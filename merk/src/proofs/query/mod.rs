@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Query proofs
+
 #[cfg(feature = "full")]
 mod map;
 
@@ -30,7 +60,8 @@ use indexmap::IndexMap;
 pub use map::*;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query_item::intersect2::QueryItemIntersectionResult;
-use query_item::QueryItem;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use storage::RawIterator;
 use verify::ProofAbsenceLimitOffset;
@@ -60,8 +91,11 @@ pub type PathKey = (Path, Key);
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq)]
+/// Subquery branch
 pub struct SubqueryBranch {
+    /// Subquery path
     pub subquery_path: Option<Path>,
+    /// Subquery
     pub subquery: Option<Box<Query>>,
 }
 
@@ -70,9 +104,13 @@ pub struct SubqueryBranch {
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Query {
+    /// Items
     pub items: Vec<QueryItem>,
+    /// Default subquery branch
     pub default_subquery_branch: SubqueryBranch,
+    /// Conditional subquery branches
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
+    /// Left to right?
     pub left_to_right: bool,
 }
 
@@ -83,6 +121,7 @@ impl Query {
         Self::new_with_direction(true)
     }
 
+    /// Creates a new query with a direction specified
     pub fn new_with_direction(left_to_right: bool) -> Self {
         Self {
             left_to_right,
@@ -90,6 +129,12 @@ impl Query {
         }
     }
 
+    /// Pushes terminal key paths and keys to `result`, no more than
+    /// `max_results`. Returns the number of terminal keys added.
+    ///
+    /// Terminal keys are the keys of a path query below which there are no more
+    /// subqueries. In other words they're the keys of the terminal queries
+    /// of a path query.
     pub fn terminal_keys(
         &self,
         current_path: Vec<Vec<u8>>,
@@ -244,18 +289,22 @@ impl Query {
         Ok(added)
     }
 
+    /// Get number of query items
     pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
 
+    /// Iterate through query items
     pub fn iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter()
     }
 
+    /// Iterate through query items in reverse
     pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter().rev()
     }
 
+    /// Iterate with direction specified
     pub fn directional_iter(
         &self,
         left_to_right: bool,
@@ -318,6 +367,7 @@ impl Query {
         }
     }
 
+    /// Check if has subquery
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
@@ -329,6 +379,7 @@ impl Query {
         false
     }
 
+    /// Check if has only keys
     pub fn has_only_keys(&self) -> bool {
         // checks if all searched for items are keys
         self.items.iter().all(|a| a.is_key())
@@ -439,6 +490,7 @@ where
 
     #[cfg(feature = "full")]
     #[allow(dead_code)] // TODO: remove when proofs will be enabled
+    /// Create a full proof
     pub(crate) fn create_full_proof(
         &mut self,
         query: &[QueryItem],

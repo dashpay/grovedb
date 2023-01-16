@@ -1,9 +1,40 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Average case costs
+//! Implements average case cost functions in GroveDb
+
 use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use integer_encoding::VarInt;
 use merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
-        add_cost_case_merk_replace_same_size,
+        add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
@@ -212,14 +243,25 @@ impl GroveDb {
                     TREE_COST_SIZE
                 };
                 let value_len = tree_cost_size + flags_len;
-                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums)
+                add_cost_case_merk_replace_layered(
+                    &mut cost,
+                    key_len,
+                    value_len,
+                    in_tree_using_sums,
+                )
             }
-            Element::SumItem(_, flags) => {
+            Element::Item(_, flags) | Element::SumItem(_, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                // Items need to be always the same serialized size for this to work
+                let sum_item_cost_size = if value.is_sum_item() {
+                    SUM_ITEM_COST_SIZE
+                } else {
+                    value.serialized_size() as u32
+                };
+                let value_len = sum_item_cost_size + flags_len;
                 add_cost_case_merk_replace_same_size(
                     &mut cost,
                     key_len,
@@ -227,7 +269,7 @@ impl GroveDb {
                     in_tree_using_sums,
                 )
             }
-            _ => add_cost_case_merk_insert(
+            _ => add_cost_case_merk_replace_same_size(
                 &mut cost,
                 key_len,
                 value.serialized_size() as u32,
@@ -242,6 +284,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    /// Add average case for deletion into Merk
     pub fn average_case_merk_delete_element(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
@@ -307,6 +350,7 @@ impl GroveDb {
         );
     }
 
+    /// Add average case to get raw cost into merk
     pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,

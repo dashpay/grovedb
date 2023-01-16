@@ -1,13 +1,40 @@
-#[cfg(feature = "full")]
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Tree hashes tests
+
 use merk::tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH};
 
-#[cfg(feature = "full")]
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},
     Element,
 };
 
-#[cfg(feature = "full")]
 #[test]
 fn test_node_hashes_when_inserting_item() {
     let db = make_test_grovedb();
@@ -58,7 +85,6 @@ fn test_node_hashes_when_inserting_item() {
     assert_eq!(elem_node_hash, node_hash);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_tree_hashes_when_inserting_empty_tree() {
     let db = make_test_grovedb();
@@ -111,7 +137,6 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     assert_eq!(elem_node_hash, node_hash);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     let db = make_test_grovedb();

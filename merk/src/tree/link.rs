@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk tree link
+
 #[cfg(feature = "full")]
 use std::io::{Read, Write};
 
@@ -22,9 +52,13 @@ pub enum Link {
     /// retaining a reference to it (its key). The child node can always be
     /// fetched from the backing store by this key when necessary.
     Reference {
+        /// Hash
         hash: CryptoHash,
+        /// Child heights
         child_heights: (u8, u8),
+        /// Key
         key: Vec<u8>,
+        /// Sum
         sum: Option<i64>,
     },
 
@@ -33,8 +67,11 @@ pub enum Link {
     /// been recomputed. The child's `Tree` instance is stored in the link.
     #[rustfmt::skip]
     Modified {
+        /// Pending writes
         pending_writes: usize, // TODO: rename to `pending_hashes`
+        /// Child heights
         child_heights: (u8, u8),
+        /// Tree
         tree: Tree
     },
 
@@ -42,18 +79,26 @@ pub enum Link {
     /// commit, but which has an up-to-date hash. The child's `Tree` instance is
     /// stored in the link.
     Uncommitted {
+        /// Hash
         hash: CryptoHash,
+        /// Child heights
         child_heights: (u8, u8),
+        /// Tree
         tree: Tree,
+        /// Sum
         sum: Option<i64>,
     },
 
     /// Represents a tree node which has not been modified, has an up-to-date
     /// hash, and which is being retained in memory.
     Loaded {
+        /// Hash
         hash: CryptoHash,
+        /// Child heights
         child_heights: (u8, u8),
+        /// Tree
         tree: Tree,
+        /// Sum
         sum: Option<i64>,
     },
 }
@@ -209,6 +254,7 @@ impl Link {
     }
 
     #[inline]
+    /// Return heights of children of the Link as mutable tuple
     pub(crate) fn child_heights_mut(&mut self) -> &mut (u8, u8) {
         match self {
             Link::Reference {
@@ -232,6 +278,7 @@ impl Link {
 
     // Costs for operations within a single merk
     #[inline]
+    /// Encoded link size
     pub const fn encoded_link_size(not_prefixed_key_len: u32, is_sum_tree: bool) -> u32 {
         let sum_tree_cost = if is_sum_tree { 8 } else { 0 };
         // Links are optional values that represent the right or left node for a given
@@ -244,7 +291,7 @@ impl Link {
         not_prefixed_key_len + HASH_LENGTH_U32 + 4 + sum_tree_cost
     }
 
-    /// the encoding cost is always 8 bytes for the sum instead of a varint
+    /// The encoding cost is always 8 bytes for the sum instead of a varint
     #[inline]
     pub fn encoding_cost(&self) -> Result<usize> {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");

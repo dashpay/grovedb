@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Verify proof operations
+
 use merk::proofs::query::{Path, ProvedKeyValue};
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
@@ -6,6 +36,7 @@ use merk::{
     CryptoHash,
 };
 
+use crate::operations::proof::util::reduce_limit_and_offset_by;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -20,6 +51,7 @@ type EncounteredAbsence = bool;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl GroveDb {
+    /// Verify proof for query many
     pub fn verify_query_many(
         proof: &[u8],
         query: Vec<&PathQuery>,
@@ -32,6 +64,7 @@ impl GroveDb {
         }
     }
 
+    /// Verify proof for query
     pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
@@ -44,6 +77,7 @@ impl GroveDb {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
+/// Proof verifier
 struct ProofVerifier {
     limit: Option<u16>,
     offset: Option<u16>,
@@ -52,6 +86,7 @@ struct ProofVerifier {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl ProofVerifier {
+    /// New query
     pub fn new(query: &PathQuery) -> Self {
         ProofVerifier {
             limit: query.query.limit,
@@ -60,6 +95,7 @@ impl ProofVerifier {
         }
     }
 
+    /// Execute proof
     pub fn execute_proof(&mut self, proof: &[u8], query: &PathQuery) -> Result<[u8; 32], Error> {
         let mut proof_reader = ProofReader::new(proof);
 
@@ -135,24 +171,41 @@ impl ProofVerifier {
                             let mut expected_combined_child_hash = value_hash;
                             let mut current_value_bytes = value_bytes;
 
-                            // What is the equivalent for an empty tree
-                            if expected_root_key.is_none() {
-                                // child node is empty, move on to next
-                                continue;
-                            }
-
                             if self.limit == Some(0) {
                                 // we are done verifying the subqueries
                                 break;
                             }
 
                             let (subquery_path, subquery_value) =
-                                Element::subquery_paths_for_sized_query(
+                                Element::subquery_paths_and_value_for_sized_query(
                                     &query.query,
                                     key.as_slice(),
                                 );
 
                             if subquery_value.is_none() && subquery_path.is_none() {
+                                // add this element to the result set
+                                let skip_limit = reduce_limit_and_offset_by(
+                                    &mut self.limit,
+                                    &mut self.offset,
+                                    1,
+                                );
+
+                                if !skip_limit {
+                                    // only insert to the result set if the offset value is not
+                                    // greater than 0
+                                    self.result_set.push(ProvedKeyValue {
+                                        key,
+                                        value: current_value_bytes,
+                                        proof: value_hash,
+                                    });
+                                }
+
+                                continue;
+                            }
+
+                            // What is the equivalent for an empty tree
+                            if expected_root_key.is_none() {
+                                // child node is empty, move on to next
                                 continue;
                             }
 
@@ -237,10 +290,24 @@ impl ProofVerifier {
                             }
                         }
                         _ => {
-                            // MerkProof type signifies there are more subtrees to explore
-                            // reaching here under a merk proof means proof for required
-                            // subtree(s) were not provided
-                            return Err(Error::InvalidProof("Missing proof for subtree"));
+                            // encountered a non tree element, we can't apply a subquery to it
+                            // add it to the result set.
+                            if self.limit == Some(0) {
+                                break;
+                            }
+
+                            let skip_limit =
+                                reduce_limit_and_offset_by(&mut self.limit, &mut self.offset, 1);
+
+                            if !skip_limit {
+                                // only insert to the result set if the offset value is not greater
+                                // than 0
+                                self.result_set.push(ProvedKeyValue {
+                                    key,
+                                    value: value_bytes,
+                                    proof: value_hash,
+                                });
+                            }
                         }
                     }
                 }
@@ -524,7 +591,6 @@ impl ProofVerifier {
             offset = self.offset;
         }
 
-        // TODO implement costs
         let (hash, result) = merk::execute_proof(proof, query, limit, offset, left_to_right)
             .unwrap()
             .map_err(|e| {

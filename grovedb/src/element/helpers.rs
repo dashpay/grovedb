@@ -1,3 +1,34 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Helpers
+//! Implements helper functions in Element
+
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 #[cfg(feature = "full")]
@@ -26,26 +57,31 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
     }
 
     #[cfg(feature = "full")]
+    /// Check if the element is a tree
     pub fn is_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
     #[cfg(feature = "full")]
+    /// Check if the element is an item
     pub fn is_item(&self) -> bool {
         matches!(self, Element::Item(..) | Element::SumItem(..))
     }
 
     #[cfg(feature = "full")]
+    /// Check if the element is a sum item
     pub fn is_sum_item(&self) -> bool {
         matches!(self, Element::SumItem(..))
     }
 
     #[cfg(feature = "full")]
+    /// Get the tree feature type
     pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
             true => {
@@ -143,11 +179,13 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Get the required item space
     pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
         len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
     #[cfg(feature = "full")]
+    /// Convert the reference to an absolute reference
     pub(crate) fn convert_if_reference_to_absolute_reference(
         self,
         path: &[&[u8]],
@@ -182,6 +220,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Get tree costs for a key value
     pub fn tree_costs_for_key_value(
         key: &Vec<u8>,
         value: &[u8],
@@ -222,6 +261,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Get tree cost for the element
     pub fn get_tree_cost(&self) -> Result<u32, Error> {
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
@@ -234,6 +274,7 @@ impl Element {
 }
 
 #[cfg(feature = "full")]
+/// Decode from bytes
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
     let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice())?;

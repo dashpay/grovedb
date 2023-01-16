@@ -1,21 +1,48 @@
-#[cfg(feature = "full")]
-use merk::proofs::query::query_item::QueryItem;
-#[cfg(feature = "full")]
-use merk::proofs::Query;
-#[cfg(feature = "full")]
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Query tests
+
+use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
-#[cfg(feature = "full")]
 use tempfile::TempDir;
 
-#[cfg(feature = "full")]
 use crate::{
     batch::GroveDbOp,
+    query_result_type::QueryResultType,
     reference_path::ReferencePathType,
     tests::{common::compare_result_sets, make_test_grovedb, TempGroveDb, TEST_LEAF},
     Element, GroveDb, PathQuery, SizedQuery,
 };
 
-#[cfg(feature = "full")]
+// TODO: get rid of the cfg attribute from each test, do this at the module
+// level
+
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
@@ -51,7 +78,6 @@ fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
-#[cfg(feature = "full")]
 fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 0u32..10 {
@@ -111,7 +137,6 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
     }
 }
 
-#[cfg(feature = "full")]
 fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
     // This subtree will be holding values
     db.insert([TEST_LEAF], b"\0", Element::empty_tree(), None, None)
@@ -173,7 +198,6 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
-#[cfg(feature = "full")]
 fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
@@ -194,7 +218,6 @@ fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
-#[cfg(feature = "full")]
 fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
     // This subtree will be holding values
     db.insert([TEST_LEAF], b"\0", Element::empty_tree(), None, None)
@@ -240,7 +263,6 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
-#[cfg(feature = "full")]
 fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut TempGroveDb) {
     populate_tree_for_unique_range_subquery(db);
     db.insert([TEST_LEAF], &[], Element::empty_tree(), None, None)
@@ -264,7 +286,6 @@ fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut 
     }
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -305,7 +326,6 @@ fn test_get_range_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery() {
     let mut db = make_test_grovedb();
@@ -341,7 +361,6 @@ fn test_get_range_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery_on_references() {
     let db = make_test_grovedb();
@@ -377,7 +396,6 @@ fn test_get_range_query_with_unique_subquery_on_references() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
     let mut db = make_test_grovedb();
@@ -422,7 +440,6 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
     let mut db = make_test_grovedb();
@@ -466,7 +483,6 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -507,7 +523,6 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let db = make_test_grovedb();
@@ -551,7 +566,6 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -587,7 +601,6 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_from_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -628,7 +641,6 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_from_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -664,7 +676,6 @@ fn test_get_range_from_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -705,7 +716,6 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -741,7 +751,6 @@ fn test_get_range_to_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -782,7 +791,6 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
     let db = make_test_grovedb();
@@ -823,7 +831,6 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bou
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -859,7 +866,6 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -900,7 +906,6 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_to_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -941,7 +946,6 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -984,7 +988,6 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
     let db = make_test_grovedb();
@@ -1027,7 +1030,6 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -1074,7 +1076,6 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_limit_and_offset() {
     let db = make_test_grovedb();
@@ -1324,7 +1325,6 @@ fn test_get_range_query_with_limit_and_offset() {
     compare_result_sets(&elements, &result_set);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
     let tmp_dir = TempDir::new().unwrap();
@@ -1469,4 +1469,436 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         .expect("expected successful proving");
     let (hash, _result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+}
+
+#[test]
+fn test_mixed_level_proofs() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"key2", Element::new_item(vec![1]), None, None)
+        .unwrap()
+        .expect("successful item insert");
+    db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF],
+        b"key4",
+        Element::new_reference(ReferencePathType::SiblingReference(b"key2".to_vec())),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k1",
+        Element::new_item(vec![2]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k2",
+        Element::new_item(vec![3]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k3",
+        Element::new_item(vec![4]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery(subquery);
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 5);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1], vec![1]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 5);
+    compare_result_sets(&elements, &result_set);
+
+    // Test mixed element proofs with limit and offset
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 5);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1], vec![1]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 5);
+    compare_result_sets(&elements, &result_set);
+
+    // TODO: Fix noticed bug when limit and offset are both set to Some(0)
+
+    let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(1), None));
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 1);
+    assert_eq!(elements, vec![vec![2]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 1);
+    compare_result_sets(&elements, &result_set);
+
+    let path_query = PathQuery::new(
+        path.clone(),
+        SizedQuery::new(query.clone(), Some(3), Some(0)),
+    );
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 3);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
+    compare_result_sets(&elements, &result_set);
+
+    let path_query = PathQuery::new(
+        path.clone(),
+        SizedQuery::new(query.clone(), Some(4), Some(0)),
+    );
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 4);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+    compare_result_sets(&elements, &result_set);
+
+    let path_query = PathQuery::new(
+        path.clone(),
+        SizedQuery::new(query.clone(), Some(10), Some(4)),
+    );
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 1);
+    assert_eq!(elements, vec![vec![1]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 1);
+    compare_result_sets(&elements, &result_set);
+}
+
+#[test]
+fn test_mixed_level_proofs_with_tree() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"key2", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k1",
+        Element::new_item(vec![2]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k2",
+        Element::new_item(vec![3]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k3",
+        Element::new_item(vec![4]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"k1",
+        Element::new_item(vec![5]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.add_conditional_subquery(QueryItem::Key(b"key1".to_vec()), None, Some(subquery));
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    let (elements, _) = db
+        .query_raw(
+            &path_query,
+            true,
+            QueryResultType::QueryPathKeyElementTrioResultType,
+            None,
+        )
+        .unwrap()
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 5);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 5);
+
+    // TODO: verify that the result set is exactly the same
+    // compare_result_sets(&elements, &result_set);
+
+    let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(1), None));
+
+    let (elements, _) = db
+        .query_raw(
+            &path_query,
+            true,
+            QueryResultType::QueryPathKeyElementTrioResultType,
+            None,
+        )
+        .unwrap()
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 1);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 1);
+    // TODO: verify that the result set is exactly the same
+    // compare_result_sets(&elements, &result_set);
+}
+
+#[test]
+fn test_mixed_level_proofs_with_subquery_paths() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"a", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"b", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"c", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    db.insert([TEST_LEAF, b"a"], b"d", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"a"],
+        b"e",
+        Element::new_item(vec![2]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"a"],
+        b"f",
+        Element::new_item(vec![3]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"a", b"d"],
+        b"d",
+        Element::new_item(vec![6]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"b"],
+        b"g",
+        Element::new_item(vec![4]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert([TEST_LEAF, b"b"], b"d", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"b", b"d"],
+        b"i",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"b", b"d"],
+        b"j",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"b", b"d"],
+        b"k",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    // if you don't have an item at the subquery path translation, you shouldn't be
+    // added to the result set.
+    let mut query = Query::new();
+    query.insert_all();
+    query.set_subquery_path(vec![b"d".to_vec()]);
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    // TODO: proofs seems to be more expressive than query_raw now
+    // let (elements, _) = db
+    // .query_raw(
+    // &path_query,
+    // true,
+    // QueryResultType::QueryPathKeyElementTrioResultType,
+    // None,
+    // )
+    // .unwrap()
+    // .expect("expected successful get_path_query");
+    //
+    // assert_eq!(elements.len(), 2);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 2);
+
+    // apply path translation then query
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery_path(vec![b"d".to_vec()]);
+    query.set_subquery(subquery);
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+
+    // apply empty path translation
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery_path(vec![]);
+    query.set_subquery(subquery);
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 5);
+
+    // use conditionals to return from more than 2 depth
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    let mut deeper_subquery = Query::new();
+    deeper_subquery.insert_all();
+    subquery.add_conditional_subquery(QueryItem::Key(b"d".to_vec()), None, Some(deeper_subquery));
+    query.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, Some(subquery.clone()));
+    query.add_conditional_subquery(QueryItem::Key(b"b".to_vec()), None, Some(subquery.clone()));
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 8);
 }
