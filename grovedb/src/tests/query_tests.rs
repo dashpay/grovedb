@@ -1630,8 +1630,6 @@ fn test_mixed_level_proofs() {
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
     compare_result_sets(&elements, &result_set);
-
-    // TODO: test return of tree in mixed element query
 }
 
 #[test]
@@ -1734,8 +1732,6 @@ fn test_mixed_level_proofs_with_tree() {
     assert_eq!(result_set.len(), 1);
     // TODO: verify that the result set is exactly the same
     // compare_result_sets(&elements, &result_set);
-
-    // TODO: test at larger depths
 }
 
 #[test]
@@ -1885,4 +1881,24 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
+
+    // use conditionals to return from more than 2 depth
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    let mut deeper_subquery = Query::new();
+    deeper_subquery.insert_all();
+    subquery.add_conditional_subquery(QueryItem::Key(b"d".to_vec()), None, Some(deeper_subquery));
+    query.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, Some(subquery.clone()));
+    query.add_conditional_subquery(QueryItem::Key(b"b".to_vec()), None, Some(subquery.clone()));
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 8);
 }
