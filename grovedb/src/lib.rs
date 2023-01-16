@@ -51,6 +51,7 @@ pub mod query_result_type;
 pub mod reference_path;
 #[cfg(feature = "full")]
 mod replication;
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "full")]

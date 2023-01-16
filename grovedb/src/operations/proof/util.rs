@@ -156,7 +156,6 @@ pub fn reduce_limit_and_offset_by(
     let mut skip_limit = false;
     let mut n = n;
 
-    // TODO: should probably break if the limit hits 0
     if let Some(offset_value) = *offset {
         if offset_value > 0 {
             if offset_value >= n {
