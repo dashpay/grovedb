@@ -28,13 +28,10 @@
 
 //! Common tests
 
-#[cfg(feature = "full")]
 use merk::proofs::query::ProvedKeyValue;
 
-#[cfg(feature = "full")]
 use crate::{Element, Error};
 
-#[cfg(feature = "full")]
 /// Compare result tuples
 pub fn compare_result_tuples(
     result_set: Vec<ProvedKeyValue>,
@@ -46,7 +43,7 @@ pub fn compare_result_tuples(
         assert_eq!(expected_result_set[i].1, result_set[i].value);
     }
 }
-#[cfg(feature = "full")]
+
 fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let elem = Element::deserialize(raw_bytes)?;
     return match elem {
@@ -55,7 +52,6 @@ fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error
     };
 }
 
-#[cfg(feature = "full")]
 /// Compare result sets
 pub fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &Vec<ProvedKeyValue>) {
     for i in 0..elements.len() {

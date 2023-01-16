@@ -501,7 +501,6 @@ mod test {
                 let chunks = chunk_producer
                     .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
                     .expect("cannot get next chunk");
-                // dbg!(chunks.len());
                 match restorer
                     .process_grove_chunks(chunks.into_iter())
                     .expect("cannot process chunk")
