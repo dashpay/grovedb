@@ -74,8 +74,6 @@ pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
 #[cfg(feature = "full")]
 /// The cost of a sum item
 pub const SUM_ITEM_COST_SIZE: u32 = 10;
-/// Min item
-pub const SUM_ITEM_COST_SIZE: u32 = 10;
 #[cfg(feature = "full")]
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
