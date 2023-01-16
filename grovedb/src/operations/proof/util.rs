@@ -146,3 +146,25 @@ impl<'a> ProofReader<'a> {
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
     dest.write_all(value).expect("TODO what if it fails?");
 }
+
+#[cfg(feature = "full")]
+// TODO: add n
+pub fn reduce_limit_and_offset_by(limit: &mut Option<u16>, offset: &mut Option<u16>) -> bool {
+    let mut skip_limit = false;
+
+    // TODO: should probably break if the limit hits 0
+    if let Some(offset_value) = *offset{
+        if offset_value > 0 {
+            *offset= Some(offset_value - 1);
+            skip_limit = true;
+        }
+    }
+
+    if let Some(limit_value) = *limit{
+        if !skip_limit && limit_value > 0 {
+            *limit = Some(limit_value - 1);
+        }
+    }
+
+    skip_limit
+}

@@ -46,7 +46,7 @@ use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 use crate::element::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::{
-    operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
+    operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH, reduce_limit_and_offset_by},
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Query,
 };
@@ -149,6 +149,7 @@ impl GroveDb {
         Ok(proof_result).wrap_with_cost(cost)
     }
 
+
     /// Perform a pre-order traversal of the tree based on the provided
     /// subqueries
     fn prove_subqueries(
@@ -161,7 +162,6 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        // TODO: refactor
         let mut to_add_to_result_set: i16 = 0;
 
         let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
@@ -181,38 +181,18 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
-            // TODO: can probably use loop tags to break out of outer instead of this
             let mut encountered_absence = false;
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
                 Element::Tree(root_key, _) | Element::SumTree(root_key, ..) => {
-                    // TODO: investigate, we are finding the subquery path before we confirm it's a
-                    //  tree  this will skip items that have no subquery when one of
-                    //  their siblings have  test this.
                     let (mut subquery_path, subquery_value) =
                         Element::subquery_paths_and_value_for_sized_query(&query.query, &key);
 
                     if subquery_value.is_none() && subquery_path.is_none() {
                         // this element should be added to the result set
                         // hence we have to update the limit and offset value
-                        // TODO: refactor as function
-                        let mut skip_limit = false;
-
-                        // TODO: should probably break if the limit hits 0
-                        if let Some(offset_value) = *current_offset {
-                            if offset_value > 0 {
-                                *current_offset = Some(offset_value - 1);
-                                skip_limit = true;
-                            }
-                        }
-
-                        if let Some(limit_value) = *current_limit {
-                            if !skip_limit && limit_value > 0 {
-                                *current_limit = Some(limit_value - 1);
-                            }
-                        }
-
+                        reduce_limit_and_offset_by(current_limit, current_offset);
                         continue;
                     }
 
@@ -415,21 +395,7 @@ impl GroveDb {
         } else {
             // TODO: refactor
             for _ in 0..to_add_to_result_set {
-                let mut skip_limit = false;
-
-                // TODO: should probably break if the limit hits 0
-                if let Some(offset_value) = *current_offset {
-                    if offset_value > 0 {
-                        *current_offset = Some(offset_value - 1);
-                        skip_limit = true;
-                    }
-                }
-
-                if let Some(limit_value) = *current_limit {
-                    if !skip_limit && limit_value > 0 {
-                        *current_limit = Some(limit_value - 1);
-                    }
-                }
+                reduce_limit_and_offset_by(current_limit, current_offset);
             }
         }
 

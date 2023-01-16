@@ -41,6 +41,7 @@ use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
     Element, Error, GroveDb, PathQuery,
 };
+use crate::operations::proof::util::reduce_limit_and_offset_by;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 type ProvedKeyValues = Vec<ProvedKeyValue>;
@@ -183,20 +184,7 @@ impl ProofVerifier {
 
                             if subquery_value.is_none() && subquery_path.is_none() {
                                 // add this element to the result set
-                                // TODO: extract limit offset  update logic to a function
-                                let mut skip_limit = false;
-                                if let Some(offset_value) = self.offset {
-                                    if offset_value > 0 {
-                                        self.offset = Some(offset_value - 1);
-                                        skip_limit = true;
-                                    }
-                                }
-
-                                if let Some(limit_value) = self.limit {
-                                    if !skip_limit && limit_value > 0 {
-                                        self.limit = Some(limit_value - 1)
-                                    }
-                                }
+                                let skip_limit = reduce_limit_and_offset_by(&mut self.limit, &mut self.offset);
 
                                 if !skip_limit {
                                     // only insert to the result set if the offset value is not
@@ -304,20 +292,7 @@ impl ProofVerifier {
                                 break;
                             }
 
-                            // TODO: extract limit offset  update logic to a function
-                            let mut skip_limit = false;
-                            if let Some(offset_value) = self.offset {
-                                if offset_value > 0 {
-                                    self.offset = Some(offset_value - 1);
-                                    skip_limit = true;
-                                }
-                            }
-
-                            if let Some(limit_value) = self.limit {
-                                if !skip_limit && limit_value > 0 {
-                                    self.limit = Some(limit_value - 1)
-                                }
-                            }
+                            let skip_limit = reduce_limit_and_offset_by(&mut self.limit, &mut self.offset);
 
                             if !skip_limit {
                                 // only insert to the result set if the offset value is not greater
