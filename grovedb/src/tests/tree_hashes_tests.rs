@@ -28,16 +28,13 @@
 
 //! Tree hashes tests
 
-#[cfg(feature = "full")]
 use merk::tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH};
 
-#[cfg(feature = "full")]
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},
     Element,
 };
 
-#[cfg(feature = "full")]
 #[test]
 fn test_node_hashes_when_inserting_item() {
     let db = make_test_grovedb();
@@ -88,7 +85,6 @@ fn test_node_hashes_when_inserting_item() {
     assert_eq!(elem_node_hash, node_hash);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_tree_hashes_when_inserting_empty_tree() {
     let db = make_test_grovedb();
@@ -141,7 +137,6 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     assert_eq!(elem_node_hash, node_hash);
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     let db = make_test_grovedb();

@@ -51,6 +51,7 @@ pub mod query_result_type;
 pub mod reference_path;
 #[cfg(feature = "full")]
 mod replication;
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "full")]
@@ -165,7 +166,7 @@ impl GroveDb {
                     Element::get_from_storage(&parent_storage, key).map_err(|e| {
                         Error::InvalidParentLayerPath(format!(
                             "could not get key {} for parent {:?} of subtree: {}",
-                            hex::encode(key.as_ref()),
+                            hex::encode(key),
                             DebugByteVectors(path_iter.clone().map(|x| x.to_vec()).collect()),
                             e
                         ))
@@ -219,7 +220,7 @@ impl GroveDb {
                     Element::get_from_storage(&parent_storage, key).map_err(|e| {
                         Error::InvalidParentLayerPath(format!(
                             "could not get key {} for parent {:?} of subtree: {}",
-                            hex::encode(key.as_ref()),
+                            hex::encode(key),
                             DebugByteVectors(path_iter.clone().map(|x| x.to_vec()).collect()),
                             e
                         ))

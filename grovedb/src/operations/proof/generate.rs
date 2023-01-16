@@ -46,7 +46,9 @@ use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 use crate::element::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::{
-    operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
+    operations::proof::util::{
+        reduce_limit_and_offset_by, write_to_vec, ProofType, EMPTY_TREE_HASH,
+    },
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Query,
 };
@@ -70,7 +72,6 @@ impl GroveDb {
     pub fn prove_query(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
 
-        // TODO: should it be possible to generate proofs for tree items (currently yes)
         let mut proof_result: Vec<u8> = vec![];
         let mut limit: Option<u16> = query.query.limit;
         let mut offset: Option<u16> = query.query.offset;
@@ -161,6 +162,8 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
+        let mut to_add_to_result_set: u16 = 0;
+
         let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
         if reached_limit {
             return Ok(()).wrap_with_cost(cost);
@@ -179,16 +182,20 @@ impl GroveDb {
 
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
             let mut encountered_absence = false;
-            let (mut subquery_path, subquery_value) =
-                Element::subquery_paths_for_sized_query(&query.query, &key);
-
-            if subquery_value.is_none() && subquery_path.is_none() {
-                continue;
-            }
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
                 Element::Tree(root_key, _) | Element::SumTree(root_key, ..) => {
+                    let (mut subquery_path, subquery_value) =
+                        Element::subquery_paths_and_value_for_sized_query(&query.query, &key);
+
+                    if subquery_value.is_none() && subquery_path.is_none() {
+                        // this element should be added to the result set
+                        // hence we have to update the limit and offset value
+                        reduce_limit_and_offset_by(current_limit, current_offset, 1);
+                        continue;
+                    }
+
                     if root_key.is_none() {
                         continue;
                     }
@@ -216,14 +223,14 @@ impl GroveDb {
 
                     if query.is_some() {
                         if let Some(subquery_path) = &subquery_path {
-                            for first_key in subquery_path.iter() {
+                            for subkey in subquery_path.iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
                                     self.open_subtree(new_path.iter().copied())
                                 );
 
                                 let mut key_as_query = Query::new();
-                                key_as_query.insert_key(first_key.clone());
+                                key_as_query.insert_key(subkey.clone());
 
                                 cost_return_on_error!(
                                     &mut cost,
@@ -237,7 +244,7 @@ impl GroveDb {
                                     )
                                 );
 
-                                new_path.push(first_key);
+                                new_path.push(subkey);
 
                                 if self
                                     .check_subtree_exists_path_not_found(new_path.clone(), None)
@@ -305,10 +312,8 @@ impl GroveDb {
                         key_as_query.insert_key(last_key);
                         query = Some(key_as_query);
                     } else {
-                        return Err(Error::CorruptedCodeExecution(
-                            "subquery_path must exist to be in this function",
-                        ))
-                        .wrap_with_cost(cost);
+                        return Err(Error::CorruptedCodeExecution("subquery_path must exist"))
+                            .wrap_with_cost(cost);
                     }
 
                     let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
@@ -339,11 +344,7 @@ impl GroveDb {
                     }
                 }
                 _ => {
-                    // currently not handling trees with mixed types
-                    // if a tree has been seen, we should see nothing but tree
-                    if !is_leaf_tree {
-                        return Err(Error::InvalidQuery("mixed tree types")).wrap_with_cost(cost);
-                    }
+                    to_add_to_result_set += 1;
                 }
             }
         }
@@ -366,6 +367,8 @@ impl GroveDb {
             // update limit and offset values
             *current_limit = limit_offset.0;
             *current_offset = limit_offset.1;
+        } else {
+            reduce_limit_and_offset_by(current_limit, current_offset, to_add_to_result_set);
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -422,8 +425,6 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        // TODO: How do you handle mixed tree types?
-        // TODO implement costs
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
             .unwrap()

@@ -491,7 +491,7 @@ impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Takes a sized query and a key and returns subquery key and subquery as
     /// tuple
-    pub fn subquery_paths_for_sized_query(
+    pub fn subquery_paths_and_value_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
     ) -> (Option<Path>, Option<Query>) {
@@ -552,7 +552,7 @@ impl Element {
                 match element_res {
                     Ok(element) => {
                         let (subquery_path, subquery) =
-                            Self::subquery_paths_for_sized_query(sized_query, key);
+                            Self::subquery_paths_and_value_for_sized_query(sized_query, key);
                         add_element_function(PathQueryPushArgs {
                             storage,
                             transaction,
@@ -605,7 +605,7 @@ impl Element {
                         .unwrap_add_cost(&mut cost)
                         .expect("key should exist");
                     let (subquery_path, subquery) =
-                        Self::subquery_paths_for_sized_query(sized_query, key);
+                        Self::subquery_paths_and_value_for_sized_query(sized_query, key);
                     cost_return_on_error!(
                         &mut cost,
                         add_element_function(PathQueryPushArgs {

@@ -36,6 +36,7 @@ use merk::{
     CryptoHash,
 };
 
+use crate::operations::proof::util::reduce_limit_and_offset_by;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -170,24 +171,41 @@ impl ProofVerifier {
                             let mut expected_combined_child_hash = value_hash;
                             let mut current_value_bytes = value_bytes;
 
-                            // What is the equivalent for an empty tree
-                            if expected_root_key.is_none() {
-                                // child node is empty, move on to next
-                                continue;
-                            }
-
                             if self.limit == Some(0) {
                                 // we are done verifying the subqueries
                                 break;
                             }
 
                             let (subquery_path, subquery_value) =
-                                Element::subquery_paths_for_sized_query(
+                                Element::subquery_paths_and_value_for_sized_query(
                                     &query.query,
                                     key.as_slice(),
                                 );
 
                             if subquery_value.is_none() && subquery_path.is_none() {
+                                // add this element to the result set
+                                let skip_limit = reduce_limit_and_offset_by(
+                                    &mut self.limit,
+                                    &mut self.offset,
+                                    1,
+                                );
+
+                                if !skip_limit {
+                                    // only insert to the result set if the offset value is not
+                                    // greater than 0
+                                    self.result_set.push(ProvedKeyValue {
+                                        key,
+                                        value: current_value_bytes,
+                                        proof: value_hash,
+                                    });
+                                }
+
+                                continue;
+                            }
+
+                            // What is the equivalent for an empty tree
+                            if expected_root_key.is_none() {
+                                // child node is empty, move on to next
                                 continue;
                             }
 
@@ -272,10 +290,24 @@ impl ProofVerifier {
                             }
                         }
                         _ => {
-                            // MerkProof type signifies there are more subtrees to explore
-                            // reaching here under a merk proof means proof for required
-                            // subtree(s) were not provided
-                            return Err(Error::InvalidProof("Missing proof for subtree"));
+                            // encountered a non tree element, we can't apply a subquery to it
+                            // add it to the result set.
+                            if self.limit == Some(0) {
+                                break;
+                            }
+
+                            let skip_limit =
+                                reduce_limit_and_offset_by(&mut self.limit, &mut self.offset, 1);
+
+                            if !skip_limit {
+                                // only insert to the result set if the offset value is not greater
+                                // than 0
+                                self.result_set.push(ProvedKeyValue {
+                                    key,
+                                    value: value_bytes,
+                                    proof: value_hash,
+                                });
+                            }
                         }
                     }
                 }
@@ -559,7 +591,6 @@ impl ProofVerifier {
             offset = self.offset;
         }
 
-        // TODO implement costs
         let (hash, result) = merk::execute_proof(proof, query, limit, offset, left_to_right)
             .unwrap()
             .map_err(|e| {
