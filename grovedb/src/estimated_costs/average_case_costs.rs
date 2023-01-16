@@ -34,7 +34,7 @@ use integer_encoding::VarInt;
 use merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
-        add_cost_case_merk_replace_same_size,
+        add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
@@ -243,14 +243,25 @@ impl GroveDb {
                     TREE_COST_SIZE
                 };
                 let value_len = tree_cost_size + flags_len;
-                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums)
+                add_cost_case_merk_replace_layered(
+                    &mut cost,
+                    key_len,
+                    value_len,
+                    in_tree_using_sums,
+                )
             }
-            Element::SumItem(_, flags) => {
+            Element::Item(_, flags) | Element::SumItem(_, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                // Items need to be always the same serialized size for this to work
+                let sum_item_cost_size = if value.is_sum_item() {
+                    SUM_ITEM_COST_SIZE
+                } else {
+                    value.serialized_size() as u32
+                };
+                let value_len = sum_item_cost_size + flags_len;
                 add_cost_case_merk_replace_same_size(
                     &mut cost,
                     key_len,
@@ -258,7 +269,7 @@ impl GroveDb {
                     in_tree_using_sums,
                 )
             }
-            _ => add_cost_case_merk_insert(
+            _ => add_cost_case_merk_replace_same_size(
                 &mut cost,
                 key_len,
                 value.serialized_size() as u32,
