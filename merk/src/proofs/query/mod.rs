@@ -60,7 +60,8 @@ use indexmap::IndexMap;
 pub use map::*;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query_item::intersect2::QueryItemIntersectionResult;
-use query_item::QueryItem;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use storage::RawIterator;
 use verify::ProofAbsenceLimitOffset;
