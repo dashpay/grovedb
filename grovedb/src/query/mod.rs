@@ -905,7 +905,6 @@ mod tests {
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");
-        // todo: should this be 3 or 4?
-        assert_eq!(result_set.len(), 3);
+        assert_eq!(result_set.len(), 4);
     }
 }
