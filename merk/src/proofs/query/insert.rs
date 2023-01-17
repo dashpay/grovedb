@@ -19,6 +19,20 @@ impl Query {
         self.insert_item(key);
     }
 
+    /// Adds multiple individual keys to the query, so that its value (or its absence)
+    /// in the tree will be included in the resulting proof.
+    ///
+    /// If the key or a range including the key already exists in the query,
+    /// this will have no effect. If the query already includes a range that has
+    /// a non-inclusive bound equal to the key, the bound will be changed to be
+    /// inclusive.
+    pub fn insert_keys(&mut self, keys: Vec<Vec<u8>>) {
+        for key in keys {
+            let key = QueryItem::Key(key);
+            self.insert_item(key);
+        }
+    }
+
     /// Adds a range to the query, so that all the entries in the tree with keys
     /// in the range will be included in the resulting proof.
     ///
