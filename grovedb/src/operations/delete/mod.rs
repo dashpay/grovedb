@@ -57,6 +57,7 @@ use storage::{
     Storage, StorageBatch, StorageContext,
 };
 
+use crate::util::merk_optional_tx_path_not_empty;
 #[cfg(feature = "full")]
 use crate::{
     batch::{GroveDbOp, Op},
@@ -326,7 +327,7 @@ impl GroveDb {
                         _ => None,
                     })
                     .collect::<BTreeSet<&[u8]>>();
-                let mut is_empty = merk_optional_tx!(
+                let mut is_empty = merk_optional_tx_path_not_empty!(
                     &mut cost,
                     self.db,
                     subtree_merk_path,

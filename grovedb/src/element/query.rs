@@ -353,7 +353,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied(),
+                                    path_vec.iter().copied().peekable(),
                                     transaction,
                                     subtree,
                                     {
@@ -375,7 +375,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied(),
+                                    path_vec.iter().copied().peekable(),
                                     transaction,
                                     subtree,
                                     {
@@ -400,7 +400,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied(),
+                                    path_vec.iter().copied().peekable(),
                                     transaction,
                                     subtree,
                                     {
@@ -548,7 +548,7 @@ impl Element {
                 let element_res = merk_optional_tx!(
                     &mut cost,
                     storage,
-                    path.iter().copied(),
+                    path.iter().copied().peekable(),
                     transaction,
                     subtree,
                     { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }

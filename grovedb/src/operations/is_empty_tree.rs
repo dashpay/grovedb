@@ -48,7 +48,7 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        let path_iter = path.into_iter();
+        let mut path_iter = path.into_iter().peekable();
         cost_return_on_error!(
             &mut cost,
             self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
