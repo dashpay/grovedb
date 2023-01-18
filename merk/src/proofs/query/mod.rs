@@ -42,11 +42,9 @@ pub mod query_item;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod verify;
 
-use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
-use std::{
-    cmp::{Ordering},
-};
+use std::cmp::Ordering;
+use std::collections::HashSet;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
@@ -66,11 +64,11 @@ pub use verify::{execute_proof, verify_query, ProofVerificationResult, ProvedKey
 use {super::Op, std::collections::LinkedList};
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use super::{Node};
+use super::Node;
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::tree::{Fetch, Link, RefWalker};
-#[cfg(any(feature = "full", feature = "verify"))]
-use crate::{error::Error};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a path.

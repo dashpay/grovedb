@@ -341,20 +341,18 @@ impl Ord for RangeSetItem {
 
             (Inclusive(v1), Inclusive(v2))
             | (ExclusiveStart(v1), ExclusiveStart(v2))
-            | (ExclusiveEnd(v1), ExclusiveEnd(v2)) => {
-                v1.cmp(v2)
-            }
+            | (ExclusiveEnd(v1), ExclusiveEnd(v2)) => v1.cmp(v2),
 
             (Inclusive(v1), ExclusiveStart(v2)) | (ExclusiveEnd(v1), Inclusive(v2)) => {
                 match v1.cmp(v2) {
                     Ordering::Equal | Ordering::Less => Ordering::Less,
-                    _ => Ordering::Greater
+                    _ => Ordering::Greater,
                 }
             }
             (Inclusive(v1), ExclusiveEnd(v2)) | (ExclusiveStart(v1), Inclusive(v2)) => {
                 match v1.cmp(v2) {
                     Ordering::Less => Ordering::Less,
-                    _ => Ordering::Greater
+                    _ => Ordering::Greater,
                 }
             }
 
@@ -364,7 +362,7 @@ impl Ord for RangeSetItem {
                 // number
                 match v1.cmp(v2) {
                     Ordering::Equal | Ordering::Greater => Ordering::Greater,
-                    _ => Ordering::Less
+                    _ => Ordering::Less,
                 }
             }
         }
@@ -479,10 +477,7 @@ mod test {
         ops::{Range, RangeInclusive},
     };
 
-    use crate::proofs::query::query_item::{
-        intersect::{RangeSetItem},
-        QueryItem,
-    };
+    use crate::proofs::query::query_item::{intersect::RangeSetItem, QueryItem};
 
     #[test]
     pub fn test_range_set_query_item_conversion() {

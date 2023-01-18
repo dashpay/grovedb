@@ -1,6 +1,4 @@
-use std::{
-    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
-};
+use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 use crate::proofs::{query::query_item::QueryItem, Query};
 

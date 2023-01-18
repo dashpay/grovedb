@@ -1613,10 +1613,7 @@ fn test_mixed_level_proofs() {
     assert_eq!(result_set.len(), 4);
     compare_result_sets(&elements, &result_set);
 
-    let path_query = PathQuery::new(
-        path,
-        SizedQuery::new(query.clone(), Some(10), Some(4)),
-    );
+    let path_query = PathQuery::new(path, SizedQuery::new(query.clone(), Some(10), Some(4)));
     let (elements, _) = db
         .query_item_value(&path_query, true, None)
         .unwrap()

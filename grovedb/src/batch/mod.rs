@@ -2255,20 +2255,12 @@ mod tests {
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![
-                b"contract".to_vec(),
-                [1u8].to_vec(),
-                b"preorder".to_vec(),
-            ],
+            vec![b"contract".to_vec(), [1u8].to_vec(), b"preorder".to_vec()],
             [0u8].to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![
-                b"contract".to_vec(),
-                [1u8].to_vec(),
-                b"preorder".to_vec(),
-            ],
+            vec![b"contract".to_vec(), [1u8].to_vec(), b"preorder".to_vec()],
             b"salted_domain".to_vec(),
             Element::empty_tree(),
         ));
@@ -2849,11 +2841,7 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
 
-        let batch = vec![GroveDbOp::insert_op(
-            acc_path,
-            b"key".to_vec(),
-            element,
-        )];
+        let batch = vec![GroveDbOp::insert_op(acc_path, b"key".to_vec(), element)];
         db.apply_batch(batch, None, None)
             .unwrap()
             .expect("cannot apply same batch twice");
@@ -2968,11 +2956,7 @@ mod tests {
                     Some(1),
                 ),
             ),
-            GroveDbOp::insert_op(
-                vec![TEST_LEAF.to_vec()],
-                b"invalid_path".to_vec(),
-                elem,
-            ),
+            GroveDbOp::insert_op(vec![TEST_LEAF.to_vec()], b"invalid_path".to_vec(), elem),
         ];
         assert!(matches!(
             db.apply_batch(batch, None, None).unwrap(),

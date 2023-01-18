@@ -1424,7 +1424,9 @@ mod tests {
             Element::new_item(b"cat".to_vec()),
             None,
             Some(&tx),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1482,7 +1484,9 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx)).unwrap().unwrap();
+        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
 
         db.insert(
             vec![b"tree".as_slice()],
@@ -1490,7 +1494,9 @@ mod tests {
             Element::new_item(b"cat".to_vec()),
             None,
             Some(&tx),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1522,7 +1528,9 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx)).unwrap().unwrap();
+        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
 
         db.insert(
             vec![b"tree".as_slice()],
@@ -1530,7 +1538,9 @@ mod tests {
             Element::new_item(b"test".to_vec()),
             None,
             Some(&tx),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1562,7 +1572,9 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx)).unwrap().unwrap();
+        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
 
         db.insert(
             vec![b"tree".as_slice()],
@@ -1570,7 +1582,9 @@ mod tests {
             Element::new_tree(None),
             None,
             Some(&tx),
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(

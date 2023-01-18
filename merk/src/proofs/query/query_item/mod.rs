@@ -6,7 +6,7 @@ pub mod intersect;
 
 use std::{
     cmp,
-    cmp::{Ordering},
+    cmp::Ordering,
     hash::Hash,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };

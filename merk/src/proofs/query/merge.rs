@@ -1,11 +1,9 @@
-
-
 use indexmap::IndexMap;
 
 use crate::proofs::{
     query::{
-        common_path::CommonPathResult,
-        query_item::{QueryItem}, QueryItemIntersectionResult, SubqueryBranch,
+        common_path::CommonPathResult, query_item::QueryItem, QueryItemIntersectionResult,
+        SubqueryBranch,
     },
     Query,
 };

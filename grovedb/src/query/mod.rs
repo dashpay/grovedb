@@ -29,6 +29,7 @@
 //! Queries
 
 use std::cmp::Ordering;
+
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::query::query_item::QueryItem;
 use merk::proofs::query::SubqueryBranch;
@@ -220,17 +221,13 @@ impl PathQuery {
         let path = &self.path;
 
         match path.len().cmp(&start_index) {
-            Ordering::Equal => {
-                Ok(SubqueryBranch {
-                    subquery_path: None,
-                    subquery: Some(Box::new(self.query.query.clone())),
-                })
-            }
-            Ordering::Less => {
-                Err(Error::CorruptedCodeExecution(
-                    "invalid start index for path query merge",
-                ))
-            }
+            Ordering::Equal => Ok(SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(self.query.query.clone())),
+            }),
+            Ordering::Less => Err(Error::CorruptedCodeExecution(
+                "invalid start index for path query merge",
+            )),
             _ => {
                 let (_, remainder) = path.split_at(start_index);
 
@@ -240,7 +237,6 @@ impl PathQuery {
                 })
             }
         }
-
     }
 }
 
@@ -472,13 +468,9 @@ mod tests {
 
         // deeper 4 was query 2
         let (deeper_4_query_item, deeper_4_subquery_branch) =
-            deep_node_2_conditional_subquery_branches
-                .first()
-                .unwrap();
+            deep_node_2_conditional_subquery_branches.first().unwrap();
         let (deeper_3_query_item, deeper_3_subquery_branch) =
-            deep_node_2_conditional_subquery_branches
-                .last()
-                .unwrap();
+            deep_node_2_conditional_subquery_branches.last().unwrap();
 
         assert_eq!(deeper_3_query_item, &QueryItem::Key(b"deeper_3".to_vec()));
         assert_eq!(deeper_4_query_item, &QueryItem::Key(b"deeper_4".to_vec()));

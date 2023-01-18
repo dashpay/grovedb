@@ -33,7 +33,6 @@ use costs::cost_return_on_error_default;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-
 #[cfg(feature = "full")]
 use merk::{
     proofs::{encode_into, Node, Op},

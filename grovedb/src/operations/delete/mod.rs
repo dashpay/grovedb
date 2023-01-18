@@ -61,9 +61,7 @@ use crate::util::merk_optional_tx_path_not_empty;
 #[cfg(feature = "full")]
 use crate::{
     batch::{GroveDbOp, Op},
-    util::{
-        storage_context_optional_tx, storage_context_with_parent_optional_tx,
-    },
+    util::{storage_context_optional_tx, storage_context_with_parent_optional_tx},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
