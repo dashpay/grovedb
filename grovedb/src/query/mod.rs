@@ -516,9 +516,9 @@ mod tests {
             .expect("expected to have conditional subquery branches");
         assert_eq!(conditional_subquery_branches.len(), 2);
         let (deep_node_1_query_item, deep_node_1_subquery_branch) =
-            conditional_subquery_branches.first().unwrap().clone();
+            conditional_subquery_branches.first().unwrap();
         let (deep_node_2_query_item, deep_node_2_subquery_branch) =
-            conditional_subquery_branches.last().unwrap().clone();
+            conditional_subquery_branches.last().unwrap();
         assert_eq!(
             deep_node_1_query_item,
             &QueryItem::Key(b"deep_node_1".to_vec())
@@ -565,13 +565,11 @@ mod tests {
         let (deeper_4_query_item, deeper_4_subquery_branch) =
             deep_node_2_conditional_subquery_branches
                 .first()
-                .unwrap()
-                .clone();
+                .unwrap();
         let (deeper_3_query_item, deeper_3_subquery_branch) =
             deep_node_2_conditional_subquery_branches
                 .last()
-                .unwrap()
-                .clone();
+                .unwrap();
 
         assert_eq!(deeper_3_query_item, &QueryItem::Key(b"deeper_3".to_vec()));
         assert_eq!(deeper_4_query_item, &QueryItem::Key(b"deeper_4".to_vec()));
@@ -881,7 +879,7 @@ mod tests {
 
         assert_eq!(conditional_subquery_branches.len(), 1);
         let (conditional_query_item, conditional_subquery_branch) =
-            conditional_subquery_branches.first().unwrap().clone();
+            conditional_subquery_branches.first().unwrap();
         assert_eq!(
             conditional_query_item,
             &QueryItem::Key(b"deeper_1".to_vec())

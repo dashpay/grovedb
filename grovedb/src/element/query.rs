@@ -920,7 +920,7 @@ mod tests {
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            storage,
             &[TEST_LEAF],
             &ascending_query,
             true,
@@ -954,7 +954,7 @@ mod tests {
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            storage,
             &[TEST_LEAF],
             &backwards_query,
             true,
@@ -1036,7 +1036,7 @@ mod tests {
 
         check_elements_no_skipped(
             Element::get_sized_query(
-                &storage,
+                storage,
                 &[TEST_LEAF],
                 &ascending_query,
                 true,
@@ -1053,7 +1053,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(
-                &storage,
+                storage,
                 &[TEST_LEAF],
                 &backwards_query,
                 true,
@@ -1073,7 +1073,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(
-                &storage,
+                storage,
                 &[TEST_LEAF],
                 &backwards_query,
                 true,

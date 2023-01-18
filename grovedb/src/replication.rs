@@ -527,7 +527,7 @@ mod test {
     {
         let expected_root_hash = original_db.root_hash(None).unwrap().unwrap();
 
-        let replica_tempdir = replicate_fn(&original_db);
+        let replica_tempdir = replicate_fn(original_db);
 
         let replica = GroveDb::open(replica_tempdir.path()).unwrap();
         assert_eq!(
@@ -809,8 +809,8 @@ mod test {
             db.insert([], &bytes, Element::empty_tree(), None, None)
                 .unwrap()
                 .unwrap();
-            subtrees.push_front(vec![bytes.clone()]);
-            to_compare.push(vec![bytes.clone()]);
+            subtrees.push_front(vec![bytes]);
+            to_compare.push(vec![bytes]);
         }
 
         while let Some(path) = subtrees.pop_front() {

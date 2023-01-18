@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(raw_result.get(&(path.clone(), b"4".to_vec())), None);
         assert_eq!(raw_result.get(&(path.clone(), b"2".to_vec())), Some(&None));
         assert_eq!(
-            raw_result.get(&(path.clone(), b"5".to_vec())),
+            raw_result.get(&(path, b"5".to_vec())),
             Some(&Some(Element::new_item(b"bye".to_vec())))
         );
     }
@@ -560,7 +560,7 @@ mod tests {
             raw_result.get(&(path.clone(), b"5".to_vec())),
             Some(&Some(Element::new_item(b"bye".to_vec())))
         );
-        assert_eq!(raw_result.get(&(path.clone(), b"3".to_vec())), None);
+        assert_eq!(raw_result.get(&(path, b"3".to_vec())), None);
     }
 
     #[test]
@@ -618,7 +618,7 @@ mod tests {
             Some(&Some(Element::new_item(b"bye".to_vec())))
         );
         assert_eq!(
-            raw_result.get(&(path.clone(), b"3".to_vec())),
+            raw_result.get(&(path, b"3".to_vec())),
             Some(&Some(Element::new_item(b"hello too".to_vec())))
         );
     }
@@ -668,7 +668,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"g".to_vec());
 
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(4), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(4), None));
         db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range a should error");
@@ -677,7 +677,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec()); // 2
         query.insert_key(b"5".to_vec()); // 3
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(3), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(3), None));
         db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("range b should not error");
@@ -686,7 +686,7 @@ mod tests {
         query.insert_range_inclusive(b"a".to_vec()..=b"c".to_vec()); // 3
         query.insert_key(b"5".to_vec()); // 4
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(3), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(3), None));
         db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range c should error");
@@ -695,7 +695,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec()); // 2
         query.insert_key(b"5".to_vec()); // 3
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(2), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(2), None));
         db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range d should error");
@@ -703,7 +703,7 @@ mod tests {
         let mut query = Query::new();
         query.insert_range(b"z".to_vec()..b"10".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
         db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range using 2 bytes should error");
@@ -776,7 +776,7 @@ mod tests {
             Some(&Some(Element::new_item(b"hello too".to_vec())))
         );
         assert_eq!(
-            raw_result.get(&(path.clone(), b"".to_vec())),
+            raw_result.get(&(path, b"".to_vec())),
             Some(&Some(Element::new_item(b"empty".to_vec())))
         );
     }
@@ -831,7 +831,7 @@ mod tests {
         let mut query = Query::new();
         query.insert_range(b"".to_vec()..b"c".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
         db.query_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range should error because we didn't subquery");
@@ -840,7 +840,7 @@ mod tests {
         query.insert_range(b"".to_vec()..b"c".to_vec());
         query.set_subquery_key(b"1".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
         let raw_result = db
             .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
@@ -942,7 +942,7 @@ mod tests {
         query.insert_range(b"".to_vec()..b"c".to_vec());
         query.set_subquery(sub_query);
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
         let raw_result = db
             .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
@@ -1066,7 +1066,7 @@ mod tests {
         query.set_subquery_key(b"1".to_vec());
         query.set_subquery(sub_query);
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
         let raw_result = db
             .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
@@ -1209,7 +1209,7 @@ mod tests {
             Some(conditional_sub_query),
         );
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
         let raw_result = db
             .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
@@ -1365,7 +1365,7 @@ mod tests {
             Some(conditional_sub_query),
         );
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
         let result = db
             .query_keys_optional(&path_query, true, None)
             .unwrap()

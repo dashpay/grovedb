@@ -2183,7 +2183,7 @@ mod tests {
                         vec![b"0".to_vec(), b"wisdom".to_vec()],
                     ),
                     Some(2),
-                    some_element_flags.clone(),
+                    some_element_flags,
                 ),
             ),
         ];
@@ -2216,57 +2216,57 @@ mod tests {
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![b"contract".to_vec()],
-            (&[0u8]).to_vec(),
+            [0u8].to_vec(),
             Element::new_item(b"serialized_contract".to_vec()),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![b"contract".to_vec()],
-            (&[1u8]).to_vec(),
+            [1u8].to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![b"contract".to_vec(), (&[1u8]).to_vec()],
+            vec![b"contract".to_vec(), [1u8].to_vec()],
             b"domain".to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
-            (&[0u8]).to_vec(),
+            vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
+            [0u8].to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
             b"normalized_domain_label".to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
             b"unique_records".to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
             b"alias_records".to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
-            vec![b"contract".to_vec(), (&[1u8]).to_vec()],
+            vec![b"contract".to_vec(), [1u8].to_vec()],
             b"preorder".to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"preorder".to_vec(),
             ],
-            (&[0u8]).to_vec(),
+            [0u8].to_vec(),
             Element::empty_tree(),
         ));
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"preorder".to_vec(),
             ],
             b"salted_domain".to_vec(),
@@ -2282,9 +2282,9 @@ mod tests {
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"domain".to_vec(),
-                (&[0u8]).to_vec(),
+                [0u8].to_vec(),
             ],
             b"serialized_domain_id".to_vec(),
             Element::new_item(b"serialized_domain".to_vec()),
@@ -2293,7 +2293,7 @@ mod tests {
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"domain".to_vec(),
                 b"normalized_domain_label".to_vec(),
             ],
@@ -2304,7 +2304,7 @@ mod tests {
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"domain".to_vec(),
                 b"normalized_domain_label".to_vec(),
                 b"dash".to_vec(),
@@ -2316,7 +2316,7 @@ mod tests {
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"domain".to_vec(),
                 b"normalized_domain_label".to_vec(),
                 b"dash".to_vec(),
@@ -2329,7 +2329,7 @@ mod tests {
         grove_db_ops.push(GroveDbOp::insert_op(
             vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"domain".to_vec(),
                 b"normalized_domain_label".to_vec(),
                 b"dash".to_vec(),
@@ -2339,9 +2339,9 @@ mod tests {
             b"sam_id".to_vec(),
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 b"contract".to_vec(),
-                (&[1u8]).to_vec(),
+                [1u8].to_vec(),
                 b"domain".to_vec(),
-                (&[0u8]).to_vec(),
+                [0u8].to_vec(),
                 b"serialized_domain_id".to_vec(),
             ])),
         ));
@@ -2446,7 +2446,7 @@ mod tests {
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
-                element.clone(),
+                element,
             ),
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec()],
@@ -2477,7 +2477,7 @@ mod tests {
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
-                element.clone(),
+                element,
             ),
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec()],
@@ -2515,7 +2515,7 @@ mod tests {
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
-                element.clone(),
+                element,
             ),
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
@@ -2536,7 +2536,7 @@ mod tests {
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
-                element.clone(),
+                element,
             ),
             GroveDbOp::insert_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
@@ -2615,7 +2615,7 @@ mod tests {
 
         // TEST_LEAF can not be overwritten
         let ops = vec![
-            GroveDbOp::insert_op(vec![], TEST_LEAF.to_vec(), element2.clone()),
+            GroveDbOp::insert_op(vec![], TEST_LEAF.to_vec(), element2),
             GroveDbOp::insert_op(
                 vec![TEST_LEAF.to_vec(), b"key_subtree".to_vec()],
                 b"key1".to_vec(),
@@ -2852,7 +2852,7 @@ mod tests {
         let batch = vec![GroveDbOp::insert_op(
             acc_path,
             b"key".to_vec(),
-            element.clone(),
+            element,
         )];
         db.apply_batch(batch, None, None)
             .unwrap()
@@ -2883,7 +2883,7 @@ mod tests {
         let batch = vec![GroveDbOp::insert_op(
             acc_path.clone(),
             b"key".to_vec(),
-            element.clone(),
+            element,
         )];
         db.apply_batch(batch, None, None)
             .unwrap()
@@ -2971,7 +2971,7 @@ mod tests {
             GroveDbOp::insert_op(
                 vec![TEST_LEAF.to_vec()],
                 b"invalid_path".to_vec(),
-                elem.clone(),
+                elem,
             ),
         ];
         assert!(matches!(

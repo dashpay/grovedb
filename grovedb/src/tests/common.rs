@@ -46,10 +46,10 @@ pub fn compare_result_tuples(
 
 fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let elem = Element::deserialize(raw_bytes)?;
-    return match elem {
+    match elem {
         Element::Item(item, _) => Ok(item),
         _ => Err(Error::CorruptedPath("expected only item type")),
-    };
+    }
 }
 
 /// Compare result sets

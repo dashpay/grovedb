@@ -150,7 +150,7 @@ impl Query {
             .iter()
             .filter_map(|our_item| {
                 if our_item.collides_with(&item) {
-                    item.merge_assign(&our_item);
+                    item.merge_assign(our_item);
                     None
                 } else {
                     Some(our_item.clone()) // todo: manage this without a clone

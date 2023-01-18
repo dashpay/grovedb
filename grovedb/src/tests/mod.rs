@@ -1986,7 +1986,7 @@ fn test_checkpoint() {
         .unwrap()
         .expect("cannot insert into checkpoint");
 
-    db.insert([b"key1".as_ref()], b"key6", element3.clone(), None, None)
+    db.insert([b"key1".as_ref()], b"key6", element3, None, None)
         .unwrap()
         .expect("cannot insert into GroveDB");
 

@@ -218,7 +218,7 @@ impl RangeSet {
                     in_both: None,
                     ours_left: Some(self.clone()),
                     ours_right: None,
-                    theirs_right: Some(other.clone()),
+                    theirs_right: Some(other),
                     theirs_left: None,
                 };
             } else {
@@ -226,7 +226,7 @@ impl RangeSet {
                     in_both: None,
                     ours_left: None,
                     ours_right: Some(self.clone()),
-                    theirs_left: Some(other.clone()),
+                    theirs_left: Some(other),
                     theirs_right: None,
                 };
             }
@@ -363,7 +363,7 @@ impl Ord for RangeSetItem {
             }
 
             (Inclusive(v1), ExclusiveStart(v2)) | (ExclusiveEnd(v1), Inclusive(v2)) => {
-                if v1 < v2 || v1 == v2 {
+                if v1 <= v2 {
                     Ordering::Less
                 } else {
                     Ordering::Greater

@@ -171,7 +171,7 @@ impl SubqueryBranch {
                 let mut our_subquery_path = our_subquery_path.clone();
 
                 // take their subquery as it will be on a topmost layer
-                let mut merged_subquery = (&other.subquery).clone().unwrap_or_default();
+                let mut merged_subquery = other.subquery.clone().unwrap_or_default();
 
                 // We need to add a conditional subquery for ours
 
@@ -207,7 +207,7 @@ impl SubqueryBranch {
                 let mut their_subquery_path = their_subquery_path.clone();
 
                 // take our subquery as it will be on a topmost layer
-                let mut merged_subquery = (&self.subquery).clone().unwrap_or_default();
+                let mut merged_subquery = self.subquery.clone().unwrap_or_default();
 
                 // The subquery_path is already set to None, no need to set it again
 
@@ -694,7 +694,7 @@ impl Query {
                 merged_items.insert(split_item, subquery_branch_merging_in.clone());
             }
         } else {
-            merged_items.insert(query_item_merging_in, subquery_branch_merging_in.clone());
+            merged_items.insert(query_item_merging_in, subquery_branch_merging_in);
         }
         merged_items
     }

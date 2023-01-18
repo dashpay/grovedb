@@ -1614,7 +1614,7 @@ fn test_mixed_level_proofs() {
     compare_result_sets(&elements, &result_set);
 
     let path_query = PathQuery::new(
-        path.clone(),
+        path,
         SizedQuery::new(query.clone(), Some(10), Some(4)),
     );
     let (elements, _) = db
@@ -1712,7 +1712,7 @@ fn test_mixed_level_proofs_with_tree() {
     // TODO: verify that the result set is exactly the same
     // compare_result_sets(&elements, &result_set);
 
-    let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(1), None));
+    let path_query = PathQuery::new(path, SizedQuery::new(query.clone(), Some(1), None));
 
     let (elements, _) = db
         .query_raw(
@@ -1828,7 +1828,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
 
     let path = vec![TEST_LEAF.to_vec()];
 
-    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    let path_query = PathQuery::new_unsized(path, query.clone());
 
     // TODO: proofs seems to be more expressive than query_raw now
     // let (elements, _) = db
@@ -1858,7 +1858,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
 
     let path = vec![TEST_LEAF.to_vec()];
 
-    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    let path_query = PathQuery::new_unsized(path, query.clone());
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
@@ -1875,7 +1875,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
 
     let path = vec![TEST_LEAF.to_vec()];
 
-    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    let path_query = PathQuery::new_unsized(path, query.clone());
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
@@ -1895,7 +1895,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
 
     let path = vec![TEST_LEAF.to_vec()];
 
-    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    let path_query = PathQuery::new_unsized(path, query.clone());
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
