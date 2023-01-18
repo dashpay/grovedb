@@ -33,7 +33,7 @@ use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use integer_encoding::VarInt;
 use merk::{
     estimated_costs::{
-        add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
+        add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
         add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
@@ -275,6 +275,48 @@ impl GroveDb {
                 value.serialized_size() as u32,
                 in_tree_using_sums,
             ),
+        };
+        if let Some(level) = propagate_for_level {
+            add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }
+        .wrap_with_cost(cost)
+    }
+
+    /// Add average case for patching an element in merk
+    /// This only propagates on 1 level
+    /// As higher level propagation is done in batching
+    pub fn average_case_merk_patch_element(
+        key: &KeyInfo,
+        value: &Element,
+        change_in_bytes: i32,
+        in_tree_using_sums: bool,
+        propagate_for_level: Option<&EstimatedLayerInformation>,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let key_len = key.max_length() as u32;
+        match value {
+            Element::Item(_, flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                // Items need to be always the same serialized size for this to work
+                let sum_item_cost_size = value.serialized_size() as u32;
+                let value_len = sum_item_cost_size + flags_len;
+                add_cost_case_merk_patch(
+                    &mut cost,
+                    key_len,
+                    value_len,
+                    change_in_bytes,
+                    in_tree_using_sums,
+                )
+            }
+            _ => {
+                return Err(Error::InvalidParameter("patching can only be on Items"))
+                    .wrap_with_cost(cost)
+            }
         };
         if let Some(level) = propagate_for_level {
             add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)

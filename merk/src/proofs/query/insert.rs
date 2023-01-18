@@ -19,8 +19,8 @@ impl Query {
         self.insert_item(key);
     }
 
-    /// Adds multiple individual keys to the query, so that its value (or its absence)
-    /// in the tree will be included in the resulting proof.
+    /// Adds multiple individual keys to the query, so that its value (or its
+    /// absence) in the tree will be included in the resulting proof.
     ///
     /// If the key or a range including the key already exists in the query,
     /// this will have no effect. If the query already includes a range that has

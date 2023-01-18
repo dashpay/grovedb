@@ -112,6 +112,13 @@ pub enum Op {
         /// Element
         element: Element,
     },
+    /// Patch
+    Patch {
+        /// Element
+        element: Element,
+        /// Byte change
+        change_in_bytes: i32,
+    },
     /// Insert tree with root hash
     InsertTreeWithRootHash {
         /// Hash
@@ -348,6 +355,13 @@ impl fmt::Debug for GroveDbOp {
                 Element::Tree(..) => "Replace Tree",
                 Element::SumTree(..) => "Replace Sum Tree",
                 Element::SumItem(..) => "Replace Sum Item",
+            },
+            Op::Patch { element, .. } => match element {
+                Element::Item(..) => "Patch Item",
+                Element::Reference(..) => "Patch Ref",
+                Element::Tree(..) => "Patch Tree",
+                Element::SumTree(..) => "Patch Sum Tree",
+                Element::SumItem(..) => "Patch Sum Item",
             },
             Op::Delete => "Delete",
             Op::DeleteTree => "Delete Tree",
@@ -631,28 +645,36 @@ where
                     Error::InvalidBatchOperation("references can not point to trees being updated"),
                 )
                 .wrap_with_cost(cost),
-                Op::Insert { element } | Op::Replace { element } => match element {
-                    Element::Item(..) | Element::SumItem(..) => {
-                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
-                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
-                        Ok(val_hash).wrap_with_cost(cost)
+                Op::Insert { element } | Op::Replace { element } | Op::Patch { element, .. } => {
+                    match element {
+                        Element::Item(..) | Element::SumItem(..) => {
+                            let serialized =
+                                cost_return_on_error_no_add!(&cost, element.serialize());
+                            let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                            Ok(val_hash).wrap_with_cost(cost)
+                        }
+                        Element::Reference(path, ..) => {
+                            let path = cost_return_on_error_no_add!(
+                                &cost,
+                                path_from_reference_qualified_path_type(
+                                    path.clone(),
+                                    qualified_path
+                                )
+                            );
+                            self.follow_reference_get_value_hash(
+                                path.as_slice(),
+                                ops_by_qualified_paths,
+                                recursions_allowed - 1,
+                            )
+                        }
+                        Element::Tree(..) | Element::SumTree(..) => {
+                            Err(Error::InvalidBatchOperation(
+                                "references can not point to trees being updated",
+                            ))
+                            .wrap_with_cost(cost)
+                        }
                     }
-                    Element::Reference(path, ..) => {
-                        let path = cost_return_on_error_no_add!(
-                            &cost,
-                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
-                        );
-                        self.follow_reference_get_value_hash(
-                            path.as_slice(),
-                            ops_by_qualified_paths,
-                            recursions_allowed - 1,
-                        )
-                    }
-                    Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost),
-                },
+                }
                 Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                     Err(Error::InvalidBatchOperation(
                         "references can not point to something currently being deleted",
@@ -825,103 +847,105 @@ where
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
-                Op::Insert { element } | Op::Replace { element } => match &element {
-                    Element::Reference(path_reference, element_max_reference_hop, _) => {
-                        let merk_feature_type = cost_return_on_error!(
-                            &mut cost,
-                            element
-                                .get_feature_type(is_sum_tree)
-                                .wrap_with_cost(OperationCost::default())
-                        );
-                        let path_iter = path.iter().map(|x| x.as_slice());
-                        let path_reference = cost_return_on_error!(
-                            &mut cost,
-                            path_from_reference_path_type(
-                                path_reference.clone(),
-                                path_iter,
-                                Some(key_info.as_slice())
-                            )
-                            .wrap_with_cost(OperationCost::default())
-                        );
-                        if path_reference.is_empty() {
-                            return Err(Error::InvalidBatchOperation(
-                                "attempting to insert an empty reference",
-                            ))
-                            .wrap_with_cost(cost);
-                        }
-
-                        let referenced_element_value_hash = cost_return_on_error!(
-                            &mut cost,
-                            self.follow_reference_get_value_hash(
-                                path_reference.as_slice(),
-                                ops_by_qualified_paths,
-                                element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
-                            )
-                        );
-
-                        cost_return_on_error!(
-                            &mut cost,
-                            element.insert_reference_into_batch_operations(
-                                key_info.get_key_clone(),
-                                referenced_element_value_hash,
-                                &mut batch_operations,
-                                merk_feature_type
-                            )
-                        );
-                    }
-                    Element::Tree(..) | Element::SumTree(..) => {
-                        let merk_feature_type = cost_return_on_error!(
-                            &mut cost,
-                            element
-                                .get_feature_type(is_sum_tree)
-                                .wrap_with_cost(OperationCost::default())
-                        );
-                        cost_return_on_error!(
-                            &mut cost,
-                            element.insert_subtree_into_batch_operations(
-                                key_info.get_key_clone(),
-                                NULL_HASH,
-                                false,
-                                &mut batch_operations,
-                                merk_feature_type
-                            )
-                        );
-                    }
-                    Element::Item(..) | Element::SumItem(..) => {
-                        let merk_feature_type = cost_return_on_error!(
-                            &mut cost,
-                            element
-                                .get_feature_type(is_sum_tree)
-                                .wrap_with_cost(OperationCost::default())
-                        );
-                        if batch_apply_options.validate_insertion_does_not_override {
-                            let inserted = cost_return_on_error!(
+                Op::Insert { element } | Op::Replace { element } | Op::Patch { element, .. } => {
+                    match &element {
+                        Element::Reference(path_reference, element_max_reference_hop, _) => {
+                            let merk_feature_type = cost_return_on_error!(
                                 &mut cost,
-                                element.insert_if_not_exists_into_batch_operations(
-                                    &mut merk,
-                                    key_info.get_key(),
-                                    &mut batch_operations,
-                                    merk_feature_type
-                                )
+                                element
+                                    .get_feature_type(is_sum_tree)
+                                    .wrap_with_cost(OperationCost::default())
                             );
-                            if !inserted {
+                            let path_iter = path.iter().map(|x| x.as_slice());
+                            let path_reference = cost_return_on_error!(
+                                &mut cost,
+                                path_from_reference_path_type(
+                                    path_reference.clone(),
+                                    path_iter,
+                                    Some(key_info.as_slice())
+                                )
+                                .wrap_with_cost(OperationCost::default())
+                            );
+                            if path_reference.is_empty() {
                                 return Err(Error::InvalidBatchOperation(
-                                    "attempting to overwrite a tree",
+                                    "attempting to insert an empty reference",
                                 ))
                                 .wrap_with_cost(cost);
                             }
-                        } else {
+
+                            let referenced_element_value_hash = cost_return_on_error!(
+                                &mut cost,
+                                self.follow_reference_get_value_hash(
+                                    path_reference.as_slice(),
+                                    ops_by_qualified_paths,
+                                    element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
+                                )
+                            );
+
                             cost_return_on_error!(
                                 &mut cost,
-                                element.insert_into_batch_operations(
-                                    key_info.get_key(),
+                                element.insert_reference_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    referenced_element_value_hash,
                                     &mut batch_operations,
                                     merk_feature_type
                                 )
                             );
                         }
+                        Element::Tree(..) | Element::SumTree(..) => {
+                            let merk_feature_type = cost_return_on_error!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(is_sum_tree)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error!(
+                                &mut cost,
+                                element.insert_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type
+                                )
+                            );
+                        }
+                        Element::Item(..) | Element::SumItem(..) => {
+                            let merk_feature_type = cost_return_on_error!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(is_sum_tree)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            if batch_apply_options.validate_insertion_does_not_override {
+                                let inserted = cost_return_on_error!(
+                                    &mut cost,
+                                    element.insert_if_not_exists_into_batch_operations(
+                                        &mut merk,
+                                        key_info.get_key(),
+                                        &mut batch_operations,
+                                        merk_feature_type
+                                    )
+                                );
+                                if !inserted {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to overwrite a tree",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            } else {
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    element.insert_into_batch_operations(
+                                        key_info.get_key(),
+                                        &mut batch_operations,
+                                        merk_feature_type
+                                    )
+                                );
+                            }
+                        }
                     }
-                },
+                }
                 Op::Delete => {
                     cost_return_on_error!(
                         &mut cost,
@@ -1225,7 +1249,8 @@ impl GroveDb {
                                                     .wrap_with_cost(cost);
                                                 }
                                                 Op::Insert { element }
-                                                | Op::Replace { element } => {
+                                                | Op::Replace { element }
+                                                | Op::Patch { element, .. } => {
                                                     if let Element::Tree(_, flags) = element {
                                                         *mutable_occupied_entry =
                                                             Op::InsertTreeWithRootHash {
