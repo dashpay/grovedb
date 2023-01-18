@@ -1425,7 +1425,8 @@ mod tests {
             None,
             Some(&tx),
         )
-        .cost;
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1484,7 +1485,8 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
-            .cost;
+            .unwrap()
+            .unwrap();
 
         db.insert(
             vec![b"tree".as_slice()],
@@ -1493,7 +1495,8 @@ mod tests {
             None,
             Some(&tx),
         )
-        .cost;
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1526,7 +1529,8 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
-            .cost;
+            .unwrap()
+            .unwrap();
 
         db.insert(
             vec![b"tree".as_slice()],
@@ -1535,7 +1539,8 @@ mod tests {
             None,
             Some(&tx),
         )
-        .cost;
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1568,7 +1573,8 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
-            .cost;
+            .unwrap()
+            .unwrap();
 
         db.insert(
             vec![b"tree".as_slice()],
@@ -1577,7 +1583,8 @@ mod tests {
             None,
             Some(&tx),
         )
-        .cost;
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(

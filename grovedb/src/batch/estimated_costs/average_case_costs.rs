@@ -105,6 +105,16 @@ impl Op {
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
+            Op::Patch {
+                element,
+                change_in_bytes,
+            } => GroveDb::average_case_merk_patch_element(
+                key,
+                element,
+                *change_in_bytes,
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
             Op::Delete => {
                 GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
             }
@@ -677,7 +687,7 @@ mod tests {
         );
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
-            ops.clone(),
+            ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {

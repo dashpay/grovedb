@@ -35,7 +35,7 @@ use costs::{
     OperationCost,
 };
 #[cfg(feature = "full")]
-use merk::proofs::query::QueryItem;
+use merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::Query;
 #[cfg(feature = "full")]
@@ -353,7 +353,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied(),
+                                    path_vec.iter().copied().peekable(),
                                     transaction,
                                     subtree,
                                     {
@@ -375,7 +375,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied(),
+                                    path_vec.iter().copied().peekable(),
                                     transaction,
                                     subtree,
                                     {
@@ -400,7 +400,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied(),
+                                    path_vec.iter().copied().peekable(),
                                     transaction,
                                     subtree,
                                     {
@@ -495,14 +495,18 @@ impl Element {
         sized_query: &SizedQuery,
         key: &[u8],
     ) -> (Option<Path>, Option<Query>) {
-        for (query_item, subquery_branch) in &sized_query.query.conditional_subquery_branches {
-            if query_item.contains(key) {
-                let subquery_path = subquery_branch.subquery_path.clone();
-                let subquery = subquery_branch
-                    .subquery
-                    .as_ref()
-                    .map(|query| *query.clone());
-                return (subquery_path, subquery);
+        if let Some(conditional_subquery_branches) =
+            &sized_query.query.conditional_subquery_branches
+        {
+            for (query_item, subquery_branch) in conditional_subquery_branches {
+                if query_item.contains(key) {
+                    let subquery_path = subquery_branch.subquery_path.clone();
+                    let subquery = subquery_branch
+                        .subquery
+                        .as_ref()
+                        .map(|query| *query.clone());
+                    return (subquery_path, subquery);
+                }
             }
         }
         let subquery_path = sized_query
@@ -544,7 +548,7 @@ impl Element {
                 let element_res = merk_optional_tx!(
                     &mut cost,
                     storage,
-                    path.iter().copied(),
+                    path.iter().copied().peekable(),
                     transaction,
                     subtree,
                     { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }
@@ -916,7 +920,7 @@ mod tests {
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            storage,
             &[TEST_LEAF],
             &ascending_query,
             true,
@@ -950,7 +954,7 @@ mod tests {
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            storage,
             &[TEST_LEAF],
             &backwards_query,
             true,
@@ -1032,7 +1036,7 @@ mod tests {
 
         check_elements_no_skipped(
             Element::get_sized_query(
-                &storage,
+                storage,
                 &[TEST_LEAF],
                 &ascending_query,
                 true,
@@ -1049,7 +1053,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(
-                &storage,
+                storage,
                 &[TEST_LEAF],
                 &backwards_query,
                 true,
@@ -1069,7 +1073,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(
-                &storage,
+                storage,
                 &[TEST_LEAF],
                 &backwards_query,
                 true,

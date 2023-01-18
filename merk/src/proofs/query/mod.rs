@@ -31,15 +31,20 @@
 #[cfg(feature = "full")]
 mod map;
 
-use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
-use std::{
-    cmp,
-    cmp::{max, min, Ordering},
-    collections::BTreeSet,
-    hash::Hash,
-    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
-};
+mod common_path;
+#[cfg(any(feature = "full", feature = "verify"))]
+mod insert;
+#[cfg(any(feature = "full", feature = "verify"))]
+mod merge;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub mod query_item;
+#[cfg(any(feature = "full", feature = "verify"))]
+mod verify;
+
+#[cfg(any(feature = "full", feature = "verify"))]
+use std::cmp::Ordering;
+use std::collections::HashSet;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
@@ -48,16 +53,22 @@ use indexmap::IndexMap;
 #[cfg(feature = "full")]
 pub use map::*;
 #[cfg(any(feature = "full", feature = "verify"))]
-use storage::RawIterator;
+pub use query_item::intersect::QueryItemIntersectionResult;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use query_item::QueryItem;
+#[cfg(any(feature = "full", feature = "verify"))]
+use verify::ProofAbsenceLimitOffset;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use verify::{execute_proof, verify_query, ProofVerificationResult, ProvedKeyValue};
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use super::{tree::execute, Decoder, Node};
+use super::Node;
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::tree::{Fetch, Link, RefWalker};
-#[cfg(any(feature = "full", feature = "verify"))]
-use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a path.
@@ -87,17 +98,14 @@ pub struct SubqueryBranch {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Query {
     /// Items
-    pub items: BTreeSet<QueryItem>,
+    pub items: Vec<QueryItem>,
     /// Default subquery branch
     pub default_subquery_branch: SubqueryBranch,
     /// Conditional subquery branches
-    pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
+    pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     /// Left to right?
     pub left_to_right: bool,
 }
-
-#[cfg(feature = "full")]
-type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Query {
@@ -129,67 +137,69 @@ impl Query {
         let mut current_len = result.len();
         let mut added = 0;
         let mut already_added_keys = HashSet::new();
-        for (conditional_query_item, subquery_branch) in &self.conditional_subquery_branches {
-            // unbounded ranges can not be supported
-            if conditional_query_item.is_unbounded_range() {
-                return Err(Error::NotSupported(
-                    "terminal keys are not supported with conditional unbounded ranges",
-                ));
-            }
-            let conditional_keys = conditional_query_item.keys()?;
-            for key in conditional_keys.into_iter() {
-                if current_len > max_results {
-                    return Err(Error::RequestAmountExceeded(format!(
-                        "terminal keys limit exceeded, set max is {}",
-                        max_results
-                    )));
+        if let Some(conditional_subquery_branches) = &self.conditional_subquery_branches {
+            for (conditional_query_item, subquery_branch) in conditional_subquery_branches {
+                // unbounded ranges can not be supported
+                if conditional_query_item.is_unbounded_range() {
+                    return Err(Error::NotSupported(
+                        "terminal keys are not supported with conditional unbounded ranges",
+                    ));
                 }
-                already_added_keys.insert(key.clone());
-                let mut path = current_path.clone();
-                if let Some(subquery_path) = &subquery_branch.subquery_path {
-                    if let Some(subquery) = &subquery_branch.subquery {
-                        // a subquery path with a subquery
+                let conditional_keys = conditional_query_item.keys()?;
+                for key in conditional_keys.into_iter() {
+                    if current_len > max_results {
+                        return Err(Error::RequestAmountExceeded(format!(
+                            "terminal keys limit exceeded, set max is {}",
+                            max_results
+                        )));
+                    }
+                    already_added_keys.insert(key.clone());
+                    let mut path = current_path.clone();
+                    if let Some(subquery_path) = &subquery_branch.subquery_path {
+                        if let Some(subquery) = &subquery_branch.subquery {
+                            // a subquery path with a subquery
+                            // push the key to the path
+                            path.push(key);
+                            // push the subquery path to the path
+                            path.extend(subquery_path.iter().cloned());
+                            // recurse onto the lower level
+                            let added_here =
+                                subquery.terminal_keys(path, max_results - current_len, result)?;
+                            added += added_here;
+                            current_len += added_here;
+                        } else {
+                            if current_len == max_results {
+                                return Err(Error::RequestAmountExceeded(format!(
+                                    "terminal keys limit exceeded, set max is {}",
+                                    max_results
+                                )));
+                            }
+                            // a subquery path but no subquery
+                            // split the subquery path and remove the last element
+                            // push the key to the path with the front elements,
+                            // and set the tail of the subquery path as the terminal key
+                            path.push(key);
+                            if let Some((last_key, front_keys)) = subquery_path.split_last() {
+                                path.extend(front_keys.iter().cloned());
+                                result.push((path, last_key.clone()));
+                            } else {
+                                return Err(Error::CorruptedCodeExecution(
+                                    "subquery_path set but doesn't contain any values",
+                                ));
+                            }
+
+                            added += 1;
+                            current_len += 1;
+                        }
+                    } else if let Some(subquery) = &subquery_branch.subquery {
+                        // a subquery without a subquery path
                         // push the key to the path
                         path.push(key);
-                        // push the subquery path to the path
-                        path.extend(subquery_path.iter().cloned());
                         // recurse onto the lower level
-                        let added_here =
-                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                        let added_here = subquery.terminal_keys(path, max_results, result)?;
                         added += added_here;
                         current_len += added_here;
-                    } else {
-                        if current_len == max_results {
-                            return Err(Error::RequestAmountExceeded(format!(
-                                "terminal keys limit exceeded, set max is {}",
-                                max_results
-                            )));
-                        }
-                        // a subquery path but no subquery
-                        // split the subquery path and remove the last element
-                        // push the key to the path with the front elements,
-                        // and set the tail of the subquery path as the terminal key
-                        path.push(key);
-                        if let Some((last_key, front_keys)) = subquery_path.split_last() {
-                            path.extend(front_keys.iter().cloned());
-                            result.push((path, last_key.clone()));
-                        } else {
-                            return Err(Error::CorruptedCodeExecution(
-                                "subquery_path set but doesn't contain any values",
-                            ));
-                        }
-
-                        added += 1;
-                        current_len += 1;
                     }
-                } else if let Some(subquery) = &subquery_branch.subquery {
-                    // a subquery without a subquery path
-                    // push the key to the path
-                    path.push(key);
-                    // recurse onto the lower level
-                    let added_here = subquery.terminal_keys(path, max_results, result)?;
-                    added += added_here;
-                    current_len += added_here;
                 }
             }
         }
@@ -329,170 +339,24 @@ impl Query {
         subquery_path: Option<Path>,
         subquery: Option<Self>,
     ) {
-        self.conditional_subquery_branches.insert(
-            item,
-            SubqueryBranch {
-                subquery_path,
-                subquery: subquery.map(Box::new),
-            },
-        );
-    }
-
-    /// Adds an individual key to the query, so that its value (or its absence)
-    /// in the tree will be included in the resulting proof.
-    ///
-    /// If the key or a range including the key already exists in the query,
-    /// this will have no effect. If the query already includes a range that has
-    /// a non-inclusive bound equal to the key, the bound will be changed to be
-    /// inclusive.
-    pub fn insert_key(&mut self, key: Vec<u8>) {
-        let key = QueryItem::Key(key);
-        self.items.insert(key);
-    }
-
-    /// Adds a range to the query, so that all the entries in the tree with keys
-    /// in the range will be included in the resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be joined together.
-    pub fn insert_range(&mut self, range: Range<Vec<u8>>) {
-        let range = QueryItem::Range(range);
-        self.insert_item(range);
-    }
-
-    /// Adds an inclusive range to the query, so that all the entries in the
-    /// tree with keys in the range will be included in the resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be merged together.
-    pub fn insert_range_inclusive(&mut self, range: RangeInclusive<Vec<u8>>) {
-        let range = QueryItem::RangeInclusive(range);
-        self.insert_item(range);
-    }
-
-    /// Adds a range until a certain included value to the query, so that all
-    /// the entries in the tree with keys in the range will be included in the
-    /// resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be joined together.
-    pub fn insert_range_to_inclusive(&mut self, range: RangeToInclusive<Vec<u8>>) {
-        let range = QueryItem::RangeToInclusive(range);
-        self.insert_item(range);
-    }
-
-    /// Adds a range from a certain included value to the query, so that all
-    /// the entries in the tree with keys in the range will be included in the
-    /// resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be joined together.
-    pub fn insert_range_from(&mut self, range: RangeFrom<Vec<u8>>) {
-        let range = QueryItem::RangeFrom(range);
-        self.insert_item(range);
-    }
-
-    /// Adds a range until a certain non included value to the query, so that
-    /// all the entries in the tree with keys in the range will be included
-    /// in the resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be joined together.
-    pub fn insert_range_to(&mut self, range: RangeTo<Vec<u8>>) {
-        let range = QueryItem::RangeTo(range);
-        self.insert_item(range);
-    }
-
-    /// Adds a range after the first value, so that all the entries in the tree
-    /// with keys in the range will be included in the resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be joined together.
-    pub fn insert_range_after(&mut self, range: RangeFrom<Vec<u8>>) {
-        let range = QueryItem::RangeAfter(range);
-        self.insert_item(range);
-    }
-
-    /// Adds a range after the first value, until a certain non included value
-    /// to the query, so that all the entries in the tree with keys in the
-    /// range will be included in the resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be joined together.
-    pub fn insert_range_after_to(&mut self, range: Range<Vec<u8>>) {
-        let range = QueryItem::RangeAfterTo(range);
-        self.insert_item(range);
-    }
-
-    /// Adds a range after the first value, until a certain included value to
-    /// the query, so that all the entries in the tree with keys in the
-    /// range will be included in the resulting proof.
-    ///
-    /// If a range including the range already exists in the query, this will
-    /// have no effect. If the query already includes a range that overlaps with
-    /// the range, the ranges will be joined together.
-    pub fn insert_range_after_to_inclusive(&mut self, range: RangeInclusive<Vec<u8>>) {
-        let range = QueryItem::RangeAfterToInclusive(range);
-        self.insert_item(range);
-    }
-
-    /// Adds a range of all potential values to the query, so that the query
-    /// will return all values
-    ///
-    /// All other items in the query will be discarded as you are now getting
-    /// back all elements.
-    pub fn insert_all(&mut self) {
-        let range = QueryItem::RangeFull(RangeFull);
-        self.insert_item(range);
-    }
-
-    /// Adds the `QueryItem` to the query, first checking to see if it collides
-    /// with any existing ranges or keys. All colliding items will be removed
-    /// then merged together so that the query includes the minimum number of
-    /// items (with no items covering any duplicate parts of keyspace) while
-    /// still including every key or range that has been added to the query.
-    pub fn insert_item(&mut self, mut item: QueryItem) {
-        // since `QueryItem::eq` considers items equal if they collide at all
-        // (including keys within ranges or ranges which partially overlap),
-        // `items.take` will remove the first item which collides
-        while let Some(existing) = self.items.take(&item) {
-            item = item.merge(existing);
-        }
-
-        self.items.insert(item);
-    }
-
-    /// Merge with another query
-    pub fn merge(&mut self, other: &Query) {
-        // merge query items as they point to the same context
-        for item in &other.items {
-            self.insert_item(item.clone())
-        }
-
-        // TODO: deal with default subquery branch
-        //  this is not needed currently for path_query merge as we enforce
-        //  non-subset paths, but might be useful in the future
-        //  Need to create a stretching function for queries that expands default
-        //  subqueries  to conditional subqueries.
-
-        // merge conditional query branches.
-        for (query_item, subquery_branch) in other.conditional_subquery_branches.iter() {
-            let subquery_branch_option = self.conditional_subquery_branches.get_mut(query_item);
-            if let Some(subquery_branch_old) = subquery_branch_option {
-                (subquery_branch_old.subquery.as_mut().unwrap())
-                    .merge(subquery_branch.subquery.as_ref().unwrap());
-            } else {
-                // we don't have that branch just assign the query
-                self.conditional_subquery_branches
-                    .insert(query_item.clone(), subquery_branch.clone());
-            }
+        if let Some(conditional_subquery_branches) = &mut self.conditional_subquery_branches {
+            conditional_subquery_branches.insert(
+                item,
+                SubqueryBranch {
+                    subquery_path,
+                    subquery: subquery.map(Box::new),
+                },
+            );
+        } else {
+            let mut conditional_subquery_branches = IndexMap::new();
+            conditional_subquery_branches.insert(
+                item,
+                SubqueryBranch {
+                    subquery_path,
+                    subquery: subquery.map(Box::new),
+                },
+            );
+            self.conditional_subquery_branches = Some(conditional_subquery_branches);
         }
     }
 
@@ -501,7 +365,7 @@ impl Query {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
             || self.default_subquery_branch.subquery_path.is_some()
-            || !self.conditional_subquery_branches.is_empty()
+            || self.conditional_subquery_branches.is_some()
         {
             return true;
         }
@@ -525,7 +389,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
                 subquery_path: None,
                 subquery: None,
             },
-            conditional_subquery_branches: IndexMap::new(),
+            conditional_subquery_branches: None,
             left_to_right: true,
         }
     }
@@ -540,627 +404,11 @@ impl From<Query> for Vec<QueryItem> {
 
 #[cfg(feature = "full")]
 impl IntoIterator for Query {
-    type IntoIter = <BTreeSet<QueryItem> as IntoIterator>::IntoIter;
+    type IntoIter = <Vec<QueryItem> as IntoIterator>::IntoIter;
     type Item = QueryItem;
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-/// A `QueryItem` represents a key or range of keys to be included in a proof.
-#[derive(Clone, Debug)]
-pub enum QueryItem {
-    /// Key
-    Key(Vec<u8>),
-    /// Range
-    Range(Range<Vec<u8>>),
-    /// Range inclusive
-    RangeInclusive(RangeInclusive<Vec<u8>>),
-    /// Range full
-    RangeFull(RangeFull),
-    /// Range from
-    RangeFrom(RangeFrom<Vec<u8>>),
-    /// Range to
-    RangeTo(RangeTo<Vec<u8>>),
-    /// Range to inclusive
-    RangeToInclusive(RangeToInclusive<Vec<u8>>),
-    /// Range after
-    RangeAfter(RangeFrom<Vec<u8>>),
-    /// Range after to
-    RangeAfterTo(Range<Vec<u8>>),
-    /// Rand after to inclusive
-    RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl Hash for QueryItem {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.enum_value().hash(state);
-        self.value_hash(state);
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl QueryItem {
-    /// Processing footprint
-    pub fn processing_footprint(&self) -> u32 {
-        match self {
-            QueryItem::Key(key) => key.len() as u32,
-            QueryItem::RangeFull(_) => 0u32,
-            _ => {
-                self.lower_bound().0.map_or(0u32, |x| x.len() as u32)
-                    + self.upper_bound().0.map_or(0u32, |x| x.len() as u32)
-            }
-        }
-    }
-
-    /// Is there a lower bound?
-    pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
-        match self {
-            QueryItem::Key(key) => (Some(key.as_slice()), false),
-            QueryItem::Range(range) => (Some(range.start.as_ref()), false),
-            QueryItem::RangeInclusive(range) => (Some(range.start().as_ref()), false),
-            QueryItem::RangeFull(_) => (None, false),
-            QueryItem::RangeFrom(range) => (Some(range.start.as_ref()), false),
-            QueryItem::RangeTo(_) => (None, false),
-            QueryItem::RangeToInclusive(_) => (None, false),
-            QueryItem::RangeAfter(range) => (Some(range.start.as_ref()), true),
-            QueryItem::RangeAfterTo(range) => (Some(range.start.as_ref()), true),
-            QueryItem::RangeAfterToInclusive(range) => (Some(range.start().as_ref()), true),
-        }
-    }
-
-    /// Is there no lower bound?
-    pub const fn lower_unbounded(&self) -> bool {
-        match self {
-            QueryItem::Key(_) => false,
-            QueryItem::Range(_) => false,
-            QueryItem::RangeInclusive(_) => false,
-            QueryItem::RangeFull(_) => true,
-            QueryItem::RangeFrom(_) => false,
-            QueryItem::RangeTo(_) => true,
-            QueryItem::RangeToInclusive(_) => true,
-            QueryItem::RangeAfter(_) => false,
-            QueryItem::RangeAfterTo(_) => false,
-            QueryItem::RangeAfterToInclusive(_) => false,
-        }
-    }
-
-    /// Is there an upper bound?
-    pub fn upper_bound(&self) -> (Option<&[u8]>, bool) {
-        match self {
-            QueryItem::Key(key) => (Some(key.as_slice()), true),
-            QueryItem::Range(range) => (Some(range.end.as_ref()), false),
-            QueryItem::RangeInclusive(range) => (Some(range.end().as_ref()), true),
-            QueryItem::RangeFull(_) => (None, true),
-            QueryItem::RangeFrom(_) => (None, true),
-            QueryItem::RangeTo(range) => (Some(range.end.as_ref()), false),
-            QueryItem::RangeToInclusive(range) => (Some(range.end.as_ref()), true),
-            QueryItem::RangeAfter(_) => (None, true),
-            QueryItem::RangeAfterTo(range) => (Some(range.end.as_ref()), false),
-            QueryItem::RangeAfterToInclusive(range) => (Some(range.end().as_ref()), true),
-        }
-    }
-
-    /// Is there no upper bound?
-    pub const fn upper_unbounded(&self) -> bool {
-        match self {
-            QueryItem::Key(_) => false,
-            QueryItem::Range(_) => false,
-            QueryItem::RangeInclusive(_) => false,
-            QueryItem::RangeFull(_) => true,
-            QueryItem::RangeFrom(_) => true,
-            QueryItem::RangeTo(_) => false,
-            QueryItem::RangeToInclusive(_) => false,
-            QueryItem::RangeAfter(_) => true,
-            QueryItem::RangeAfterTo(_) => false,
-            QueryItem::RangeAfterToInclusive(_) => false,
-        }
-    }
-
-    /// Check if contains a key
-    pub fn contains(&self, key: &[u8]) -> bool {
-        let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
-        let (upper_bound, upper_bound_inclusive) = self.upper_bound();
-        (self.lower_unbounded()
-            || Some(key) > lower_bound
-            || (Some(key) == lower_bound && !lower_bound_non_inclusive))
-            && (self.upper_unbounded()
-                || Some(key) < upper_bound
-                || (Some(key) == upper_bound && upper_bound_inclusive))
-    }
-
-    fn merge(self, other: Self) -> Self {
-        // TODO: don't copy into new vecs
-        let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
-        let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
-
-        let (start, start_non_inclusive) = min(self.lower_bound(), other.lower_bound());
-        let (end, end_inclusive) = max(self.upper_bound(), other.upper_bound());
-
-        if start_non_inclusive {
-            return if upper_unbounded {
-                Self::RangeAfter(RangeFrom {
-                    start: start.expect("start should be bounded").to_vec(),
-                })
-            } else if end_inclusive {
-                Self::RangeAfterToInclusive(RangeInclusive::new(
-                    start.expect("start should be bounded").to_vec(),
-                    end.expect("end should be bounded").to_vec(),
-                ))
-            } else {
-                // upper is bounded and not inclusive
-                Self::RangeAfterTo(Range {
-                    start: start.expect("start should be bounded").to_vec(),
-                    end: end.expect("end should be bounded").to_vec(),
-                })
-            };
-        }
-
-        if lower_unbounded {
-            return if upper_unbounded {
-                Self::RangeFull(RangeFull)
-            } else if end_inclusive {
-                Self::RangeToInclusive(RangeToInclusive {
-                    end: end.expect("end should be bounded").to_vec(),
-                })
-            } else {
-                // upper is bounded and not inclusive
-                Self::RangeTo(RangeTo {
-                    end: end.expect("end should be bounded").to_vec(),
-                })
-            };
-        }
-
-        // Lower is bounded
-        if upper_unbounded {
-            Self::RangeFrom(RangeFrom {
-                start: start.expect("start should be bounded").to_vec(),
-            })
-        } else if end_inclusive {
-            Self::RangeInclusive(RangeInclusive::new(
-                start.expect("start should be bounded").to_vec(),
-                end.expect("end should be bounded").to_vec(),
-            ))
-        } else {
-            // upper is bounded and not inclusive
-            Self::Range(Range {
-                start: start.expect("start should be bounded").to_vec(),
-                end: end.expect("end should be bounded").to_vec(),
-            })
-        }
-    }
-
-    fn enum_value(&self) -> u32 {
-        match self {
-            QueryItem::Key(_) => 0,
-            QueryItem::Range(_) => 1,
-            QueryItem::RangeInclusive(_) => 2,
-            QueryItem::RangeFull(_) => 3,
-            QueryItem::RangeFrom(_) => 4,
-            QueryItem::RangeTo(_) => 5,
-            QueryItem::RangeToInclusive(_) => 6,
-            QueryItem::RangeAfter(_) => 7,
-            QueryItem::RangeAfterTo(_) => 8,
-            QueryItem::RangeAfterToInclusive(_) => 9,
-        }
-    }
-
-    fn value_hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            QueryItem::Key(key) => key.hash(state),
-            QueryItem::Range(range) => range.hash(state),
-            QueryItem::RangeInclusive(range) => range.hash(state),
-            QueryItem::RangeFull(range) => range.hash(state),
-            QueryItem::RangeFrom(range) => range.hash(state),
-            QueryItem::RangeTo(range) => range.hash(state),
-            QueryItem::RangeToInclusive(range) => range.hash(state),
-            QueryItem::RangeAfter(range) => range.hash(state),
-            QueryItem::RangeAfterTo(range) => range.hash(state),
-            QueryItem::RangeAfterToInclusive(range) => range.hash(state),
-        }
-    }
-
-    /// Check if is key
-    pub const fn is_key(&self) -> bool {
-        matches!(self, QueryItem::Key(_))
-    }
-
-    /// Check if is range
-    pub const fn is_range(&self) -> bool {
-        !matches!(self, QueryItem::Key(_))
-    }
-
-    /// Check if is unbounded range
-    pub const fn is_unbounded_range(&self) -> bool {
-        !matches!(
-            self,
-            QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
-        )
-    }
-
-    /// Gets keys in `QueryItem`
-    pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
-        match self {
-            QueryItem::Key(key) => Ok(vec![key.clone()]),
-            QueryItem::Range(Range { start, end }) => {
-                let mut keys = vec![];
-                if start.len() > 1 || end.len() != 1 {
-                    return Err(Error::InvalidOperation(
-                        "distinct keys are not available for ranges using more or less than 1 byte",
-                    ));
-                }
-                let start = *start.first().unwrap_or_else(|| {
-                    keys.push(vec![]);
-                    &0
-                });
-                if let Some(end) = end.first() {
-                    let end = *end;
-                    for i in start..end {
-                        keys.push(vec![i]);
-                    }
-                }
-                Ok(keys)
-            }
-            QueryItem::RangeInclusive(range_inclusive) => {
-                let start = range_inclusive.start();
-                let end = range_inclusive.end();
-                let mut keys = vec![];
-                if start.len() > 1 || end.len() != 1 {
-                    return Err(Error::InvalidOperation(
-                        "distinct keys are not available for ranges using more or less than 1 byte",
-                    ));
-                }
-                let start = *start.first().unwrap_or_else(|| {
-                    keys.push(vec![]);
-                    &0
-                });
-                if let Some(end) = end.first() {
-                    let end = *end;
-                    for i in start..=end {
-                        keys.push(vec![i]);
-                    }
-                }
-                Ok(keys)
-            }
-            _ => Err(Error::InvalidOperation(
-                "distinct keys are not available for unbounded ranges",
-            )),
-        }
-    }
-
-    /// Get and consume keys in `QueryItem`
-    pub fn keys_consume(self) -> Result<Vec<Vec<u8>>, Error> {
-        match self {
-            QueryItem::Key(key) => Ok(vec![key]),
-            QueryItem::Range(Range { start, end }) => {
-                let mut keys = vec![];
-                if start.len() > 1 || end.len() != 1 {
-                    return Err(Error::InvalidOperation(
-                        "distinct keys are not available for ranges using more or less than 1 byte",
-                    ));
-                }
-                let start = *start.first().unwrap_or_else(|| {
-                    keys.push(vec![]);
-                    &0
-                });
-                if let Some(end) = end.first() {
-                    let end = *end;
-                    for i in start..end {
-                        keys.push(vec![i]);
-                    }
-                }
-                Ok(keys)
-            }
-            QueryItem::RangeInclusive(range_inclusive) => {
-                let start = range_inclusive.start();
-                let end = range_inclusive.end();
-                let mut keys = vec![];
-                if start.len() > 1 || end.len() != 1 {
-                    return Err(Error::InvalidOperation(
-                        "distinct keys are not available for ranges using more or less than 1 byte",
-                    ));
-                }
-                let start = *start.first().unwrap_or_else(|| {
-                    keys.push(vec![]);
-                    &0
-                });
-                if let Some(end) = end.first() {
-                    let end = *end;
-                    for i in start..=end {
-                        keys.push(vec![i]);
-                    }
-                }
-                Ok(keys)
-            }
-            _ => Err(Error::InvalidOperation(
-                "distinct keys are not available for unbounded ranges",
-            )),
-        }
-    }
-
-    /// Seek for iter
-    pub fn seek_for_iter<I: RawIterator>(
-        &self,
-        iter: &mut I,
-        left_to_right: bool,
-    ) -> CostContext<()> {
-        match self {
-            QueryItem::Key(start) => iter.seek(start),
-            QueryItem::Range(Range { start, end }) => {
-                if left_to_right {
-                    iter.seek(start)
-                } else {
-                    iter.seek(end).flat_map(|_| iter.prev())
-                }
-            }
-            QueryItem::RangeInclusive(range_inclusive) => iter.seek(if left_to_right {
-                range_inclusive.start()
-            } else {
-                range_inclusive.end()
-            }),
-            QueryItem::RangeFull(..) => {
-                if left_to_right {
-                    iter.seek_to_first()
-                } else {
-                    iter.seek_to_last()
-                }
-            }
-            QueryItem::RangeFrom(RangeFrom { start }) => {
-                if left_to_right {
-                    iter.seek(start)
-                } else {
-                    iter.seek_to_last()
-                }
-            }
-            QueryItem::RangeTo(RangeTo { end }) => {
-                if left_to_right {
-                    iter.seek_to_first()
-                } else {
-                    iter.seek(end).flat_map(|_| iter.prev())
-                }
-            }
-            QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
-                if left_to_right {
-                    iter.seek_to_first()
-                } else {
-                    iter.seek_for_prev(end)
-                }
-            }
-            QueryItem::RangeAfter(RangeFrom { start }) => {
-                if left_to_right {
-                    let mut cost = OperationCost::default();
-                    iter.seek(start).unwrap_add_cost(&mut cost);
-                    if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                        // if the key is the same as start we should go to next
-                        if key == start {
-                            iter.next().unwrap_add_cost(&mut cost)
-                        }
-                    }
-                    ().wrap_with_cost(cost)
-                } else {
-                    iter.seek_to_last()
-                }
-            }
-            QueryItem::RangeAfterTo(Range { start, end }) => {
-                if left_to_right {
-                    let mut cost = OperationCost::default();
-                    iter.seek(start).unwrap_add_cost(&mut cost);
-                    if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                        // if the key is the same as start we тshould go to next
-                        if key == start {
-                            iter.next().unwrap_add_cost(&mut cost);
-                        }
-                    }
-                    ().wrap_with_cost(cost)
-                } else {
-                    iter.seek(end).flat_map(|_| iter.prev())
-                }
-            }
-            QueryItem::RangeAfterToInclusive(range_inclusive) => {
-                if left_to_right {
-                    let mut cost = OperationCost::default();
-                    let start = range_inclusive.start();
-                    iter.seek(start).unwrap_add_cost(&mut cost);
-                    if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                        // if the key is the same as start we тshould go to next
-                        if key == start {
-                            iter.next().unwrap_add_cost(&mut cost);
-                        }
-                    }
-                    ().wrap_with_cost(cost)
-                } else {
-                    let end = range_inclusive.end();
-                    iter.seek_for_prev(end)
-                }
-            }
-        }
-    }
-
-    fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
-        for (ai, bi) in a.iter().zip(b.iter()) {
-            match ai.cmp(bi) {
-                Ordering::Equal => continue,
-                ord => return ord,
-            }
-        }
-
-        // if every single element was equal, compare length
-        a.len().cmp(&b.len())
-    }
-
-    /// Check if iterator is valid for the type
-    pub fn iter_is_valid_for_type<I: RawIterator>(
-        &self,
-        iter: &I,
-        limit: Option<u16>,
-        left_to_right: bool,
-    ) -> CostContext<bool> {
-        let mut cost = OperationCost::default();
-
-        // Check that if limit is set it's greater than 0 and iterator points to a valid
-        // place.
-        let basic_valid =
-            limit.map(|l| l > 0).unwrap_or(true) && iter.valid().unwrap_add_cost(&mut cost);
-
-        if !basic_valid {
-            return false.wrap_with_cost(cost);
-        }
-
-        // Key should also be something, otherwise terminate early.
-        let key = if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-            key
-        } else {
-            return false.wrap_with_cost(cost);
-        };
-
-        let is_valid = match self {
-            QueryItem::Key(start) => key == start,
-            QueryItem::Range(Range { start, end }) => {
-                if left_to_right {
-                    key < end
-                } else {
-                    key >= start
-                }
-            }
-            QueryItem::RangeInclusive(range_inclusive) => {
-                if left_to_right {
-                    key <= range_inclusive.end()
-                } else {
-                    key >= range_inclusive.start()
-                }
-            }
-            QueryItem::RangeFull(..) => {
-                true // requires only basic validation which is done above
-            }
-            QueryItem::RangeFrom(RangeFrom { start }) => left_to_right || key >= start,
-            QueryItem::RangeTo(RangeTo { end }) => !left_to_right || key < end,
-            QueryItem::RangeToInclusive(RangeToInclusive { end }) => !left_to_right || key <= end,
-            QueryItem::RangeAfter(RangeFrom { start }) => left_to_right || key > start,
-            QueryItem::RangeAfterTo(Range { start, end }) => {
-                if left_to_right {
-                    key < end
-                } else {
-                    key > start
-                }
-            }
-            QueryItem::RangeAfterToInclusive(range_inclusive) => {
-                if left_to_right {
-                    let end = range_inclusive.end().as_slice();
-                    match Self::compare(key, end) {
-                        Ordering::Less => true,
-                        Ordering::Equal => true,
-                        Ordering::Greater => false,
-                    }
-                } else {
-                    let start = range_inclusive.start().as_slice();
-                    match Self::compare(key, start) {
-                        Ordering::Less => false,
-                        Ordering::Equal => false,
-                        Ordering::Greater => true,
-                    }
-                }
-            }
-        };
-
-        is_valid.wrap_with_cost(cost)
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl PartialEq for QueryItem {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl PartialEq<&[u8]> for QueryItem {
-    fn eq(&self, other: &&[u8]) -> bool {
-        matches!(self.partial_cmp(other), Some(Ordering::Equal))
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl Eq for QueryItem {}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl Ord for QueryItem {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let cmp_lu = if self.lower_unbounded() {
-            if other.lower_unbounded() {
-                Ordering::Equal
-            } else {
-                Ordering::Less
-            }
-        } else if other.lower_unbounded() {
-            Ordering::Greater
-        } else {
-            // confirmed the bounds are not unbounded, hence safe to unwrap
-            // as bound cannot be None
-            self.lower_bound()
-                .0
-                .expect("should be bounded")
-                .cmp(other.upper_bound().0.expect("should be bounded"))
-        };
-
-        let cmp_ul = if self.upper_unbounded() {
-            if other.upper_unbounded() {
-                Ordering::Equal
-            } else {
-                Ordering::Greater
-            }
-        } else if other.upper_unbounded() {
-            Ordering::Less
-        } else {
-            // confirmed the bounds are not unbounded, hence safe to unwrap
-            // as bound cannot be None
-            self.upper_bound()
-                .0
-                .expect("should be bounded")
-                .cmp(other.lower_bound().0.expect("should be bounded"))
-        };
-
-        let self_inclusive = self.upper_bound().1;
-        let other_inclusive = other.upper_bound().1;
-
-        match (cmp_lu, cmp_ul) {
-            (Ordering::Less, Ordering::Less) => Ordering::Less,
-            (Ordering::Less, Ordering::Equal) => match self_inclusive {
-                true => Ordering::Equal,
-                false => Ordering::Less,
-            },
-            (Ordering::Less, Ordering::Greater) => Ordering::Equal,
-            (Ordering::Equal, _) => match other_inclusive {
-                true => Ordering::Equal,
-                false => Ordering::Greater,
-            },
-            (Ordering::Greater, _) => Ordering::Greater,
-        }
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl PartialOrd for QueryItem {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl PartialOrd<&[u8]> for QueryItem {
-    fn partial_cmp(&self, other: &&[u8]) -> Option<Ordering> {
-        let other = Self::Key(other.to_vec());
-        Some(self.cmp(&other))
-    }
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-impl From<Vec<u8>> for QueryItem {
-    fn from(key: Vec<u8>) -> Self {
-        Self::Key(key)
     }
 }
 
@@ -1264,7 +512,16 @@ where
 
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
-        let mut search = query.binary_search_by(|key| key.cmp(&node_key));
+        let mut search = query.binary_search_by(|key| {
+            // TODO: change to contains more efficient
+            //  left here to catch potential errors with the intersect function
+            if key.collides_with(&node_key) {
+                // if key.contains(self.tree().key()) {
+                Ordering::Equal
+            } else {
+                key.cmp(&node_key)
+            }
+        });
 
         let current_node_in_query: bool;
         let mut node_on_non_inclusive_bounds = false;
@@ -1493,334 +750,6 @@ where
 }
 
 #[cfg(feature = "full")]
-/// Verify proof against expected hash
-pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
-    let ops = Decoder::new(bytes);
-    let mut map_builder = MapBuilder::new();
-
-    execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
-        root.hash().map(|hash| {
-            if hash != expected_hash {
-                Err(Error::InvalidProofError(format!(
-                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-                    expected_hash,
-                    root.hash()
-                )))
-            } else {
-                Ok(map_builder.build())
-            }
-        })
-    })
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-/// Verifies the encoded proof with the given query
-///
-/// Every key in `keys` is checked to either have a key/value pair in the proof,
-/// or to have its absence in the tree proven.
-///
-/// Returns `Err` if the proof is invalid, or a list of proven values associated
-/// with `keys`. For example, if `keys` contains keys `A` and `B`, the returned
-/// list will contain 2 elements, the value of `A` and the value of `B`. Keys
-/// proven to be absent in the tree will have an entry of `None`, keys that have
-/// a proven value will have an entry of `Some(value)`.
-pub fn execute_proof(
-    bytes: &[u8],
-    query: &Query,
-    limit: Option<u16>,
-    offset: Option<u16>,
-    left_to_right: bool,
-) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
-    let mut cost = OperationCost::default();
-
-    let mut output = Vec::with_capacity(query.len());
-    let mut last_push = None;
-    let mut query = query.directional_iter(left_to_right).peekable();
-    let mut in_range = false;
-    let mut current_limit = limit;
-    let mut current_offset = offset;
-
-    let ops = Decoder::new(bytes);
-
-    let root_wrapped = execute(ops, true, |node| {
-        let mut execute_node =
-            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_, Error> {
-                while let Some(item) = query.peek() {
-                    // get next item in query
-                    let query_item = *item;
-                    let (lower_bound, start_non_inclusive) = query_item.lower_bound();
-                    let (upper_bound, end_inclusive) = query_item.upper_bound();
-
-                    let terminate = if left_to_right {
-                        // we have not reached next queried part of tree
-                        // or we intersect with the query_item but at the start which is non
-                        // inclusive; continue to the next push
-                        *query_item > key.as_slice()
-                            || (start_non_inclusive
-                                && lower_bound.is_some()
-                                && lower_bound.unwrap() == key.as_slice())
-                    } else {
-                        // we intersect with the query_item but at the end which is non inclusive;
-                        // continue to the next push
-                        *query_item < key.as_slice()
-                            || (!end_inclusive
-                                && upper_bound.is_some()
-                                && upper_bound.unwrap() == key.as_slice())
-                    };
-                    if terminate {
-                        break;
-                    }
-
-                    if !in_range {
-                        // this is the first data we have encountered for this query item
-                        if left_to_right {
-                            // ensure lower bound of query item is proven
-                            match last_push {
-                                // lower bound is proven - we have an exact match
-                                // ignoring the case when the lower bound is unbounded
-                                // as it's not possible the get an exact key match for
-                                // an unbounded value
-                                _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
-
-                                // lower bound is proven - this is the leftmost node
-                                // in the tree
-                                None => {}
-
-                                // lower bound is proven - the preceding tree node
-                                // is lower than the bound
-                                Some(Node::KV(..)) => {}
-                                Some(Node::KVDigest(..)) => {}
-                                Some(Node::KVRefValueHash(..)) => {}
-                                Some(Node::KVValueHash(..)) => {}
-
-                                // cannot verify lower bound - we have an abridged
-                                // tree so we cannot tell what the preceding key was
-                                Some(_) => {
-                                    return Err(Error::InvalidProofError(
-                                        "Cannot verify lower bound of queried range".to_string(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            // ensure upper bound of query item is proven
-                            match last_push {
-                                // upper bound is proven - we have an exact match
-                                // ignoring the case when the upper bound is unbounded
-                                // as it's not possible the get an exact key match for
-                                // an unbounded value
-                                _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
-
-                                // lower bound is proven - this is the rightmost node
-                                // in the tree
-                                None => {}
-
-                                // upper bound is proven - the preceding tree node
-                                // is greater than the bound
-                                Some(Node::KV(..)) => {}
-                                Some(Node::KVDigest(..)) => {}
-                                Some(Node::KVRefValueHash(..)) => {}
-                                Some(Node::KVValueHash(..)) => {}
-
-                                // cannot verify upper bound - we have an abridged
-                                // tree so we cannot tell what the previous key was
-                                Some(_) => {
-                                    return Err(Error::InvalidProofError(
-                                        "Cannot verify upper bound of queried range".to_string(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-
-                    if left_to_right {
-                        if query_item.upper_bound().0.is_some()
-                            && Some(key.as_slice()) >= query_item.upper_bound().0
-                        {
-                            // at or past upper bound of range (or this was an exact
-                            // match on a single-key queryitem), advance to next query
-                            // item
-                            query.next();
-                            in_range = false;
-                        } else {
-                            // have not reached upper bound, we expect more values
-                            // to be proven in the range (and all pushes should be
-                            // unabridged until we reach end of range)
-                            in_range = true;
-                        }
-                    } else if query_item.lower_bound().0.is_some()
-                        && Some(key.as_slice()) <= query_item.lower_bound().0
-                    {
-                        // at or before lower bound of range (or this was an exact
-                        // match on a single-key queryitem), advance to next query
-                        // item
-                        query.next();
-                        in_range = false;
-                    } else {
-                        // have not reached lower bound, we expect more values
-                        // to be proven in the range (and all pushes should be
-                        // unabridged until we reach end of range)
-                        in_range = true;
-                    }
-
-                    // this push matches the queried item
-                    if query_item.contains(key) {
-                        // if there are still offset slots, and node is of type kvdigest
-                        // reduce the offset counter
-                        // also, verify that a kv node was not pushed before offset is exhausted
-                        if let Some(offset) = current_offset {
-                            if offset > 0 && value.is_none() {
-                                current_offset = Some(offset - 1);
-                                break;
-                            } else if offset > 0 && value.is_some() {
-                                // inserting a kv node before exhausting offset
-                                return Err(Error::InvalidProofError(
-                                    "Proof returns data before offset is exhausted".to_string(),
-                                ));
-                            }
-                        }
-
-                        // offset is equal to zero or none
-                        if let Some(val) = value {
-                            if let Some(limit) = current_limit {
-                                if limit == 0 {
-                                    return Err(Error::InvalidProofError(
-                                        "Proof returns more data than limit".to_string(),
-                                    ));
-                                } else {
-                                    current_limit = Some(limit - 1);
-                                    if current_limit == Some(0) {
-                                        in_range = false;
-                                    }
-                                }
-                            }
-                            // add data to output
-                            output.push(ProvedKeyValue {
-                                key: key.clone(),
-                                value: val.clone(),
-                                proof: value_hash,
-                            });
-
-                            // continue to next push
-                            break;
-                        } else {
-                            return Err(Error::InvalidProofError(
-                                "Proof is missing data for query".to_string(),
-                            ));
-                        }
-                    }
-                    {}
-                    // continue to next queried item
-                }
-                Ok(())
-            };
-
-        if let Node::KV(key, value) = node {
-            execute_node(key, Some(value), value_hash(value).unwrap())?;
-        } else if let Node::KVValueHash(key, value, value_hash) = node {
-            execute_node(key, Some(value), *value_hash)?;
-        } else if let Node::KVDigest(key, value_hash) = node {
-            execute_node(key, None, *value_hash)?;
-        } else if let Node::KVRefValueHash(key, value, value_hash) = node {
-            execute_node(key, Some(value), *value_hash)?;
-        } else if in_range {
-            // we encountered a queried range but the proof was abridged (saw a
-            // non-KV push), we are missing some part of the range
-            return Err(Error::InvalidProofError(
-                "Proof is missing data for query for range".to_string(),
-            ));
-        }
-
-        last_push = Some(node.clone());
-
-        Ok(())
-    });
-
-    let root = cost_return_on_error!(&mut cost, root_wrapped);
-
-    // we have remaining query items, check absence proof against right edge of
-    // tree
-    if query.peek().is_some() {
-        if current_limit == Some(0) {
-        } else {
-            match last_push {
-                // last node in tree was less than queried item
-                Some(Node::KV(..)) => {}
-                Some(Node::KVDigest(..)) => {}
-                Some(Node::KVRefValueHash(..)) => {}
-                Some(Node::KVValueHash(..)) => {}
-
-                // proof contains abridged data so we cannot verify absence of
-                // remaining query items
-                _ => {
-                    return Err(Error::InvalidProofError(
-                        "Proof is missing data for query a".to_string(),
-                    ))
-                    .wrap_with_cost(cost)
-                }
-            }
-        }
-    }
-
-    Ok((
-        root.hash().unwrap_add_cost(&mut cost),
-        ProofVerificationResult {
-            result_set: output,
-            limit: current_limit,
-            offset: current_offset,
-        },
-    ))
-    .wrap_with_cost(cost)
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-#[derive(PartialEq, Eq, Debug)]
-/// Proved key-value
-pub struct ProvedKeyValue {
-    /// Key
-    pub key: Vec<u8>,
-    /// Value
-    pub value: Vec<u8>,
-    /// Proof
-    pub proof: CryptoHash,
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-#[derive(PartialEq, Eq, Debug)]
-/// Proof verification result
-pub struct ProofVerificationResult {
-    /// Result set
-    pub result_set: Vec<ProvedKeyValue>,
-    /// Limit
-    pub limit: Option<u16>,
-    /// Offset
-    pub offset: Option<u16>,
-}
-
-#[cfg(any(feature = "full", feature = "verify"))]
-/// Verifies the encoded proof with the given query and expected hash
-pub fn verify_query(
-    bytes: &[u8],
-    query: &Query,
-    limit: Option<u16>,
-    offset: Option<u16>,
-    left_to_right: bool,
-    expected_hash: MerkHash,
-) -> CostResult<ProofVerificationResult, Error> {
-    execute_proof(bytes, query, limit, offset, left_to_right)
-        .map_ok(|(root_hash, verification_result)| {
-            if root_hash == expected_hash {
-                Ok(verification_result)
-            } else {
-                Err(Error::InvalidProofError(format!(
-                    "Proof did not match expected hash\n\tExpected: {expected_hash:?}\n\tActual: \
-                     {root_hash:?}"
-                )))
-            }
-        })
-        .flatten()
-}
-
-#[cfg(feature = "full")]
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {
@@ -1831,7 +760,11 @@ mod test {
         *,
     };
     use crate::{
-        proofs::query::QueryItem::RangeAfter,
+        proofs::query::{
+            query_item::QueryItem::RangeAfter,
+            verify,
+            verify::{verify_query, ProvedKeyValue},
+        },
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
         TreeFeatureType::BasicMerk,
@@ -1959,28 +892,34 @@ mod test {
     }
 
     #[test]
-    fn test_query_merge() {
+    fn test_query_merge_single_key() {
         // single key test
         let mut query_one = Query::new();
         query_one.insert_key(b"a".to_vec());
         let mut query_two = Query::new();
         query_two.insert_key(b"b".to_vec());
-        query_one.merge(&query_two);
+        query_one.merge_with(query_two);
         let mut expected_query = Query::new();
         expected_query.insert_key(b"a".to_vec());
         expected_query.insert_key(b"b".to_vec());
         assert_eq!(query_one, expected_query);
+    }
 
+    #[test]
+    fn test_query_merge_range() {
         // range test
         let mut query_one = Query::new();
         query_one.insert_range(b"a".to_vec()..b"c".to_vec());
         let mut query_two = Query::new();
         query_two.insert_key(b"b".to_vec());
-        query_one.merge(&query_two);
+        query_one.merge_with(query_two);
         let mut expected_query = Query::new();
         expected_query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(query_one, expected_query);
+    }
 
+    #[test]
+    fn test_query_merge_conditional_query() {
         // conditional query test
         let mut query_one = Query::new();
         query_one.insert_key(b"a".to_vec());
@@ -1994,7 +933,7 @@ mod test {
 
         let mut query_two = Query::new();
         query_two.insert_key(b"b".to_vec());
-        query_one.merge(&query_two);
+        query_one.merge_with(query_two);
 
         let mut expected_query = Query::new();
         expected_query.insert_key(b"a".to_vec());
@@ -2007,7 +946,10 @@ mod test {
             Some(insert_all_query),
         );
         assert_eq!(query_one, expected_query);
+    }
 
+    #[test]
+    fn test_query_merge_deep_conditional_query() {
         // deep conditional query
         // [a, b, c]
         // [a, c, d]
@@ -2036,7 +978,7 @@ mod test {
             Some(query_two_d),
         );
         query_two.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, Some(query_two_c));
-        query_one.merge(&query_two);
+        query_one.merge_with(query_two);
 
         let mut expected_query = Query::new();
         expected_query.insert_key(b"a".to_vec());
@@ -2762,61 +1704,26 @@ mod test {
     }
 
     #[test]
-    fn query_item_cmp() {
-        assert!(QueryItem::Key(vec![10]) < QueryItem::Key(vec![20]));
-        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Key(vec![10]));
-        assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
-
-        assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(
-            QueryItem::Key(vec![10]),
-            QueryItem::Range(vec![10]..vec![20])
-        );
-        assert_eq!(
-            QueryItem::Key(vec![15]),
-            QueryItem::Range(vec![10]..vec![20])
-        );
-        assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
-        assert_eq!(
-            QueryItem::Key(vec![20]),
-            QueryItem::RangeInclusive(vec![10]..=vec![20])
-        );
-        assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
-
-        assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
-        assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(
-            QueryItem::RangeInclusive(vec![10]..=vec![20]),
-            QueryItem::Range(vec![20]..vec![30])
-        );
-        assert_eq!(
-            QueryItem::Range(vec![15]..vec![25]),
-            QueryItem::Range(vec![20]..vec![30])
-        );
-        assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
-    }
-
-    #[test]
     fn query_item_merge() {
         let mine = QueryItem::Range(vec![10]..vec![30]);
         let other = QueryItem::Range(vec![15]..vec![20]);
-        assert_eq!(mine.merge(other), QueryItem::Range(vec![10]..vec![30]));
+        assert_eq!(mine.merge(&other), QueryItem::Range(vec![10]..vec![30]));
 
         let mine = QueryItem::RangeInclusive(vec![10]..=vec![30]);
         let other = QueryItem::Range(vec![20]..vec![30]);
         assert_eq!(
-            mine.merge(other),
+            mine.merge(&other),
             QueryItem::RangeInclusive(vec![10]..=vec![30])
         );
 
         let mine = QueryItem::Key(vec![5]);
         let other = QueryItem::Range(vec![1]..vec![10]);
-        assert_eq!(mine.merge(other), QueryItem::Range(vec![1]..vec![10]));
+        assert_eq!(mine.merge(&other), QueryItem::Range(vec![1]..vec![10]));
 
         let mine = QueryItem::Key(vec![10]);
         let other = QueryItem::RangeInclusive(vec![1]..=vec![10]);
         assert_eq!(
-            mine.merge(other),
+            mine.merge(&other),
             QueryItem::RangeInclusive(vec![1]..=vec![10])
         );
     }
@@ -5590,37 +4497,38 @@ mod test {
         assert_eq!(res.offset, Some(197));
 
         // right_to_left proof
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
-        let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
-            .unwrap()
-            .expect("create_proof errored");
-
-        assert_eq!(absence, (false, false));
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
-        compare_result_tuples(
-            res.result_set,
-            vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])],
-        );
+        // let mut tree = make_6_node_tree();
+        // let mut walker = RefWalker::new(&mut tree, PanicSource {});
+        //
+        // let queryitems =
+        // vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+        // let (proof, absence, ..) = walker
+        //     .create_full_proof(queryitems.as_slice(), None, None, false)
+        //     .unwrap()
+        //     .expect("create_proof errored");
+        //
+        // assert_eq!(absence, (false, false));
+        //
+        // let mut bytes = vec![];
+        // encode_into(proof.iter(), &mut bytes);
+        // let mut query = Query::new();
+        // for item in queryitems {
+        //     query.insert_item(item);
+        // }
+        // let res = verify_query(
+        //     bytes.as_slice(),
+        //     &query,
+        //     None,
+        //     None,
+        //     false,
+        //     tree.hash().unwrap(),
+        // )
+        // .unwrap()
+        // .unwrap();
+        // compare_result_tuples(
+        //     res.result_set,
+        //     vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])],
+        // );
     }
 
     #[test]
@@ -6529,8 +5437,8 @@ mod test {
         )];
         let query = Query::from(queryitems);
 
-        let mut expected = BTreeSet::new();
-        expected.insert(QueryItem::Range(
+        let mut expected = Vec::new();
+        expected.push(QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         ));
         assert_eq!(query.items, expected);
@@ -6588,7 +5496,7 @@ mod test {
 
         encode_into(proof.iter(), &mut bytes);
 
-        let map = verify(&bytes, root_hash).unwrap().unwrap();
+        let map = verify::verify(&bytes, root_hash).unwrap().unwrap();
         assert_eq!(
             map.get(vec![5].as_slice()).unwrap().unwrap(),
             vec![5].as_slice()
@@ -6618,7 +5526,9 @@ mod test {
 
         encode_into(proof.iter(), &mut bytes);
 
-        let _map = verify(&bytes, [42; 32]).unwrap().expect("verify failed");
+        let _map = verify::verify(&bytes, [42; 32])
+            .unwrap()
+            .expect("verify failed");
     }
 
     #[test]

@@ -28,7 +28,7 @@
 
 //! A hierarchical "grove" of trees with proofs and secondary indexes.
 
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 
 #[cfg(feature = "full")]
 extern crate core;
@@ -75,6 +75,8 @@ pub use element::Element;
 #[cfg(feature = "full")]
 pub use element::ElementFlags;
 #[cfg(feature = "full")]
+pub use merk::proofs::query::query_item::QueryItem;
+#[cfg(feature = "full")]
 use merk::{
     self,
     tree::{combine_hash, value_hash},
@@ -88,7 +90,7 @@ pub use merk::{
         },
         worst_case_costs::WorstCaseLayerInformation,
     },
-    proofs::{query::QueryItem, Query},
+    proofs::Query,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};

@@ -60,7 +60,7 @@ use crate::{
         defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
         options::MerkOptions,
     },
-    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
+    proofs::{encode_into, query::query_item::QueryItem, Op as ProofOp, Query},
     tree::{
         kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
         Walker, NULL_HASH,

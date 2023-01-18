@@ -134,20 +134,20 @@ pub fn make_deep_tree() -> TempGroveDb {
     //             k4,v4
     //     deep_leaf
     //          deep_node_1
-    //              deeper_node_1
+    //              deeper_1
     //                  k1,v1
     //                  k2,v2
     //                  k3,v3
-    //              deeper_node_2
+    //              deeper_2
     //                  k4,v4
     //                  k5,v5
     //                  k6,v6
     //          deep_node_2
-    //              deeper_node_3
+    //              deeper_3
     //                  k7,v7
     //                  k8,v8
     //                  k9,v9
-    //              deeper_node_4
+    //              deeper_4
     //                  k10,v10
     //                  k11,v11
 
@@ -289,7 +289,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     temp_db
         .insert(
             [DEEP_LEAF, b"deep_node_1"],
-            b"deeper_node_1",
+            b"deeper_1",
             Element::empty_tree(),
             None,
             None,
@@ -299,7 +299,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     temp_db
         .insert(
             [DEEP_LEAF, b"deep_node_1"],
-            b"deeper_node_2",
+            b"deeper_2",
             Element::empty_tree(),
             None,
             None,
@@ -309,7 +309,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     temp_db
         .insert(
             [DEEP_LEAF, b"deep_node_2"],
-            b"deeper_node_3",
+            b"deeper_3",
             Element::empty_tree(),
             None,
             None,
@@ -319,7 +319,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     temp_db
         .insert(
             [DEEP_LEAF, b"deep_node_2"],
-            b"deeper_node_4",
+            b"deeper_4",
             Element::empty_tree(),
             None,
             None,
@@ -329,7 +329,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     // Insert level 3 nodes
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_node_1"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_1"],
             b"key1",
             Element::new_item(b"value1".to_vec()),
             None,
@@ -339,7 +339,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_node_1"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_1"],
             b"key2",
             Element::new_item(b"value2".to_vec()),
             None,
@@ -349,7 +349,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_node_1"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_1"],
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -359,7 +359,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_node_2"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_2"],
             b"key4",
             Element::new_item(b"value4".to_vec()),
             None,
@@ -369,7 +369,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_node_2"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_2"],
             b"key5",
             Element::new_item(b"value5".to_vec()),
             None,
@@ -379,7 +379,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_node_2"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_2"],
             b"key6",
             Element::new_item(b"value6".to_vec()),
             None,
@@ -390,7 +390,7 @@ pub fn make_deep_tree() -> TempGroveDb {
 
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_node_3"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_3"],
             b"key7",
             Element::new_item(b"value7".to_vec()),
             None,
@@ -400,7 +400,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_node_3"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_3"],
             b"key8",
             Element::new_item(b"value8".to_vec()),
             None,
@@ -410,7 +410,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_node_3"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_3"],
             b"key9",
             Element::new_item(b"value9".to_vec()),
             None,
@@ -420,7 +420,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_node_4"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_4"],
             b"key10",
             Element::new_item(b"value10".to_vec()),
             None,
@@ -430,7 +430,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_node_4"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_4"],
             b"key11",
             Element::new_item(b"value11".to_vec()),
             None,
@@ -1000,7 +1000,7 @@ fn test_proof_for_invalid_path() {
         vec![
             b"deep_leaf".to_vec(),
             b"deep_node_1".to_vec(),
-            b"deeper_node_1".to_vec(),
+            b"deeper_1".to_vec(),
             b"invalid_key".to_vec(),
         ],
         query,
@@ -1018,7 +1018,7 @@ fn test_proof_for_invalid_path() {
         vec![
             b"deep_leaf".to_vec(),
             b"early_invalid_key".to_vec(),
-            b"deeper_node_1".to_vec(),
+            b"deeper_1".to_vec(),
             b"invalid_key".to_vec(),
         ],
         query,
@@ -1533,7 +1533,7 @@ fn test_path_query_proofs_with_subquery_path() {
     let mut subq = Query::new();
     subq.insert_all();
 
-    query.set_subquery_key(b"deeper_node_1".to_vec());
+    query.set_subquery_key(b"deeper_1".to_vec());
     query.set_subquery(subq);
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
@@ -1558,7 +1558,7 @@ fn test_path_query_proofs_with_subquery_path() {
     let mut subq = Query::new();
     subq.insert_all();
 
-    query.set_subquery_path(vec![b"deep_node_1".to_vec(), b"deeper_node_1".to_vec()]);
+    query.set_subquery_path(vec![b"deep_node_1".to_vec(), b"deeper_1".to_vec()]);
     query.set_subquery(subq);
 
     let path_query = PathQuery::new_unsized(vec![], query);
@@ -1622,7 +1622,7 @@ fn test_path_query_proofs_with_subquery_path() {
 
     query.set_subquery_path(vec![
         b"deep_node_1".to_vec(),
-        b"deeper_node_10".to_vec(),
+        b"deeper_10".to_vec(),
         b"another_invalid_key".to_vec(),
     ]);
     query.set_subquery(subq);
@@ -1645,7 +1645,7 @@ fn test_path_query_proofs_with_key_and_subquery() {
     let mut subq = Query::new();
     subq.insert_all();
 
-    query.set_subquery_key(b"deeper_node_1".to_vec());
+    query.set_subquery_key(b"deeper_1".to_vec());
     query.set_subquery(subq);
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
@@ -1678,7 +1678,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     final_subquery.insert_all();
 
     subquery.add_conditional_subquery(
-        QueryItem::Key(b"deeper_node_4".to_vec()),
+        QueryItem::Key(b"deeper_4".to_vec()),
         None,
         Some(final_subquery),
     );
@@ -1693,9 +1693,9 @@ fn test_path_query_proofs_with_conditional_subquery() {
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
 
     let keys = [
-        b"deeper_node_1".to_vec(),
-        b"deeper_node_2".to_vec(),
-        b"deeper_node_3".to_vec(),
+        b"deeper_1".to_vec(),
+        b"deeper_2".to_vec(),
+        b"deeper_3".to_vec(),
         b"key10".to_vec(),
         b"key11".to_vec(),
     ];
@@ -1720,7 +1720,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     final_default_subquery.insert_range_inclusive(b"key3".to_vec()..=b"key6".to_vec());
 
     subquery.add_conditional_subquery(
-        QueryItem::Key(b"deeper_node_4".to_vec()),
+        QueryItem::Key(b"deeper_4".to_vec()),
         None,
         Some(final_conditional_subquery),
     );
@@ -1777,7 +1777,7 @@ fn test_path_query_proofs_with_sized_query() {
     final_default_subquery.insert_range_inclusive(b"key3".to_vec()..=b"key6".to_vec());
 
     subquery.add_conditional_subquery(
-        QueryItem::Key(b"deeper_node_4".to_vec()),
+        QueryItem::Key(b"deeper_4".to_vec()),
         None,
         Some(final_conditional_subquery),
     );
@@ -1820,7 +1820,7 @@ fn test_path_query_proofs_with_direction() {
     final_default_subquery.insert_range_inclusive(b"key3".to_vec()..=b"key6".to_vec());
 
     subquery.add_conditional_subquery(
-        QueryItem::Key(b"deeper_node_4".to_vec()),
+        QueryItem::Key(b"deeper_4".to_vec()),
         None,
         Some(final_conditional_subquery),
     );
@@ -1986,7 +1986,7 @@ fn test_checkpoint() {
         .unwrap()
         .expect("cannot insert into checkpoint");
 
-    db.insert([b"key1".as_ref()], b"key6", element3.clone(), None, None)
+    db.insert([b"key1".as_ref()], b"key6", element3, None, None)
         .unwrap()
         .expect("cannot insert into GroveDB");
 
@@ -2399,6 +2399,17 @@ fn test_get_full_query() {
     .unwrap()
     .expect("successful value insert");
 
+    //          Test_Leaf
+    // ___________________________
+    //         /        \
+    //     key1           key2
+    // ___________________________
+    //      |              |
+    //     key4          key6
+    //     / \
+    //   key3 key5
+    //
+
     let path1 = vec![TEST_LEAF.to_vec(), b"key1".to_vec()];
     let path2 = vec![TEST_LEAF.to_vec(), b"key2".to_vec()];
     let mut query1 = Query::new();
@@ -2407,7 +2418,9 @@ fn test_get_full_query() {
     query2.insert_key(b"key6".to_vec());
 
     let path_query1 = PathQuery::new_unsized(path1, query1);
+    // should get back key3, key4
     let path_query2 = PathQuery::new_unsized(path2, query2);
+    // should get back key6
 
     assert_eq!(
         db.query_many_raw(

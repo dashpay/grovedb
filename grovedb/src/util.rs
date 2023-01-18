@@ -178,6 +178,61 @@ macro_rules! merk_optional_tx {
         $subtree:ident,
         { $($body:tt)* }
     ) => {
+            if $path.peek().is_none() {
+use crate::util::storage_context_optional_tx;
+            storage_context_optional_tx!($db, [], $transaction, storage, {
+                let $subtree = cost_return_on_error!(
+                    &mut $cost,
+                    ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
+                        .map(|merk_res|
+                             merk_res
+                                .map_err(|_| crate::Error::CorruptedData(
+                                    "cannot open a subtree".to_owned()
+                                ))
+                             )
+                );
+                $($body)*
+            })
+            } else {
+                use crate::util::storage_context_with_parent_optional_tx;
+            storage_context_with_parent_optional_tx!(
+                &mut $cost,
+                $db,
+                $path,
+                $transaction,
+                storage,
+                root_key,
+                is_sum_tree,
+                {
+                    #[allow(unused_mut)]
+                    let mut $subtree = cost_return_on_error!(
+                        &mut $cost,
+                        ::merk::Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                            .map(|merk_res|
+                                 merk_res
+                                 .map_err(|_| crate::Error::CorruptedData(
+                                     "cannot open a subtree".to_owned()
+                                 ))
+                            )
+                    );
+                    $($body)*
+                }
+            )
+            }
+    };
+}
+
+/// Macro to execute same piece of code on Merk with varying storage
+/// contexts.
+macro_rules! merk_optional_tx_path_not_empty {
+    (
+        &mut $cost:ident,
+        $db:expr,
+        $path:expr,
+        $transaction:ident,
+        $subtree:ident,
+        { $($body:tt)* }
+    ) => {
         {
             use crate::util::storage_context_with_parent_optional_tx;
             storage_context_with_parent_optional_tx!(
@@ -203,7 +258,7 @@ macro_rules! merk_optional_tx {
                     $($body)*
                 }
             )
-        }
+    }
     };
 }
 
@@ -237,9 +292,8 @@ macro_rules! root_merk_optional_tx {
 }
 
 pub(crate) use merk_optional_tx;
+pub(crate) use merk_optional_tx_path_not_empty;
 pub(crate) use meta_storage_context_optional_tx;
 pub(crate) use root_merk_optional_tx;
 pub(crate) use storage_context_optional_tx;
-// pub(crate) use storage_context_with_parent_no_tx;
 pub(crate) use storage_context_with_parent_optional_tx;
-// pub(crate) use storage_context_with_parent_using_tx;

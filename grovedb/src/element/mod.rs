@@ -72,7 +72,7 @@ pub type MaxReferenceHop = Option<u8>;
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
 #[cfg(feature = "full")]
-/// The cost of a tree
+/// The cost of a sum item
 pub const SUM_ITEM_COST_SIZE: u32 = 10;
 #[cfg(feature = "full")]
 /// The cost of a sum tree

@@ -52,7 +52,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn seek_to_last(&mut self) -> CostContext<()> {
         let mut prefix_vec = self.prefix.to_vec();
         for i in (0..prefix_vec.len()).rev() {
-            prefix_vec[i] += 1;
+            prefix_vec[i] = prefix_vec[i].wrapping_add(1);
             if prefix_vec[i] != 0 {
                 // if it is == 0 then we need to go to next bit
                 break;
@@ -139,7 +139,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn seek_to_last(&mut self) -> CostContext<()> {
         let mut prefix_vec = self.prefix.to_vec();
         for i in (0..prefix_vec.len()).rev() {
-            prefix_vec[i] += 1;
+            prefix_vec[i] = prefix_vec[i].wrapping_add(1);
             if prefix_vec[i] != 0 {
                 // if it is == 0 then we need to go to next bit
                 break;
