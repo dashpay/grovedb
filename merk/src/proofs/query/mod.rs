@@ -46,7 +46,6 @@ use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::{
     cmp::{Ordering},
-    hash::Hash,
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -60,7 +59,6 @@ pub use query_item::intersect::QueryItemIntersectionResult;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
-use storage::RawIterator;
 use verify::ProofAbsenceLimitOffset;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use verify::{execute_proof, verify_query, ProofVerificationResult, ProvedKeyValue};

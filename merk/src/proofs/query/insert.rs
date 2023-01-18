@@ -158,7 +158,7 @@ impl Query {
             })
             .collect();
 
-        /// since we need items to be sorted we do
+        // since we need items to be sorted we do
         match self.items.binary_search(&item) {
             Ok(_) => {
                 unreachable!("this shouldn't be possible")

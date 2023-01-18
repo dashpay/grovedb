@@ -141,18 +141,6 @@ impl From<RangeSetIntersection> for QueryItemIntersectionResult {
     }
 }
 
-impl QueryItemIntersectionResult {
-    fn flip(self) -> Self {
-        QueryItemIntersectionResult {
-            in_both: self.in_both,
-            ours_left: self.theirs_left,
-            ours_right: self.theirs_right,
-            theirs_left: self.ours_left,
-            theirs_right: self.ours_right,
-        }
-    }
-}
-
 impl RangeSet {
     // TODO: convert to impl of From/To trait
     pub fn to_query_item(&self) -> QueryItem {
@@ -353,27 +341,19 @@ impl Ord for RangeSetItem {
             (Inclusive(v1), Inclusive(v2))
             | (ExclusiveStart(v1), ExclusiveStart(v2))
             | (ExclusiveEnd(v1), ExclusiveEnd(v2)) => {
-                if v1 == v2 {
-                    Ordering::Equal
-                } else if v1 < v2 {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
-                }
+                v1.cmp(v2)
             }
 
             (Inclusive(v1), ExclusiveStart(v2)) | (ExclusiveEnd(v1), Inclusive(v2)) => {
-                if v1 <= v2 {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
+                match v1.cmp(v2) {
+                    Ordering::Equal | Ordering::Less => Ordering::Less,
+                    _ => Ordering::Greater
                 }
             }
             (Inclusive(v1), ExclusiveEnd(v2)) | (ExclusiveStart(v1), Inclusive(v2)) => {
-                if v1 < v2 {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
+                match v1.cmp(v2) {
+                    Ordering::Less => Ordering::Less,
+                    _ => Ordering::Greater
                 }
             }
 
@@ -381,10 +361,9 @@ impl Ord for RangeSetItem {
                 // start goes up, end goes down
                 // if they are equal, exclusive end is smaller cause it stops just before the
                 // number
-                if v1 >= v2 {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
+                match v1.cmp(v2) {
+                    Ordering::Equal | Ordering::Greater => Ordering::Greater,
+                    _ => Ordering::Less
                 }
             }
         }
