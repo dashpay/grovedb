@@ -78,6 +78,7 @@ impl QueryItemManyIntersectionResult {
         }
     }
 
+    #[allow(unused)]
     fn push_theirs_from_result(
         &mut self,
         query_item_intersection_result: QueryItemIntersectionResultTheirsLeftovers,
