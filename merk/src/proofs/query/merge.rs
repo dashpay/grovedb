@@ -1,15 +1,11 @@
-use std::{
-    collections::{BTreeSet, VecDeque},
-    ops::RangeFull,
-};
+
 
 use indexmap::IndexMap;
 
 use crate::proofs::{
     query::{
         common_path::CommonPathResult,
-        query_item::{intersect2::QueryItemManyIntersectionResult, QueryItem},
-        Path, QueryItemIntersectionResult, SubqueryBranch,
+        query_item::{QueryItem}, QueryItemIntersectionResult, SubqueryBranch,
     },
     Query,
 };

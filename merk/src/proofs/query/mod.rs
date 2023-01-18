@@ -45,11 +45,8 @@ mod verify;
 use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::{
-    cmp,
-    cmp::{max, min, Ordering},
-    collections::BTreeSet,
+    cmp::{Ordering},
     hash::Hash,
-    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -71,11 +68,11 @@ pub use verify::{execute_proof, verify_query, ProofVerificationResult, ProvedKey
 use {super::Op, std::collections::LinkedList};
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use super::{tree::execute, Decoder, Node};
+use super::{Node};
 #[cfg(feature = "full")]
 use crate::tree::{Fetch, Link, RefWalker};
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
+use crate::{error::Error};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a path.

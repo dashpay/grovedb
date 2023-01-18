@@ -102,7 +102,7 @@ impl Op {
             ),
             Op::Patch {
                 element,
-                change_in_bytes,
+                change_in_bytes: _,
             } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,

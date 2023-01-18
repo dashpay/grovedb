@@ -1,8 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{btree_set, BTreeSet},
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
-    option::IntoIter,
 };
 
 use crate::proofs::query::query_item::{
@@ -100,9 +98,9 @@ impl QueryItemManyIntersectionResult {
 
     fn merge_in(&mut self, query_item_many_intersection_result: Self) {
         let QueryItemManyIntersectionResult {
-            mut in_both,
-            mut ours,
-            mut theirs,
+            in_both,
+            ours,
+            theirs,
         } = query_item_many_intersection_result;
         if let Some(mut in_both) = in_both {
             let in_both_vec = self.in_both.get_or_insert(vec![]);
@@ -502,7 +500,7 @@ mod test {
     };
 
     use crate::proofs::query::query_item::{
-        intersect2::{RangeSet, RangeSetItem},
+        intersect2::{RangeSetItem},
         QueryItem,
     };
 

@@ -149,7 +149,7 @@ impl PathQuery {
 
         let mut merged_query = Query::merge_multiple(queries_for_common_path_this_level);
         // add conditional subqueries
-        for mut sub_path_query in queries_for_common_path_sub_level {
+        for sub_path_query in queries_for_common_path_sub_level {
             let SubqueryBranch {
                 subquery_path,
                 subquery,
@@ -309,7 +309,7 @@ mod tests {
     use crate::{
         query_result_type::QueryResultType,
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
-        Element, Error, GroveDb, PathQuery,
+        Element, GroveDb, PathQuery,
     };
 
     #[test]
