@@ -484,7 +484,7 @@ impl Query {
                     if !items.is_empty() {
                         let intersection_result =
                             QueryItem::intersect_many_ordered(&mut items, vec![conditional_item]);
-                        items = intersection_result.ours.unwrap();
+                        items = intersection_result.ours.unwrap_or_default();
                     }
                 }
             }
