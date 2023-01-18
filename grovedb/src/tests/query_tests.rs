@@ -36,7 +36,9 @@ use crate::{
     batch::GroveDbOp,
     query_result_type::QueryResultType,
     reference_path::ReferencePathType,
-    tests::{common::compare_result_sets, make_test_grovedb, TempGroveDb, TEST_LEAF},
+    tests::{
+        common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb, TEST_LEAF,
+    },
     Element, GroveDb, PathQuery, SizedQuery,
 };
 
@@ -1901,4 +1903,20 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 8);
+}
+
+#[test]
+fn tests_proof_with_limit_zero() {
+    let db = make_deep_tree();
+    let mut query = Query::new();
+    query.insert_all();
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec()],
+        SizedQuery::new(query, Some(0), Some(0)),
+    );
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
 }

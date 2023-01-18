@@ -143,6 +143,7 @@ impl GroveDb {
                 query,
                 &mut limit,
                 &mut offset,
+                true
             )
         );
         cost_return_on_error!(&mut cost, self.prove_path(&mut proof_result, path_slices));
@@ -159,19 +160,33 @@ impl GroveDb {
         query: &PathQuery,
         current_limit: &mut Option<u16>,
         current_offset: &mut Option<u16>,
+        is_first_call: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let mut to_add_to_result_set: u16 = 0;
 
-        let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
-        if reached_limit {
-            return Ok(()).wrap_with_cost(cost);
-        }
-
         let subtree = cost_return_on_error!(&mut cost, self.open_subtree(path.iter().copied()));
         if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
             write_to_vec(proofs, &[ProofType::EmptyTree.into()]);
+            return Ok(()).wrap_with_cost(cost);
+        }
+
+        let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
+        if reached_limit {
+            if is_first_call {
+                cost_return_on_error!(
+                    &mut cost,
+                    self.generate_and_store_merk_proof(
+                        path.iter().copied(),
+                        &subtree,
+                        &query.query.query,
+                        (*current_limit, *current_offset),
+                        ProofType::SizedMerk,
+                        proofs,
+                    )
+                );
+            }
             return Ok(()).wrap_with_cost(cost);
         }
 
@@ -336,6 +351,7 @@ impl GroveDb {
                             &new_path_query,
                             current_limit,
                             current_offset,
+                            false
                         )
                     );
 
