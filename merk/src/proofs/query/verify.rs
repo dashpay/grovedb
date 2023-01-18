@@ -17,6 +17,8 @@ pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, O
 
 #[cfg(feature = "full")]
 /// Verify proof against expected hash
+#[deprecated]
+#[allow(unused)]
 pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
