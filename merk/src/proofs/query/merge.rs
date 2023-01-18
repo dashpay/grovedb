@@ -181,6 +181,8 @@ impl SubqueryBranch {
 
                 let our_top_key = our_subquery_path.remove(0);
 
+                merged_subquery.insert_key(our_top_key.clone());
+
                 let maybe_our_subquery_path = if our_subquery_path.is_empty() {
                     None
                 } else {
@@ -214,6 +216,8 @@ impl SubqueryBranch {
                 // The subquery_path is already set to None, no need to set it again
 
                 let their_top_key = their_subquery_path.remove(0);
+
+                merged_subquery.insert_key(their_top_key.clone());
 
                 let maybe_their_subquery_path = if their_subquery_path.is_empty() {
                     None
