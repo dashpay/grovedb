@@ -185,13 +185,21 @@ pub fn add_cost_case_merk_patch(
 ) {
     cost.seek_count += 1;
     if change_in_bytes >= 0 {
-        cost.storage_cost.replaced_bytes += KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+        // it's possible that the required space has also changed which would cause a +1
+        // to happen
+        let old_byte_size = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
             key_len,
             value_len - change_in_bytes as u32,
             in_tree_using_sums,
         );
+        let new_byte_size = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+            key_len,
+            value_len,
+            in_tree_using_sums,
+        );
+        cost.storage_cost.replaced_bytes += old_byte_size;
 
-        cost.storage_cost.added_bytes += change_in_bytes as u32
+        cost.storage_cost.added_bytes += new_byte_size - old_byte_size;
     } else {
         cost.storage_cost.replaced_bytes += KV::node_byte_cost_size_for_key_and_raw_value_lengths(
             key_len,

@@ -303,8 +303,8 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 // Items need to be always the same serialized size for this to work
-                let sum_item_cost_size = value.serialized_size() as u32;
-                let value_len = sum_item_cost_size + flags_len;
+                let item_cost_size = value.serialized_size() as u32;
+                let value_len = item_cost_size + flags_len;
                 add_cost_case_merk_patch(
                     &mut cost,
                     key_len,
