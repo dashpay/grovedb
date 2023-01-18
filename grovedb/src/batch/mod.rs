@@ -418,21 +418,37 @@ impl GroveDbOp {
     }
 
     /// A patch op using a known owned path and known key
-    pub fn patch_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element, change_in_bytes: i32) -> Self {
+    pub fn patch_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        element: Element,
+        change_in_bytes: i32,
+    ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
-            op: Op::Patch { element, change_in_bytes },
+            op: Op::Patch {
+                element,
+                change_in_bytes,
+            },
         }
     }
 
     /// A patch op
-    pub fn patch_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element, change_in_bytes: i32) -> Self {
+    pub fn patch_estimated_op(
+        path: KeyInfoPath,
+        key: KeyInfo,
+        element: Element,
+        change_in_bytes: i32,
+    ) -> Self {
         Self {
             path,
             key,
-            op: Op::Patch { element, change_in_bytes },
+            op: Op::Patch {
+                element,
+                change_in_bytes,
+            },
         }
     }
 
