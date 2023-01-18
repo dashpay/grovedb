@@ -105,6 +105,16 @@ impl Op {
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
+            Op::Patch {
+                element,
+                change_in_bytes,
+            } => GroveDb::average_case_merk_patch_element(
+                key,
+                element,
+                *change_in_bytes,
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
             Op::Delete => {
                 GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
             }
