@@ -56,7 +56,7 @@ use indexmap::IndexMap;
 #[cfg(feature = "full")]
 pub use map::*;
 #[cfg(any(feature = "full", feature = "verify"))]
-pub use query_item::intersect2::QueryItemIntersectionResult;
+pub use query_item::intersect::QueryItemIntersectionResult;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]

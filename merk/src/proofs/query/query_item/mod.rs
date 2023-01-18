@@ -2,7 +2,7 @@
 mod merge;
 // TODO: potentially rename
 // mod intersect;
-pub mod intersect2;
+pub mod intersect;
 
 use std::{
     cmp,
