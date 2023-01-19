@@ -57,6 +57,24 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Gives the item value in the Item element type
+    pub fn as_item_bytes(&self) -> Result<&[u8], Error> {
+        match self {
+            Element::Item(value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected an item")),
+        }
+    }
+
+    #[cfg(feature = "full")]
+    /// Gives the item value in the Item element type
+    pub fn into_item_bytes(self) -> Result<Vec<u8>, Error> {
+        match self {
+            Element::Item(value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected an item")),
+        }
+    }
+
+    #[cfg(feature = "full")]
     /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
