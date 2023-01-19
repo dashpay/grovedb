@@ -44,7 +44,7 @@ use crate::{
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
-type ProvedKeyValues = Vec<ProvedKeyValue>;
+pub type ProvedKeyValues = Vec<ProvedKeyValue>;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 type EncounteredAbsence = bool;

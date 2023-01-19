@@ -11,6 +11,7 @@ use crate::{
     tree::value_hash,
     CryptoHash as MerkHash, CryptoHash, Error,
 };
+use crate::proofs::query::{Key, Path};
 
 #[cfg(feature = "full")]
 pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
@@ -305,7 +306,7 @@ pub fn execute_proof(
 /// Proved key-value
 pub struct ProvedKeyValue {
     /// Key
-    pub key: Vec<u8>,
+    pub key: Key,
     /// Value
     pub value: Vec<u8>,
     /// Proof
