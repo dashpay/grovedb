@@ -39,4 +39,4 @@ pub mod insert;
 #[cfg(feature = "full")]
 pub(crate) mod is_empty_tree;
 #[cfg(any(feature = "full", feature = "verify"))]
-pub(crate) mod proof;
+pub mod proof;
