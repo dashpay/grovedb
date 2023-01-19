@@ -356,7 +356,7 @@ where {
         transaction: TransactionArg,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
-            Error::NotSupported("limits must be set in query_raw_keys_optional",)
+            Error::NotSupported("limits must be set in query_keys_optional",)
         )) as usize;
         if path_query.query.offset.is_some() {
             return Err(Error::NotSupported(
