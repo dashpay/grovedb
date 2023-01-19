@@ -171,7 +171,7 @@ fn test_sum_item_behaves_like_regular_item() {
     let element_from_proof =
         Element::deserialize(&result_set[0].value).expect("should deserialize element");
     assert_eq!(element_from_proof, Element::new_sum_item(5));
-    assert_eq!(element_from_proof.sum_value(), Some(5));
+    assert_eq!(element_from_proof.sum_value_or_default(), 5);
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn test_sum_tree_feature() {
         .get([TEST_LEAF], b"key2", None)
         .unwrap()
         .expect("should retrieve tree");
-    assert_eq!(sum_tree.sum_value(), Some(0));
+    assert_eq!(sum_tree.sum_value_or_default(), 0);
 
     // Add sum items to the sum tree
     db.insert(
@@ -520,7 +520,7 @@ fn test_sum_tree_propagation() {
         .get([TEST_LEAF], b"key", None)
         .unwrap()
         .expect("should fetch tree");
-    assert_eq!(sum_tree.sum_value(), Some(35));
+    assert_eq!(sum_tree.sum_value_or_default(), 35);
 
     // Assert node feature types
     let test_leaf_merk = db

@@ -46,17 +46,27 @@ use crate::{
 };
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else
-    pub fn sum_value(&self) -> Option<i64> {
+    pub fn sum_value_or_default(&self) -> i64 {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => Some(*sum_value),
-            _ => Some(0),
+            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => *sum_value,
+            _ => 0,
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumItem element type, returns 0 for
+    /// everything else
+    pub fn as_sum_item_value(&self) -> Result<i64, Error> {
+        match self {
+            Element::SumItem(value, _) => Ok(*value),
+            _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Gives the item value in the Item element type
     pub fn as_item_bytes(&self) -> Result<&[u8], Error> {
         match self {
@@ -65,7 +75,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Gives the item value in the Item element type
     pub fn into_item_bytes(self) -> Result<Vec<u8>, Error> {
         match self {
@@ -74,25 +84,25 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
     pub fn is_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is an item
     pub fn is_item(&self) -> bool {
         matches!(self, Element::Item(..) | Element::SumItem(..))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a sum item
     pub fn is_sum_item(&self) -> bool {
         matches!(self, Element::SumItem(..))
@@ -102,15 +112,7 @@ impl Element {
     /// Get the tree feature type
     pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
-            true => {
-                let sum_value = self.sum_value();
-                match sum_value {
-                    Some(sum) => Ok(SummedMerk(sum)),
-                    None => Err(Error::CorruptedData(String::from(
-                        "cannot decode sum item to i64",
-                    ))),
-                }
-            }
+            true => Ok(SummedMerk(self.sum_value_or_default())),
             false => Ok(BasicMerk),
         }
     }
