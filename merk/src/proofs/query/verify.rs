@@ -4,14 +4,13 @@ use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 use crate::{
     proofs::{
-        query::{Map, MapBuilder},
+        query::{Key, Map, MapBuilder, Path},
         tree::execute,
         Decoder, Node, Op, Query,
     },
     tree::value_hash,
     CryptoHash as MerkHash, CryptoHash, Error,
 };
-use crate::proofs::query::{Key, Path};
 
 #[cfg(feature = "full")]
 pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
