@@ -74,6 +74,24 @@ impl SizedQuery {
             offset,
         }
     }
+
+    /// New sized query with one key
+    pub fn new_single_key(key: Vec<u8>) -> Self {
+        Self {
+            query: Query::new_single_key(key),
+            limit: None,
+            offset: None,
+        }
+    }
+
+    /// New sized query with one key
+    pub fn new_single_query_item(query_item: QueryItem) -> Self {
+        Self {
+            query: Query::new_single_query_item(query_item),
+            limit: None,
+            offset: None,
+        }
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -83,8 +101,24 @@ impl PathQuery {
         Self { path, query }
     }
 
+    /// New path query with a single key
+    pub fn new_single_key(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
+        Self {
+            path,
+            query: SizedQuery::new_single_key(key),
+        }
+    }
+
+    /// New path query with a single query item
+    pub fn new_single_query_item(path: Vec<Vec<u8>>, query_item: QueryItem) -> Self {
+        Self {
+            path,
+            query: SizedQuery::new_single_query_item(query_item),
+        }
+    }
+
     /// New unsized path query
-    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
+    pub fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
         Self { path, query }
     }
