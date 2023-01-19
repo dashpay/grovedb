@@ -33,4 +33,4 @@ mod generate;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod util;
 #[cfg(any(feature = "full", feature = "verify"))]
-mod verify;
+pub mod verify;

@@ -28,7 +28,8 @@
 
 //! Verify proof operations
 
-use merk::proofs::query::{Path, ProvedKeyValue};
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use merk::proofs::query::{Path, ProvedKeyValue};
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
     proofs::Query,
@@ -44,7 +45,7 @@ use crate::{
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
-type ProvedKeyValues = Vec<ProvedKeyValue>;
+pub type ProvedKeyValues = Vec<ProvedKeyValue>;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 type EncounteredAbsence = bool;

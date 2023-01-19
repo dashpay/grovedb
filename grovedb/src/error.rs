@@ -52,6 +52,10 @@ pub enum Error {
     /// Invalid input
     InvalidInput(&'static str),
 
+    #[error("wrong element type: {0}")]
+    /// Invalid element type
+    WrongElementType(&'static str),
+
     // Path errors
     /// The path key not found could represent a valid query, just where the
     /// path key isn't there

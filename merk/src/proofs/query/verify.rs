@@ -4,7 +4,7 @@ use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 use crate::{
     proofs::{
-        query::{Map, MapBuilder},
+        query::{Key, Map, MapBuilder, Path},
         tree::execute,
         Decoder, Node, Op, Query,
     },
@@ -305,7 +305,7 @@ pub fn execute_proof(
 /// Proved key-value
 pub struct ProvedKeyValue {
     /// Key
-    pub key: Vec<u8>,
+    pub key: Key,
     /// Value
     pub value: Vec<u8>,
     /// Proof

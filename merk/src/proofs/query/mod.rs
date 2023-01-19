@@ -114,9 +114,40 @@ impl Query {
         Self::new_with_direction(true)
     }
 
+    /// Creates a new query which contains only one key.
+    pub fn new_single_key(key: Vec<u8>) -> Self {
+        Self {
+            items: vec![QueryItem::Key(key)],
+            left_to_right: true,
+            ..Self::default()
+        }
+    }
+
+    /// Creates a new query which contains only one item.
+    pub fn new_single_query_item(query_item: QueryItem) -> Self {
+        Self {
+            items: vec![query_item],
+            left_to_right: true,
+            ..Self::default()
+        }
+    }
+
     /// Creates a new query with a direction specified
     pub fn new_with_direction(left_to_right: bool) -> Self {
         Self {
+            left_to_right,
+            ..Self::default()
+        }
+    }
+
+    /// Creates a new query which contains only one item with the specified
+    /// direction.
+    pub fn new_single_query_item_with_direction(
+        query_item: QueryItem,
+        left_to_right: bool,
+    ) -> Self {
+        Self {
+            items: vec![query_item],
             left_to_right,
             ..Self::default()
         }
