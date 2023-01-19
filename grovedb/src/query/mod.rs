@@ -118,7 +118,7 @@ impl PathQuery {
     }
 
     /// New unsized path query
-    pub fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
+    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
         Self { path, query }
     }
