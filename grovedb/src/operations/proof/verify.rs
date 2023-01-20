@@ -74,13 +74,11 @@ impl GroveDb {
         proof: &[u8],
         query: &PathQuery,
     ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
-        // TODO: make this idiomatic get rid of the for loop!!
         let (root_hash, proved_path_key_values) = Self::verify_query_raw(proof, query)?;
-        let mut path_key_optional_elements: Vec<PathKeyOptionalElementTrio> = Vec::new();
-        for pkv in proved_path_key_values {
-            let path_key_optional_element: PathKeyOptionalElementTrio = pkv.try_into()?;
-            path_key_optional_elements.push(path_key_optional_element);
-        }
+        let path_key_optional_elements = proved_path_key_values
+            .into_iter()
+            .map(|pkv| pkv.try_into())
+            .collect::<Result<Vec<PathKeyOptionalElementTrio>, Error>>()?;
         Ok((root_hash, path_key_optional_elements))
     }
 
