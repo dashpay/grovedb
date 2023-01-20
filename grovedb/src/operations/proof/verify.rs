@@ -28,6 +28,9 @@
 
 //! Verify proof operations
 
+use std::collections::BTreeMap;
+
+use merk::proofs::query::PathKey;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use merk::proofs::query::{Path, ProvedKeyValue};
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -70,6 +73,7 @@ impl GroveDb {
         }
     }
 
+    /// Verify proof return deserialized elements
     pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
@@ -91,6 +95,53 @@ impl GroveDb {
         let hash = verifier.execute_proof(proof, query)?;
 
         Ok((hash, verifier.result_set))
+    }
+
+    /// Verifies the proof and returns both elements in the result set and the
+    /// elements in query but not in state.
+    /// Note: This only works for certain path queries.
+    // TODO: We should not care about terminal keys, as theoretically they can be
+    // infinite  we should perform the absence check solely on the proof and the
+    // given key.  temporary solution
+    pub fn verify_query_with_absence_proof(
+        proof: &[u8],
+        query: &PathQuery,
+    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+        // make sure the path query meets the requirements for generating terminal
+        // keys
+
+        // must have a limit
+        let max_results = query.query.limit.ok_or(Error::NotSupported(
+            "limits must be set in verify_query_with_absence_proof",
+        ))? as usize;
+
+        // must have no offset
+        if query.query.offset.is_some() {
+            return Err(Error::NotSupported(
+                "offsets are not supported for verify_query_with_absence_proof",
+            ));
+        }
+
+        let terminal_keys = query.terminal_keys(max_results)?;
+
+        // need to actually verify the query
+        let (root_hash, result_set) = Self::verify_query(proof, query)?;
+
+        // convert the result set to a btree map
+        let mut result_set_as_map: BTreeMap<PathKey, Option<Element>> = result_set
+            .into_iter()
+            .map(|(path, key, element)| ((path, key), element))
+            .collect();
+
+        let result_set_with_absence: Vec<PathKeyOptionalElementTrio> = terminal_keys
+            .into_iter()
+            .map(|terminal_key| {
+                let element = result_set_as_map.remove(&terminal_key).flatten();
+                (terminal_key.0, terminal_key.1, element)
+            })
+            .collect();
+
+        Ok((root_hash, result_set_with_absence))
     }
 }
 

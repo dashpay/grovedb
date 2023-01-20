@@ -2097,3 +2097,54 @@ fn test_verification_with_path_key_optional_element_trio() {
         )
     );
 }
+
+#[test]
+fn test_absence_proof() {
+    let db = make_deep_tree();
+
+    // simple case, request for items k2..=k5 under inner tree
+    // we pass them as keys as terminal keys does not handle ranges with start or
+    // end len greater than 1 k2, k3 should be Some, k4, k5 should be None, k1,
+    // k6.. should not be in map
+    let mut query = Query::new();
+    query.insert_key(b"key2".to_vec());
+    query.insert_key(b"key3".to_vec());
+    query.insert_key(b"key4".to_vec());
+    query.insert_key(b"key5".to_vec());
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+        SizedQuery::new(query, Some(4), None),
+    );
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query_with_absence_proof(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+
+    assert_eq!(
+        result_set[0].0,
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()]
+    );
+    assert_eq!(
+        result_set[1].0,
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()]
+    );
+    assert_eq!(
+        result_set[2].0,
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()]
+    );
+    assert_eq!(
+        result_set[3].0,
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()]
+    );
+
+    assert_eq!(result_set[0].1, b"key2".to_vec());
+    assert_eq!(result_set[1].1, b"key3".to_vec());
+    assert_eq!(result_set[2].1, b"key4".to_vec());
+    assert_eq!(result_set[3].1, b"key5".to_vec());
+
+    assert_eq!(result_set[0].2, Some(Element::new_item(b"value2".to_vec())));
+    assert_eq!(result_set[1].2, Some(Element::new_item(b"value3".to_vec())));
+    assert_eq!(result_set[2].2, None);
+    assert_eq!(result_set[3].2, None);
+}
