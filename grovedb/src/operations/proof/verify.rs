@@ -101,8 +101,8 @@ impl GroveDb {
     /// elements in query but not in state.
     /// Note: This only works for certain path queries.
     // TODO: We should not care about terminal keys, as theoretically they can be
-    // infinite  we should perform the absence check solely on the proof and the
-    // given key.  temporary solution
+    //  infinite  we should perform the absence check solely on the proof and the
+    //  given key.  temporary solution
     pub fn verify_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
