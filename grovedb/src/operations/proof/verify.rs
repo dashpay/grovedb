@@ -37,7 +37,12 @@ use merk::{
     CryptoHash,
 };
 
-use crate::operations::proof::util::reduce_limit_and_offset_by;
+use crate::{
+    operations::proof::util::{
+        reduce_limit_and_offset_by, ProvedPathKeyValue, ProvedPathKeyValues,
+    },
+    query_result_type::PathKeyOptionalElementTrio,
+};
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -56,20 +61,32 @@ impl GroveDb {
     pub fn verify_query_many(
         proof: &[u8],
         query: Vec<&PathQuery>,
-    ) -> Result<([u8; 32], ProvedKeyValues), Error> {
+    ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
         if query.len() > 1 {
             let query = PathQuery::merge(query)?;
-            GroveDb::verify_query(proof, &query)
+            GroveDb::verify_query_raw(proof, &query)
         } else {
-            GroveDb::verify_query(proof, query[0])
+            GroveDb::verify_query_raw(proof, query[0])
         }
     }
 
-    /// Verify proof for query
     pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
-    ) -> Result<([u8; 32], ProvedKeyValues), Error> {
+    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+        let (root_hash, proved_path_key_values) = Self::verify_query_raw(proof, query)?;
+        let path_key_optional_elements = proved_path_key_values
+            .into_iter()
+            .map(|pkv| pkv.try_into())
+            .collect::<Result<Vec<PathKeyOptionalElementTrio>, Error>>()?;
+        Ok((root_hash, path_key_optional_elements))
+    }
+
+    /// Verify proof for query returns serialized elements
+    pub fn verify_query_raw(
+        proof: &[u8],
+        query: &PathQuery,
+    ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
         let mut verifier = ProofVerifier::new(query);
         let hash = verifier.execute_proof(proof, query)?;
 
@@ -82,7 +99,7 @@ impl GroveDb {
 struct ProofVerifier {
     limit: Option<u16>,
     offset: Option<u16>,
-    result_set: ProvedKeyValues,
+    result_set: ProvedPathKeyValues,
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -107,8 +124,15 @@ impl ProofVerifier {
         let root_hash = if proof_type == AbsentPath {
             self.verify_absent_path(&mut proof_reader, path_slices)?
         } else {
-            let mut last_subtree_root_hash =
-                self.execute_subquery_proof(proof_type, proof, &mut proof_reader, query.clone())?;
+            // TODO: might be nicer to do with references
+            let path_owned = path_slices.iter().map(|a| a.to_vec()).collect();
+            let mut last_subtree_root_hash = self.execute_subquery_proof(
+                proof_type,
+                proof,
+                &mut proof_reader,
+                query.clone(),
+                path_owned,
+            )?;
 
             // validate the path elements are connected
             self.verify_path_to_root(
@@ -128,6 +152,7 @@ impl ProofVerifier {
         proof: Vec<u8>,
         proof_reader: &mut ProofReader,
         query: PathQuery,
+        path: Path,
     ) -> Result<[u8; 32], Error> {
         let last_root_hash: [u8; 32];
 
@@ -139,6 +164,7 @@ impl ProofVerifier {
                     &proof,
                     &query.query.query,
                     query.query.query.left_to_right,
+                    path,
                 )?;
 
                 last_root_hash = verification_result.0;
@@ -152,6 +178,7 @@ impl ProofVerifier {
                     &proof,
                     &query.query.query,
                     query.query.query.left_to_right,
+                    path,
                 )?;
 
                 last_root_hash = proof_root_hash;
@@ -159,12 +186,13 @@ impl ProofVerifier {
                     "MERK_PROOF always returns a result set",
                 ))?;
 
-                for proved_key_value in children {
-                    let ProvedKeyValue {
+                for proved_path_key_value in children {
+                    let ProvedPathKeyValue {
+                        path,
                         key,
                         value: value_bytes,
                         proof: value_hash,
-                    } = proved_key_value;
+                    } = proved_path_key_value;
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(expected_root_key, _)
@@ -194,11 +222,16 @@ impl ProofVerifier {
                                 if !skip_limit {
                                     // only insert to the result set if the offset value is not
                                     // greater than 0
-                                    self.result_set.push(ProvedKeyValue {
-                                        key,
-                                        value: current_value_bytes,
-                                        proof: value_hash,
-                                    });
+                                    self.result_set.push(
+                                        ProvedPathKeyValue::from_proved_key_value(
+                                            path,
+                                            ProvedKeyValue {
+                                                key,
+                                                value: current_value_bytes,
+                                                proof: value_hash,
+                                            },
+                                        ),
+                                    );
                                 }
 
                                 continue;
@@ -210,6 +243,10 @@ impl ProofVerifier {
                                 continue;
                             }
 
+                            // update the path, we are about to perform a subquery call
+                            let mut new_path = path.to_owned();
+                            new_path.push(key);
+
                             if subquery_path.is_some()
                                 && !subquery_path.as_ref().unwrap().is_empty()
                             {
@@ -220,6 +257,7 @@ impl ProofVerifier {
                                         &mut subquery_path.expect("confirmed it has a value above"),
                                         &mut expected_combined_child_hash,
                                         &mut current_value_bytes,
+                                        &mut new_path,
                                     )?;
                                     continue;
                                 } else {
@@ -231,6 +269,7 @@ impl ProofVerifier {
                                                 .expect("confirmed it has a value above"),
                                             &mut expected_combined_child_hash,
                                             &mut current_value_bytes,
+                                            &mut new_path,
                                         )?;
 
                                     if encountered_absence {
@@ -275,6 +314,7 @@ impl ProofVerifier {
                                 child_proof,
                                 proof_reader,
                                 new_path_query,
+                                new_path,
                             )?;
 
                             let combined_child_hash = combine_hash(
@@ -303,11 +343,15 @@ impl ProofVerifier {
                             if !skip_limit {
                                 // only insert to the result set if the offset value is not greater
                                 // than 0
-                                self.result_set.push(ProvedKeyValue {
-                                    key,
-                                    value: value_bytes,
-                                    proof: value_hash,
-                                });
+                                self.result_set
+                                    .push(ProvedPathKeyValue::from_proved_key_value(
+                                        path,
+                                        ProvedKeyValue {
+                                            key,
+                                            value: value_bytes,
+                                            proof: value_hash,
+                                        },
+                                    ));
                             }
                         }
                     }
@@ -330,7 +374,7 @@ impl ProofVerifier {
     fn update_root_key_from_subquery_path_element(
         expected_child_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
-        subquery_path_result_set: &[ProvedKeyValue],
+        subquery_path_result_set: &[ProvedPathKeyValue],
     ) -> Result<(), Error> {
         let elem_value = &subquery_path_result_set[0].value;
         let subquery_path_element = Element::deserialize(elem_value)
@@ -361,7 +405,8 @@ impl ProofVerifier {
         subquery_path: &mut Path,
         expected_root_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
-    ) -> Result<(CryptoHash, Option<ProvedKeyValues>, EncounteredAbsence), Error> {
+        current_path: &mut Path,
+    ) -> Result<(CryptoHash, Option<ProvedPathKeyValues>, EncounteredAbsence), Error> {
         // the subquery path contains at least one item.
         let last_key = subquery_path.remove(subquery_path.len() - 1);
 
@@ -377,12 +422,14 @@ impl ProofVerifier {
                 ProofType::Merk => {
                     let mut key_as_query = Query::new();
                     key_as_query.insert_key(subquery_key.to_owned());
+                    current_path.push(subquery_key.to_owned());
 
                     let (proof_root_hash, result_set) = self.execute_merk_proof(
                         proof_type,
                         &subkey_proof,
                         &key_as_query,
                         key_as_query.left_to_right,
+                        current_path.to_owned(),
                     )?;
 
                     // should always be some as we force the proof type to be MERK
@@ -436,13 +483,15 @@ impl ProofVerifier {
         match proof_type {
             ProofType::Merk | ProofType::SizedMerk => {
                 let mut key_as_query = Query::new();
-                key_as_query.insert_key(last_key);
+                key_as_query.insert_key(last_key.to_owned());
+                current_path.push(last_key);
 
                 let verification_result = self.execute_merk_proof(
                     proof_type,
                     &subkey_proof,
                     &key_as_query,
                     key_as_query.left_to_right,
+                    current_path.to_owned(),
                 )?;
 
                 Ok((verification_result.0, verification_result.1, false))
@@ -460,7 +509,7 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut root_key_hash = None;
         let mut expected_child_hash = None;
-        let mut last_result_set: ProvedKeyValues = vec![];
+        let mut last_result_set: ProvedPathKeyValues = vec![];
 
         for key in path_slices {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -468,8 +517,15 @@ impl ProofVerifier {
             let mut child_query = Query::new();
             child_query.insert_key(key.to_vec());
 
-            let proof_result =
-                self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
+            // TODO: don't pass empty vec
+            let proof_result = self.execute_merk_proof(
+                ProofType::Merk,
+                &merk_proof,
+                &child_query,
+                true,
+                // cannot return a result set
+                Vec::new(),
+            )?;
 
             if expected_child_hash.is_none() {
                 root_key_hash = Some(proof_result.0);
@@ -537,6 +593,8 @@ impl ProofVerifier {
                 &parent_merk_proof,
                 &parent_query,
                 query.query.query.left_to_right,
+                // TODO: don't pass empty vec
+                Vec::new(),
             )?;
 
             let result_set = proof_result
@@ -582,7 +640,8 @@ impl ProofVerifier {
         proof: &[u8],
         query: &Query,
         left_to_right: bool,
-    ) -> Result<(CryptoHash, Option<ProvedKeyValues>), Error> {
+        path: Path,
+    ) -> Result<(CryptoHash, Option<ProvedPathKeyValues>), Error> {
         let is_sized_proof = proof_type == ProofType::SizedMerk;
         let mut limit = None;
         let mut offset = None;
@@ -599,13 +658,17 @@ impl ProofVerifier {
                 Error::InvalidProof("invalid proof verification parameters")
             })?;
 
+        // convert the result set to proved_path_key_values
+        let proved_path_key_values =
+            ProvedPathKeyValue::from_proved_key_values(path, result.result_set);
+
         if is_sized_proof {
             self.limit = result.limit;
             self.offset = result.offset;
-            self.result_set.extend(result.result_set);
+            self.result_set.extend(proved_path_key_values);
             Ok((hash, None))
         } else {
-            Ok((hash, Some(result.result_set)))
+            Ok((hash, Some(proved_path_key_values)))
         }
     }
 }

@@ -412,7 +412,7 @@ mod tests {
             .unwrap()
             .expect("should generate proof");
         let (hash, result) =
-            GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
+            GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
         assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
         assert_eq!(result.len(), 5);
     }

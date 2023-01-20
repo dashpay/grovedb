@@ -99,7 +99,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
         .unwrap()
         .expect("should generate proof");
     let (root_hash, result_set) =
-        GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
+        GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
     assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
     assert_eq!(
@@ -165,7 +165,7 @@ fn test_sum_item_behaves_like_regular_item() {
         .unwrap()
         .expect("should generate proof");
     let (root_hash, result_set) =
-        GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
+        GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
     assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
     let element_from_proof =
