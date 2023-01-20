@@ -2926,7 +2926,7 @@ mod tests {
             .prove_query(&path_query)
             .unwrap()
             .expect("should generate proof");
-        let verification_result = GroveDb::verify_query(&proof, &path_query);
+        let verification_result = GroveDb::verify_query_raw(&proof, &path_query);
         assert!(matches!(verification_result, Ok(_)));
 
         // Hit reference limit when you specify max reference hop, lower than actual hop
