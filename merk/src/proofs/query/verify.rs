@@ -4,7 +4,7 @@ use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 use crate::{
     proofs::{
-        query::{Key, Map, MapBuilder, Path},
+        query::{Key, Map, MapBuilder},
         tree::execute,
         Decoder, Node, Op, Query,
     },
