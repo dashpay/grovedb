@@ -42,9 +42,6 @@ use crate::{
     Element, GroveDb, PathQuery, SizedQuery,
 };
 
-// TODO: get rid of the cfg attribute from each test, do this at the module
-// level
-
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
