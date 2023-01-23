@@ -85,6 +85,7 @@ impl GroveDb {
     // TODO: better comment??
     /// Generates a verbose or non verbose proof based on a bool
     // TODO: use more explict type definition for the verbose bool
+    // TODO: change to is_verbose
     fn prove_internal(&self, query: &PathQuery, verbose: bool) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
 
@@ -134,6 +135,7 @@ impl GroveDb {
                             (None, None),
                             ProofType::Merk,
                             &mut proof_result,
+                            verbose
                         )
                     );
 
@@ -159,7 +161,8 @@ impl GroveDb {
                 query,
                 &mut limit,
                 &mut offset,
-                true
+                true,
+                verbose
             )
         );
         cost_return_on_error!(&mut cost, self.prove_path(&mut proof_result, path_slices));
@@ -177,6 +180,7 @@ impl GroveDb {
         current_limit: &mut Option<u16>,
         current_offset: &mut Option<u16>,
         is_first_call: bool,
+        verbose: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -200,6 +204,7 @@ impl GroveDb {
                         (*current_limit, *current_offset),
                         ProofType::SizedMerk,
                         proofs,
+                        verbose
                     )
                 );
             }
@@ -243,6 +248,7 @@ impl GroveDb {
                                 (None, None),
                                 ProofType::Merk,
                                 proofs,
+                                verbose
                             )
                         );
                     }
@@ -272,6 +278,7 @@ impl GroveDb {
                                         (None, None),
                                         ProofType::Merk,
                                         proofs,
+                                        verbose
                                     )
                                 );
 
@@ -318,6 +325,7 @@ impl GroveDb {
                                     (None, None),
                                     ProofType::Merk,
                                     proofs,
+                                    verbose
                                 )
                             );
 
@@ -367,7 +375,8 @@ impl GroveDb {
                             &new_path_query,
                             current_limit,
                             current_offset,
-                            false
+                            false,
+                            verbose
                         )
                     );
 
@@ -393,6 +402,7 @@ impl GroveDb {
                     (*current_limit, *current_offset),
                     ProofType::SizedMerk,
                     proofs,
+                    verbose
                 )
             );
 
@@ -432,6 +442,10 @@ impl GroveDb {
                     (None, None),
                     ProofType::Merk,
                     proof_result,
+                    // TODO: do we need to generate a verbose proof for the path??
+                    //  even if we don't can the proof reader differentiate??
+                    //  maybe we always just pass it when doing proof execution
+                    false
                 )
             );
             split_path = path_slice.split_last();
@@ -449,6 +463,8 @@ impl GroveDb {
         limit_offset: LimitOffset,
         proof_type: ProofType,
         proofs: &mut Vec<u8>,
+        // TODO: update type definition with something more explicit
+        verbose: bool,
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
     where
         S: StorageContext<'a>,
