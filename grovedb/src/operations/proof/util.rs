@@ -112,15 +112,19 @@ impl<'a> ProofReader<'a> {
         }
     }
 
+    fn read_into_slice(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.proof_data
+            .read(buf)
+            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))
+    }
+
     /// Read proof with optional type
     pub fn read_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
     ) -> Result<(ProofType, Vec<u8>), Error> {
         let mut data_type = [0; 1];
-        self.proof_data
-            .read(&mut data_type)
-            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
+        self.read_into_slice(&mut data_type)?;
 
         if let Some(expected_data_type) = expected_data_type_option {
             if data_type != [expected_data_type] {
@@ -134,18 +138,46 @@ impl<'a> ProofReader<'a> {
             return Ok((proof_type, vec![]));
         }
 
-        let mut proof_length = [0; 8_usize];
-        self.proof_data
-            .read(&mut proof_length)
-            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
-        let proof_length = usize::from_be_bytes(proof_length);
+        let proof = if proof_type == ProofType::Merk || proof_type == ProofType::SizedMerk {
+            let mut proof_length = [0; 8_usize];
+            self.read_into_slice(&mut proof_length)?;
+            let proof_length = usize::from_be_bytes(proof_length);
 
-        let mut proof = vec![0; proof_length];
-        self.proof_data
-            .read(&mut proof)
-            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
+            let mut proof = vec![0; proof_length];
+            self.read_into_slice(&mut proof)?;
+
+            proof
+        } else {
+            return Err(Error::InvalidProof("expected merk or sized merk proof"));
+        };
 
         Ok((proof_type, proof))
+    }
+
+    /// Reads path information from the proof vector
+    pub fn read_path_info(&mut self) -> Result<Vec<Vec<u8>>, Error> {
+        let mut data_type = [0; 1];
+        self.read_into_slice(&mut data_type)?;
+
+        if data_type != [ProofType::PathInfo.into()] {
+            return Err(Error::InvalidProof("wrong data_type"));
+        }
+
+        let mut path = vec![];
+        let mut path_slice_len = [0; 8_usize];
+        self.read_into_slice(&mut path_slice_len)?;
+        let path_slice_len = usize::from_be_bytes(path_slice_len);
+
+        for i in 0..path_slice_len {
+            let mut path_len = [0; 8_usize];
+            self.read_into_slice(&mut path_len)?;
+            let path_len = usize::from_be_bytes(path_len);
+            let mut path_value = vec![0; path_len];
+            self.read_into_slice(&mut path_value)?;
+            path.push(path_value);
+        }
+
+        Ok(path)
     }
 }
 

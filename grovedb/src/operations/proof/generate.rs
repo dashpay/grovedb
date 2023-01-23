@@ -163,18 +163,10 @@ impl GroveDb {
         // if the subtree exists and the proof type is verbose we need to insert
         // the path information to the proof
         if is_verbose {
-            // TODO: create a new function for generation of path info proofs
-            let path_len_bytes: [u8; 8] = path_slices.len().to_be_bytes();
-            write_to_vec(&mut proof_result, &[ProofType::PathInfo.into()]);
-            // write the number of slices we are about to write
-            write_to_vec(&mut proof_result, &path_len_bytes);
-            for path in &path_slices {
-                // for each slice we need to write the len and then the value
-                // TODO: is there a better way to do this?
-                let path_len_bytes: [u8; 8] = path_slices.len().to_be_bytes();
-                write_to_vec(&mut proof_result, &path_len_bytes);
-                write_to_vec(&mut proof_result, path);
-            }
+            cost_return_on_error!(
+                &mut cost,
+                Self::generate_and_store_path_proof(path_slices.clone(), &mut proof_result)
+            );
         }
 
         cost_return_on_error!(
@@ -515,9 +507,32 @@ impl GroveDb {
         Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
     }
 
+    /// Serializes a path and add it to the proof vector
+    fn generate_and_store_path_proof(
+        path: Vec<&[u8]>,
+        proofs: &mut Vec<u8>,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let path_slice_len_bytes: [u8; 8] = path.len().to_be_bytes();
+        write_to_vec(proofs, &[ProofType::PathInfo.into()]);
+
+        // write the number of slices we are about to write
+        write_to_vec(proofs, &path_slice_len_bytes);
+
+        for p in path {
+            // for each slice we need to write the len and then the value
+            let path_len_bytes: [u8; 8] = p.len().to_be_bytes();
+            write_to_vec(proofs, &path_len_bytes);
+            write_to_vec(proofs, p);
+        }
+
+        Ok(()).wrap_with_cost(cost)
+    }
+
     /// Converts Items to Node::KV from Node::KVValueHash
     /// Converts References to Node::KVRefValueHash and sets the value to the
-    /// referenced element
+    /// /// referenced element
     fn post_process_proof<'p, P>(
         &self,
         path: P,
