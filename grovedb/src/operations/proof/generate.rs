@@ -58,6 +58,8 @@ type LimitOffset = (Option<u16>, Option<u16>);
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    // TODO: how do you deal with many path queries with verbose and non verbose
+    //  proving
     /// Prove query many
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
         if query.len() > 1 {
@@ -68,8 +70,22 @@ impl GroveDb {
         }
     }
 
-    /// Prove query
+    /// Generate a minimalistic proof for a given path query
+    /// doesn't allow for subset verification
     pub fn prove_query(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
+        self.prove_internal(query, false)
+    }
+
+    /// Generate a verbose proof for a given path query
+    /// allows for subset verification
+    pub fn prove_verbose(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
+        self.prove_internal(query, true)
+    }
+
+    // TODO: better comment??
+    /// Generates a verbose or non verbose proof based on a bool
+    // TODO: use more explict type definition for the verbose bool
+    fn prove_internal(&self, query: &PathQuery, verbose: bool) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
 
         let mut proof_result: Vec<u8> = vec![];
