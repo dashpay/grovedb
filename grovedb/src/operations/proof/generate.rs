@@ -102,7 +102,6 @@ impl GroveDb {
             .check_subtree_exists_path_not_found(path_slices.clone(), None)
             .unwrap_add_cost(&mut cost);
 
-        // TODO: look into moving this into it's own function
         // if the subtree at the given path doesn't exists, prove that this path
         // doesn't point to a valid subtree
         match subtree_exists {
@@ -468,12 +467,14 @@ impl GroveDb {
     }
 
     /// Serializes a path and add it to the proof vector
-    fn generate_and_store_path_proof(
+    // TODO: do you really need to consume the path
+    pub fn generate_and_store_path_proof(
         path: Vec<&[u8]>,
         proofs: &mut Vec<u8>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
+        // TODO: write length as var vec
         let path_slice_len_bytes: [u8; 8] = path.len().to_be_bytes();
         write_to_vec(proofs, &[ProofType::PathInfo.into()]);
 
@@ -620,5 +621,23 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         self.open_non_transactional_merk_at_path(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::GroveDb;
+    use crate::operations::proof::util::ProofReader;
+
+    #[test]
+    fn test_path_info_encoding_and_decoding() {
+        let path = vec![b"a".as_slice(), b"b".as_slice(), b"c".as_slice()];
+        let mut proof_vector = vec![];
+        GroveDb::generate_and_store_path_proof(path.clone(), &mut proof_vector);
+
+        let mut proof_reader = ProofReader::new(proof_vector.as_slice());
+        let decoded_path= proof_reader.read_path_info().unwrap();
+
+        assert_eq!(path, decoded_path);
     }
 }
