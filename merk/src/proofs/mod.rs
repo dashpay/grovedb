@@ -94,6 +94,7 @@ pub enum Node {
     KVHash(CryptoHash),
 
     /// Represents the key/value_hash pair of a tree node
+    /// same as the Node::KV but the value is not required by the proof
     KVDigest(Vec<u8>, CryptoHash),
 
     /// Represents the key and value of a tree node.
