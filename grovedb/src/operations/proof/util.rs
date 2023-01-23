@@ -47,10 +47,10 @@ pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 #[derive(Debug, PartialEq, Eq)]
 /// Proof type
 // TODO: remove the root proof type
+// TODO: there might be a better name for this
 pub enum ProofType {
     Merk,
     SizedMerk,
-    Root,
     EmptyTree,
     AbsentPath,
     PathInfo,
@@ -63,7 +63,6 @@ impl From<ProofType> for u8 {
         match proof_type {
             ProofType::Merk => 0x01,
             ProofType::SizedMerk => 0x02,
-            ProofType::Root => 0x03,
             ProofType::EmptyTree => 0x04,
             ProofType::AbsentPath => 0x05,
             ProofType::PathInfo => 0x06,
@@ -78,7 +77,6 @@ impl From<u8> for ProofType {
         match val {
             0x01 => ProofType::Merk,
             0x02 => ProofType::SizedMerk,
-            0x03 => ProofType::Root,
             0x04 => ProofType::EmptyTree,
             0x05 => ProofType::AbsentPath,
             0x06 => ProofType::PathInfo,
@@ -242,7 +240,6 @@ mod tests {
     fn test_proof_type_encoding() {
         assert_eq!(0x01_u8, ProofType::Merk.into());
         assert_eq!(0x02_u8, ProofType::SizedMerk.into());
-        assert_eq!(0x03_u8, ProofType::Root.into());
         assert_eq!(0x04_u8, ProofType::EmptyTree.into());
         assert_eq!(0x05_u8, ProofType::AbsentPath.into());
         assert_eq!(0x06_u8, ProofType::PathInfo.into());
@@ -253,7 +250,6 @@ mod tests {
     fn test_proof_type_decoding() {
         assert_eq!(ProofType::Merk, 0x01_u8.into());
         assert_eq!(ProofType::SizedMerk, 0x02_u8.into());
-        assert_eq!(ProofType::Root, 0x03_u8.into());
         assert_eq!(ProofType::EmptyTree, 0x04_u8.into());
         assert_eq!(ProofType::AbsentPath, 0x05_u8.into());
         assert_eq!(ProofType::PathInfo, 0x06_u8.into());

@@ -29,7 +29,8 @@
 //! Generate proof operations
 
 // TODO: entire file is due for a refactor, need some kind of path generator
-//  that supports multiple implementations for verbose and non-verbose generation
+//  that supports multiple implementations for verbose and non-verbose
+// generation
 
 use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
