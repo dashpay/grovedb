@@ -85,8 +85,7 @@ impl GroveDb {
     // TODO: better comment??
     /// Generates a verbose or non verbose proof based on a bool
     // TODO: use more explict type definition for the verbose bool
-    // TODO: change to is_verbose
-    fn prove_internal(&self, query: &PathQuery, verbose: bool) -> CostResult<Vec<u8>, Error> {
+    fn prove_internal(&self, query: &PathQuery, is_verbose: bool) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
 
         let mut proof_result: Vec<u8> = vec![];
@@ -135,7 +134,7 @@ impl GroveDb {
                             (None, None),
                             ProofType::Merk,
                             &mut proof_result,
-                            verbose
+                            is_verbose
                         )
                     );
 
@@ -162,7 +161,7 @@ impl GroveDb {
                 &mut limit,
                 &mut offset,
                 true,
-                verbose
+                is_verbose
             )
         );
         cost_return_on_error!(&mut cost, self.prove_path(&mut proof_result, path_slices));
@@ -180,7 +179,7 @@ impl GroveDb {
         current_limit: &mut Option<u16>,
         current_offset: &mut Option<u16>,
         is_first_call: bool,
-        verbose: bool,
+        is_verbose: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -204,7 +203,7 @@ impl GroveDb {
                         (*current_limit, *current_offset),
                         ProofType::SizedMerk,
                         proofs,
-                        verbose
+                        is_verbose
                     )
                 );
             }
@@ -248,7 +247,7 @@ impl GroveDb {
                                 (None, None),
                                 ProofType::Merk,
                                 proofs,
-                                verbose
+                                is_verbose
                             )
                         );
                     }
@@ -278,7 +277,7 @@ impl GroveDb {
                                         (None, None),
                                         ProofType::Merk,
                                         proofs,
-                                        verbose
+                                        is_verbose
                                     )
                                 );
 
@@ -325,7 +324,7 @@ impl GroveDb {
                                     (None, None),
                                     ProofType::Merk,
                                     proofs,
-                                    verbose
+                                    is_verbose
                                 )
                             );
 
@@ -376,7 +375,7 @@ impl GroveDb {
                             current_limit,
                             current_offset,
                             false,
-                            verbose
+                            is_verbose
                         )
                     );
 
@@ -402,7 +401,7 @@ impl GroveDb {
                     (*current_limit, *current_offset),
                     ProofType::SizedMerk,
                     proofs,
-                    verbose
+                    is_verbose
                 )
             );
 
