@@ -626,8 +626,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use crate::GroveDb;
-    use crate::operations::proof::util::ProofReader;
+    use crate::{operations::proof::util::ProofReader, GroveDb};
 
     #[test]
     fn test_path_info_encoding_and_decoding() {
@@ -636,7 +635,7 @@ mod tests {
         GroveDb::generate_and_store_path_proof(path.clone(), &mut proof_vector);
 
         let mut proof_reader = ProofReader::new(proof_vector.as_slice());
-        let decoded_path= proof_reader.read_path_info().unwrap();
+        let decoded_path = proof_reader.read_path_info().unwrap();
 
         assert_eq!(path, decoded_path);
     }
