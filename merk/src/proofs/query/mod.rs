@@ -5464,32 +5464,221 @@ mod test {
     #[test]
     fn subset_proof() {
         let mut tree = make_tree_seq(10);
+        let expected_hash = tree.hash().unwrap().to_owned();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![
-            QueryItem::RangeFull(..), /* QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5,
-                                       * 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]), */
-        ];
-        let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+        // 1..10 prove range full, subset 7
+        let mut query = Query::new();
+        query.insert_all();
+
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
             .unwrap()
             .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        // subset query
+        let mut query = Query::new();
+        query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 6]);
+
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 1);
+        compare_result_tuples(
+            res.result_set,
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
+        );
+
+        // 1..10 prove (2..=5, 7..10) subset (3..=4, 7..=8)
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 7]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
 
         let mut query = Query::new();
-        query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 6]);
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            Some(1),
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
-        dbg!(&res);
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 3]..=vec![0, 0, 0, 0, 0, 0, 0, 4]);
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 7]..=vec![0, 0, 0, 0, 0, 0, 0, 8]);
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 4);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 8], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove (2..=5, 6..10) subset (4..=8)
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 6]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 4]..=vec![0, 0, 0, 0, 0, 0, 0, 8]);
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 5);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 8], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove (1..=3, 2..=5) subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 3]);
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 5);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 1], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 2], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove full (..) limit to 5, subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), Some(5), None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let res = verify_query(bytes.as_slice(), &query, Some(5), None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 5);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 1], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 2], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove full (..) limit to 5, subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, Some(1), true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let res = verify_query(bytes.as_slice(), &query, None, Some(1), true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 4);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 2], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn break_subset_proof() {
+        // TODO: move this to where you'd set the constraints for this definition
+        // goal is to show that ones limit and offset values are involved
+        // whether a query is subset or not now also depends on the state
+        // queries essentially highlight parts of the tree, a query
+        // is a subset of another query if all the nodes it highlights
+        // are also highlighted by the original query
+        // with limit and offset the nodes a query highlights now depends on state
+        // hence it's impossible to know if something is subset at definition time
+
+        let mut tree = make_tree_seq(10);
+        let expected_hash = tree.hash().unwrap().to_owned();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        // 1..10 prove full (..) limit to 5, subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), Some(3), None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 4]);
+        let res = verify_query(bytes.as_slice(), &query, Some(3), None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 1);
+        compare_result_tuples(
+            res.result_set,
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60])],
+        );
     }
 
     #[test]

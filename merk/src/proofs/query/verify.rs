@@ -11,7 +11,6 @@ use crate::{
     tree::value_hash,
     CryptoHash as MerkHash, CryptoHash, Error,
 };
-use crate::proofs::query::QueryItem;
 
 #[cfg(feature = "full")]
 pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
@@ -102,7 +101,8 @@ pub fn execute_proof(
 
                 if !in_range {
                     // this is the first data we have encountered for this query item
-                    // we need to ensure that this is indeed the first node in state for this query item
+                    // we need to ensure that this is indeed the first node in state for this query
+                    // item
                     if left_to_right {
                         // ensure lower bound of query item is proven
                         match last_push {
@@ -331,6 +331,7 @@ pub struct ProofVerificationResult {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Verifies the encoded proof with the given query and expected hash
+// TODO: borrow the expected hash instead
 pub fn verify_query(
     bytes: &[u8],
     query: &Query,
