@@ -102,11 +102,15 @@ impl GroveDb {
             .check_subtree_exists_path_not_found(path_slices.clone(), None)
             .unwrap_add_cost(&mut cost);
 
+        // TODO: look into moving this into it's own function
+        // if the subtree at the given path doesn't exists, prove that this path
+        // doesn't point to a valid subtree
         match subtree_exists {
-            Ok(_) => {}
+            Ok(_) => {
+                // subtree exists
+                // do nothing
+            }
             Err(_) => {
-                // subtree at the given path doesn't exists, prove that this path
-                // doesn't point to a valid subtree
                 write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
                 let mut current_path: Vec<&[u8]> = vec![];
 
@@ -153,6 +157,23 @@ impl GroveDb {
                 }
 
                 return Ok(proof_result).wrap_with_cost(cost);
+            }
+        }
+
+        // if the subtree exists and the proof type is verbose we need to insert
+        // the path information to the proof
+        if is_verbose {
+            // TODO: create a new function for generation of path info proofs
+            let path_len_bytes: [u8; 8] = path_slices.len().to_be_bytes();
+            write_to_vec(&mut proof_result, &[ProofType::PathInfo.into()]);
+            // write the number of slices we are about to write
+            write_to_vec(&mut proof_result, &path_len_bytes);
+            for path in &path_slices {
+                // for each slice we need to write the len and then the value
+                // TODO: is there a better way to do this?
+                let path_len_bytes: [u8; 8] = path_slices.len().to_be_bytes();
+                write_to_vec(&mut proof_result, &path_len_bytes);
+                write_to_vec(&mut proof_result, path);
             }
         }
 
@@ -467,7 +488,7 @@ impl GroveDb {
         proof_type: ProofType,
         proofs: &mut Vec<u8>,
         // TODO: update type definition with something more explicit
-        verbose: bool,
+        is_verbose: bool,
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
     where
         S: StorageContext<'a>,
