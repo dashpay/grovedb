@@ -5462,6 +5462,37 @@ mod test {
     }
 
     #[test]
+    fn subset_proof() {
+        let mut tree = make_tree_seq(10);
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![
+            QueryItem::RangeFull(..), /* QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5,
+                                       * 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]), */
+        ];
+        let (proof, absence, ..) = walker
+            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 6]);
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            None,
+            true,
+            tree.hash().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        dbg!(&res);
+    }
+
+    #[test]
     fn query_from_vec() {
         let queryitems = vec![QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],

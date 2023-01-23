@@ -242,21 +242,23 @@ pub fn execute_proof(
             Ok(())
         };
 
-        if let Node::KV(key, value) = node {
-            execute_node(key, Some(value), value_hash(value).unwrap())?;
-        } else if let Node::KVValueHash(key, value, value_hash) = node {
-            execute_node(key, Some(value), *value_hash)?;
-        } else if let Node::KVDigest(key, value_hash) = node {
-            execute_node(key, None, *value_hash)?;
-        } else if let Node::KVRefValueHash(key, value, value_hash) = node {
-            execute_node(key, Some(value), *value_hash)?;
-        } else if in_range {
-            // we encountered a queried range but the proof was abridged (saw a
-            // non-KV push), we are missing some part of the range
-            return Err(Error::InvalidProofError(
-                "Proof is missing data for query for range".to_string(),
-            ));
-        }
+        match node {
+            Node::KV(key, value) => execute_node(key, Some(value), value_hash(value).unwrap())?,
+            Node::KVValueHash(key, value, value_hash)
+            | Node::KVRefValueHash(key, value, value_hash) => {
+                execute_node(key, Some(value), value_hash.to_owned())?
+            }
+            Node::KVDigest(key, value_hash) => execute_node(key, None, value_hash.to_owned())?,
+            _ => {
+                if in_range {
+                    // we encountered a queried range but the proof was abridged (saw a
+                    // non-KV push), we are missing some part of the range
+                    return Err(Error::InvalidProofError(
+                        "Proof is missing data for query for range".to_string(),
+                    ));
+                }
+            }
+        };
 
         last_push = Some(node.clone());
 
@@ -281,7 +283,7 @@ pub fn execute_proof(
                 // remaining query items
                 _ => {
                     return Err(Error::InvalidProofError(
-                        "Proof is missing data for query a".to_string(),
+                        "Proof is missing data for query".to_string(),
                     ))
                     .wrap_with_cost(cost)
                 }
