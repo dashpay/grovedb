@@ -46,12 +46,14 @@ pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
 /// Proof type
+// TODO: remove the root proof type
 pub enum ProofType {
     Merk,
     SizedMerk,
     Root,
     EmptyTree,
     AbsentPath,
+    PathInfo,
     Invalid,
 }
 
@@ -64,6 +66,7 @@ impl From<ProofType> for u8 {
             ProofType::Root => 0x03,
             ProofType::EmptyTree => 0x04,
             ProofType::AbsentPath => 0x05,
+            ProofType::PathInfo => 0x06,
             ProofType::Invalid => 0x10,
         }
     }
@@ -78,6 +81,7 @@ impl From<u8> for ProofType {
             0x03 => ProofType::Root,
             0x04 => ProofType::EmptyTree,
             0x05 => ProofType::AbsentPath,
+            0x06 => ProofType::PathInfo,
             _ => ProofType::Invalid,
         }
     }
@@ -232,7 +236,29 @@ impl ProvedPathKeyValue {
 mod tests {
     use merk::proofs::query::ProvedKeyValue;
 
-    use crate::operations::proof::util::ProvedPathKeyValue;
+    use crate::operations::proof::util::{ProofType, ProvedPathKeyValue};
+
+    #[test]
+    fn test_proof_type_encoding() {
+        assert_eq!(0x01_u8, ProofType::Merk.into());
+        assert_eq!(0x02_u8, ProofType::SizedMerk.into());
+        assert_eq!(0x03_u8, ProofType::Root.into());
+        assert_eq!(0x04_u8, ProofType::EmptyTree.into());
+        assert_eq!(0x05_u8, ProofType::AbsentPath.into());
+        assert_eq!(0x06_u8, ProofType::PathInfo.into());
+        assert_eq!(0x10_u8, ProofType::Invalid.into());
+    }
+
+    #[test]
+    fn test_proof_type_decoding() {
+        assert_eq!(ProofType::Merk, 0x01_u8.into());
+        assert_eq!(ProofType::SizedMerk, 0x02_u8.into());
+        assert_eq!(ProofType::Root, 0x03_u8.into());
+        assert_eq!(ProofType::EmptyTree, 0x04_u8.into());
+        assert_eq!(ProofType::AbsentPath, 0x05_u8.into());
+        assert_eq!(ProofType::PathInfo, 0x06_u8.into());
+        assert_eq!(ProofType::Invalid, 0x10_u8.into());
+    }
 
     #[test]
     fn test_proved_path_from_single_proved_key_value() {
