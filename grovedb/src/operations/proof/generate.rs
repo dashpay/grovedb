@@ -111,51 +111,11 @@ impl GroveDb {
                 // do nothing
             }
             Err(_) => {
-                write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
-                let mut current_path: Vec<&[u8]> = vec![];
-
-                let mut split_path = path_slices.split_first();
-                while let Some((key, path_slice)) = split_path {
-                    let subtree = self
-                        .open_subtree(current_path.iter().copied())
-                        .unwrap_add_cost(&mut cost);
-
-                    if subtree.is_err() {
-                        break;
-                    }
-
-                    let has_item = Element::get(
-                        subtree.as_ref().expect("confirmed not error above"),
-                        key,
-                        true,
-                    )
-                    .unwrap_add_cost(&mut cost);
-
-                    let mut next_key_query = Query::new();
-                    next_key_query.insert_key(key.to_vec());
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.generate_and_store_merk_proof(
-                            current_path.iter().copied(),
-                            &subtree.expect("confirmed not error above"),
-                            &next_key_query,
-                            (None, None),
-                            ProofType::Merk,
-                            &mut proof_result,
-                            is_verbose
-                        )
-                    );
-
-                    current_path.push(key);
-
-                    if has_item.is_err() || path_slice.is_empty() {
-                        // reached last key
-                        break;
-                    }
-
-                    split_path = path_slice.split_first();
-                }
-
+                cost_return_on_error!(
+                    &mut cost,
+                    self.generate_and_store_absent_path_proof(&path_slices, &mut proof_result)
+                );
+                // return the absence proof no need to continue proof generation
                 return Ok(proof_result).wrap_with_cost(cost);
             }
         }
@@ -528,6 +488,62 @@ impl GroveDb {
         }
 
         Ok(()).wrap_with_cost(cost)
+    }
+
+    fn generate_and_store_absent_path_proof(
+        &self,
+        path_slices: &Vec<&[u8]>,
+        proof_result: &mut Vec<u8>,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        write_to_vec(proof_result, &[ProofType::AbsentPath.into()]);
+        let mut current_path: Vec<&[u8]> = vec![];
+
+        let mut split_path = path_slices.split_first();
+        while let Some((key, path_slice)) = split_path {
+            let subtree = self
+                .open_subtree(current_path.iter().copied())
+                .unwrap_add_cost(&mut cost);
+
+            if subtree.is_err() {
+                break;
+            }
+
+            let has_item = Element::get(
+                subtree.as_ref().expect("confirmed not error above"),
+                key,
+                true,
+            )
+            .unwrap_add_cost(&mut cost);
+
+            let mut next_key_query = Query::new();
+            next_key_query.insert_key(key.to_vec());
+            cost_return_on_error!(
+                &mut cost,
+                self.generate_and_store_merk_proof(
+                    current_path.iter().copied(),
+                    &subtree.expect("confirmed not error above"),
+                    &next_key_query,
+                    (None, None),
+                    ProofType::Merk,
+                    proof_result,
+                    // TODO: should we default the verbose bool??
+                    false
+                )
+            );
+
+            current_path.push(key);
+
+            if has_item.is_err() || path_slice.is_empty() {
+                // reached last key
+                break;
+            }
+
+            split_path = path_slice.split_first();
+        }
+
+        return Ok(()).wrap_with_cost(cost);
     }
 
     /// Converts Items to Node::KV from Node::KVValueHash
