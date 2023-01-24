@@ -2258,7 +2258,8 @@ fn test_chained_path_query_verification() {
     let verbose_proof = db.prove_verbose(&path_query).unwrap().unwrap();
     assert!(verbose_proof.len() > proof.len());
 
-    // init deeper_1 path query
+    // TODO: change the tests here when you want to confirm path non equality works
+    // // init deeper_1 path query
     let mut query = Query::new();
     query.insert_key(b"deep_node_1".to_vec());
     let mut subq = Query::new();
@@ -2274,18 +2275,17 @@ fn test_chained_path_query_verification() {
     // define the path query generators
     let mut chained_path_queries = vec![];
     chained_path_queries.push(|elements: Vec<PathKeyOptionalElementTrio>| {
-        // TODO: change the tests here when you want to confirm path non equality works
         let mut query = Query::new();
-        query.insert_key(b"deep_node_1".to_vec());
-        let mut subq = Query::new();
-        subq.insert_key(b"deeper_2".to_vec());
-        let mut subsubq = Query::new();
-        subsubq.insert_all();
+        query.insert_all();
 
-        subq.set_subquery(subsubq);
-        query.set_subquery(subq);
-
-        let deeper_2_path_query = PathQuery::new_unsized(vec![b"deep_leaf".to_vec()], query);
+        let deeper_2_path_query = PathQuery::new_unsized(
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_1".to_vec(),
+                b"deeper_2".to_vec(),
+            ],
+            query,
+        );
         return Some(deeper_2_path_query);
     });
 

@@ -264,7 +264,6 @@ impl<'a> ProofReader<'a> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
-        dbg!(data_type);
         if data_type != [ProofType::PathInfo.into()] {
             return Err(Error::InvalidProof("wrong data_type, expected path_info"));
         }

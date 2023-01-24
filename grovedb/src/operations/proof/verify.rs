@@ -28,7 +28,10 @@
 
 //! Verify proof operations
 
-use std::collections::BTreeMap;
+use std::{
+    borrow::{Borrow, Cow},
+    collections::BTreeMap,
+};
 
 use merk::proofs::query::PathKey;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -45,6 +48,7 @@ use crate::{
         reduce_limit_and_offset_by, ProvedPathKeyValue, ProvedPathKeyValues,
     },
     query_result_type::PathKeyOptionalElementTrio,
+    SizedQuery,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
@@ -222,21 +226,54 @@ impl ProofVerifier {
     pub fn execute_proof(
         &mut self,
         proof: &[u8],
-        query: &PathQuery,
+        mut query: &PathQuery,
         is_verbose: bool,
     ) -> Result<[u8; 32], Error> {
         let mut proof_reader = ProofReader::new_with_verbose_status(proof, is_verbose);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+        let mut query = Cow::Borrowed(query);
 
+        // TODO: refactor and add better comments
         // if verbose, the first thing we want to do is read the path info
         if is_verbose {
             let original_path = proof_reader.read_path_info()?;
-            if original_path != path_slices {
-                // TODO: we can relax this constraint, fix this
+
+            if original_path == path_slices {
+                // do nothing
+            } else if original_path.len() > path_slices.len() {
+                // TODO: can we relax this constraint
                 return Err(Error::InvalidProof(
-                    "original path query path and subset path are not the same",
+                    "original path query path must not be greater than the subset path len",
                 ));
+            } else {
+                let original_path_in_new_path = original_path
+                    .iter()
+                    .all(|key| path_slices.contains(&key.as_slice()));
+                if !original_path_in_new_path {
+                    return Err(Error::InvalidProof(
+                        "the original path should be a subset of the subset path",
+                    ));
+                } else {
+                    // we need to construct a new query
+                    let path_not_common = (&path_slices[original_path.len()..]).to_vec();
+                    let mut path_iter = path_not_common.iter();
+
+                    let mut new_query = Query::new();
+                    if path_iter.len() >= 1 {
+                        new_query
+                            .insert_key(path_iter.next().expect("confirmed has value").to_vec());
+                    }
+
+                    // need to add the first key to the query
+                    new_query.set_subquery_path(path_iter.map(|a| a.to_vec()).collect());
+                    new_query.set_subquery(query.query.query.clone());
+
+                    query = Cow::Owned(PathQuery::new(
+                        original_path,
+                        SizedQuery::new(new_query, query.query.limit, query.query.offset),
+                    ));
+                }
             }
         }
 
@@ -246,19 +283,19 @@ impl ProofVerifier {
             self.verify_absent_path(&mut proof_reader, path_slices)?
         } else {
             // TODO: might be nicer to do with references
-            let path_owned = path_slices.iter().map(|a| a.to_vec()).collect();
+            let path_owned = query.path.iter().map(|a| a.to_vec()).collect();
             let mut last_subtree_root_hash = self.execute_subquery_proof(
                 proof_type,
                 proof,
                 &mut proof_reader,
-                query.clone(),
+                query.as_ref(),
                 path_owned,
             )?;
 
             // validate the path elements are connected
             self.verify_path_to_root(
-                query,
-                path_slices,
+                query.as_ref(),
+                query.path.iter().map(|a| a.as_ref()).collect(),
                 &mut proof_reader,
                 &mut last_subtree_root_hash,
             )?
@@ -272,7 +309,7 @@ impl ProofVerifier {
         proof_type: ProofType,
         proof: Vec<u8>,
         proof_reader: &mut ProofReader,
-        query: PathQuery,
+        query: &PathQuery,
         path: Path,
     ) -> Result<[u8; 32], Error> {
         let last_root_hash: [u8; 32];
@@ -435,7 +472,7 @@ impl ProofVerifier {
                                 child_proof_type,
                                 child_proof,
                                 proof_reader,
-                                new_path_query,
+                                &new_path_query,
                                 new_path,
                             )?;
 

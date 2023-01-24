@@ -212,7 +212,7 @@ impl PathQuery {
     /// Given a set of path queries, this returns an array of path keys that are
     /// common across all the path queries.
     /// Also returns the point at which they stopped being equal.
-    fn get_common_path(path_queries: &[&PathQuery]) -> (Vec<Vec<u8>>, usize) {
+    pub fn get_common_path(path_queries: &[&PathQuery]) -> (Vec<Vec<u8>>, usize) {
         let min_path_length = path_queries
             .iter()
             .map(|path_query| path_query.path.len())
