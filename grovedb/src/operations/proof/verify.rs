@@ -92,7 +92,7 @@ impl GroveDb {
         query: &PathQuery,
     ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
         let mut verifier = ProofVerifier::new(query);
-        let hash = verifier.execute_proof(proof, query)?;
+        let hash = verifier.execute_proof(proof, query, false)?;
 
         Ok((hash, verifier.result_set))
     }
@@ -143,6 +143,29 @@ impl GroveDb {
 
         Ok((root_hash, result_set_with_absence))
     }
+
+    // TODO: add documentation
+    pub fn verify_subset_query(
+        proof: &[u8],
+        query: &PathQuery,
+    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+        let (root_hash, proved_path_key_values) = Self::verify_subset_query_raw(proof, query)?;
+        let path_key_optional_elements = proved_path_key_values
+            .into_iter()
+            .map(|pkv| pkv.try_into())
+            .collect::<Result<Vec<PathKeyOptionalElementTrio>, Error>>()?;
+        Ok((root_hash, path_key_optional_elements))
+    }
+
+    // TODO: add documentation
+    pub fn verify_subset_query_raw(
+        proof: &[u8],
+        query: &PathQuery,
+    ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
+        let mut verifier = ProofVerifier::new(query);
+        let hash = verifier.execute_proof(proof, query, true)?;
+        Ok((hash, verifier.result_set))
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -165,7 +188,7 @@ impl ProofVerifier {
     }
 
     /// Execute proof
-    pub fn execute_proof(&mut self, proof: &[u8], query: &PathQuery) -> Result<[u8; 32], Error> {
+    pub fn execute_proof(&mut self, proof: &[u8], query: &PathQuery, is_verbose: bool) -> Result<[u8; 32], Error> {
         let mut proof_reader = ProofReader::new(proof);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
