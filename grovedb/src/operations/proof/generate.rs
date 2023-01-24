@@ -458,6 +458,8 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]> + Iterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
+        // TODO: enforce that proof type should be merk or sized merk
+
         let mut cost = OperationCost::default();
 
         let mut proof_result = subtree

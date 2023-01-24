@@ -105,7 +105,7 @@ impl<'a> ProofReader<'a> {
     }
 
     /// Read verbose proof
-    pub fn read_verbose_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
+    pub fn read_verbose_proof(&mut self) -> Result<(ProofType, Vec<u8>, Vec<u8>), Error> {
         self.read_verbose_proof_with_optional_type(None)
     }
 
@@ -118,9 +118,12 @@ impl<'a> ProofReader<'a> {
     }
 
     /// Read verbose proof of type
-    pub fn read_verbose_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
+    pub fn read_verbose_proof_of_type(
+        &mut self,
+        expected_data_type: u8,
+    ) -> Result<(Vec<u8>, Vec<u8>), Error> {
         match self.read_verbose_proof_with_optional_type(Some(expected_data_type)) {
-            Ok((_, proof)) => Ok(proof),
+            Ok((_, proof, key)) => Ok((proof, key)),
             Err(e) => Err(e),
         }
     }
@@ -137,15 +140,25 @@ impl<'a> ProofReader<'a> {
         &mut self,
         expected_data_type_option: Option<u8>,
     ) -> Result<(ProofType, Vec<u8>), Error> {
-        self.read_proof_internal_with_optional_type(expected_data_type_option, false)
+        let (proof_type, proof, _) =
+            self.read_proof_internal_with_optional_type(expected_data_type_option, false)?;
+        Ok((proof_type, proof))
     }
 
     /// Read verbose proof with optional type
     pub fn read_verbose_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
-    ) -> Result<(ProofType, Vec<u8>), Error> {
-        self.read_proof_internal_with_optional_type(expected_data_type_option, true)
+    ) -> Result<(ProofType, Vec<u8>, Vec<u8>), Error> {
+        let (proof_type, proof, key) =
+            self.read_proof_internal_with_optional_type(expected_data_type_option, true)?;
+        Ok((
+            proof_type,
+            proof,
+            key.ok_or(Error::InvalidProof(
+                "key must exist for verbose merk proofs",
+            ))?,
+        ))
     }
 
     /// Read proof with optional type
@@ -153,8 +166,7 @@ impl<'a> ProofReader<'a> {
         &mut self,
         expected_data_type_option: Option<u8>,
         is_verbose: bool,
-    ) -> Result<(ProofType, Vec<u8>), Error> {
-        // TODO: handle the is_verbose case
+    ) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
@@ -167,10 +179,26 @@ impl<'a> ProofReader<'a> {
         let proof_type: ProofType = data_type[0].into();
 
         if proof_type == ProofType::EmptyTree || proof_type == ProofType::AbsentPath {
-            return Ok((proof_type, vec![]));
+            // TODO: should this really be none, don't we store this information
+            //  fix this!!
+            return Ok((proof_type, vec![], None));
         }
 
-        let proof = if proof_type == ProofType::Merk || proof_type == ProofType::SizedMerk {
+        let (proof, key) = if proof_type == ProofType::Merk || proof_type == ProofType::SizedMerk {
+            // if verbose we need to read the key first
+            let key = if is_verbose {
+                let mut key_length = [0; 8_usize];
+                self.read_into_slice(&mut key_length)?;
+                let key_length = usize::from_be_bytes(key_length);
+
+                let mut key = vec![0; key_length];
+                self.read_into_slice(&mut key);
+
+                Some(key)
+            } else {
+                None
+            };
+
             let mut proof_length = [0; 8_usize];
             self.read_into_slice(&mut proof_length)?;
             let proof_length = usize::from_be_bytes(proof_length);
@@ -178,12 +206,12 @@ impl<'a> ProofReader<'a> {
             let mut proof = vec![0; proof_length];
             self.read_into_slice(&mut proof)?;
 
-            proof
+            (proof, key)
         } else {
             return Err(Error::InvalidProof("expected merk or sized merk proof"));
         };
 
-        Ok((proof_type, proof))
+        Ok((proof_type, proof, key))
     }
 
     /// Reads path information from the proof vector
