@@ -2261,16 +2261,16 @@ fn test_chained_path_query_verification() {
     // TODO: change the tests here when you want to confirm path non equality works
     // // init deeper_1 path query
     let mut query = Query::new();
-    query.insert_key(b"deep_node_1".to_vec());
-    let mut subq = Query::new();
-    subq.insert_key(b"deeper_1".to_vec());
-    let mut subsubq = Query::new();
-    subsubq.insert_all();
+    query.insert_all();
 
-    subq.set_subquery(subsubq);
-    query.set_subquery(subq);
-
-    let deeper_1_path_query = PathQuery::new_unsized(vec![b"deep_leaf".to_vec()], query);
+    let deeper_1_path_query = PathQuery::new_unsized(
+        vec![
+            b"deep_leaf".to_vec(),
+            b"deep_node_1".to_vec(),
+            b"deeper_1".to_vec(),
+        ],
+        query,
+    );
 
     // define the path query generators
     let mut chained_path_queries = vec![];
