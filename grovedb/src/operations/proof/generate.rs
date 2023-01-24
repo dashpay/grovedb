@@ -112,7 +112,11 @@ impl GroveDb {
             Err(_) => {
                 cost_return_on_error!(
                     &mut cost,
-                    self.generate_and_store_absent_path_proof(&path_slices, &mut proof_result, is_verbose)
+                    self.generate_and_store_absent_path_proof(
+                        &path_slices,
+                        &mut proof_result,
+                        is_verbose
+                    )
                 );
                 // return the absence proof no need to continue proof generation
                 return Ok(proof_result).wrap_with_cost(cost);
@@ -140,7 +144,10 @@ impl GroveDb {
                 is_verbose
             )
         );
-        cost_return_on_error!(&mut cost, self.prove_path(&mut proof_result, path_slices, is_verbose));
+        cost_return_on_error!(
+            &mut cost,
+            self.prove_path(&mut proof_result, path_slices, is_verbose)
+        );
 
         Ok(proof_result).wrap_with_cost(cost)
     }
@@ -453,7 +460,6 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
             .unwrap()
@@ -511,7 +517,7 @@ impl GroveDb {
         &self,
         path_slices: &Vec<&[u8]>,
         proof_result: &mut Vec<u8>,
-        is_verbose: bool
+        is_verbose: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 

@@ -104,6 +104,11 @@ impl<'a> ProofReader<'a> {
         self.read_proof_with_optional_type(None)
     }
 
+    /// Read verbose proof
+    pub fn read_verbose_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
+        self.read_verbose_proof_with_optional_type(None)
+    }
+
     /// Read proof of type
     pub fn read_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
         match self.read_proof_with_optional_type(Some(expected_data_type)) {
@@ -112,6 +117,15 @@ impl<'a> ProofReader<'a> {
         }
     }
 
+    /// Read verbose proof of type
+    pub fn read_verbose_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
+        match self.read_verbose_proof_with_optional_type(Some(expected_data_type)) {
+            Ok((_, proof)) => Ok(proof),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Reads data from proof into slice of specific size
     fn read_into_slice(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         self.proof_data
             .read(buf)
@@ -123,6 +137,24 @@ impl<'a> ProofReader<'a> {
         &mut self,
         expected_data_type_option: Option<u8>,
     ) -> Result<(ProofType, Vec<u8>), Error> {
+        self.read_proof_internal_with_optional_type(expected_data_type_option, false)
+    }
+
+    /// Read verbose proof with optional type
+    pub fn read_verbose_proof_with_optional_type(
+        &mut self,
+        expected_data_type_option: Option<u8>,
+    ) -> Result<(ProofType, Vec<u8>), Error> {
+        self.read_proof_internal_with_optional_type(expected_data_type_option, true)
+    }
+
+    /// Read proof with optional type
+    pub fn read_proof_internal_with_optional_type(
+        &mut self,
+        expected_data_type_option: Option<u8>,
+        is_verbose: bool,
+    ) -> Result<(ProofType, Vec<u8>), Error> {
+        // TODO: handle the is_verbose case
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
@@ -168,7 +200,7 @@ impl<'a> ProofReader<'a> {
         self.read_into_slice(&mut path_slice_len)?;
         let path_slice_len = usize::from_be_bytes(path_slice_len);
 
-        for i in 0..path_slice_len {
+        for _ in 0..path_slice_len {
             let mut path_len = [0; 8_usize];
             self.read_into_slice(&mut path_len)?;
             let path_len = usize::from_be_bytes(path_len);
