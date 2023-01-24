@@ -495,7 +495,6 @@ impl GroveDb {
         path: Vec<&[u8]>,
         proofs: &mut Vec<u8>,
     ) -> CostResult<(), Error> {
-        dbg!("generating the path proof");
         let mut cost = OperationCost::default();
 
         // TODO: write length as var vec
@@ -521,7 +520,6 @@ impl GroveDb {
         proof_result: &mut Vec<u8>,
         is_verbose: bool,
     ) -> CostResult<(), Error> {
-        dbg!("generating the absence proof");
         let mut cost = OperationCost::default();
 
         write_to_vec(proof_result, &[ProofType::AbsentPath.into()]);

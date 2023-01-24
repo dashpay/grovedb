@@ -34,7 +34,7 @@ use tempfile::TempDir;
 
 use crate::{
     batch::GroveDbOp,
-    query_result_type::QueryResultType,
+    query_result_type::{PathKeyOptionalElementTrio, QueryResultType},
     reference_path::ReferencePathType,
     tests::{
         common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb, TEST_LEAF,
@@ -2207,7 +2207,6 @@ fn test_subset_proof_verification() {
     );
 
     // prove verbose
-    dbg!("proving verbose");
     let verbose_proof = db.prove_verbose(&path_query).unwrap().unwrap();
     assert!(verbose_proof.len() > proof.len());
 
@@ -2229,6 +2228,149 @@ fn test_subset_proof_verification() {
             vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
             b"key1".to_vec(),
             Some(Element::new_item(b"value1".to_vec()))
+        )
+    );
+}
+
+#[test]
+fn test_chained_path_query_verification() {
+    let db = make_deep_tree();
+
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subq = Query::new();
+    subq.insert_all();
+    let mut subsubq = Query::new();
+    subsubq.insert_all();
+
+    subq.set_subquery(subsubq);
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![b"deep_leaf".to_vec()], query);
+
+    // first prove non verbose
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 11);
+
+    // prove verbose
+    let verbose_proof = db.prove_verbose(&path_query).unwrap().unwrap();
+    assert!(verbose_proof.len() > proof.len());
+
+    // init deeper_1 path query
+    let mut query = Query::new();
+    query.insert_key(b"deep_node_1".to_vec());
+    let mut subq = Query::new();
+    subq.insert_key(b"deeper_1".to_vec());
+    let mut subsubq = Query::new();
+    subsubq.insert_all();
+
+    subq.set_subquery(subsubq);
+    query.set_subquery(subq);
+
+    let deeper_1_path_query = PathQuery::new_unsized(vec![b"deep_leaf".to_vec()], query);
+
+    // define the path query generators
+    let mut chained_path_queries = vec![];
+    chained_path_queries.push(|elements: Vec<PathKeyOptionalElementTrio>| {
+        // TODO: change the tests here when you want to confirm path non equality works
+        let mut query = Query::new();
+        query.insert_key(b"deep_node_1".to_vec());
+        let mut subq = Query::new();
+        subq.insert_key(b"deeper_2".to_vec());
+        let mut subsubq = Query::new();
+        subsubq.insert_all();
+
+        subq.set_subquery(subsubq);
+        query.set_subquery(subq);
+
+        let deeper_2_path_query = PathQuery::new_unsized(vec![b"deep_leaf".to_vec()], query);
+        return Some(deeper_2_path_query);
+    });
+
+    // verify the path query chain
+    let (root_hash, results) = GroveDb::verify_query_with_chained_path_queries(
+        &verbose_proof,
+        &deeper_1_path_query,
+        chained_path_queries,
+    )
+    .unwrap();
+    assert_eq!(root_hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].len(), 3);
+    assert_eq!(
+        results[0][0],
+        (
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_1".to_vec(),
+                b"deeper_1".to_vec()
+            ],
+            b"key1".to_vec(),
+            Some(Element::new_item(b"value1".to_vec()))
+        )
+    );
+    assert_eq!(
+        results[0][1],
+        (
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_1".to_vec(),
+                b"deeper_1".to_vec()
+            ],
+            b"key2".to_vec(),
+            Some(Element::new_item(b"value2".to_vec()))
+        )
+    );
+    assert_eq!(
+        results[0][2],
+        (
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_1".to_vec(),
+                b"deeper_1".to_vec()
+            ],
+            b"key3".to_vec(),
+            Some(Element::new_item(b"value3".to_vec()))
+        )
+    );
+
+    assert_eq!(results[1].len(), 3);
+    assert_eq!(
+        results[1][0],
+        (
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_1".to_vec(),
+                b"deeper_2".to_vec()
+            ],
+            b"key4".to_vec(),
+            Some(Element::new_item(b"value4".to_vec()))
+        )
+    );
+    assert_eq!(
+        results[1][1],
+        (
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_1".to_vec(),
+                b"deeper_2".to_vec()
+            ],
+            b"key5".to_vec(),
+            Some(Element::new_item(b"value5".to_vec()))
+        )
+    );
+    assert_eq!(
+        results[1][2],
+        (
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_1".to_vec(),
+                b"deeper_2".to_vec()
+            ],
+            b"key6".to_vec(),
+            Some(Element::new_item(b"value6".to_vec()))
         )
     );
 }

@@ -112,7 +112,6 @@ impl<'a> ProofReader<'a> {
 
     // TODO: add documentation
     pub fn read_next_proof(&mut self, key: &[u8]) -> Result<(ProofType, Vec<u8>), Error> {
-        dbg!(std::str::from_utf8(key));
         if self.is_verbose {
             self.read_verbose_proof_at_key(key)
         } else {
