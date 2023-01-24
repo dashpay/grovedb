@@ -46,7 +46,6 @@ pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
 /// Proof type
-// TODO: remove the root proof type
 // TODO: there might be a better name for this
 pub enum ProofType {
     Merk,
@@ -159,6 +158,22 @@ impl<'a> ProofReader<'a> {
                 "key must exist for verbose merk proofs",
             ))?,
         ))
+    }
+
+    /// Read verbose proof at key
+    /// Returns an error if it can't find a proof for that key
+    pub fn read_verbose_proof_at_key(
+        &mut self,
+        expected_key: &[u8],
+    ) -> Result<(ProofType, Vec<u8>), Error> {
+        let (proof_type, proof, key) = loop {
+            let (proof_type, proof, key) = self.read_verbose_proof()?;
+            if key.as_slice() == expected_key {
+                break (proof_type, proof, key);
+            }
+        };
+
+        Ok((proof_type, proof))
     }
 
     /// Read proof with optional type

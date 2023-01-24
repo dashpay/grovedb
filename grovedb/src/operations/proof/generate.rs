@@ -671,6 +671,7 @@ mod tests {
         assert_eq!(path, decoded_path);
     }
 
+    // TODO: should move this to util
     #[test]
     fn test_reading_of_verbose_proofs() {
         let db = make_deep_tree();
@@ -739,5 +740,119 @@ mod tests {
             .unwrap();
         assert_eq!(root_hash, expected_root_hash);
         assert_eq!(result_set.result_set.len(), 3);
+    }
+
+    #[test]
+    fn test_reading_verbose_proof_at_key() {
+        // going to generate an array of multiple proofs with different keys
+        let db = make_deep_tree();
+        let mut proofs = vec![];
+
+        let mut query = Query::new();
+        query.insert_all();
+
+        // insert all under inner tree
+        let path = vec![TEST_LEAF, b"innertree"];
+
+        let merk = db
+            .open_non_transactional_merk_at_path(path.iter().copied())
+            .unwrap()
+            .unwrap();
+        let inner_tree_root_hash = merk.root_hash().unwrap();
+        db.generate_and_store_merk_proof(
+            path.iter().copied(),
+            &merk,
+            &query,
+            (None, None),
+            ProofType::Merk,
+            &mut proofs,
+            true,
+            path.iter().last().unwrap_or(&(&[][..])),
+        );
+
+        // insert all under innertree4
+        let path = vec![TEST_LEAF, b"innertree4"];
+        let merk = db
+            .open_non_transactional_merk_at_path(path.iter().copied())
+            .unwrap()
+            .unwrap();
+        let inner_tree_4_root_hash = merk.root_hash().unwrap();
+        db.generate_and_store_merk_proof(
+            path.iter().copied(),
+            &merk,
+            &query,
+            (None, None),
+            ProofType::Merk,
+            &mut proofs,
+            true,
+            path.iter().last().unwrap_or(&(&[][..])),
+        );
+
+        // insert all for deeper_1
+        let path: Vec<&[u8]> = vec![b"deep_leaf", b"deep_node_1", b"deeper_1"];
+        let merk = db
+            .open_non_transactional_merk_at_path(path.iter().copied())
+            .unwrap()
+            .unwrap();
+        let deeper_1_root_hash = merk.root_hash().unwrap();
+        db.generate_and_store_merk_proof(
+            path.iter().copied(),
+            &merk,
+            &query,
+            (None, None),
+            ProofType::Merk,
+            &mut proofs,
+            true,
+            path.iter().last().unwrap_or(&(&[][..])),
+        );
+
+        // read the proof at innertree
+        let contextual_proof = proofs.clone();
+        let mut proof_reader = ProofReader::new(&contextual_proof);
+        let (proof_type, proof) = proof_reader
+            .read_verbose_proof_at_key(b"innertree")
+            .unwrap();
+
+        assert_eq!(proof_type, ProofType::Merk);
+
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(root_hash, inner_tree_root_hash);
+        assert_eq!(result_set.result_set.len(), 3);
+
+        // read the proof at innertree4
+        let contextual_proof = proofs.clone();
+        let mut proof_reader = ProofReader::new(&contextual_proof);
+        let (proof_type, proof) = proof_reader
+            .read_verbose_proof_at_key(b"innertree4")
+            .unwrap();
+
+        assert_eq!(proof_type, ProofType::Merk);
+
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(root_hash, inner_tree_4_root_hash);
+        assert_eq!(result_set.result_set.len(), 2);
+
+        // read the proof at deeper_1
+        let contextual_proof = proofs.clone();
+        let mut proof_reader = ProofReader::new(&contextual_proof);
+        let (proof_type, proof) = proof_reader.read_verbose_proof_at_key(b"deeper_1").unwrap();
+
+        assert_eq!(proof_type, ProofType::Merk);
+
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(root_hash, deeper_1_root_hash);
+        assert_eq!(result_set.result_set.len(), 3);
+
+        // read the proof at an invalid key
+        let contextual_proof = proofs.clone();
+        let mut proof_reader = ProofReader::new(&contextual_proof);
+        let reading_result = proof_reader.read_verbose_proof_at_key(b"unknown_key");
+        assert!(reading_result.is_err())
     }
 }
