@@ -2219,8 +2219,6 @@ fn test_subset_proof_verification() {
     query.set_subquery(subq);
     let subset_path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-    // TODO: it seems to be returning the tree itself which is wrong
-
     let (hash, result_set) =
         GroveDb::verify_subset_query(&verbose_proof, &subset_path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());

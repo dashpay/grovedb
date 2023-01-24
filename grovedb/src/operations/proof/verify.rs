@@ -166,6 +166,37 @@ impl GroveDb {
         let hash = verifier.execute_proof(proof, query, true)?;
         Ok((hash, verifier.result_set))
     }
+
+    /// Verify proof with chained path query
+    pub fn verify_query_with_chained_path_queries<C>(
+        proof: &[u8],
+        first_query: &PathQuery,
+        chained_path_queries: Vec<C>,
+    ) -> Result<(CryptoHash, Vec<Vec<PathKeyOptionalElementTrio>>), Error>
+    where
+        C: Fn(Vec<PathKeyOptionalElementTrio>) -> Option<PathQuery>,
+    {
+        let mut results = vec![];
+
+        let (last_root_hash, elements) = Self::verify_subset_query(&proof, first_query)?;
+        results.push(elements);
+
+        // we should iterate over each chained path queries
+        for path_query_generator in chained_path_queries {
+            let new_path_query = path_query_generator(results[results.len() - 1].clone()).ok_or(
+                Error::InvalidInput("one of the path query generators returns no path query"),
+            )?;
+            let (new_root_hash, new_elements) = Self::verify_subset_query(&proof, &new_path_query)?;
+            if new_root_hash != last_root_hash {
+                return Err(Error::InvalidProof(
+                    "root hash for different path queries do no match",
+                ));
+            }
+            results.push(new_elements);
+        }
+
+        Ok((last_root_hash, results))
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
