@@ -112,7 +112,7 @@ impl GroveDb {
             Err(_) => {
                 cost_return_on_error!(
                     &mut cost,
-                    self.generate_and_store_absent_path_proof(&path_slices, &mut proof_result)
+                    self.generate_and_store_absent_path_proof(&path_slices, &mut proof_result, is_verbose)
                 );
                 // return the absence proof no need to continue proof generation
                 return Ok(proof_result).wrap_with_cost(cost);
@@ -140,7 +140,7 @@ impl GroveDb {
                 is_verbose
             )
         );
-        cost_return_on_error!(&mut cost, self.prove_path(&mut proof_result, path_slices));
+        cost_return_on_error!(&mut cost, self.prove_path(&mut proof_result, path_slices, is_verbose));
 
         Ok(proof_result).wrap_with_cost(cost)
     }
@@ -179,7 +179,8 @@ impl GroveDb {
                         (*current_limit, *current_offset),
                         ProofType::SizedMerk,
                         proofs,
-                        is_verbose
+                        is_verbose,
+                        path.iter().last().unwrap_or(&(&[][..]))
                     )
                 );
             }
@@ -223,7 +224,8 @@ impl GroveDb {
                                 (None, None),
                                 ProofType::Merk,
                                 proofs,
-                                is_verbose
+                                is_verbose,
+                                path.iter().last().unwrap_or(&(&[][..]))
                             )
                         );
                     }
@@ -253,7 +255,8 @@ impl GroveDb {
                                         (None, None),
                                         ProofType::Merk,
                                         proofs,
-                                        is_verbose
+                                        is_verbose,
+                                        new_path.iter().last().unwrap_or(&(&[][..]))
                                     )
                                 );
 
@@ -300,7 +303,8 @@ impl GroveDb {
                                     (None, None),
                                     ProofType::Merk,
                                     proofs,
-                                    is_verbose
+                                    is_verbose,
+                                    new_path.iter().last().unwrap_or(&(&[][..]))
                                 )
                             );
 
@@ -351,7 +355,7 @@ impl GroveDb {
                             current_limit,
                             current_offset,
                             false,
-                            is_verbose
+                            is_verbose,
                         )
                     );
 
@@ -377,7 +381,8 @@ impl GroveDb {
                     (*current_limit, *current_offset),
                     ProofType::SizedMerk,
                     proofs,
-                    is_verbose
+                    is_verbose,
+                    path.iter().last().unwrap_or(&(&[][..]))
                 )
             );
 
@@ -397,6 +402,7 @@ impl GroveDb {
         &self,
         proof_result: &mut Vec<u8>,
         path_slices: Vec<&[u8]>,
+        is_verbose: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -417,10 +423,8 @@ impl GroveDb {
                     (None, None),
                     ProofType::Merk,
                     proof_result,
-                    // TODO: do we need to generate a verbose proof for the path??
-                    //  even if we don't can the proof reader differentiate??
-                    //  maybe we always just pass it when doing proof execution
-                    false
+                    is_verbose,
+                    path_slice.iter().last().unwrap_or(&(&[][..]))
                 )
             );
             split_path = path_slice.split_last();
@@ -440,13 +444,15 @@ impl GroveDb {
         proofs: &mut Vec<u8>,
         // TODO: update type definition with something more explicit
         is_verbose: bool,
+        key: &[u8],
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
     where
         S: StorageContext<'a>,
-        P: IntoIterator<Item = &'p [u8]>,
+        P: IntoIterator<Item = &'p [u8]> + Iterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
+
 
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
@@ -458,8 +464,18 @@ impl GroveDb {
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
+        // TODO: consider using var vec for the lengths
         let proof_len_bytes: [u8; 8] = proof_bytes.len().to_be_bytes();
         write_to_vec(proofs, &[proof_type.into()]);
+
+        // if is verbose, write the key to the proof
+        if is_verbose {
+            // TODO: consider using var vec for the lengths
+            let proof_key_len_bytes: [u8; 8] = key.len().to_be_bytes();
+            write_to_vec(proofs, &proof_key_len_bytes);
+            write_to_vec(proofs, &key);
+        }
+
         write_to_vec(proofs, &proof_len_bytes);
         write_to_vec(proofs, &proof_bytes);
 
@@ -495,6 +511,7 @@ impl GroveDb {
         &self,
         path_slices: &Vec<&[u8]>,
         proof_result: &mut Vec<u8>,
+        is_verbose: bool
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -529,8 +546,8 @@ impl GroveDb {
                     (None, None),
                     ProofType::Merk,
                     proof_result,
-                    // TODO: should we default the verbose bool??
-                    false
+                    is_verbose,
+                    current_path.iter().last().unwrap_or(&(&[][..]))
                 )
             );
 
