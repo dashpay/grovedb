@@ -651,7 +651,13 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use crate::{operations::proof::util::ProofReader, GroveDb};
+    use merk::{execute_proof, proofs::Query};
+
+    use crate::{
+        operations::proof::util::{ProofReader, ProofType},
+        tests::{make_deep_tree, TEST_LEAF},
+        GroveDb,
+    };
 
     #[test]
     fn test_path_info_encoding_and_decoding() {
@@ -663,5 +669,75 @@ mod tests {
         let decoded_path = proof_reader.read_path_info().unwrap();
 
         assert_eq!(path, decoded_path);
+    }
+
+    #[test]
+    fn test_reading_of_verbose_proofs() {
+        let db = make_deep_tree();
+
+        let path = vec![TEST_LEAF, b"innertree"];
+        let mut query = Query::new();
+        query.insert_all();
+
+        let merk = db
+            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"])
+            .unwrap()
+            .unwrap();
+        let expected_root_hash = merk.root_hash().unwrap();
+
+        let mut proof = vec![];
+        db.generate_and_store_merk_proof(
+            path.iter().copied(),
+            &merk,
+            &query,
+            (None, None),
+            ProofType::Merk,
+            &mut proof,
+            true,
+            b"innertree",
+        );
+        assert_ne!(proof.len(), 0);
+
+        let mut proof_reader = ProofReader::new(&proof);
+        let (proof_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
+
+        assert_eq!(proof_type, ProofType::Merk);
+        assert_eq!(key, b"innertree".to_vec());
+
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(root_hash, expected_root_hash);
+        assert_eq!(result_set.result_set.len(), 3);
+
+        // what is the key is empty??
+        let merk = db.open_non_transactional_merk_at_path([]).unwrap().unwrap();
+        let expected_root_hash = merk.root_hash().unwrap();
+
+        let path = vec![];
+        let mut proof = vec![];
+        db.generate_and_store_merk_proof(
+            path.iter().copied(),
+            &merk,
+            &query,
+            (None, None),
+            ProofType::Merk,
+            &mut proof,
+            true,
+            path.iter().last().unwrap_or(&(&[][..])),
+        );
+        assert_ne!(proof.len(), 0);
+
+        let mut proof_reader = ProofReader::new(&proof);
+        let (proof_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
+
+        assert_eq!(proof_type, ProofType::Merk);
+        assert_eq!(key, vec![]);
+
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(root_hash, expected_root_hash);
+        assert_eq!(result_set.result_set.len(), 3);
     }
 }
