@@ -459,7 +459,6 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         // TODO: enforce that proof type should be merk or sized merk
-
         let mut cost = OperationCost::default();
 
         let mut proof_result = subtree
@@ -496,6 +495,7 @@ impl GroveDb {
         path: Vec<&[u8]>,
         proofs: &mut Vec<u8>,
     ) -> CostResult<(), Error> {
+        dbg!("generating the path proof");
         let mut cost = OperationCost::default();
 
         // TODO: write length as var vec
@@ -521,6 +521,7 @@ impl GroveDb {
         proof_result: &mut Vec<u8>,
         is_verbose: bool,
     ) -> CostResult<(), Error> {
+        dbg!("generating the absence proof");
         let mut cost = OperationCost::default();
 
         write_to_vec(proof_result, &[ProofType::AbsentPath.into()]);
@@ -703,7 +704,7 @@ mod tests {
         let (proof_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
 
         assert_eq!(proof_type, ProofType::Merk);
-        assert_eq!(key, b"innertree".to_vec());
+        assert_eq!(key, Some(b"innertree".to_vec()));
 
         let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
             .unwrap()
@@ -733,7 +734,7 @@ mod tests {
         let (proof_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
 
         assert_eq!(proof_type, ProofType::Merk);
-        assert_eq!(key, vec![]);
+        assert_eq!(key, Some(vec![]));
 
         let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
             .unwrap()

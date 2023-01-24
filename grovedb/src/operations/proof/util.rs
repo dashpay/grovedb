@@ -89,29 +89,58 @@ impl From<u8> for ProofType {
 /// Proof reader
 pub struct ProofReader<'a> {
     proof_data: &'a [u8],
+    is_verbose: bool,
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl<'a> ProofReader<'a> {
-    /// New proof data
+    /// New proof reader
     pub fn new(proof_data: &'a [u8]) -> Self {
-        Self { proof_data }
+        Self {
+            proof_data,
+            is_verbose: false,
+        }
     }
 
-    /// Read proof
-    pub fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
-        self.read_proof_with_optional_type(None)
+    /// New proof reader with verbose_status
+    pub fn new_with_verbose_status(proof_data: &'a [u8], is_verbose: bool) -> Self {
+        Self {
+            proof_data,
+            is_verbose,
+        }
+    }
+
+    // TODO: add documentation
+    pub fn read_next_proof(&mut self, key: &[u8]) -> Result<(ProofType, Vec<u8>), Error> {
+        if self.is_verbose {
+            self.read_verbose_proof_at_key(key)
+        } else {
+            let (proof_type, proof, _) = self.read_proof_with_optional_type(None)?;
+            Ok((proof_type, proof))
+        }
+    }
+
+    /// Read the next proof, return the proof type
+    pub fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
+        if self.is_verbose {
+            self.read_verbose_proof_with_optional_type(None)
+        } else {
+            self.read_proof_with_optional_type(None)
+        }
     }
 
     /// Read verbose proof
-    pub fn read_verbose_proof(&mut self) -> Result<(ProofType, Vec<u8>, Vec<u8>), Error> {
+    pub fn read_verbose_proof(&mut self) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
         self.read_verbose_proof_with_optional_type(None)
     }
 
     /// Read proof of type
-    pub fn read_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
+    pub fn read_proof_of_type(
+        &mut self,
+        expected_data_type: u8,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
         match self.read_proof_with_optional_type(Some(expected_data_type)) {
-            Ok((_, proof)) => Ok(proof),
+            Ok((_, proof, ..)) => Ok((proof, None)),
             Err(e) => Err(e),
         }
     }
@@ -120,7 +149,7 @@ impl<'a> ProofReader<'a> {
     pub fn read_verbose_proof_of_type(
         &mut self,
         expected_data_type: u8,
-    ) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
         match self.read_verbose_proof_with_optional_type(Some(expected_data_type)) {
             Ok((_, proof, key)) => Ok((proof, key)),
             Err(e) => Err(e),
@@ -138,25 +167,25 @@ impl<'a> ProofReader<'a> {
     pub fn read_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
-    ) -> Result<(ProofType, Vec<u8>), Error> {
+    ) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
         let (proof_type, proof, _) =
             self.read_proof_internal_with_optional_type(expected_data_type_option, false)?;
-        Ok((proof_type, proof))
+        Ok((proof_type, proof, None))
     }
 
     /// Read verbose proof with optional type
     pub fn read_verbose_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
-    ) -> Result<(ProofType, Vec<u8>, Vec<u8>), Error> {
+    ) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
         let (proof_type, proof, key) =
             self.read_proof_internal_with_optional_type(expected_data_type_option, true)?;
         Ok((
             proof_type,
             proof,
-            key.ok_or(Error::InvalidProof(
+            Some(key.ok_or(Error::InvalidProof(
                 "key must exist for verbose merk proofs",
-            ))?,
+            ))?),
         ))
     }
 
@@ -168,6 +197,7 @@ impl<'a> ProofReader<'a> {
     ) -> Result<(ProofType, Vec<u8>), Error> {
         let (proof_type, proof, key) = loop {
             let (proof_type, proof, key) = self.read_verbose_proof()?;
+            let key = key.expect("read_verbose_proof enforces that this exists");
             if key.as_slice() == expected_key {
                 break (proof_type, proof, key);
             }
@@ -234,8 +264,9 @@ impl<'a> ProofReader<'a> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
+        dbg!(data_type);
         if data_type != [ProofType::PathInfo.into()] {
-            return Err(Error::InvalidProof("wrong data_type"));
+            return Err(Error::InvalidProof("wrong data_type, expected path_info"));
         }
 
         let mut path = vec![];

@@ -2145,3 +2145,41 @@ fn test_absence_proof() {
     assert_eq!(result_set[2].2, None);
     assert_eq!(result_set[3].2, None);
 }
+
+#[test]
+fn test_subset_proof_verification() {
+    let db = make_deep_tree();
+
+    // original path query
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subq = Query::new();
+    subq.insert_all();
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+    // first we prove non-verbose
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 5);
+    // TODO: assert things about the result set items
+
+    // prove verbose
+    let verbose_proof = db.prove_verbose(&path_query).unwrap().unwrap();
+    assert!(verbose_proof.len() > proof.len());
+
+    // subset path query
+    let mut query = Query::new();
+    query.insert_key(b"innertree4".to_vec());
+    let mut subq = Query::new();
+    subq.insert_key(b"key5".to_vec());
+    let subset_path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+    let (hash, result_set) =
+        GroveDb::verify_subset_query(&verbose_proof, &subset_path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 1);
+    // TODO: assert things about the result set item
+}

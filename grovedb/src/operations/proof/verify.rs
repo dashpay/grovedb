@@ -188,12 +188,28 @@ impl ProofVerifier {
     }
 
     /// Execute proof
-    pub fn execute_proof(&mut self, proof: &[u8], query: &PathQuery, is_verbose: bool) -> Result<[u8; 32], Error> {
-        let mut proof_reader = ProofReader::new(proof);
+    pub fn execute_proof(
+        &mut self,
+        proof: &[u8],
+        query: &PathQuery,
+        is_verbose: bool,
+    ) -> Result<[u8; 32], Error> {
+        let mut proof_reader = ProofReader::new_with_verbose_status(proof, is_verbose);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
-        let (proof_type, proof) = proof_reader.read_proof()?;
+        // if verbose, the first thing we want to do is read the path info
+        if is_verbose {
+            let original_path = proof_reader.read_path_info()?;
+            if original_path != path_slices {
+                // TODO: we can relax this constraint, fix this
+                return Err(Error::InvalidProof(
+                    "original path query path and subset path are not the same",
+                ));
+            }
+        }
+
+        let (proof_type, proof, _) = proof_reader.read_proof()?;
 
         let root_hash = if proof_type == AbsentPath {
             self.verify_absent_path(&mut proof_reader, path_slices)?
@@ -382,7 +398,8 @@ impl ProofVerifier {
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
 
-                            let (child_proof_type, child_proof) = proof_reader.read_proof()?;
+                            let (child_proof_type, child_proof) = proof_reader
+                                .read_next_proof(new_path.last().unwrap_or(&Default::default()))?;
                             let child_hash = self.execute_subquery_proof(
                                 child_proof_type,
                                 child_proof,
@@ -485,7 +502,8 @@ impl ProofVerifier {
         let last_key = subquery_path.remove(subquery_path.len() - 1);
 
         for subquery_key in subquery_path.iter() {
-            let (proof_type, subkey_proof) = proof_reader.read_proof()?;
+            let (proof_type, subkey_proof) =
+                proof_reader.read_next_proof(current_path.last().unwrap_or(&Default::default()))?;
             // intermediate proofs are all going to be unsized merk proofs
             if proof_type != ProofType::Merk {
                 return Err(Error::InvalidProof(
@@ -547,7 +565,8 @@ impl ProofVerifier {
             }
         }
 
-        let (proof_type, subkey_proof) = proof_reader.read_proof()?;
+        let (proof_type, subkey_proof) =
+            proof_reader.read_next_proof(current_path.last().unwrap_or(&Default::default()))?;
         if proof_type != expected_proof_type {
             return Err(Error::InvalidProof(
                 "unexpected proof type for subquery path",
@@ -586,7 +605,8 @@ impl ProofVerifier {
         let mut last_result_set: ProvedPathKeyValues = vec![];
 
         for key in path_slices {
-            let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
+            // TODO: fix this
+            let (merk_proof, _) = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
 
             let mut child_query = Query::new();
             child_query.insert_key(key.to_vec());
@@ -657,7 +677,11 @@ impl ProofVerifier {
         while let Some((key, path_slice)) = split_path {
             // for every subtree, there should be a corresponding proof for the parent
             // which should prove that this subtree is a child of the parent tree
-            let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
+            let (proof_type, parent_merk_proof) =
+                proof_reader.read_next_proof(path_slice.last().unwrap_or(&Default::default()))?;
+            if proof_type != ProofType::Merk {
+                return Err(Error::InvalidProof("wrong data_type expected merk proof"));
+            }
 
             let mut parent_query = Query::new();
             parent_query.insert_key(key.to_vec());
