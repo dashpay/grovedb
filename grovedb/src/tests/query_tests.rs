@@ -2165,21 +2165,72 @@ fn test_subset_proof_verification() {
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
     // TODO: assert things about the result set items
+    assert_eq!(
+        result_set[0],
+        (
+            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+            b"key1".to_vec(),
+            Some(Element::new_item(b"value1".to_vec()))
+        )
+    );
+    assert_eq!(
+        result_set[1],
+        (
+            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+            b"key2".to_vec(),
+            Some(Element::new_item(b"value2".to_vec()))
+        )
+    );
+    assert_eq!(
+        result_set[2],
+        (
+            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+            b"key3".to_vec(),
+            Some(Element::new_item(b"value3".to_vec()))
+        )
+    );
+    assert_eq!(
+        result_set[3],
+        (
+            vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()],
+            b"key4".to_vec(),
+            Some(Element::new_item(b"value4".to_vec()))
+        )
+    );
+    assert_eq!(
+        result_set[4],
+        (
+            vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()],
+            b"key5".to_vec(),
+            Some(Element::new_item(b"value5".to_vec()))
+        )
+    );
 
     // prove verbose
+    dbg!("proving verbose");
     let verbose_proof = db.prove_verbose(&path_query).unwrap().unwrap();
     assert!(verbose_proof.len() > proof.len());
 
     // subset path query
     let mut query = Query::new();
-    query.insert_key(b"innertree4".to_vec());
+    query.insert_key(b"innertree".to_vec());
     let mut subq = Query::new();
-    subq.insert_key(b"key5".to_vec());
+    subq.insert_key(b"key1".to_vec());
+    query.set_subquery(subq);
     let subset_path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+    // TODO: it seems to be returning the tree itself which is wrong
 
     let (hash, result_set) =
         GroveDb::verify_subset_query(&verbose_proof, &subset_path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
-    // TODO: assert things about the result set item
+    assert_eq!(
+        result_set[0],
+        (
+            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+            b"key1".to_vec(),
+            Some(Element::new_item(b"value1".to_vec()))
+        )
+    );
 }
