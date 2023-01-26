@@ -441,6 +441,8 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
+    // TODO: look into what happens when the merk is really really big
+    //  does the single byte length work for this??
     fn generate_and_store_merk_proof<'a, 'p, S: 'a, P>(
         &self,
         path: P,
