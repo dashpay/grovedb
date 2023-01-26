@@ -31,6 +31,7 @@ use std::io::Read;
 #[cfg(feature = "full")]
 use std::io::Write;
 
+use integer_encoding::{VarInt, VarIntReader};
 use merk::{
     proofs::query::{Key, Path, ProvedKeyValue},
     CryptoHash,
@@ -86,6 +87,7 @@ impl From<u8> for ProofType {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug)]
+// TODO: possibility for a proof writer??
 /// Proof reader
 pub struct ProofReader<'a> {
     proof_data: &'a [u8],
@@ -163,6 +165,13 @@ impl<'a> ProofReader<'a> {
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))
     }
 
+    // TODO: add documentation
+    fn read_length_data(&mut self) -> Result<usize, Error> {
+        self.proof_data
+            .read_varint()
+            .map_err(|_| Error::InvalidProof("expected length data"))
+    }
+
     /// Read proof with optional type
     pub fn read_proof_with_optional_type(
         &mut self,
@@ -232,9 +241,7 @@ impl<'a> ProofReader<'a> {
         let (proof, key) = if proof_type == ProofType::Merk || proof_type == ProofType::SizedMerk {
             // if verbose we need to read the key first
             let key = if is_verbose {
-                let mut key_length = [0; 8_usize];
-                self.read_into_slice(&mut key_length)?;
-                let key_length = usize::from_be_bytes(key_length);
+                let key_length = self.read_length_data()?;
 
                 let mut key = vec![0; key_length];
                 self.read_into_slice(&mut key);
@@ -244,9 +251,7 @@ impl<'a> ProofReader<'a> {
                 None
             };
 
-            let mut proof_length = [0; 8_usize];
-            self.read_into_slice(&mut proof_length)?;
-            let proof_length = usize::from_be_bytes(proof_length);
+            let proof_length = self.read_length_data()?;
 
             let mut proof = vec![0; proof_length];
             self.read_into_slice(&mut proof)?;
@@ -269,14 +274,10 @@ impl<'a> ProofReader<'a> {
         }
 
         let mut path = vec![];
-        let mut path_slice_len = [0; 8_usize];
-        self.read_into_slice(&mut path_slice_len)?;
-        let path_slice_len = usize::from_be_bytes(path_slice_len);
+        let path_slice_len = self.read_length_data()?;
 
         for _ in 0..path_slice_len {
-            let mut path_len = [0; 8_usize];
-            self.read_into_slice(&mut path_len)?;
-            let path_len = usize::from_be_bytes(path_len);
+            let path_len = self.read_length_data()?;
             let mut path_value = vec![0; path_len];
             self.read_into_slice(&mut path_value)?;
             path.push(path_value);
@@ -296,19 +297,15 @@ pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
 #[cfg(feature = "full")]
 /// Write a slice to the vector, first write the length of the slice
 pub fn write_slice_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
-    // TODO: consider using var vec for the lengths
-    let value_len_bytes: [u8; 8] = value.len().to_be_bytes();
-    write_to_vec(dest, &value_len_bytes);
+    write_to_vec(dest, value.len().encode_var_vec().as_slice());
     write_to_vec(dest, value);
 }
 
 #[cfg(feature = "full")]
 /// Write a slice of a slice to a flat vector:w
 pub fn write_slice_of_slice_to_slice<W: Write>(dest: &mut W, value: &[&[u8]]) {
-    // TODO: consider using var vec for the lengths
-    let slice_len_bytes: [u8; 8] = value.len().to_be_bytes();
     // write the number of slices we are about to write
-    write_to_vec(dest, &slice_len_bytes);
+    write_to_vec(dest, value.len().encode_var_vec().as_slice());
 
     for inner_slice in value {
         write_slice_to_vec(dest, inner_slice);
