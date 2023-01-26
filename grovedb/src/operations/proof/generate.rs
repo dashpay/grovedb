@@ -48,6 +48,7 @@ use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
+use crate::operations::proof::util::{write_slice_of_slice_to_slice, write_slice_to_vec};
 #[cfg(feature = "full")]
 use crate::{
     operations::proof::util::{
@@ -473,20 +474,15 @@ impl GroveDb {
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
-        // TODO: consider using var vec for the lengths
-        let proof_len_bytes: [u8; 8] = proof_bytes.len().to_be_bytes();
         write_to_vec(proofs, &[proof_type.into()]);
 
-        // if is verbose, write the key to the proof
+        // if is verbose, write the key
         if is_verbose {
-            // TODO: consider using var vec for the lengths
-            let proof_key_len_bytes: [u8; 8] = key.len().to_be_bytes();
-            write_to_vec(proofs, &proof_key_len_bytes);
-            write_to_vec(proofs, &key);
+            write_slice_to_vec(proofs, &key);
         }
 
-        write_to_vec(proofs, &proof_len_bytes);
-        write_to_vec(proofs, &proof_bytes);
+        // write the merk proof
+        write_slice_to_vec(proofs, &proof_bytes);
 
         Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
     }
@@ -499,19 +495,9 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        // TODO: write length as var vec
-        let path_slice_len_bytes: [u8; 8] = path.len().to_be_bytes();
         write_to_vec(proofs, &[ProofType::PathInfo.into()]);
 
-        // write the number of slices we are about to write
-        write_to_vec(proofs, &path_slice_len_bytes);
-
-        for p in path {
-            // for each slice we need to write the len and then the value
-            let path_len_bytes: [u8; 8] = p.len().to_be_bytes();
-            write_to_vec(proofs, &path_len_bytes);
-            write_to_vec(proofs, p);
-        }
+        write_slice_of_slice_to_slice(proofs, &path);
 
         Ok(()).wrap_with_cost(cost)
     }

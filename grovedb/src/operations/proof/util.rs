@@ -288,8 +288,31 @@ impl<'a> ProofReader<'a> {
 
 #[cfg(feature = "full")]
 /// Write to vec
+// TODO: this can error out handle the error
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
     dest.write_all(value).expect("TODO what if it fails?");
+}
+
+#[cfg(feature = "full")]
+/// Write a slice to the vector, first write the length of the slice
+pub fn write_slice_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
+    // TODO: consider using var vec for the lengths
+    let value_len_bytes: [u8; 8] = value.len().to_be_bytes();
+    write_to_vec(dest, &value_len_bytes);
+    write_to_vec(dest, value);
+}
+
+#[cfg(feature = "full")]
+/// Write a slice of a slice to a flat vector:w
+pub fn write_slice_of_slice_to_slice<W: Write>(dest: &mut W, value: &[&[u8]]) {
+    // TODO: consider using var vec for the lengths
+    let slice_len_bytes: [u8; 8] = value.len().to_be_bytes();
+    // write the number of slices we are about to write
+    write_to_vec(dest, &slice_len_bytes);
+
+    for inner_slice in value {
+        write_slice_to_vec(dest, inner_slice);
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
