@@ -199,7 +199,7 @@ impl GroveDb {
     {
         let mut results = vec![];
 
-        let (last_root_hash, elements) = Self::verify_subset_query(&proof, first_query)?;
+        let (last_root_hash, elements) = Self::verify_subset_query(proof, first_query)?;
         results.push(elements);
 
         // we should iterate over each chained path queries
@@ -207,7 +207,7 @@ impl GroveDb {
             let new_path_query = path_query_generator(results[results.len() - 1].clone()).ok_or(
                 Error::InvalidInput("one of the path query generators returns no path query"),
             )?;
-            let (new_root_hash, new_elements) = Self::verify_subset_query(&proof, &new_path_query)?;
+            let (new_root_hash, new_elements) = Self::verify_subset_query(proof, &new_path_query)?;
             if new_root_hash != last_root_hash {
                 return Err(Error::InvalidProof(
                     "root hash for different path queries do no match",
@@ -243,7 +243,7 @@ impl ProofVerifier {
     pub fn execute_proof(
         &mut self,
         proof: &[u8],
-        mut query: &PathQuery,
+        query: &PathQuery,
         is_verbose: bool,
     ) -> Result<[u8; 32], Error> {
         let mut proof_reader = ProofReader::new_with_verbose_status(proof, is_verbose);
@@ -274,7 +274,7 @@ impl ProofVerifier {
                     ));
                 } else {
                     // We construct a new path query
-                    let path_not_common = (&path_slices[original_path.len()..]).to_vec();
+                    let path_not_common = path_slices[original_path.len()..].to_vec();
                     let mut path_iter = path_not_common.iter();
 
                     let mut new_query = Query::new();

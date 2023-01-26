@@ -44,6 +44,8 @@ use crate::Error;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
+pub type ProofTokenInfo = (ProofTokenType, Vec<u8>, Option<Vec<u8>>);
+
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
 /// Proof type
@@ -124,7 +126,7 @@ impl<'a> ProofReader<'a> {
     }
 
     /// Read the next proof, return the proof type
-    pub fn read_proof(&mut self) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
+    pub fn read_proof(&mut self) -> Result<ProofTokenInfo, Error> {
         if self.is_verbose {
             self.read_verbose_proof_with_optional_type(None)
         } else {
@@ -133,9 +135,7 @@ impl<'a> ProofReader<'a> {
     }
 
     /// Read verbose proof
-    pub fn read_verbose_proof(
-        &mut self,
-    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
+    pub fn read_verbose_proof(&mut self) -> Result<ProofTokenInfo, Error> {
         self.read_verbose_proof_with_optional_type(None)
     }
 
@@ -157,7 +157,7 @@ impl<'a> ProofReader<'a> {
     pub fn read_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
-    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
+    ) -> Result<ProofTokenInfo, Error> {
         let (proof_token_type, proof, _) =
             self.read_proof_internal_with_optional_type(expected_data_type_option, false)?;
         Ok((proof_token_type, proof, None))
@@ -167,7 +167,7 @@ impl<'a> ProofReader<'a> {
     pub fn read_verbose_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
-    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
+    ) -> Result<ProofTokenInfo, Error> {
         let (proof_token_type, proof, key) =
             self.read_proof_internal_with_optional_type(expected_data_type_option, true)?;
         Ok((
@@ -201,7 +201,7 @@ impl<'a> ProofReader<'a> {
         &mut self,
         expected_data_type_option: Option<u8>,
         is_verbose: bool,
-    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
+    ) -> Result<ProofTokenInfo, Error> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
@@ -227,7 +227,7 @@ impl<'a> ProofReader<'a> {
                 let key_length = self.read_length_data()?;
 
                 let mut key = vec![0; key_length];
-                self.read_into_slice(&mut key);
+                self.read_into_slice(&mut key)?;
 
                 Some(key)
             } else {
@@ -275,7 +275,7 @@ impl<'a> ProofReader<'a> {
 // TODO: this can error out handle the error
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) -> Result<(), Error> {
     dest.write_all(value)
-        .map_err(|e| Error::InternalError("failed to write to vector"))
+        .map_err(|_e| Error::InternalError("failed to write to vector"))
 }
 
 #[cfg(feature = "full")]
@@ -337,7 +337,7 @@ pub type ProvedPathKeyValues = Vec<ProvedPathKeyValue>;
 
 /// Proved path-key-value
 #[cfg(any(feature = "full", feature = "verify"))]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ProvedPathKeyValue {
     /// Path
     pub path: Path,

@@ -131,12 +131,10 @@ where {
                 "transactions are not currently supported",
             ))
             .wrap_with_cost(Default::default())
+        } else if is_verbose {
+            self.prove_verbose(path_query)
         } else {
-            if is_verbose {
-                self.prove_verbose(path_query)
-            } else {
-                self.prove_query(path_query)
-            }
+            self.prove_query(path_query)
         }
     }
 

@@ -37,8 +37,7 @@ use crate::{
     query_result_type::{PathKeyOptionalElementTrio, QueryResultType},
     reference_path::ReferencePathType,
     tests::{
-        common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb,
-        ANOTHER_TEST_LEAF, TEST_LEAF,
+        common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb, TEST_LEAF,
     },
     Element, Error, GroveDb, PathQuery, SizedQuery,
 };
@@ -2247,7 +2246,7 @@ fn test_subset_proof_verification() {
 
     // should not allow verbose proof generation if offset is set
     let path_query_with_offset = {
-        let mut cloned_path_query = path_query.clone();
+        let mut cloned_path_query = path_query;
         cloned_path_query.query.offset = Some(10);
         cloned_path_query
     };
@@ -2301,7 +2300,7 @@ fn test_chained_path_query_verification() {
 
     // define the path query generators
     let mut chained_path_queries = vec![];
-    chained_path_queries.push(|elements: Vec<PathKeyOptionalElementTrio>| {
+    chained_path_queries.push(|_elements: Vec<PathKeyOptionalElementTrio>| {
         let mut query = Query::new();
         query.insert_all();
 
@@ -2313,7 +2312,7 @@ fn test_chained_path_query_verification() {
             ],
             query,
         );
-        return Some(deeper_2_path_query);
+        Some(deeper_2_path_query)
     });
 
     // verify the path query chain

@@ -506,7 +506,7 @@ impl GroveDb {
 
         // if is verbose, write the key
         if is_verbose {
-            cost_return_on_error_no_add!(&cost, write_slice_to_vec(proofs, &key));
+            cost_return_on_error_no_add!(&cost, write_slice_to_vec(proofs, key));
         }
 
         // write the merk proof
@@ -520,7 +520,7 @@ impl GroveDb {
         path: Vec<&[u8]>,
         proofs: &mut Vec<u8>,
     ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
 
         cost_return_on_error_no_add!(
             &cost,
@@ -534,7 +534,7 @@ impl GroveDb {
 
     fn generate_and_store_absent_path_proof(
         &self,
-        path_slices: &Vec<&[u8]>,
+        path_slices: &[&[u8]],
         proof_result: &mut Vec<u8>,
         is_verbose: bool,
     ) -> CostResult<(), Error> {
@@ -589,7 +589,7 @@ impl GroveDb {
             split_path = path_slice.split_first();
         }
 
-        return Ok(()).wrap_with_cost(cost);
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Converts Items to Node::KV from Node::KVValueHash
@@ -683,7 +683,9 @@ mod tests {
     fn test_path_info_encoding_and_decoding() {
         let path = vec![b"a".as_slice(), b"b".as_slice(), b"c".as_slice()];
         let mut proof_vector = vec![];
-        GroveDb::generate_and_store_path_proof(path.clone(), &mut proof_vector);
+        GroveDb::generate_and_store_path_proof(path.clone(), &mut proof_vector)
+            .unwrap()
+            .unwrap();
 
         let mut proof_reader = ProofReader::new(proof_vector.as_slice());
         let decoded_path = proof_reader.read_path_info().unwrap();
@@ -715,7 +717,9 @@ mod tests {
             &mut proof,
             true,
             b"innertree",
-        );
+        )
+        .unwrap()
+        .unwrap();
         assert_ne!(proof.len(), 0);
 
         let mut proof_reader = ProofReader::new(&proof);
@@ -745,7 +749,9 @@ mod tests {
             &mut proof,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
-        );
+        )
+        .unwrap()
+        .unwrap();
         assert_ne!(proof.len(), 0);
 
         let mut proof_reader = ProofReader::new(&proof);
@@ -787,7 +793,9 @@ mod tests {
             &mut proofs,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
-        );
+        )
+        .unwrap()
+        .unwrap();
 
         // insert all under innertree4
         let path = vec![TEST_LEAF, b"innertree4"];
@@ -805,7 +813,9 @@ mod tests {
             &mut proofs,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
-        );
+        )
+        .unwrap()
+        .unwrap();
 
         // insert all for deeper_1
         let path: Vec<&[u8]> = vec![b"deep_leaf", b"deep_node_1", b"deeper_1"];
@@ -823,7 +833,9 @@ mod tests {
             &mut proofs,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
-        );
+        )
+        .unwrap()
+        .unwrap();
 
         // read the proof at innertree
         let contextual_proof = proofs.clone();
