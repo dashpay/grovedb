@@ -48,7 +48,7 @@ pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 #[derive(Debug, PartialEq, Eq)]
 /// Proof type
 // TODO: there might be a better name for this
-pub enum ProofType {
+pub enum ProofTokenType {
     Merk,
     SizedMerk,
     EmptyTree,
@@ -58,29 +58,29 @@ pub enum ProofType {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-impl From<ProofType> for u8 {
-    fn from(proof_type: ProofType) -> Self {
-        match proof_type {
-            ProofType::Merk => 0x01,
-            ProofType::SizedMerk => 0x02,
-            ProofType::EmptyTree => 0x04,
-            ProofType::AbsentPath => 0x05,
-            ProofType::PathInfo => 0x06,
-            ProofType::Invalid => 0x10,
+impl From<ProofTokenType> for u8 {
+    fn from(proof_token_type: ProofTokenType) -> Self {
+        match proof_token_type {
+            ProofTokenType::Merk => 0x01,
+            ProofTokenType::SizedMerk => 0x02,
+            ProofTokenType::EmptyTree => 0x04,
+            ProofTokenType::AbsentPath => 0x05,
+            ProofTokenType::PathInfo => 0x06,
+            ProofTokenType::Invalid => 0x10,
         }
     }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-impl From<u8> for ProofType {
+impl From<u8> for ProofTokenType {
     fn from(val: u8) -> Self {
         match val {
-            0x01 => ProofType::Merk,
-            0x02 => ProofType::SizedMerk,
-            0x04 => ProofType::EmptyTree,
-            0x05 => ProofType::AbsentPath,
-            0x06 => ProofType::PathInfo,
-            _ => ProofType::Invalid,
+            0x01 => ProofTokenType::Merk,
+            0x02 => ProofTokenType::SizedMerk,
+            0x04 => ProofTokenType::EmptyTree,
+            0x05 => ProofTokenType::AbsentPath,
+            0x06 => ProofTokenType::PathInfo,
+            _ => ProofTokenType::Invalid,
         }
     }
 }
@@ -112,18 +112,19 @@ impl<'a> ProofReader<'a> {
         }
     }
 
-    // TODO: add documentation
-    pub fn read_next_proof(&mut self, key: &[u8]) -> Result<(ProofType, Vec<u8>), Error> {
+    /// For non verbose proof read the immediate next proof, for verbose proof
+    /// read the first proof that matches a given key
+    pub fn read_next_proof(&mut self, key: &[u8]) -> Result<(ProofTokenType, Vec<u8>), Error> {
         if self.is_verbose {
             self.read_verbose_proof_at_key(key)
         } else {
-            let (proof_type, proof, _) = self.read_proof_with_optional_type(None)?;
-            Ok((proof_type, proof))
+            let (proof_token_type, proof, _) = self.read_proof_with_optional_type(None)?;
+            Ok((proof_token_type, proof))
         }
     }
 
     /// Read the next proof, return the proof type
-    pub fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
+    pub fn read_proof(&mut self) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
         if self.is_verbose {
             self.read_verbose_proof_with_optional_type(None)
         } else {
@@ -132,30 +133,10 @@ impl<'a> ProofReader<'a> {
     }
 
     /// Read verbose proof
-    pub fn read_verbose_proof(&mut self) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
+    pub fn read_verbose_proof(
+        &mut self,
+    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
         self.read_verbose_proof_with_optional_type(None)
-    }
-
-    /// Read proof of type
-    pub fn read_proof_of_type(
-        &mut self,
-        expected_data_type: u8,
-    ) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
-        match self.read_proof_with_optional_type(Some(expected_data_type)) {
-            Ok((_, proof, ..)) => Ok((proof, None)),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Read verbose proof of type
-    pub fn read_verbose_proof_of_type(
-        &mut self,
-        expected_data_type: u8,
-    ) -> Result<(Vec<u8>, Option<Vec<u8>>), Error> {
-        match self.read_verbose_proof_with_optional_type(Some(expected_data_type)) {
-            Ok((_, proof, key)) => Ok((proof, key)),
-            Err(e) => Err(e),
-        }
     }
 
     /// Reads data from proof into slice of specific size
@@ -165,7 +146,7 @@ impl<'a> ProofReader<'a> {
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))
     }
 
-    // TODO: add documentation
+    /// Read varint encoded length information from proof data
     fn read_length_data(&mut self) -> Result<usize, Error> {
         self.proof_data
             .read_varint()
@@ -176,21 +157,21 @@ impl<'a> ProofReader<'a> {
     pub fn read_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
-    ) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
-        let (proof_type, proof, _) =
+    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
+        let (proof_token_type, proof, _) =
             self.read_proof_internal_with_optional_type(expected_data_type_option, false)?;
-        Ok((proof_type, proof, None))
+        Ok((proof_token_type, proof, None))
     }
 
     /// Read verbose proof with optional type
     pub fn read_verbose_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
-    ) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
-        let (proof_type, proof, key) =
+    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
+        let (proof_token_type, proof, key) =
             self.read_proof_internal_with_optional_type(expected_data_type_option, true)?;
         Ok((
-            proof_type,
+            proof_token_type,
             proof,
             Some(key.ok_or(Error::InvalidProof(
                 "key must exist for verbose merk proofs",
@@ -203,16 +184,16 @@ impl<'a> ProofReader<'a> {
     pub fn read_verbose_proof_at_key(
         &mut self,
         expected_key: &[u8],
-    ) -> Result<(ProofType, Vec<u8>), Error> {
-        let (proof_type, proof, key) = loop {
-            let (proof_type, proof, key) = self.read_verbose_proof()?;
+    ) -> Result<(ProofTokenType, Vec<u8>), Error> {
+        let (proof_token_type, proof, _) = loop {
+            let (proof_token_type, proof, key) = self.read_verbose_proof()?;
             let key = key.expect("read_verbose_proof enforces that this exists");
             if key.as_slice() == expected_key {
-                break (proof_type, proof, key);
+                break (proof_token_type, proof, key);
             }
         };
 
-        Ok((proof_type, proof))
+        Ok((proof_token_type, proof))
     }
 
     /// Read proof with optional type
@@ -220,7 +201,7 @@ impl<'a> ProofReader<'a> {
         &mut self,
         expected_data_type_option: Option<u8>,
         is_verbose: bool,
-    ) -> Result<(ProofType, Vec<u8>, Option<Vec<u8>>), Error> {
+    ) -> Result<(ProofTokenType, Vec<u8>, Option<Vec<u8>>), Error> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
@@ -230,15 +211,17 @@ impl<'a> ProofReader<'a> {
             }
         }
 
-        let proof_type: ProofType = data_type[0].into();
+        let proof_token_type: ProofTokenType = data_type[0].into();
 
-        if proof_type == ProofType::EmptyTree || proof_type == ProofType::AbsentPath {
-            // TODO: should this really be none, don't we store this information
-            //  fix this!!
-            return Ok((proof_type, vec![], None));
+        if proof_token_type == ProofTokenType::EmptyTree
+            || proof_token_type == ProofTokenType::AbsentPath
+        {
+            return Ok((proof_token_type, vec![], None));
         }
 
-        let (proof, key) = if proof_type == ProofType::Merk || proof_type == ProofType::SizedMerk {
+        let (proof, key) = if proof_token_type == ProofTokenType::Merk
+            || proof_token_type == ProofTokenType::SizedMerk
+        {
             // if verbose we need to read the key first
             let key = if is_verbose {
                 let key_length = self.read_length_data()?;
@@ -261,7 +244,7 @@ impl<'a> ProofReader<'a> {
             return Err(Error::InvalidProof("expected merk or sized merk proof"));
         };
 
-        Ok((proof_type, proof, key))
+        Ok((proof_token_type, proof, key))
     }
 
     /// Reads path information from the proof vector
@@ -269,7 +252,7 @@ impl<'a> ProofReader<'a> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
-        if data_type != [ProofType::PathInfo.into()] {
+        if data_type != [ProofTokenType::PathInfo.into()] {
             return Err(Error::InvalidProof("wrong data_type, expected path_info"));
         }
 
@@ -290,26 +273,28 @@ impl<'a> ProofReader<'a> {
 #[cfg(feature = "full")]
 /// Write to vec
 // TODO: this can error out handle the error
-pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
-    dest.write_all(value).expect("TODO what if it fails?");
+pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) -> Result<(), Error> {
+    dest.write_all(value)
+        .map_err(|e| Error::InternalError("failed to write to vector"))
 }
 
 #[cfg(feature = "full")]
 /// Write a slice to the vector, first write the length of the slice
-pub fn write_slice_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
-    write_to_vec(dest, value.len().encode_var_vec().as_slice());
-    write_to_vec(dest, value);
+pub fn write_slice_to_vec<W: Write>(dest: &mut W, value: &[u8]) -> Result<(), Error> {
+    write_to_vec(dest, value.len().encode_var_vec().as_slice())?;
+    write_to_vec(dest, value)?;
+    Ok(())
 }
 
 #[cfg(feature = "full")]
 /// Write a slice of a slice to a flat vector:w
-pub fn write_slice_of_slice_to_slice<W: Write>(dest: &mut W, value: &[&[u8]]) {
+pub fn write_slice_of_slice_to_slice<W: Write>(dest: &mut W, value: &[&[u8]]) -> Result<(), Error> {
     // write the number of slices we are about to write
-    write_to_vec(dest, value.len().encode_var_vec().as_slice());
-
+    write_to_vec(dest, value.len().encode_var_vec().as_slice())?;
     for inner_slice in value {
-        write_slice_to_vec(dest, inner_slice);
+        write_slice_to_vec(dest, inner_slice)?;
     }
+    Ok(())
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -391,26 +376,26 @@ impl ProvedPathKeyValue {
 mod tests {
     use merk::proofs::query::ProvedKeyValue;
 
-    use crate::operations::proof::util::{ProofType, ProvedPathKeyValue};
+    use crate::operations::proof::util::{ProofTokenType, ProvedPathKeyValue};
 
     #[test]
-    fn test_proof_type_encoding() {
-        assert_eq!(0x01_u8, ProofType::Merk.into());
-        assert_eq!(0x02_u8, ProofType::SizedMerk.into());
-        assert_eq!(0x04_u8, ProofType::EmptyTree.into());
-        assert_eq!(0x05_u8, ProofType::AbsentPath.into());
-        assert_eq!(0x06_u8, ProofType::PathInfo.into());
-        assert_eq!(0x10_u8, ProofType::Invalid.into());
+    fn test_proof_token_type_encoding() {
+        assert_eq!(0x01_u8, ProofTokenType::Merk.into());
+        assert_eq!(0x02_u8, ProofTokenType::SizedMerk.into());
+        assert_eq!(0x04_u8, ProofTokenType::EmptyTree.into());
+        assert_eq!(0x05_u8, ProofTokenType::AbsentPath.into());
+        assert_eq!(0x06_u8, ProofTokenType::PathInfo.into());
+        assert_eq!(0x10_u8, ProofTokenType::Invalid.into());
     }
 
     #[test]
-    fn test_proof_type_decoding() {
-        assert_eq!(ProofType::Merk, 0x01_u8.into());
-        assert_eq!(ProofType::SizedMerk, 0x02_u8.into());
-        assert_eq!(ProofType::EmptyTree, 0x04_u8.into());
-        assert_eq!(ProofType::AbsentPath, 0x05_u8.into());
-        assert_eq!(ProofType::PathInfo, 0x06_u8.into());
-        assert_eq!(ProofType::Invalid, 0x10_u8.into());
+    fn test_proof_token_type_decoding() {
+        assert_eq!(ProofTokenType::Merk, 0x01_u8.into());
+        assert_eq!(ProofTokenType::SizedMerk, 0x02_u8.into());
+        assert_eq!(ProofTokenType::EmptyTree, 0x04_u8.into());
+        assert_eq!(ProofTokenType::AbsentPath, 0x05_u8.into());
+        assert_eq!(ProofTokenType::PathInfo, 0x06_u8.into());
+        assert_eq!(ProofTokenType::Invalid, 0x10_u8.into());
     }
 
     #[test]

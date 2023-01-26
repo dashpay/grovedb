@@ -331,7 +331,6 @@ pub struct ProofVerificationResult {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Verifies the encoded proof with the given query and expected hash
-// TODO: borrow the expected hash instead
 pub fn verify_query(
     bytes: &[u8],
     query: &Query,

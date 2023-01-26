@@ -28,7 +28,6 @@
 
 //! Query tests
 
-use itertools::cloned;
 use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
 use tempfile::TempDir;
@@ -2166,7 +2165,6 @@ fn test_subset_proof_verification() {
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
-    // TODO: assert things about the result set items
     assert_eq!(
         result_set[0],
         (
@@ -2288,8 +2286,7 @@ fn test_chained_path_query_verification() {
     let verbose_proof = db.prove_verbose(&path_query).unwrap().unwrap();
     assert!(verbose_proof.len() > proof.len());
 
-    // TODO: change the tests here when you want to confirm path non equality works
-    // // init deeper_1 path query
+    // init deeper_1 path query
     let mut query = Query::new();
     query.insert_all();
 

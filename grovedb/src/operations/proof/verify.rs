@@ -28,10 +28,7 @@
 
 //! Verify proof operations
 
-use std::{
-    borrow::{Borrow, Cow},
-    collections::BTreeMap,
-};
+use std::{borrow::Cow, collections::BTreeMap};
 
 use merk::proofs::query::PathKey;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -52,7 +49,9 @@ use crate::{
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
-    operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
+    operations::proof::util::{
+        ProofReader, ProofTokenType, ProofTokenType::AbsentPath, EMPTY_TREE_HASH,
+    },
     Element, Error, GroveDb, PathQuery,
 };
 
@@ -268,12 +267,13 @@ impl ProofVerifier {
                 let original_path_in_new_path = original_path
                     .iter()
                     .all(|key| path_slices.contains(&key.as_slice()));
+
                 if !original_path_in_new_path {
                     return Err(Error::InvalidProof(
                         "the original path should be a subset of the subset path",
                     ));
                 } else {
-                    // we need to construct a new query
+                    // We construct a new path query
                     let path_not_common = (&path_slices[original_path.len()..]).to_vec();
                     let mut path_iter = path_not_common.iter();
 
@@ -295,15 +295,14 @@ impl ProofVerifier {
             }
         }
 
-        let (proof_type, proof, _) = proof_reader.read_proof()?;
+        let (proof_token_type, proof, _) = proof_reader.read_proof()?;
 
-        let root_hash = if proof_type == AbsentPath {
+        let root_hash = if proof_token_type == AbsentPath {
             self.verify_absent_path(&mut proof_reader, path_slices)?
         } else {
-            // TODO: might be nicer to do with references
             let path_owned = query.path.iter().map(|a| a.to_vec()).collect();
             let mut last_subtree_root_hash = self.execute_subquery_proof(
-                proof_type,
+                proof_token_type,
                 proof,
                 &mut proof_reader,
                 query.as_ref(),
@@ -324,7 +323,7 @@ impl ProofVerifier {
 
     fn execute_subquery_proof(
         &mut self,
-        proof_type: ProofType,
+        proof_token_type: ProofTokenType,
         proof: Vec<u8>,
         proof_reader: &mut ProofReader,
         query: &PathQuery,
@@ -332,11 +331,11 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let last_root_hash: [u8; 32];
 
-        match proof_type {
-            ProofType::SizedMerk => {
+        match proof_token_type {
+            ProofTokenType::SizedMerk => {
                 // verify proof with limit and offset values
                 let verification_result = self.execute_merk_proof(
-                    ProofType::SizedMerk,
+                    ProofTokenType::SizedMerk,
                     &proof,
                     &query.query.query,
                     query.query.query.left_to_right,
@@ -345,12 +344,12 @@ impl ProofVerifier {
 
                 last_root_hash = verification_result.0;
             }
-            ProofType::Merk => {
+            ProofTokenType::Merk => {
                 // for non leaf subtrees, we want to prove that all the queried keys
                 // have an accompanying proof as long as the limit is non zero
                 // and their child subtree is not empty
                 let (proof_root_hash, children) = self.execute_merk_proof(
-                    ProofType::Merk,
+                    ProofTokenType::Merk,
                     &proof,
                     &query.query.query,
                     query.query.query.left_to_right,
@@ -429,7 +428,7 @@ impl ProofVerifier {
                                 if subquery_value.is_none() {
                                     self.verify_subquery_path(
                                         proof_reader,
-                                        ProofType::SizedMerk,
+                                        ProofTokenType::SizedMerk,
                                         &mut subquery_path.expect("confirmed it has a value above"),
                                         &mut expected_combined_child_hash,
                                         &mut current_value_bytes,
@@ -440,7 +439,7 @@ impl ProofVerifier {
                                     let (_, result_set_opt, encountered_absence) = self
                                         .verify_subquery_path(
                                             proof_reader,
-                                            ProofType::Merk,
+                                            ProofTokenType::Merk,
                                             &mut subquery_path
                                                 .expect("confirmed it has a value above"),
                                             &mut expected_combined_child_hash,
@@ -484,10 +483,11 @@ impl ProofVerifier {
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
 
-                            let (child_proof_type, child_proof) = proof_reader
+                            let (child_proof_token_type, child_proof) = proof_reader
                                 .read_next_proof(new_path.last().unwrap_or(&Default::default()))?;
+
                             let child_hash = self.execute_subquery_proof(
-                                child_proof_type,
+                                child_proof_token_type,
                                 child_proof,
                                 proof_reader,
                                 &new_path_query,
@@ -534,7 +534,7 @@ impl ProofVerifier {
                     }
                 }
             }
-            ProofType::EmptyTree => {
+            ProofTokenType::EmptyTree => {
                 last_root_hash = EMPTY_TREE_HASH;
             }
             _ => {
@@ -578,7 +578,7 @@ impl ProofVerifier {
     fn verify_subquery_path(
         &mut self,
         proof_reader: &mut ProofReader,
-        expected_proof_type: ProofType,
+        expected_proof_token_type: ProofTokenType,
         subquery_path: &mut Path,
         expected_root_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
@@ -588,22 +588,22 @@ impl ProofVerifier {
         let last_key = subquery_path.remove(subquery_path.len() - 1);
 
         for subquery_key in subquery_path.iter() {
-            let (proof_type, subkey_proof) =
+            let (proof_token_type, subkey_proof) =
                 proof_reader.read_next_proof(current_path.last().unwrap_or(&Default::default()))?;
             // intermediate proofs are all going to be unsized merk proofs
-            if proof_type != ProofType::Merk {
+            if proof_token_type != ProofTokenType::Merk {
                 return Err(Error::InvalidProof(
                     "expected MERK proof type for intermediate subquery path keys",
                 ));
             }
-            match proof_type {
-                ProofType::Merk => {
+            match proof_token_type {
+                ProofTokenType::Merk => {
                     let mut key_as_query = Query::new();
                     key_as_query.insert_key(subquery_key.to_owned());
                     current_path.push(subquery_key.to_owned());
 
                     let (proof_root_hash, result_set) = self.execute_merk_proof(
-                        proof_type,
+                        proof_token_type,
                         &subkey_proof,
                         &key_as_query,
                         key_as_query.left_to_right,
@@ -651,22 +651,22 @@ impl ProofVerifier {
             }
         }
 
-        let (proof_type, subkey_proof) =
+        let (proof_token_type, subkey_proof) =
             proof_reader.read_next_proof(current_path.last().unwrap_or(&Default::default()))?;
-        if proof_type != expected_proof_type {
+        if proof_token_type != expected_proof_token_type {
             return Err(Error::InvalidProof(
                 "unexpected proof type for subquery path",
             ));
         }
 
-        match proof_type {
-            ProofType::Merk | ProofType::SizedMerk => {
+        match proof_token_type {
+            ProofTokenType::Merk | ProofTokenType::SizedMerk => {
                 let mut key_as_query = Query::new();
                 key_as_query.insert_key(last_key.to_owned());
                 current_path.push(last_key);
 
                 let verification_result = self.execute_merk_proof(
-                    proof_type,
+                    proof_token_type,
                     &subkey_proof,
                     &key_as_query,
                     key_as_query.left_to_right,
@@ -691,15 +691,17 @@ impl ProofVerifier {
         let mut last_result_set: ProvedPathKeyValues = vec![];
 
         for key in path_slices {
-            // TODO: fix this
-            let (merk_proof, _) = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
+            let (proof_token_type, merk_proof, _) = proof_reader.read_proof()?;
+            if proof_token_type != ProofTokenType::Merk {
+                return Err(Error::InvalidProof("expected a merk proof for absent path"));
+            }
 
             let mut child_query = Query::new();
             child_query.insert_key(key.to_vec());
 
             // TODO: don't pass empty vec
             let proof_result = self.execute_merk_proof(
-                ProofType::Merk,
+                ProofTokenType::Merk,
                 &merk_proof,
                 &child_query,
                 true,
@@ -763,9 +765,9 @@ impl ProofVerifier {
         while let Some((key, path_slice)) = split_path {
             // for every subtree, there should be a corresponding proof for the parent
             // which should prove that this subtree is a child of the parent tree
-            let (proof_type, parent_merk_proof) =
+            let (proof_token_type, parent_merk_proof) =
                 proof_reader.read_next_proof(path_slice.last().unwrap_or(&Default::default()))?;
-            if proof_type != ProofType::Merk {
+            if proof_token_type != ProofTokenType::Merk {
                 return Err(Error::InvalidProof("wrong data_type expected merk proof"));
             }
 
@@ -773,7 +775,7 @@ impl ProofVerifier {
             parent_query.insert_key(key.to_vec());
 
             let proof_result = self.execute_merk_proof(
-                ProofType::Merk,
+                ProofTokenType::Merk,
                 &parent_merk_proof,
                 &parent_query,
                 query.query.query.left_to_right,
@@ -820,13 +822,13 @@ impl ProofVerifier {
     /// encountered i.e. update the limit, offset and result set values
     fn execute_merk_proof(
         &mut self,
-        proof_type: ProofType,
+        proof_token_type: ProofTokenType,
         proof: &[u8],
         query: &Query,
         left_to_right: bool,
         path: Path,
     ) -> Result<(CryptoHash, Option<ProvedPathKeyValues>), Error> {
-        let is_sized_proof = proof_type == ProofType::SizedMerk;
+        let is_sized_proof = proof_token_type == ProofTokenType::SizedMerk;
         let mut limit = None;
         let mut offset = None;
 

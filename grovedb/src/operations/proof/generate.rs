@@ -52,7 +52,7 @@ use crate::operations::proof::util::{write_slice_of_slice_to_slice, write_slice_
 #[cfg(feature = "full")]
 use crate::{
     operations::proof::util::{
-        reduce_limit_and_offset_by, write_to_vec, ProofType, EMPTY_TREE_HASH,
+        reduce_limit_and_offset_by, write_to_vec, ProofTokenType, EMPTY_TREE_HASH,
     },
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Query,
@@ -63,8 +63,6 @@ type LimitOffset = (Option<u16>, Option<u16>);
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    // TODO: how do you deal with many path queries with verbose and non verbose
-    //  proving
     /// Prove query many
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
         if query.len() > 1 {
@@ -72,6 +70,16 @@ impl GroveDb {
             self.prove_query(&query)
         } else {
             self.prove_query(query[0])
+        }
+    }
+
+    /// Prove verbose many
+    pub fn prove_verbose_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
+        if query.len() > 1 {
+            let query = cost_return_on_error_default!(PathQuery::merge(query));
+            self.prove_verbose(&query)
+        } else {
+            self.prove_verbose(query[0])
         }
     }
 
@@ -87,9 +95,7 @@ impl GroveDb {
         self.prove_internal(query, true)
     }
 
-    // TODO: better comment??
     /// Generates a verbose or non verbose proof based on a bool
-    // TODO: use more explict type definition for the verbose bool
     fn prove_internal(&self, query: &PathQuery, is_verbose: bool) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
 
@@ -97,13 +103,14 @@ impl GroveDb {
         let mut limit: Option<u16> = query.query.limit;
         let mut offset: Option<u16> = query.query.offset;
 
-        // We prevent the generation of verbose proofs with path queries that have a
-        // limit or offset This is because once they are set, the subset nature
-        // of a path query now depends not only on the path query definition,
-        // but also on the current state of the db. Meaning a path query that
-        // could have a valid subset could potentially not be due to the current state
-        // Hence verification errors due to non subset with not be deterministic, we
-        // don't want this.
+        // We prevent the generation of verbose proofs for path queries that have a
+        // limit or offset.
+        // This is because once they are set, the subset nature
+        // of the path query now depends not only on the path query definition,
+        // but also on the current state of the db.
+        // Meaning a path query that could have been a valid subset could potentially
+        // not be due to the current state.
+        // Hence verification errors due to non subset issues will not be deterministic.
         if (limit.is_some() || offset.is_some()) && is_verbose {
             return Err(Error::InvalidInput(
                 "cannot generate verbose proof for path-query with a limit or offset value",
@@ -185,7 +192,10 @@ impl GroveDb {
 
         let subtree = cost_return_on_error!(&mut cost, self.open_subtree(path.iter().copied()));
         if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
-            write_to_vec(proofs, &[ProofType::EmptyTree.into()]);
+            cost_return_on_error_no_add!(
+                &cost,
+                write_to_vec(proofs, &[ProofTokenType::EmptyTree.into()])
+            );
             return Ok(()).wrap_with_cost(cost);
         }
 
@@ -199,7 +209,7 @@ impl GroveDb {
                         &subtree,
                         &query.query.query,
                         (*current_limit, *current_offset),
-                        ProofType::SizedMerk,
+                        ProofTokenType::SizedMerk,
                         proofs,
                         is_verbose,
                         path.iter().last().unwrap_or(&(&[][..]))
@@ -244,10 +254,10 @@ impl GroveDb {
                                 &subtree,
                                 &query.query.query,
                                 (None, None),
-                                ProofType::Merk,
+                                ProofTokenType::Merk,
                                 proofs,
                                 is_verbose,
-                                path.iter().last().unwrap_or(&(&[][..]))
+                                path.iter().last().unwrap_or(&Default::default())
                             )
                         );
                     }
@@ -275,10 +285,10 @@ impl GroveDb {
                                         &inner_subtree,
                                         &key_as_query,
                                         (None, None),
-                                        ProofType::Merk,
+                                        ProofTokenType::Merk,
                                         proofs,
                                         is_verbose,
-                                        new_path.iter().last().unwrap_or(&(&[][..]))
+                                        new_path.iter().last().unwrap_or(&Default::default())
                                     )
                                 );
 
@@ -323,10 +333,10 @@ impl GroveDb {
                                     &inner_subtree,
                                     &key_as_query,
                                     (None, None),
-                                    ProofType::Merk,
+                                    ProofTokenType::Merk,
                                     proofs,
                                     is_verbose,
-                                    new_path.iter().last().unwrap_or(&(&[][..]))
+                                    new_path.iter().last().unwrap_or(&Default::default())
                                 )
                             );
 
@@ -401,10 +411,10 @@ impl GroveDb {
                     &subtree,
                     &query.query.query,
                     (*current_limit, *current_offset),
-                    ProofType::SizedMerk,
+                    ProofTokenType::SizedMerk,
                     proofs,
                     is_verbose,
-                    path.iter().last().unwrap_or(&(&[][..]))
+                    path.iter().last().unwrap_or(&Default::default())
                 )
             );
 
@@ -443,10 +453,10 @@ impl GroveDb {
                     &subtree,
                     &query,
                     (None, None),
-                    ProofType::Merk,
+                    ProofTokenType::Merk,
                     proof_result,
                     is_verbose,
-                    path_slice.iter().last().unwrap_or(&(&[][..]))
+                    path_slice.iter().last().unwrap_or(&Default::default())
                 )
             );
             split_path = path_slice.split_last();
@@ -456,17 +466,14 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    // TODO: look into what happens when the merk is really really big
-    //  does the single byte length work for this??
     fn generate_and_store_merk_proof<'a, 'p, S: 'a, P>(
         &self,
         path: P,
         subtree: &'a Merk<S>,
         query: &Query,
         limit_offset: LimitOffset,
-        proof_type: ProofType,
+        proof_token_type: ProofTokenType,
         proofs: &mut Vec<u8>,
-        // TODO: update type definition with something more explicit
         is_verbose: bool,
         key: &[u8],
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
@@ -475,7 +482,14 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]> + Iterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        // TODO: enforce that proof type should be merk or sized merk
+        if proof_token_type != ProofTokenType::Merk && proof_token_type != ProofTokenType::SizedMerk
+        {
+            return Err(Error::InvalidInput(
+                "expect proof type for merk proof generation to be sized or merk proof type",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         let mut cost = OperationCost::default();
 
         let mut proof_result = subtree
@@ -488,30 +502,32 @@ impl GroveDb {
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
-        write_to_vec(proofs, &[proof_type.into()]);
+        cost_return_on_error_no_add!(&cost, write_to_vec(proofs, &[proof_token_type.into()]));
 
         // if is verbose, write the key
         if is_verbose {
-            write_slice_to_vec(proofs, &key);
+            cost_return_on_error_no_add!(&cost, write_slice_to_vec(proofs, &key));
         }
 
         // write the merk proof
-        write_slice_to_vec(proofs, &proof_bytes);
+        cost_return_on_error_no_add!(&cost, write_slice_to_vec(proofs, &proof_bytes));
 
         Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
     }
 
     /// Serializes a path and add it to the proof vector
-    // TODO: do you really need to consume the path
     pub fn generate_and_store_path_proof(
         path: Vec<&[u8]>,
         proofs: &mut Vec<u8>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        write_to_vec(proofs, &[ProofType::PathInfo.into()]);
+        cost_return_on_error_no_add!(
+            &cost,
+            write_to_vec(proofs, &[ProofTokenType::PathInfo.into()])
+        );
 
-        write_slice_of_slice_to_slice(proofs, &path);
+        cost_return_on_error_no_add!(&cost, write_slice_of_slice_to_slice(proofs, &path));
 
         Ok(()).wrap_with_cost(cost)
     }
@@ -524,7 +540,10 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        write_to_vec(proof_result, &[ProofType::AbsentPath.into()]);
+        cost_return_on_error_no_add!(
+            &cost,
+            write_to_vec(proof_result, &[ProofTokenType::AbsentPath.into()])
+        );
         let mut current_path: Vec<&[u8]> = vec![];
 
         let mut split_path = path_slices.split_first();
@@ -553,7 +572,7 @@ impl GroveDb {
                     &subtree.expect("confirmed not error above"),
                     &next_key_query,
                     (None, None),
-                    ProofType::Merk,
+                    ProofTokenType::Merk,
                     proof_result,
                     is_verbose,
                     current_path.iter().last().unwrap_or(&(&[][..]))
@@ -575,7 +594,7 @@ impl GroveDb {
 
     /// Converts Items to Node::KV from Node::KVValueHash
     /// Converts References to Node::KVRefValueHash and sets the value to the
-    /// /// referenced element
+    /// referenced element
     fn post_process_proof<'p, P>(
         &self,
         path: P,
@@ -655,7 +674,7 @@ mod tests {
     use merk::{execute_proof, proofs::Query};
 
     use crate::{
-        operations::proof::util::{ProofReader, ProofType},
+        operations::proof::util::{ProofReader, ProofTokenType},
         tests::{make_deep_tree, TEST_LEAF},
         GroveDb,
     };
@@ -672,7 +691,6 @@ mod tests {
         assert_eq!(path, decoded_path);
     }
 
-    // TODO: should move this to util
     #[test]
     fn test_reading_of_verbose_proofs() {
         let db = make_deep_tree();
@@ -693,7 +711,7 @@ mod tests {
             &merk,
             &query,
             (None, None),
-            ProofType::Merk,
+            ProofTokenType::Merk,
             &mut proof,
             true,
             b"innertree",
@@ -701,9 +719,9 @@ mod tests {
         assert_ne!(proof.len(), 0);
 
         let mut proof_reader = ProofReader::new(&proof);
-        let (proof_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
+        let (proof_token_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
 
-        assert_eq!(proof_type, ProofType::Merk);
+        assert_eq!(proof_token_type, ProofTokenType::Merk);
         assert_eq!(key, Some(b"innertree".to_vec()));
 
         let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
@@ -723,7 +741,7 @@ mod tests {
             &merk,
             &query,
             (None, None),
-            ProofType::Merk,
+            ProofTokenType::Merk,
             &mut proof,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
@@ -731,9 +749,9 @@ mod tests {
         assert_ne!(proof.len(), 0);
 
         let mut proof_reader = ProofReader::new(&proof);
-        let (proof_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
+        let (proof_token_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
 
-        assert_eq!(proof_type, ProofType::Merk);
+        assert_eq!(proof_token_type, ProofTokenType::Merk);
         assert_eq!(key, Some(vec![]));
 
         let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
@@ -765,7 +783,7 @@ mod tests {
             &merk,
             &query,
             (None, None),
-            ProofType::Merk,
+            ProofTokenType::Merk,
             &mut proofs,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
@@ -783,7 +801,7 @@ mod tests {
             &merk,
             &query,
             (None, None),
-            ProofType::Merk,
+            ProofTokenType::Merk,
             &mut proofs,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
@@ -801,7 +819,7 @@ mod tests {
             &merk,
             &query,
             (None, None),
-            ProofType::Merk,
+            ProofTokenType::Merk,
             &mut proofs,
             true,
             path.iter().last().unwrap_or(&(&[][..])),
@@ -810,11 +828,11 @@ mod tests {
         // read the proof at innertree
         let contextual_proof = proofs.clone();
         let mut proof_reader = ProofReader::new(&contextual_proof);
-        let (proof_type, proof) = proof_reader
+        let (proof_token_type, proof) = proof_reader
             .read_verbose_proof_at_key(b"innertree")
             .unwrap();
 
-        assert_eq!(proof_type, ProofType::Merk);
+        assert_eq!(proof_token_type, ProofTokenType::Merk);
 
         let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
             .unwrap()
@@ -825,11 +843,11 @@ mod tests {
         // read the proof at innertree4
         let contextual_proof = proofs.clone();
         let mut proof_reader = ProofReader::new(&contextual_proof);
-        let (proof_type, proof) = proof_reader
+        let (proof_token_type, proof) = proof_reader
             .read_verbose_proof_at_key(b"innertree4")
             .unwrap();
 
-        assert_eq!(proof_type, ProofType::Merk);
+        assert_eq!(proof_token_type, ProofTokenType::Merk);
 
         let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
             .unwrap()
@@ -840,9 +858,10 @@ mod tests {
         // read the proof at deeper_1
         let contextual_proof = proofs.clone();
         let mut proof_reader = ProofReader::new(&contextual_proof);
-        let (proof_type, proof) = proof_reader.read_verbose_proof_at_key(b"deeper_1").unwrap();
+        let (proof_token_type, proof) =
+            proof_reader.read_verbose_proof_at_key(b"deeper_1").unwrap();
 
-        assert_eq!(proof_type, ProofType::Merk);
+        assert_eq!(proof_token_type, ProofTokenType::Merk);
 
         let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
             .unwrap()
