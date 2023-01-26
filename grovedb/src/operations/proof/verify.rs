@@ -101,19 +101,36 @@ impl GroveDb {
         Ok((hash, verifier.result_set))
     }
 
+    /// Verify non subset query return the absence proof
+    pub fn verify_query_with_absence_proof(
+        proof: &[u8],
+        query: &PathQuery,
+    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+        Self::verify_with_absence_proof(proof, query, Self::verify_query)
+    }
+
+    /// Verify subset query return the absence proof
+    pub fn verify_subset_query_with_absence_proof(
+        proof: &[u8],
+        query: &PathQuery,
+    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+        Self::verify_with_absence_proof(proof, query, Self::verify_subset_query)
+    }
+
     /// Verifies the proof and returns both elements in the result set and the
     /// elements in query but not in state.
     /// Note: This only works for certain path queries.
     // TODO: We should not care about terminal keys, as theoretically they can be
     //  infinite  we should perform the absence check solely on the proof and the
     //  given key, this is a temporary solution
-    pub fn verify_query_with_absence_proof(
+    fn verify_with_absence_proof<T>(
         proof: &[u8],
         query: &PathQuery,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
-        // make sure the path query meets the requirements for generating terminal
-        // keys
-
+        verification_fn: T,
+    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error>
+    where
+        T: Fn(&[u8], &PathQuery) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error>,
+    {
         // must have a limit
         let max_results = query.query.limit.ok_or(Error::NotSupported(
             "limits must be set in verify_query_with_absence_proof",
@@ -129,7 +146,7 @@ impl GroveDb {
         let terminal_keys = query.terminal_keys(max_results)?;
 
         // need to actually verify the query
-        let (root_hash, result_set) = Self::verify_query(proof, query)?;
+        let (root_hash, result_set) = verification_fn(proof, query)?;
 
         // convert the result set to a btree map
         let mut result_set_as_map: BTreeMap<PathKey, Option<Element>> = result_set
