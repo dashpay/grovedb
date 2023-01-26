@@ -31,6 +31,7 @@ use std::io::Read;
 #[cfg(feature = "full")]
 use std::io::Write;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader};
 use merk::{
     proofs::query::{Key, Path, ProvedKeyValue},
