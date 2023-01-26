@@ -33,9 +33,16 @@ use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
 use tempfile::TempDir;
 
-use crate::{batch::GroveDbOp, query_result_type::{PathKeyOptionalElementTrio, QueryResultType}, reference_path::ReferencePathType, tests::{
-    common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb, TEST_LEAF,
-}, Element, GroveDb, PathQuery, SizedQuery, Error};
+use crate::{
+    batch::GroveDbOp,
+    query_result_type::{PathKeyOptionalElementTrio, QueryResultType},
+    reference_path::ReferencePathType,
+    tests::{
+        common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb,
+        ANOTHER_TEST_LEAF, TEST_LEAF,
+    },
+    Element, Error, GroveDb, PathQuery, SizedQuery,
+};
 
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
@@ -2233,20 +2240,26 @@ fn test_subset_proof_verification() {
         cloned_path_query
     };
     let verbose_proof_result = db.prove_verbose(&path_query_with_limit).unwrap();
-    assert!(matches!(verbose_proof_result, Err(Error::InvalidInput(
-        "cannot generate verbose proof for path-query with a limit or offset value"
-    ))));
+    assert!(matches!(
+        verbose_proof_result,
+        Err(Error::InvalidInput(
+            "cannot generate verbose proof for path-query with a limit or offset value"
+        ))
+    ));
 
     // should not allow verbose proof generation if offset is set
     let path_query_with_offset = {
         let mut cloned_path_query = path_query.clone();
-        cloned_path_query.query.offset= Some(10);
+        cloned_path_query.query.offset = Some(10);
         cloned_path_query
     };
     let verbose_proof_result = db.prove_verbose(&path_query_with_offset).unwrap();
-    assert!(matches!(verbose_proof_result, Err(Error::InvalidInput(
-        "cannot generate verbose proof for path-query with a limit or offset value"
-    ))));
+    assert!(matches!(
+        verbose_proof_result,
+        Err(Error::InvalidInput(
+            "cannot generate verbose proof for path-query with a limit or offset value"
+        ))
+    ));
 }
 
 #[test]
