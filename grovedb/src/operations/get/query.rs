@@ -124,6 +124,7 @@ where {
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
+        is_verbose: bool,
     ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
             Err(Error::NotSupported(
@@ -131,7 +132,11 @@ where {
             ))
             .wrap_with_cost(Default::default())
         } else {
-            self.prove_query(path_query)
+            if is_verbose {
+                self.prove_verbose(path_query)
+            } else {
+                self.prove_query(path_query)
+            }
         }
     }
 
