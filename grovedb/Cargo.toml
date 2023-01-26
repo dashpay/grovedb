@@ -56,5 +56,6 @@ verify = [
     "thiserror",
     "serde/derive",
     "storage/rocksdb_storage",
-    "bincode"
+    "bincode",
+    "integer-encoding",
 ]
