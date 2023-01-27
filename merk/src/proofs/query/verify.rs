@@ -101,6 +101,8 @@ pub fn execute_proof(
 
                 if !in_range {
                     // this is the first data we have encountered for this query item
+                    // we need to ensure that this is indeed the first node in state for this query
+                    // item
                     if left_to_right {
                         // ensure lower bound of query item is proven
                         match last_push {
@@ -242,21 +244,23 @@ pub fn execute_proof(
             Ok(())
         };
 
-        if let Node::KV(key, value) = node {
-            execute_node(key, Some(value), value_hash(value).unwrap())?;
-        } else if let Node::KVValueHash(key, value, value_hash) = node {
-            execute_node(key, Some(value), *value_hash)?;
-        } else if let Node::KVDigest(key, value_hash) = node {
-            execute_node(key, None, *value_hash)?;
-        } else if let Node::KVRefValueHash(key, value, value_hash) = node {
-            execute_node(key, Some(value), *value_hash)?;
-        } else if in_range {
-            // we encountered a queried range but the proof was abridged (saw a
-            // non-KV push), we are missing some part of the range
-            return Err(Error::InvalidProofError(
-                "Proof is missing data for query for range".to_string(),
-            ));
-        }
+        match node {
+            Node::KV(key, value) => execute_node(key, Some(value), value_hash(value).unwrap())?,
+            Node::KVValueHash(key, value, value_hash)
+            | Node::KVRefValueHash(key, value, value_hash) => {
+                execute_node(key, Some(value), value_hash.to_owned())?
+            }
+            Node::KVDigest(key, value_hash) => execute_node(key, None, value_hash.to_owned())?,
+            _ => {
+                if in_range {
+                    // we encountered a queried range but the proof was abridged (saw a
+                    // non-KV push), we are missing some part of the range
+                    return Err(Error::InvalidProofError(
+                        "Proof is missing data for query for range".to_string(),
+                    ));
+                }
+            }
+        };
 
         last_push = Some(node.clone());
 
@@ -269,6 +273,7 @@ pub fn execute_proof(
     // tree
     if query.peek().is_some() {
         if current_limit == Some(0) {
+            // do nothing
         } else {
             match last_push {
                 // last node in tree was less than queried item
@@ -281,7 +286,7 @@ pub fn execute_proof(
                 // remaining query items
                 _ => {
                     return Err(Error::InvalidProofError(
-                        "Proof is missing data for query a".to_string(),
+                        "Proof is missing data for query".to_string(),
                     ))
                     .wrap_with_cost(cost)
                 }
