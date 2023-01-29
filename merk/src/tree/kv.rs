@@ -40,6 +40,9 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "full")]
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
+use crate::tree::kv::ValueDefinedCostType::{
+    LayeredSumItemValueDefinedCost, LayeredValueDefinedCost, SumItemValueDefinedCost,
+};
 #[cfg(feature = "full")]
 use crate::{
     tree::{
@@ -54,6 +57,23 @@ use crate::{
 //       field to save even more. also might be possible to combine key
 //       field and value field.
 
+/// It is possible to predefine the value cost of specific types
+#[cfg(feature = "full")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValueDefinedCostType {
+    /// There is a predefined cost used to remove the root key from a sub tree
+    /// In order to keep node costs associated to the user performing
+    /// modifications This should be used for trees
+    LayeredValueDefinedCost(u32),
+    /// There is a predefined cost used to remove the root key from a sub tree
+    /// The sum item is also considered constant
+    /// This should be used for sum trees
+    LayeredSumItemValueDefinedCost(u32),
+    /// There is a predefined cost used to make the sum item cost constant
+    /// This should be used for sum items
+    SumItemValueDefinedCost(u32),
+}
+
 #[cfg(feature = "full")]
 /// Contains a key/value pair, and the hash of the key/value pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +83,7 @@ pub struct KV {
     pub(super) feature_type: TreeFeatureType,
     /// The value defined cost is only used on insert
     /// Todo: find another way to do this without this attribute.
-    pub(crate) value_defined_cost: Option<u32>,
+    pub(crate) value_defined_cost: Option<ValueDefinedCostType>,
     pub(super) hash: CryptoHash,
     pub(super) value_hash: CryptoHash,
 }
@@ -151,7 +171,7 @@ impl KV {
                 key,
                 value,
                 feature_type,
-                value_defined_cost: Some(value_cost),
+                value_defined_cost: Some(LayeredValueDefinedCost(value_cost)),
                 hash,
                 value_hash: combined_value_hash,
             })
@@ -217,7 +237,7 @@ impl KV {
         reference_value_hash: CryptoHash,
         value_cost: u32,
     ) -> CostContext<Self> {
-        self.value_defined_cost = Some(value_cost);
+        self.value_defined_cost = Some(LayeredValueDefinedCost(value_cost));
         self.put_value_and_reference_value_hash_then_update(value, reference_value_hash)
     }
 
@@ -416,6 +436,46 @@ impl KV {
             value_cost,
             is_sum_node,
         )
+    }
+
+    #[inline]
+    pub(crate) fn layered_sum_item_value_byte_cost_size(&self, value_cost: u32) -> u32 {
+        let key_len = self.key.len() as u32;
+        let is_sum_node = self.feature_type.is_sum_feature();
+
+        Self::layered_value_byte_cost_size_for_key_and_value_lengths(
+            key_len,
+            value_cost,
+            is_sum_node,
+        )
+    }
+
+    #[inline]
+    pub(crate) fn sum_item_value_byte_cost_size(&self, value_cost: u32) -> u32 {
+        let key_len = self.key.len() as u32;
+        let is_sum_node = self.feature_type.is_sum_feature();
+
+        Self::layered_value_byte_cost_size_for_key_and_value_lengths(
+            key_len,
+            value_cost,
+            is_sum_node,
+        )
+    }
+
+    /// Costs based on predefined types (Trees, SumTrees, SumItems) that behave
+    /// differently than items or references
+    #[inline]
+    pub(crate) fn predefined_value_byte_cost_size(
+        &self,
+        value_defined_cost_type: &ValueDefinedCostType,
+    ) -> u32 {
+        match value_defined_cost_type {
+            LayeredValueDefinedCost(cost) => self.layered_value_byte_cost_size(*cost),
+            LayeredSumItemValueDefinedCost(cost) => {
+                self.layered_sum_item_value_byte_cost_size(*cost)
+            }
+            SumItemValueDefinedCost(cost) => self.sum_item_value_byte_cost_size(*cost),
+        }
     }
 
     #[inline]

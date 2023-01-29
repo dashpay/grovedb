@@ -62,8 +62,9 @@ use crate::{
     },
     proofs::{encode_into, query::query_item::QueryItem, Op as ProofOp, Query},
     tree::{
-        kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
-        Walker, NULL_HASH,
+        kv::{ValueDefinedCostType, KV},
+        AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree, Walker,
+        NULL_HASH,
     },
     Error::{CostsError, EdError, StorageError},
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
@@ -780,7 +781,10 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>), Error>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -876,7 +880,11 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<(bool, Option<u32>), Error>,
+        U: FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let maybe_walker = self
@@ -884,10 +892,6 @@ where
             .take()
             .take()
             .map(|tree| Walker::new(tree, self.source()));
-
-        if maybe_walker.is_some() {
-            // dbg!(&maybe_walker.as_ref().unwrap().tree());
-        }
 
         Walker::apply_to(
             maybe_walker,
@@ -1010,7 +1014,10 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>), Error>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -1342,7 +1349,10 @@ impl Commit for MerkCommitter {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>), Error>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,

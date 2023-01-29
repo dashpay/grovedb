@@ -1524,6 +1524,149 @@ mod tests {
     }
 
     #[test]
+    fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [0; 32].as_slice(),
+            Element::new_sum_item(15),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                [0; 32].as_slice(),
+                Element::new_sum_item(1000000),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 239,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 305, // todo verify this
+                hash_node_calls: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item_parent_sum_tree_already_big(
+    ) {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [1; 32].as_slice(),
+            Element::new_sum_item(1000000),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [0; 32].as_slice(),
+            Element::new_sum_item(15),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                [0; 32].as_slice(),
+                Element::new_sum_item(1000000),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 239,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 305, // todo verify this
+                hash_node_calls: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_same_cost_in_underlying_sum_tree_smaller_sum_item() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [0; 32].as_slice(),
+            Element::new_sum_item(1000000),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                [0; 32].as_slice(),
+                Element::new_sum_item(15),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 239,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 305, // todo verify this
+                hash_node_calls: 9,
+            }
+        );
+    }
+
+    #[test]
     fn test_one_update_bigger_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();

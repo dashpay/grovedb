@@ -70,7 +70,13 @@ use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
-    tree::{kv::KV, value_hash, NULL_HASH},
+    tree::{
+        kv::{
+            ValueDefinedCostType::{LayeredValueDefinedCost, SumItemValueDefinedCost},
+            KV,
+        },
+        value_hash, NULL_HASH,
+    },
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
 };
 pub use options::BatchApplyOptions;
@@ -84,7 +90,7 @@ use crate::{
     batch::{
         batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
     },
-    element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
@@ -1131,7 +1137,16 @@ where
                                         let tree_value_cost = tree_cost_size
                                             + flags_len
                                             + flags_len.required_space() as u32;
-                                        Ok((true, Some(tree_value_cost)))
+                                        Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
+                                    }
+                                    Element::SumItem(..) => {
+                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
+                                            + flags_len
+                                            + flags_len.required_space() as u32;
+                                        Ok((
+                                            true,
+                                            Some(SumItemValueDefinedCost(sum_item_value_cost)),
+                                        ))
                                     }
                                     _ => Ok((true, None)),
                                 }

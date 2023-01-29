@@ -35,6 +35,7 @@ use costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
 use super::Tree;
 #[cfg(feature = "full")]
 use crate::error::Error;
+use crate::tree::kv::ValueDefinedCostType;
 
 #[cfg(feature = "full")]
 /// To be used when committing a tree (writing it to a store after applying the
@@ -50,7 +51,10 @@ pub trait Commit {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>), Error>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -85,8 +89,10 @@ impl Commit for NoopCommit {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        )
-            -> Result<(bool, Option<u32>), Error>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
         _section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,

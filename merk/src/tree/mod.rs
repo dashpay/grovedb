@@ -88,6 +88,7 @@ pub use tree_feature_type::TreeFeatureType;
 #[cfg(feature = "full")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
 
@@ -715,7 +716,10 @@ impl Tree {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>), Error>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
