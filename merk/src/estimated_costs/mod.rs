@@ -38,13 +38,23 @@ pub mod average_case_costs;
 pub mod worst_case_costs;
 
 /// The cost of a subtree layer
+/// It is 3 because we have:
+/// 1 byte for the element type
+/// 1 byte for the root key option
+/// 1 byte for the flag option
 pub const LAYER_COST_SIZE: u32 = 3;
 
+/// The cost of a sum value
+pub const SUM_VALUE_EXTRA_COST: u32 = 9;
+
 /// The cost of a summed subtree layer
-pub const SUM_LAYER_COST_SIZE: u32 = 11;
+/// This is the layer size + 9 for the encoded value
+pub const SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST;
 
 impl KV {
     fn encoded_kv_node_size(element_size: u32, is_sum_node: bool) -> u32 {
+        // We always charge 8 bytes for the sum node (even though
+        // it could theoretically be 9 bytes
         let sum_node_feature_size = if is_sum_node { 9 } else { 1 };
         // KV holds the state of a node
         // 32 bytes to encode the hash of the node

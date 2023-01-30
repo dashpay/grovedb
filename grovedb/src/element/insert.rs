@@ -29,6 +29,7 @@
 //! Insert
 //! Implements functions in Element for inserting into Merk
 
+use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -40,8 +41,9 @@ use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureTyp
 #[cfg(feature = "full")]
 use storage::StorageContext;
 
+use crate::Element::SumItem;
 #[cfg(feature = "full")]
-use crate::{element::TREE_COST_SIZE, Element, Error, Hash};
+use crate::{Element, Error, Hash};
 
 impl Element {
     #[cfg(feature = "full")]
@@ -56,9 +58,7 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let cost = OperationCost::default();
-
-        let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
+        let serialized = cost_return_on_error_default!(self.serialize());
 
         if !merk.is_sum_tree && self.is_sum_item() {
             return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
@@ -66,14 +66,33 @@ impl Element {
         }
 
         let merk_feature_type =
-            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+            cost_return_on_error_default!(self.get_feature_type(merk.is_sum_tree));
+        let batch_operations = if matches!(self, SumItem(..)) {
+            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
 
-        let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
+            let cost = value_cost
+                + self.get_flags().as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+            [(
+                key,
+                Op::PutWithSpecializedCost(serialized, cost, merk_feature_type),
+            )]
+        } else {
+            [(key, Op::Put(serialized, merk_feature_type))]
+        };
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-        })
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                // it is possible that a normal item was being replaced with a
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -91,7 +110,21 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = (key, Op::Put(serialized, feature_type));
+        let entry = if matches!(self, SumItem(..)) {
+            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
+
+            let cost = value_cost
+                + self.get_flags().as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+            (
+                key,
+                Op::PutWithSpecializedCost(serialized, cost, feature_type),
+            )
+        } else {
+            (key, Op::Put(serialized, feature_type))
+        };
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -179,10 +212,15 @@ impl Element {
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-        })
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -231,7 +269,7 @@ impl Element {
         let merk_feature_type =
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
-        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_tree_cost());
+        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_specialized_cost());
 
         let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
@@ -243,10 +281,15 @@ impl Element {
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-        })
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -264,7 +307,10 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let cost = TREE_COST_SIZE
+
+        let tree_cost = cost_return_on_error_default!(self.get_specialized_cost());
+
+        let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32

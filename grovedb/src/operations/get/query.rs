@@ -123,8 +123,8 @@ where {
     pub fn get_proved_path_query(
         &self,
         path_query: &PathQuery,
-        transaction: TransactionArg,
         is_verbose: bool,
+        transaction: TransactionArg,
     ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
             Err(Error::NotSupported(

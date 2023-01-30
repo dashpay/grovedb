@@ -33,6 +33,7 @@
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use integer_encoding::VarInt;
 use merk::tree::kv::KV;
 #[cfg(feature = "full")]
 use merk::Merk;
@@ -41,6 +42,7 @@ use merk::{ed::Decode, tree::TreeInner};
 #[cfg(feature = "full")]
 use storage::StorageContext;
 
+use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::{Element, Error, Hash};
 
@@ -111,8 +113,8 @@ impl Element {
             Self::deserialize(value.as_slice())
                 .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
         );
-        match element {
-            Element::Item(..) | Element::Reference(..) | Element::SumItem(..) => {
+        match &element {
+            Element::Item(..) | Element::Reference(..) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
@@ -121,11 +123,35 @@ impl Element {
                     false,
                 )
             }
-            Element::Tree(..) | Element::SumTree(..) => {
+            Element::SumItem(_, flags) => {
+                let cost_size = SUM_ITEM_COST_SIZE;
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = cost_size + flags_len;
+                cost.storage_loaded_bytes =
+                    KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
+                        key_ref.len() as u32,
+                        value_len,
+                        false,
+                    )
+            }
+            Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
+                let tree_cost_size = if element.is_sum_tree() {
+                    SUM_TREE_COST_SIZE
+                } else {
+                    TREE_COST_SIZE
+                };
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = tree_cost_size + flags_len;
                 cost.storage_loaded_bytes =
                     KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                         key_ref.len() as u32,
-                        value.len() as u32,
+                        value_len,
                         false,
                     )
             }

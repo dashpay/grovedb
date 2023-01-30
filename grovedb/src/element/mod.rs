@@ -49,6 +49,7 @@ mod serialize;
 #[cfg(feature = "full")]
 use core::fmt;
 
+use merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
 use merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -73,10 +74,13 @@ pub type MaxReferenceHop = Option<u8>;
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
 #[cfg(feature = "full")]
 /// The cost of a sum item
-pub const SUM_ITEM_COST_SIZE: u32 = 10;
+/// It is 11 because we have 9 bytes for the sum value
+/// 1 byte for the item type
+/// 1 byte for the flags option
+pub const SUM_ITEM_COST_SIZE: u32 = SUM_VALUE_EXTRA_COST + 2; // 11
 #[cfg(feature = "full")]
 /// The cost of a sum tree
-pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
+pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// int 64 sum value
