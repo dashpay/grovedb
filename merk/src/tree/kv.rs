@@ -40,9 +40,7 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "full")]
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
-use crate::tree::kv::ValueDefinedCostType::{
-    LayeredSumItemValueDefinedCost, LayeredValueDefinedCost, SumItemValueDefinedCost,
-};
+use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "full")]
 use crate::{
     tree::{
@@ -65,13 +63,9 @@ pub enum ValueDefinedCostType {
     /// In order to keep node costs associated to the user performing
     /// modifications This should be used for trees
     LayeredValueDefinedCost(u32),
-    /// There is a predefined cost used to remove the root key from a sub tree
-    /// The sum item is also considered constant
-    /// This should be used for sum trees
-    LayeredSumItemValueDefinedCost(u32),
     /// There is a predefined cost used to make the sum item cost constant
     /// This should be used for sum items
-    SumItemValueDefinedCost(u32),
+    SpecializedValueDefinedCost(u32),
 }
 
 #[cfg(feature = "full")]
@@ -92,7 +86,12 @@ pub struct KV {
 impl KV {
     /// Creates a new `KV` with the given key and value and computes its hash.
     #[inline]
-    pub fn new(key: Vec<u8>, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
+    pub fn new(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_defined_cost: Option<ValueDefinedCostType>,
+        feature_type: TreeFeatureType,
+    ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         let value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
         let kv_hash = kv_digest_to_kv_hash(key.as_slice(), &value_hash).unwrap_add_cost(&mut cost);
@@ -100,7 +99,7 @@ impl KV {
             key,
             value,
             feature_type,
-            value_defined_cost: None,
+            value_defined_cost,
             hash: kv_hash,
             value_hash,
         }
@@ -208,6 +207,19 @@ impl KV {
         self.value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
+    }
+
+    /// Replaces the `KV`'s value with the given value, updates the hash,
+    /// value hash and returns the modified `KV`.
+    /// This is used when we want a fixed cost, for example in sum trees
+    #[inline]
+    pub fn put_value_with_fixed_cost_then_update(
+        mut self,
+        value: Vec<u8>,
+        value_cost: u32,
+    ) -> CostContext<Self> {
+        self.value_defined_cost = Some(SpecializedValueDefinedCost(value_cost));
+        self.put_value_then_update(value)
     }
 
     /// Replaces the `KV`'s value with the given value and value hash,
@@ -346,6 +358,7 @@ impl KV {
     }
 
     /// Get the costs for the node, this has the parent to child hooks
+    /// Layered compared to specialized pays for one less hash
     #[inline]
     pub fn layered_value_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
@@ -364,6 +377,31 @@ impl KV {
         // by the parent to child reference hook of the root of the underlying
         // tree
         let node_value_size = value_len + feature_len + HASH_LENGTH_U32 + 2;
+        // The node will be a child of another node which stores it's key and hash
+        // That will be added during propagation
+        let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len, is_sum_node);
+        node_value_size + parent_to_child_cost
+    }
+
+    /// Get the costs for the node, this has the parent to child hooks
+    #[inline]
+    pub fn specialized_value_byte_cost_size_for_key_and_value_lengths(
+        not_prefixed_key_len: u32,
+        value_len: u32,
+        is_sum_node: bool,
+    ) -> u32 {
+        // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
+        // costs can not take advantage of the varint aspect of the feature.
+        let feature_len = if is_sum_node { 9 } else { 1 };
+        // Each node stores the key and value, and the node hash
+        // the value hash on a layered node is not stored directly in the node
+        // The required space is set to 2. However in reality it could be 1 or 2.
+        // This is because the underlying tree pays for the value cost and it's required
+        // length. The value could be a key, and keys can only be 256 bytes.
+        // There is no point to pay for the value_hash because it is already being paid
+        // by the parent to child reference hook of the root of the underlying
+        // tree
+        let node_value_size = value_len + feature_len + HASH_LENGTH_U32_X2 + 2;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
         let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len, is_sum_node);
@@ -438,24 +476,16 @@ impl KV {
         )
     }
 
+    /// This function is used to calculate the cost of groveDB sum item nodes
+    /// The difference with layered nodes is that the value hash is payed for by
+    /// the node in the specialized nodes and by the parent in the layered
+    /// ones
     #[inline]
-    pub(crate) fn layered_sum_item_value_byte_cost_size(&self, value_cost: u32) -> u32 {
+    pub(crate) fn specialized_value_byte_cost_size(&self, value_cost: u32) -> u32 {
         let key_len = self.key.len() as u32;
         let is_sum_node = self.feature_type.is_sum_feature();
 
-        Self::layered_value_byte_cost_size_for_key_and_value_lengths(
-            key_len,
-            value_cost,
-            is_sum_node,
-        )
-    }
-
-    #[inline]
-    pub(crate) fn sum_item_value_byte_cost_size(&self, value_cost: u32) -> u32 {
-        let key_len = self.key.len() as u32;
-        let is_sum_node = self.feature_type.is_sum_feature();
-
-        Self::layered_value_byte_cost_size_for_key_and_value_lengths(
+        Self::specialized_value_byte_cost_size_for_key_and_value_lengths(
             key_len,
             value_cost,
             is_sum_node,
@@ -470,11 +500,8 @@ impl KV {
         value_defined_cost_type: &ValueDefinedCostType,
     ) -> u32 {
         match value_defined_cost_type {
+            SpecializedValueDefinedCost(cost) => self.specialized_value_byte_cost_size(*cost),
             LayeredValueDefinedCost(cost) => self.layered_value_byte_cost_size(*cost),
-            LayeredSumItemValueDefinedCost(cost) => {
-                self.layered_sum_item_value_byte_cost_size(*cost)
-            }
-            SumItemValueDefinedCost(cost) => self.sum_item_value_byte_cost_size(*cost),
         }
     }
 
@@ -546,7 +573,7 @@ mod test {
 
     #[test]
     fn new_kv() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], BasicMerk).unwrap();
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerk).unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);
         assert_eq!(kv.value_as_slice(), &[4, 5, 6]);
@@ -555,7 +582,7 @@ mod test {
 
     #[test]
     fn with_value() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], BasicMerk)
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerk)
             .unwrap()
             .put_value_then_update(vec![7, 8, 9])
             .unwrap();
@@ -567,7 +594,7 @@ mod test {
 
     #[test]
     fn encode_and_decode_kv() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], BasicMerk).unwrap();
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerk).unwrap();
         let mut encoded_kv = vec![];
         kv.encode_into(&mut encoded_kv).expect("encoded");
         let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();
@@ -575,7 +602,7 @@ mod test {
 
         assert_eq!(kv, decoded_kv);
 
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], SummedMerk(20)).unwrap();
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, SummedMerk(20)).unwrap();
         let mut encoded_kv = vec![];
         kv.encode_into(&mut encoded_kv).expect("encoded");
         let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();

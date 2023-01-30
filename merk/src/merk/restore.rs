@@ -135,7 +135,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         tree.visit_refs(&mut |proof_node| {
             if let Some((mut node, key)) = match &proof_node.node {
                 Node::KV(key, value) => Some((
-                    Tree::new(key.clone(), value.clone(), BasicMerk).unwrap(),
+                    Tree::new(key.clone(), value.clone(), None, BasicMerk).unwrap(),
                     key,
                 )),
                 Node::KVValueHash(key, value, value_hash) => Some((

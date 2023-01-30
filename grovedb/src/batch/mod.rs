@@ -72,7 +72,7 @@ use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     tree::{
         kv::{
-            ValueDefinedCostType::{LayeredValueDefinedCost, SumItemValueDefinedCost},
+            ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
             KV,
         },
         value_hash, NULL_HASH,
@@ -1094,8 +1094,24 @@ where
                                 is_sum_tree,
                             ))
                         }
+                        Element::SumItem(_, flags) => {
+                            let cost_size = SUM_ITEM_COST_SIZE;
+                            let flags_len = flags.map_or(0, |flags| {
+                                let flags_len = flags.len() as u32;
+                                flags_len + flags_len.required_space() as u32
+                            });
+                            let value_len = cost_size + flags_len;
+                            let key_len = key.len() as u32;
+                            Ok(
+                                KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
+                                    key_len,
+                                    value_len,
+                                    is_sum_tree,
+                                ),
+                            )
+                        }
                         _ => Err(MerkError::SpecializedCostsError(
-                            "only trees are supported for specialized costs",
+                            "only trees and sum items are supported for specialized costs",
                         )),
                     }
                 },
@@ -1145,7 +1161,7 @@ where
                                             + flags_len.required_space() as u32;
                                         Ok((
                                             true,
-                                            Some(SumItemValueDefinedCost(sum_item_value_cost)),
+                                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
                                         ))
                                     }
                                     _ => Ok((true, None)),

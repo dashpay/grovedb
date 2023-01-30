@@ -51,9 +51,9 @@ use Op::*;
 
 #[cfg(feature = "full")]
 use super::{Fetch, Link, Tree, Walker};
-use crate::merk::KeyUpdates;
 #[cfg(feature = "full")]
 use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
+use crate::{merk::KeyUpdates, tree::kv::ValueDefinedCostType::SpecializedValueDefinedCost};
 
 #[cfg(feature = "full")]
 /// An operation to be applied to a key in the store.
@@ -61,6 +61,10 @@ use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, 
 pub enum Op {
     /// Insert or Update an element into the Merk tree
     Put(Vec<u8>, TreeFeatureType),
+    /// Insert or Update an element that is encoded with a special
+    /// cost into the Merk tree. This is ideal for sum items where
+    /// we want sizes to always be fixed
+    PutWithSpecializedCost(Vec<u8>, u32, TreeFeatureType),
     /// Combined references include the value in the node hash
     /// because the value is independent of the reference hash
     /// In GroveDB this is used for references
@@ -95,6 +99,9 @@ impl fmt::Debug for Op {
             "{}",
             match self {
                 Put(value, _) => format!("Put({value:?})"),
+                PutWithSpecializedCost(value, cost, feature_type) => format!(
+                    "Put Specialized Cost({value:?}) with cost ({cost:?}) for ({feature_type:?})"
+                ),
                 PutCombinedReference(value, referenced_value, feature_type) => format!(
                     "Put Combined Reference({value:?}) for ({referenced_value:?}). \
                      ({feature_type:?})"
@@ -266,6 +273,7 @@ where
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
             Put(value, feature_type)
+            | PutWithSpecializedCost(value, .., feature_type)
             | PutCombinedReference(value, .., feature_type)
             | PutLayeredReference(value, .., feature_type)
             | ReplaceLayeredReference(value, .., feature_type) => (value.to_vec(), feature_type),
@@ -277,6 +285,14 @@ where
             Put(..) => Tree::new(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
+                None,
+                mid_feature_type.to_owned(),
+            )
+            .unwrap_add_cost(&mut cost),
+            PutWithSpecializedCost(_, value_cost, _) => Tree::new(
+                mid_key.as_ref().to_vec(),
+                mid_value.to_vec(),
+                Some(SpecializedValueDefinedCost(*value_cost)),
                 mid_feature_type.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
@@ -372,6 +388,9 @@ where
                 // TODO: take vec from batch so we don't need to clone
                 Put(value, feature_type) => self
                     .put_value(value.to_vec(), feature_type.to_owned())
+                    .unwrap_add_cost(&mut cost),
+                PutWithSpecializedCost(value, value_cost, feature_type) => self
+                    .put_value_with_fixed_cost(value.to_vec(), *value_cost, feature_type.to_owned())
                     .unwrap_add_cost(&mut cost),
                 PutCombinedReference(value, referenced_value, feature_type) => self
                     .put_value_and_reference_value_hash(
@@ -728,7 +747,7 @@ mod test {
     #[test]
     fn simple_insert() {
         let batch = [(b"foo2".to_vec(), Op::Put(b"bar2".to_vec(), BasicMerk))];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         let (maybe_walker, key_updates) = Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -744,7 +763,7 @@ mod test {
     #[test]
     fn simple_update() {
         let batch = [(b"foo".to_vec(), Op::Put(b"bar2".to_vec(), BasicMerk))];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         let (maybe_walker, key_updates) = Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -770,7 +789,7 @@ mod test {
                 hash: [123; 32],
                 sum: None,
                 child_heights: (0, 0),
-                tree: Tree::new(b"foo2".to_vec(), b"bar2".to_vec(), BasicMerk).unwrap(),
+                tree: Tree::new(b"foo2".to_vec(), b"bar2".to_vec(), None, BasicMerk).unwrap(),
             }),
             BasicMerk,
         )
@@ -795,7 +814,7 @@ mod test {
     #[test]
     fn delete_non_existent() {
         let batch = [(b"foo2".to_vec(), Op::Delete)];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -805,7 +824,7 @@ mod test {
     #[test]
     fn delete_only_node() {
         let batch = [(b"foo".to_vec(), Op::Delete)];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         let (maybe_walker, key_updates) = Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -1019,7 +1038,7 @@ mod test {
 
     #[test]
     fn insert_root_single() {
-        let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
+        let tree = Tree::new(vec![5], vec![123], None, BasicMerk).unwrap();
         let batch = vec![(vec![6], Op::Put(vec![123], BasicMerk))];
         let tree = apply_memonly(tree, &batch);
         assert_eq!(tree.key(), &[5]);
@@ -1029,7 +1048,7 @@ mod test {
 
     #[test]
     fn insert_root_double() {
-        let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
+        let tree = Tree::new(vec![5], vec![123], None, BasicMerk).unwrap();
         let batch = vec![
             (vec![4], Op::Put(vec![123], BasicMerk)),
             (vec![6], Op::Put(vec![123], BasicMerk)),
@@ -1042,7 +1061,7 @@ mod test {
 
     #[test]
     fn insert_rebalance() {
-        let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
+        let tree = Tree::new(vec![5], vec![123], None, BasicMerk).unwrap();
 
         let batch = vec![(vec![6], Op::Put(vec![123], BasicMerk))];
         let tree = apply_memonly(tree, &batch);
@@ -1057,7 +1076,7 @@ mod test {
 
     #[test]
     fn insert_100_sequential() {
-        let mut tree = Tree::new(vec![0], vec![123], BasicMerk).unwrap();
+        let mut tree = Tree::new(vec![0], vec![123], None, BasicMerk).unwrap();
 
         for i in 0..100 {
             let batch = vec![(vec![i + 1], Op::Put(vec![123], BasicMerk))];

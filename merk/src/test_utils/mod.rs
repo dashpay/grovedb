@@ -258,7 +258,7 @@ pub fn make_tree_rand(
     } else {
         BasicMerk
     };
-    let mut tree = Tree::new(vec![0; 20], value, feature_type).unwrap();
+    let mut tree = Tree::new(vec![0; 20], value, None, feature_type).unwrap();
 
     let mut seed = initial_seed;
 
@@ -283,7 +283,7 @@ pub fn make_tree_seq(node_count: u64) -> Tree {
     };
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value, BasicMerk).unwrap();
+    let mut tree = Tree::new(vec![0; 20], value, None, BasicMerk).unwrap();
 
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {

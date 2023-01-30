@@ -705,12 +705,12 @@ where
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
-    pub fn apply_with_tree_costs<KB, KA>(
+    pub fn apply_with_specialized_costs<KB, KA>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
     ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
@@ -720,7 +720,7 @@ where
             batch,
             aux,
             options,
-            old_tree_cost,
+            old_specialized_cost,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -776,7 +776,7 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -821,7 +821,7 @@ where
             batch,
             aux,
             options,
-            old_tree_cost,
+            old_specialized_cost,
             update_tree_value_based_on_costs,
             section_removal_bytes,
         )
@@ -872,7 +872,7 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &C,
+        old_specialized_cost: &C,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
     ) -> CostResult<(), Error>
@@ -897,7 +897,7 @@ where
             maybe_walker,
             batch,
             self.source(),
-            old_tree_cost,
+            old_specialized_cost,
             section_removal_bytes,
         )
         .flat_map_ok(|(maybe_tree, key_updates)| {
@@ -908,7 +908,7 @@ where
                 key_updates,
                 aux,
                 options,
-                old_tree_cost,
+                old_specialized_cost,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
             )
@@ -1009,7 +1009,7 @@ where
         key_updates: KeyUpdates,
         aux: &AuxMerkBatch<K>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -1044,7 +1044,7 @@ where
                     &mut inner_cost,
                     tree.commit(
                         &mut committer,
-                        old_tree_cost,
+                        old_specialized_cost,
                         update_tree_value_based_on_costs,
                         section_removal_bytes
                     )
@@ -1344,7 +1344,7 @@ impl Commit for MerkCommitter {
     fn write(
         &mut self,
         tree: &mut Tree,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -1364,7 +1364,7 @@ impl Commit for MerkCommitter {
     ) -> Result<(), Error> {
         let tree_size = tree.encoding_length();
         let (mut current_tree_plus_hook_size, mut storage_costs) =
-            tree.kv_with_parent_hook_size_and_storage_cost(old_tree_cost)?;
+            tree.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
         let mut i = 0;
 
         if let Some(old_value) = tree.old_value.clone() {
@@ -1386,7 +1386,7 @@ impl Commit for MerkCommitter {
                         break;
                     }
                     let new_size_and_storage_costs =
-                        tree.kv_with_parent_hook_size_and_storage_cost(old_tree_cost)?;
+                        tree.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
                     current_tree_plus_hook_size = new_size_and_storage_costs.0;
                     storage_costs = new_size_and_storage_costs.1;
                 }

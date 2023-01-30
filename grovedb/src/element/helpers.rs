@@ -38,6 +38,7 @@ use merk::{
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
+use crate::element::SUM_ITEM_COST_SIZE;
 #[cfg(feature = "full")]
 use crate::{
     element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
@@ -241,7 +242,7 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get tree costs for a key value
-    pub fn tree_costs_for_key_value(
+    pub fn specialized_costs_for_key_value(
         key: &Vec<u8>,
         value: &[u8],
         is_sum_node: bool,
@@ -266,13 +267,28 @@ impl Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = TREE_COST_SIZE + flags_len + 8;
+                let value_len = SUM_TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
                     is_sum_node,
                 ))
+            }
+            Element::SumItem(.., flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                Ok(
+                    KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
+                        key_len,
+                        value_len,
+                        is_sum_node,
+                    ),
+                )
             }
             _ => Err(Error::CorruptedCodeExecution(
                 "only trees are supported for specialized costs",
@@ -282,10 +298,11 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get tree cost for the element
-    pub fn get_tree_cost(&self) -> Result<u32, Error> {
+    pub fn get_specialized_cost(&self) -> Result<u32, Error> {
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
+            Element::SumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),

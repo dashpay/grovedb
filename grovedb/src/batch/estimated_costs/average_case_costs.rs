@@ -707,10 +707,10 @@ mod tests {
                 seek_count: 41,
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 5624,
+                    replaced_bytes: 5625,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 7669,
+                storage_loaded_bytes: 7670,
                 hash_node_calls: 79,
             }
         );

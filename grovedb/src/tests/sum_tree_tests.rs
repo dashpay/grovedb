@@ -421,6 +421,10 @@ fn test_sum_tree_feature() {
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(-60)); // 30 + 10 - 100 = -60
 
+    // We can not replace a normal item with a sum item, so let's delete it first
+    db.delete([TEST_LEAF, b"key2"], b"item4", None, None)
+        .unwrap()
+        .expect("expected to delete");
     // Use a large value
     db.insert(
         [TEST_LEAF, b"key2"],
