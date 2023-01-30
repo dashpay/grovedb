@@ -44,6 +44,8 @@ mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
 #[cfg(test)]
+mod single_sum_item_deletion_cost_tests;
+#[cfg(test)]
 mod single_sum_item_insert_cost_tests;
 
 use core::fmt;
