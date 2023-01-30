@@ -394,10 +394,8 @@ impl KV {
         // costs can not take advantage of the varint aspect of the feature.
         let feature_len = if is_sum_node { 9 } else { 1 };
         // Each node stores the key and value, and the node hash and the value hash
-        let node_value_size = inner_value_len
-            + inner_value_len.required_space() as u32
-            + feature_len
-            + HASH_LENGTH_U32_X2;
+        let node_value_size = inner_value_len + feature_len + HASH_LENGTH_U32_X2;
+        let node_value_size = node_value_size + node_value_size.required_space() as u32;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
         let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len, is_sum_node);
