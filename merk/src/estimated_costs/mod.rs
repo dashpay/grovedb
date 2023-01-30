@@ -53,8 +53,9 @@ pub const SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST;
 
 impl KV {
     fn encoded_kv_node_size(element_size: u32, is_sum_node: bool) -> u32 {
-        // 10 because of SUM_VALUE_EXTRA_COST (9) and 1 byte for the type
-        let sum_node_feature_size = if is_sum_node { 10 } else { 1 };
+        // We always charge 8 bytes for the sum node (even though
+        // it could theoretically be 9 bytes
+        let sum_node_feature_size = if is_sum_node { 9 } else { 1 };
         // KV holds the state of a node
         // 32 bytes to encode the hash of the node
         // 32 bytes to encode the value hash

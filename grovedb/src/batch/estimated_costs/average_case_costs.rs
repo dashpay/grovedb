@@ -710,7 +710,7 @@ mod tests {
                     replaced_bytes: 5625,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 7670,
+                storage_loaded_bytes: 7669,
                 hash_node_calls: 79,
             }
         );

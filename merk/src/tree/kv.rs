@@ -387,21 +387,17 @@ impl KV {
     #[inline]
     pub fn specialized_value_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
-        value_len: u32,
+        inner_value_len: u32,
         is_sum_node: bool,
     ) -> u32 {
         // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
         // costs can not take advantage of the varint aspect of the feature.
         let feature_len = if is_sum_node { 9 } else { 1 };
-        // Each node stores the key and value, and the node hash
-        // the value hash on a layered node is not stored directly in the node
-        // The required space is set to 2. However in reality it could be 1 or 2.
-        // This is because the underlying tree pays for the value cost and it's required
-        // length. The value could be a key, and keys can only be 256 bytes.
-        // There is no point to pay for the value_hash because it is already being paid
-        // by the parent to child reference hook of the root of the underlying
-        // tree
-        let node_value_size = value_len + feature_len + HASH_LENGTH_U32_X2 + 2;
+        // Each node stores the key and value, and the node hash and the value hash
+        let node_value_size = inner_value_len
+            + inner_value_len.required_space() as u32
+            + feature_len
+            + HASH_LENGTH_U32_X2;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
         let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len, is_sum_node);
@@ -435,7 +431,7 @@ impl KV {
         raw_value_len: u32,
         is_sum_node: bool,
     ) -> u32 {
-        let sum_tree_len = if is_sum_node { 9 } else { 1 }; // 1 for option, 0 or 8 for sum feature
+        let sum_tree_len = if is_sum_node { 9 } else { 1 }; // 1 for option, 0 or 9 for sum feature
         let value_len = raw_value_len + HASH_LENGTH_U32_X2 + sum_tree_len;
         Self::value_byte_cost_size_for_key_and_value_lengths(
             not_prefixed_key_len,

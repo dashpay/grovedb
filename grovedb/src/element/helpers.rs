@@ -247,8 +247,9 @@ impl Element {
         value: &[u8],
         is_sum_node: bool,
     ) -> Result<u32, Error> {
+        // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value)?;
-        match element {
+        let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -256,11 +257,11 @@ impl Element {
                 });
                 let value_len = TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
                     is_sum_node,
-                ))
+                )
             }
             Element::SumTree(_, _sum_value, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
@@ -269,11 +270,11 @@ impl Element {
                 });
                 let value_len = SUM_TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
                     is_sum_node,
-                ))
+                )
             }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
@@ -282,18 +283,19 @@ impl Element {
                 });
                 let value_len = SUM_ITEM_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                Ok(
-                    KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
-                        key_len,
-                        value_len,
-                        is_sum_node,
-                    ),
+                KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len,
+                    value_len,
+                    is_sum_node,
                 )
             }
-            _ => Err(Error::CorruptedCodeExecution(
-                "only trees are supported for specialized costs",
-            )),
-        }
+            _ => KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
+                key.len() as u32,
+                value.len() as u32,
+                is_sum_node,
+            ),
+        };
+        Ok(cost)
     }
 
     #[cfg(feature = "full")]

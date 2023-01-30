@@ -706,13 +706,13 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 86
+        // Value -> 85
         //   1 for the enum type item
         //   9 for the value (encoded var vec)
         //   1 for the flag option (but no flags)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
-        // 10 for Summed merk
+        // 9 for Summed merk
         // 1 byte for the value_size (required space for 77)
 
         // Parent Hook -> 48
@@ -722,13 +722,13 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 86 + 48 = 171
+        // Total 37 + 85 + 48 = 170
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 5,
                 storage_cost: StorageCost {
-                    added_bytes: 171,
+                    added_bytes: 170,
                     replaced_bytes: 84, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
@@ -774,13 +774,13 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 86
+        // Value -> 85
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
         //   9 for the value (encoded var vec)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
-        // 10 for Summed merk
+        // 9 for Summed merk
         // 1 byte for the value_size (required space for 77)
 
         // Parent Hook -> 48
@@ -790,13 +790,13 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 86 + 48 = 171
+        // Total 37 + 85 + 48 = 170
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 7,
                 storage_cost: StorageCost {
-                    added_bytes: 171,
+                    added_bytes: 170,
                     replaced_bytes: 209, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
@@ -843,13 +843,13 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 86
+        // Value -> 85
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
         //   9 for the value (encoded var vec)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
-        // 10 for Summed merk
+        // 9 for Summed merk
         // 1 byte for the value_size (required space for 81)
 
         // Parent Hook -> 48
@@ -859,13 +859,13 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 86 + 48 = 171
+        // Total 37 + 85 + 48 = 170
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 7,
                 storage_cost: StorageCost {
-                    added_bytes: 171,
+                    added_bytes: 170,
                     replaced_bytes: 211, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
@@ -1558,7 +1558,7 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 249,
+                    replaced_bytes: 248,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 266, // todo verify this
@@ -1613,7 +1613,7 @@ mod tests {
                 seek_count: 9, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 406, // todo: verify this
+                    replaced_bytes: 405, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 487, // todo verify this
@@ -1657,7 +1657,7 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 249,
+                    replaced_bytes: 248,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 276, // todo verify this
