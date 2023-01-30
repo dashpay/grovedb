@@ -31,18 +31,9 @@
 #[cfg(feature = "full")]
 mod tests {
     use costs::{
-        storage_cost::{
-            removal::{
-                StorageRemovedBytes::{
-                    NoStorageRemoval,
-                },
-            },
-            StorageCost,
-        },
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
-    
-    
 
     use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 

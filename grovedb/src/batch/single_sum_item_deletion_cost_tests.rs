@@ -30,8 +30,6 @@
 
 #[cfg(feature = "full")]
 mod tests {
-    
-    
 
     use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 
