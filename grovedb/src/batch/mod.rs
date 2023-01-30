@@ -43,6 +43,8 @@ mod options;
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
+#[cfg(test)]
+mod single_sum_item_insert_cost_tests;
 
 use core::fmt;
 use std::{
@@ -993,7 +995,7 @@ where
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             false,
-                            false,
+                            is_sum_tree, //we are in a sum tree, this might or might not be a sum item
                             &mut batch_operations
                         )
                     );
@@ -1072,48 +1074,8 @@ where
                 &[],
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
-                    let element = Element::deserialize(value)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                    let is_sum_tree = element.is_sum_tree();
-                    match element {
-                        Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
-                            let tree_cost_size = if is_sum_tree {
-                                SUM_TREE_COST_SIZE
-                            } else {
-                                TREE_COST_SIZE
-                            };
-                            let flags_len = flags.map_or(0, |flags| {
-                                let flags_len = flags.len() as u32;
-                                flags_len + flags_len.required_space() as u32
-                            });
-                            let value_len = tree_cost_size + flags_len;
-                            let key_len = key.len() as u32;
-                            Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                                key_len,
-                                value_len,
-                                is_sum_tree,
-                            ))
-                        }
-                        Element::SumItem(_, flags) => {
-                            let cost_size = SUM_ITEM_COST_SIZE;
-                            let flags_len = flags.map_or(0, |flags| {
-                                let flags_len = flags.len() as u32;
-                                flags_len + flags_len.required_space() as u32
-                            });
-                            let value_len = cost_size + flags_len;
-                            let key_len = key.len() as u32;
-                            Ok(
-                                KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
-                                    key_len,
-                                    value_len,
-                                    is_sum_tree,
-                                ),
-                            )
-                        }
-                        _ => Err(MerkError::SpecializedCostsError(
-                            "only trees and sum items are supported for specialized costs",
-                        )),
-                    }
+                    Element::specialized_costs_for_key_value(key, value, is_sum_tree)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization

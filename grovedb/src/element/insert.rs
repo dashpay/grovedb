@@ -35,6 +35,7 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
+use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
 #[cfg(feature = "full")]
@@ -57,9 +58,7 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let cost = OperationCost::default();
-
-        let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
+        let serialized = cost_return_on_error_default!(self.serialize());
 
         if !merk.is_sum_tree && self.is_sum_item() {
             return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
@@ -67,9 +66,9 @@ impl Element {
         }
 
         let merk_feature_type =
-            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+            cost_return_on_error_default!(self.get_feature_type(merk.is_sum_tree));
         let batch_operations = if matches!(self, SumItem(..)) {
-            let value_cost = cost_return_on_error_no_add!(&cost, self.get_specialized_cost());
+            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
 
             let cost = value_cost
                 + self.get_flags().as_ref().map_or(0, |flags| {
@@ -111,7 +110,21 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = (key, Op::Put(serialized, feature_type));
+        let entry = if matches!(self, SumItem(..)) {
+            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
+
+            let cost = value_cost
+                + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+            (
+                key,
+                Op::PutWithSpecializedCost(serialized, cost, feature_type),
+            )
+        } else {
+            (key, Op::Put(serialized, feature_type))
+        };
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -294,7 +307,10 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let cost = TREE_COST_SIZE
+
+        let tree_cost = cost_return_on_error_default!(self.get_specialized_cost());
+
+        let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
