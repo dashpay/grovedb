@@ -995,7 +995,8 @@ where
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             false,
-                            is_sum_tree, //we are in a sum tree, this might or might not be a sum item
+                            is_sum_tree, /* we are in a sum tree, this might or might not be a
+                                          * sum item */
                             &mut batch_operations
                         )
                     );
@@ -1075,7 +1076,7 @@ where
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
                     Element::specialized_costs_for_key_value(key, value, is_sum_tree)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization

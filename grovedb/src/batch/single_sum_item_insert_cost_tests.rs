@@ -53,12 +53,18 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db
-            .insert(vec![], b"sum_tree", Element::empty_sum_tree(), None, None)
-            .unwrap().expect("expected to insert sum tree");
+        db.insert(vec![], b"sum_tree", Element::empty_sum_tree(), None, None)
+            .unwrap()
+            .expect("expected to insert sum tree");
 
         let non_batch_cost = db
-            .insert([b"sum_tree".as_slice()], b"key1", Element::new_sum_item(150), None, Some(&tx))
+            .insert(
+                [b"sum_tree".as_slice()],
+                b"key1",
+                Element::new_sum_item(150),
+                None,
+                Some(&tx),
+            )
             .cost;
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::insert_op(

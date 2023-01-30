@@ -29,13 +29,13 @@
 //! Insert
 //! Implements functions in Element for inserting into Merk
 
+use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
 #[cfg(feature = "full")]
@@ -115,9 +115,9 @@ impl Element {
 
             let cost = value_cost
                 + self.get_flags().as_ref().map_or(0, |flags| {
-                let flags_len = flags.len() as u32;
-                flags_len + flags_len.required_space() as u32
-            });
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
             (
                 key,
                 Op::PutWithSpecializedCost(serialized, cost, feature_type),
