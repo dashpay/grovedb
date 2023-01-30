@@ -75,7 +75,6 @@ use merk::{
     tree::{
         kv::{
             ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-            KV,
         },
         value_hash, NULL_HASH,
     },

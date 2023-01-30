@@ -43,7 +43,7 @@ use storage::StorageContext;
 
 use crate::Element::SumItem;
 #[cfg(feature = "full")]
-use crate::{element::TREE_COST_SIZE, Element, Error, Hash};
+use crate::{Element, Error, Hash};
 
 impl Element {
     #[cfg(feature = "full")]
