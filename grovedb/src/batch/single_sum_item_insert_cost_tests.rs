@@ -33,18 +33,16 @@ mod tests {
     use costs::{
         storage_cost::{
             removal::{
-                Identifier, StorageRemovalPerEpochByIdentifier,
                 StorageRemovedBytes::{
-                    BasicStorageRemoval, NoStorageRemoval, SectionedStorageRemoval,
+                    NoStorageRemoval,
                 },
             },
-            transition::OperationStorageTransitionType,
             StorageCost,
         },
         OperationCost,
     };
-    use integer_encoding::VarInt;
-    use intmap::IntMap;
+    
+    
 
     use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 
