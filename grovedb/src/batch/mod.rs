@@ -73,9 +73,7 @@ use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     tree::{
-        kv::{
-            ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-        },
+        kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, NULL_HASH,
     },
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
