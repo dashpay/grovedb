@@ -135,7 +135,8 @@ pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    /// Opens a given path
+    /// Opens an instance of GroveDB at the given path.
+    /// This automatically creates an empty root tree.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         Ok(GroveDb { db })
