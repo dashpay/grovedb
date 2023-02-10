@@ -183,6 +183,59 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Insert an element in Merk under a key if the value is different from
+    /// what already exists; path should be resolved and proper Merk should
+    /// be loaded by this moment If transaction is not passed, the batch
+    /// will be written immediately. If transaction is passed, the operation
+    /// will be committed on the transaction commit.
+    pub fn insert_if_changed_value<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        options: Option<MerkOptions>,
+    ) -> CostResult<bool, Error> {
+        let mut cost = OperationCost::default();
+        let previous_element =
+            cost_return_on_error!(&mut cost, Self::get_from_storage(&merk.storage, key));
+        if &previous_element == self {
+            Ok(false).wrap_with_cost(cost)
+        } else {
+            cost_return_on_error!(&mut cost, self.insert(merk, key, options));
+            Ok(true).wrap_with_cost(cost)
+        }
+    }
+
+    #[cfg(feature = "full")]
+    /// Adds a "Put" op to batch operations with the element and key if the
+    /// value is different from what already exists; Returns CostResult.
+    pub fn insert_if_changed_value_into_batch_operations<
+        'db,
+        S: StorageContext<'db>,
+        K: AsRef<[u8]>,
+    >(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+    ) -> CostResult<bool, Error> {
+        let mut cost = OperationCost::default();
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_from_storage(&merk.storage, key.as_ref())
+        );
+        if &previous_element == self {
+            Ok(false).wrap_with_cost(cost)
+        } else {
+            cost_return_on_error!(
+                &mut cost,
+                self.insert_into_batch_operations(key, batch_operations, feature_type)
+            );
+            Ok(true).wrap_with_cost(cost)
+        }
+    }
+
+    #[cfg(feature = "full")]
     /// Insert a reference element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -357,6 +410,55 @@ mod tests {
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
+        );
+    }
+
+    #[test]
+    fn test_insert_if_changed_value_does_not_insert_when_value_does_not_change() {
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey", None)
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"value".to_vec())
+            .insert(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+        let inserted = Element::new_item(b"value".to_vec())
+            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+
+        assert!(!inserted);
+        assert_eq!(
+            Element::get(&merk, b"another-key", true)
+                .unwrap()
+                .expect("expected successful get"),
+            Element::new_item(b"value".to_vec()),
+        );
+    }
+
+    #[test]
+    fn test_insert_if_changed_value_inserts_when_value_changed() {
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey", None)
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"value".to_vec())
+            .insert(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+        Element::new_item(b"value2".to_vec())
+            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+
+        assert_eq!(
+            Element::get(&merk, b"another-key", true)
+                .unwrap()
+                .expect("expected successful get"),
+            Element::new_item(b"value2".to_vec()),
         );
     }
 }

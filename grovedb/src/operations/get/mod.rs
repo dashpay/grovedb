@@ -184,6 +184,20 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
+    pub fn get_raw_optional<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        transaction: TransactionArg,
+    ) -> CostResult<Element, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        self.get_raw_caching_optional(path, key, true, transaction)
+    }
+
+    /// Get tree item without following references
     pub fn get_raw_caching_optional<'p, P>(
         &self,
         path: P,
