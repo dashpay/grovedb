@@ -196,8 +196,14 @@ impl Element {
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let previous_element =
-            cost_return_on_error!(&mut cost, Self::get_from_storage(&merk.storage, key));
-        if &previous_element == self {
+            cost_return_on_error!(&mut cost, Self::get_optional_from_storage(&merk.storage, key));
+        let needs_insert = match previous_element {
+            None => true,
+            Some(previous_element) => {
+                &previous_element != self
+            }
+        };
+        if !needs_insert {
             Ok(false).wrap_with_cost(cost)
         } else {
             cost_return_on_error!(&mut cost, self.insert(merk, key, options));
@@ -222,9 +228,15 @@ impl Element {
         let mut cost = OperationCost::default();
         let previous_element = cost_return_on_error!(
             &mut cost,
-            Self::get_from_storage(&merk.storage, key.as_ref())
+            Self::get_optional_from_storage(&merk.storage, key.as_ref())
         );
-        if &previous_element == self {
+        let needs_insert = match previous_element {
+            None => true,
+            Some(previous_element) => {
+                &previous_element != self
+            }
+        };
+        if !needs_insert {
             Ok(false).wrap_with_cost(cost)
         } else {
             cost_return_on_error!(
@@ -449,6 +461,26 @@ mod tests {
             .insert(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
+        Element::new_item(b"value2".to_vec())
+            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+
+        assert_eq!(
+            Element::get(&merk, b"another-key", true)
+                .unwrap()
+                .expect("expected successful get"),
+            Element::new_item(b"value2".to_vec()),
+        );
+    }
+
+    #[test]
+    fn test_insert_if_changed_value_inserts_when_no_value() {
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey", None)
+            .unwrap()
+            .expect("expected successful insertion");
         Element::new_item(b"value2".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None)
             .unwrap()
