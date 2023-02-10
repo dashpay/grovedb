@@ -195,13 +195,13 @@ impl Element {
         options: Option<MerkOptions>,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
-        let previous_element =
-            cost_return_on_error!(&mut cost, Self::get_optional_from_storage(&merk.storage, key));
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_optional_from_storage(&merk.storage, key)
+        );
         let needs_insert = match previous_element {
             None => true,
-            Some(previous_element) => {
-                &previous_element != self
-            }
+            Some(previous_element) => &previous_element != self,
         };
         if !needs_insert {
             Ok(false).wrap_with_cost(cost)
@@ -232,9 +232,7 @@ impl Element {
         );
         let needs_insert = match previous_element {
             None => true,
-            Some(previous_element) => {
-                &previous_element != self
-            }
+            Some(previous_element) => &previous_element != self,
         };
         if !needs_insert {
             Ok(false).wrap_with_cost(cost)
