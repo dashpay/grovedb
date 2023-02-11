@@ -466,13 +466,14 @@ impl GroveDb {
     }
 
     /// Insert if the value changed
+    /// If the value was changed then we return the previous element
     pub fn insert_if_changed_value<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error>
+    ) -> CostResult<Option<Element>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -483,15 +484,15 @@ impl GroveDb {
             &mut cost,
             self.get_raw_optional(path_iter.clone(), key, transaction)
         );
-        let needs_insert = match previous_element {
+        let needs_insert = match &previous_element {
             None => true,
-            Some(previous_element) => &previous_element != &element,
+            Some(previous_element) => previous_element != &element,
         };
         if !needs_insert {
-            Ok(false).wrap_with_cost(cost)
+            Ok(None).wrap_with_cost(cost)
         } else {
             self.insert(path_iter, key, element, None, transaction)
-                .map_ok(|_| true)
+                .map_ok(|_| previous_element)
                 .add_cost(cost)
         }
     }

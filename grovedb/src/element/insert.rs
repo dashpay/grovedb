@@ -188,26 +188,27 @@ impl Element {
     /// be loaded by this moment If transaction is not passed, the batch
     /// will be written immediately. If transaction is passed, the operation
     /// will be committed on the transaction commit.
+    /// If the value changed we return the old element
     pub fn insert_if_changed_value<'db, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
         options: Option<MerkOptions>,
-    ) -> CostResult<bool, Error> {
+    ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let previous_element = cost_return_on_error!(
             &mut cost,
             Self::get_optional_from_storage(&merk.storage, key)
         );
-        let needs_insert = match previous_element {
+        let needs_insert = match &previous_element {
             None => true,
-            Some(previous_element) => &previous_element != self,
+            Some(previous_element) => previous_element != self,
         };
         if !needs_insert {
-            Ok(false).wrap_with_cost(cost)
+            Ok(None).wrap_with_cost(cost)
         } else {
             cost_return_on_error!(&mut cost, self.insert(merk, key, options));
-            Ok(true).wrap_with_cost(cost)
+            Ok(previous_element).wrap_with_cost(cost)
         }
     }
 
@@ -224,24 +225,24 @@ impl Element {
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
-    ) -> CostResult<bool, Error> {
+    ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let previous_element = cost_return_on_error!(
             &mut cost,
             Self::get_optional_from_storage(&merk.storage, key.as_ref())
         );
-        let needs_insert = match previous_element {
+        let needs_insert = match &previous_element {
             None => true,
-            Some(previous_element) => &previous_element != self,
+            Some(previous_element) => previous_element != self,
         };
         if !needs_insert {
-            Ok(false).wrap_with_cost(cost)
+            Ok(None).wrap_with_cost(cost)
         } else {
             cost_return_on_error!(
                 &mut cost,
                 self.insert_into_batch_operations(key, batch_operations, feature_type)
             );
-            Ok(true).wrap_with_cost(cost)
+            Ok(previous_element).wrap_with_cost(cost)
         }
     }
 
@@ -434,12 +435,12 @@ mod tests {
             .insert(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
-        let inserted = Element::new_item(b"value".to_vec())
+        let previous = Element::new_item(b"value".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        assert!(!inserted);
+        assert_eq!(previous, None);
         assert_eq!(
             Element::get(&merk, b"another-key", true)
                 .unwrap()
@@ -459,10 +460,12 @@ mod tests {
             .insert(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
-        Element::new_item(b"value2".to_vec())
+        let previous = Element::new_item(b"value2".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
+
+        assert_eq!(previous, Some(Element::new_item(b"value".to_vec())),);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true)
@@ -479,10 +482,12 @@ mod tests {
             .insert(&mut merk, b"mykey", None)
             .unwrap()
             .expect("expected successful insertion");
-        Element::new_item(b"value2".to_vec())
+        let previous = Element::new_item(b"value2".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
+
+        assert_eq!(previous, None,);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true)
