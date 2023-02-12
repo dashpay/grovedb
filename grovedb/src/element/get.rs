@@ -55,6 +55,25 @@ impl Element {
         key: K,
         allow_cache: bool,
     ) -> CostResult<Element, Error> {
+        Self::get_optional(merk, key.as_ref(), allow_cache).map(|result| {
+            let value = result?;
+            value.ok_or_else(|| {
+                Error::PathKeyNotFound(format!(
+                    "key not found in Merk for get: {}",
+                    hex::encode(key)
+                ))
+            })
+        })
+    }
+
+    #[cfg(feature = "full")]
+    /// Get an element from Merk under a key; path should be resolved and proper
+    /// Merk should be loaded by this moment
+    pub fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        key: K,
+        allow_cache: bool,
+    ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
 
         let value_opt = cost_return_on_error!(
@@ -62,30 +81,46 @@ impl Element {
             merk.get(key.as_ref(), allow_cache)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
-        let value = cost_return_on_error_no_add!(
-            &cost,
-            value_opt.ok_or_else(|| {
-                Error::PathKeyNotFound(format!(
-                    "key not found in Merk for get: {}",
-                    hex::encode(key)
-                ))
-            })
-        );
         let element = cost_return_on_error_no_add!(
             &cost,
-            Self::deserialize(value.as_slice())
-                .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+            value_opt
+                .map(|value| {
+                    Self::deserialize(value.as_slice()).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to deserialize element"))
+                    })
+                })
+                .transpose()
         );
+
         Ok(element).wrap_with_cost(cost)
     }
 
     #[cfg(feature = "full")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
+    /// Errors if element doesn't exist
     pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         storage: &S,
         key: K,
     ) -> CostResult<Element, Error> {
+        Self::get_optional_from_storage(storage, key.as_ref()).map(|result| {
+            let value = result?;
+            value.ok_or_else(|| {
+                Error::PathKeyNotFound(format!(
+                    "key not found in Merk for get from storage: {}",
+                    hex::encode(key)
+                ))
+            })
+        })
+    }
+
+    #[cfg(feature = "full")]
+    /// Get an element directly from storage under a key
+    /// Merk does not need to be loaded
+    pub fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        storage: &S,
+        key: K,
+    ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let key_ref = key.as_ref();
         let node_value_opt = cost_return_on_error!(
@@ -94,36 +129,39 @@ impl Element {
                 .get(key_ref)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
-        let node_value = cost_return_on_error_no_add!(
+        let maybe_tree_inner: Option<TreeInner> = cost_return_on_error_no_add!(
             &cost,
-            node_value_opt.ok_or_else(|| {
-                Error::PathKeyNotFound(format!(
-                    "key not found in Merk for get from storage: {}",
-                    hex::encode(key_ref)
-                ))
-            })
+            node_value_opt
+                .map(|node_value| {
+                    Decode::decode(node_value.as_slice())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                })
+                .transpose()
         );
-        let tree_inner: TreeInner = cost_return_on_error_no_add!(
-            &cost,
-            Decode::decode(node_value.as_slice()).map_err(|e| Error::CorruptedData(e.to_string()))
-        );
-        let value = tree_inner.value_as_owned();
+
+        let value = maybe_tree_inner.map(|tree_inner| tree_inner.value_as_owned());
         let element = cost_return_on_error_no_add!(
             &cost,
-            Self::deserialize(value.as_slice())
-                .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+            value
+                .as_ref()
+                .map(|value| {
+                    Self::deserialize(value.as_slice()).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to deserialize element"))
+                    })
+                })
+                .transpose()
         );
         match &element {
-            Element::Item(..) | Element::Reference(..) => {
+            Some(Element::Item(..)) | Some(Element::Reference(..)) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
                     key_ref.len() as u32,
-                    value.len() as u32,
+                    value.as_ref().unwrap().len() as u32,
                     false,
                 )
             }
-            Element::SumItem(_, flags) => {
+            Some(Element::SumItem(_, flags)) => {
                 let cost_size = SUM_ITEM_COST_SIZE;
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -137,8 +175,8 @@ impl Element {
                         false,
                     )
             }
-            Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
-                let tree_cost_size = if element.is_sum_tree() {
+            Some(Element::Tree(_, flags)) | Some(Element::SumTree(_, _, flags)) => {
+                let tree_cost_size = if element.as_ref().unwrap().is_sum_tree() {
                     SUM_TREE_COST_SIZE
                 } else {
                     TREE_COST_SIZE
@@ -155,6 +193,7 @@ impl Element {
                         false,
                     )
             }
+            None => {}
         }
         Ok(element).wrap_with_cost(cost)
     }
