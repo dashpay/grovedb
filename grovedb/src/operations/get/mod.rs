@@ -38,6 +38,7 @@ mod worst_case;
 #[cfg(feature = "full")]
 use std::collections::HashSet;
 
+use costs::cost_return_on_error_no_add;
 #[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
@@ -281,19 +282,28 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let mut cost = OperationCost::default();
-
-        let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(path.into_iter(), transaction)
-                .map_err(|e| match e {
-                    Error::InvalidParentLayerPath(s) => {
-                        Error::PathParentLayerNotFound(s)
-                    }
-                    _ => e,
-                })
+        let merk_result = self
+            .open_transactional_merk_at_path(path.into_iter(), transaction)
+            .map_err(|e| match e {
+                Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
+                _ => e,
+            })
+            .unwrap_add_cost(&mut cost);
+        let merk: Option<Merk<PrefixedRocksDbTransactionContext>> = cost_return_on_error_no_add!(
+            &cost,
+            match merk_result {
+                Ok(result) => Ok(Some(result)),
+                Err(Error::PathParentLayerNotFound(_)) | Err(Error::InvalidParentLayerPath(_)) =>
+                    Ok(None),
+                Err(e) => Err(e),
+            }
         );
 
-        Element::get_optional(&merk_to_get_from, key, allow_cache).add_cost(cost)
+        if let Some(merk_to_get_from) = merk {
+            Element::get_optional(&merk_to_get_from, key, allow_cache).add_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
     }
 
     /// Get tree item without following references
@@ -335,19 +345,28 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let mut cost = OperationCost::default();
-
-        let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
-            &mut cost,
-            self.open_non_transactional_merk_at_path(path.into_iter())
-                .map_err(|e| match e {
-                    Error::InvalidParentLayerPath(s) => {
-                        Error::PathParentLayerNotFound(s)
-                    }
-                    _ => e,
-                })
+        let merk_result = self
+            .open_non_transactional_merk_at_path(path.into_iter())
+            .map_err(|e| match e {
+                Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
+                _ => e,
+            })
+            .unwrap_add_cost(&mut cost);
+        let merk: Option<Merk<PrefixedRocksDbStorageContext>> = cost_return_on_error_no_add!(
+            &cost,
+            match merk_result {
+                Ok(result) => Ok(Some(result)),
+                Err(Error::PathParentLayerNotFound(_)) | Err(Error::InvalidParentLayerPath(_)) =>
+                    Ok(None),
+                Err(e) => Err(e),
+            }
         );
 
-        Element::get_optional(&merk_to_get_from, key, allow_cache).add_cost(cost)
+        if let Some(merk_to_get_from) = merk {
+            Element::get_optional(&merk_to_get_from, key, allow_cache).add_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
     }
 
     /// Does tree element exist without following references
