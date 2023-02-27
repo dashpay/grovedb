@@ -49,8 +49,10 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
+pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>;
 /// Level, path, key, op
-type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
+#[cfg(feature = "full")]
+pub type OpsByLevelPath = IntMap<u32, OpsByPath>;
 
 /// Batch structure
 #[cfg(feature = "full")]
@@ -115,9 +117,26 @@ where
         split_remove_bytes_function: SR,
         mut merk_tree_cache: C,
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
+        Self::continue_from_ops(
+            None,
+            ops,
+            update_element_flags_function,
+            split_remove_bytes_function,
+            merk_tree_cache,
+        )
+    }
+
+    /// Create batch structure from a list of ops. Returns CostResult.
+    pub(super) fn continue_from_ops(
+        previous_ops: Option<OpsByLevelPath>,
+        ops: Vec<GroveDbOp>,
+        update_element_flags_function: F,
+        split_remove_bytes_function: SR,
+        mut merk_tree_cache: C,
+    ) -> CostResult<BatchStructure<C, F, SR>, Error> {
         let mut cost = OperationCost::default();
 
-        let mut ops_by_level_paths: OpsByLevelPath = IntMap::default();
+        let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
         let mut current_last_level: u32 = 0;
 
         // qualified paths meaning path + key

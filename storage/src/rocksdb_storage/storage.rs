@@ -160,16 +160,27 @@ impl RocksDbStorage {
     /// write of the write batch.
     pub fn build_write_batch(
         &self,
-        batch: StorageBatch,
+        storage_batch: StorageBatch,
     ) -> CostResult<(WriteBatchWithTransaction<true>, OperationCost), Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
+        self.continue_write_batch(&mut db_batch, storage_batch)
+            .map_ok(|operation_cost| (db_batch, operation_cost))
+    }
 
+    /// Continues the write batch, returning pending costs
+    /// Pending costs are costs that should only be applied after successful
+    /// write of the write batch.
+    pub fn continue_write_batch(
+        &self,
+        db_batch: &mut WriteBatchWithTransaction<true>,
+        storage_batch: StorageBatch,
+    ) -> CostResult<OperationCost, Error> {
         let mut cost = OperationCost::default();
         // Until batch is committed these costs are pending (should not be added in case
         // of early termination).
         let mut pending_costs = OperationCost::default();
 
-        for op in batch.into_iter() {
+        for op in storage_batch.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
                     key,
@@ -370,7 +381,7 @@ impl RocksDbStorage {
                 }
             }
         }
-        Ok((db_batch, pending_costs)).wrap_with_cost(cost)
+        Ok(pending_costs).wrap_with_cost(cost)
     }
 
     /// Commits a write batch
