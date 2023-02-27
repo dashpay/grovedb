@@ -50,6 +50,9 @@ pub struct BatchApplyOptions {
     pub disable_operation_consistency_check: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
+    /// At what height do we want to pause applying batch operations
+    /// Most of the time this should be not set
+    pub batch_pause_height: Option<u8>,
 }
 
 #[cfg(feature = "full")]
@@ -62,6 +65,7 @@ impl Default for BatchApplyOptions {
             deleting_non_empty_trees_returns_error: true,
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
+            batch_pause_height: None,
         }
     }
 }
