@@ -38,6 +38,8 @@ mod mode;
 #[cfg(test)]
 mod multi_insert_cost_tests;
 
+#[cfg(test)]
+mod just_in_time_cost_tests;
 mod options;
 #[cfg(test)]
 mod single_deletion_cost_tests;
@@ -53,7 +55,7 @@ use std::{
     cmp::Ordering,
     collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
     hash::{Hash, Hasher},
-    ops::AddAssign,
+    ops::{Add, AddAssign},
     slice::Iter,
     vec::IntoIter,
 };
@@ -74,6 +76,7 @@ use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
+    proofs::query::Map,
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, NULL_HASH,
@@ -82,14 +85,19 @@ use merk::{
 };
 pub use options::BatchApplyOptions;
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
+    rocksdb_storage::{
+        PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
+        WriteBatchWithTransaction,
+    },
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{Drawer, Visualize};
 
 use crate::{
     batch::{
-        batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
+        batch_structure::{BatchStructure, OpsByLevelPath, OpsByPath},
+        estimated_costs::EstimatedCostsType,
+        mode::BatchRunMode,
     },
     element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     operations::get::MAX_REFERENCE_HOPS,
@@ -1168,10 +1176,12 @@ where
 
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
+    /// If the stop level is set in the apply options the remaining operations
+    /// are returned
     fn apply_batch_structure<C: TreeCache<F, SR>, F, SR>(
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
-    ) -> CostResult<(), Error>
+    ) -> CostResult<Option<OpsByLevelPath>, Error>
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(
@@ -1192,6 +1202,7 @@ impl GroveDb {
         let mut current_level = last_level;
 
         let batch_apply_options = batch_apply_options.unwrap_or_default();
+        let stop_level = batch_apply_options.batch_pause_height.unwrap_or_default() as u32;
 
         // We will update up the tree
         while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
@@ -1347,14 +1358,20 @@ impl GroveDb {
                     }
                 }
             }
+            if current_level == stop_level {
+                // we need to pause the batch execution
+                return Ok(Some(ops_by_level_paths)).wrap_with_cost(cost);
+            }
             if current_level > 0 {
                 current_level -= 1;
             }
         }
-        Ok(()).wrap_with_cost(cost)
+        Ok(None).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
+    /// If the pause height is set in the batch apply options
+    /// Then return the list of leftover operations
     fn apply_body<'db, S: StorageContext<'db>>(
         &self,
         ops: Vec<GroveDbOp>,
@@ -1373,12 +1390,52 @@ impl GroveDb {
             Error,
         >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<Option<OpsByLevelPath>, Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
             BatchStructure::from_ops(
                 ops,
+                update_element_flags_function,
+                split_removed_bytes_function,
+                TreeCacheMerkByPath {
+                    merks: Default::default(),
+                    get_merk_fn,
+                }
+            )
+        );
+        Self::apply_batch_structure(batch_structure, batch_apply_options).add_cost(cost)
+    }
+
+    /// Method to propagate updated subtree root hashes up to GroveDB root
+    /// If the pause height is set in the batch apply options
+    /// Then return the list of leftover operations
+    fn continue_partial_apply_body<'db, S: StorageContext<'db>>(
+        &self,
+        previous_leftover_operations: Option<OpsByLevelPath>,
+        additional_ops: Vec<GroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<bool, Error>,
+        split_removed_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    ) -> CostResult<Option<OpsByLevelPath>, Error> {
+        let mut cost = OperationCost::default();
+        let batch_structure = cost_return_on_error!(
+            &mut cost,
+            BatchStructure::continue_from_ops(
+                previous_leftover_operations,
+                additional_ops,
                 update_element_flags_function,
                 split_removed_bytes_function,
                 TreeCacheMerkByPath {
@@ -1450,6 +1507,32 @@ impl GroveDb {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            transaction,
+        )
+    }
+
+    /// Applies batch on GroveDB
+    pub fn apply_partial_batch(
+        &self,
+        ops: Vec<GroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        cost_based_add_on_operations: impl FnMut(
+            &OperationCost,
+            &Option<OpsByLevelPath>,
+        ) -> Result<Vec<GroveDbOp>, Error>,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error> {
+        self.apply_partial_batch_with_element_flags_update(
+            ops,
+            batch_apply_options,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
+            cost_based_add_on_operations,
             transaction,
         )
     }
@@ -1651,11 +1734,10 @@ impl GroveDb {
             );
 
             // TODO: compute batch costs
-            cost_return_on_error_no_add!(
-                &cost,
+            cost_return_on_error!(
+                &mut cost,
                 self.db
                     .commit_multi_context_batch(storage_batch, Some(tx))
-                    .unwrap_add_cost(&mut cost)
                     .map_err(|e| e.into())
             );
         } else {
@@ -1673,11 +1755,236 @@ impl GroveDb {
             );
 
             // TODO: compute batch costs
-            cost_return_on_error_no_add!(
-                &cost,
+            cost_return_on_error!(
+                &mut cost,
                 self.db
                     .commit_multi_context_batch(storage_batch, None)
-                    .unwrap_add_cost(&mut cost)
+                    .map_err(|e| e.into())
+            );
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Applies a partial batch of operations on GroveDB
+    /// The batch is not committed
+    /// Clients should set the Batch Apply Options batch pause height
+    /// If it is not set we default to pausing at the root tree
+    pub fn apply_partial_batch_with_element_flags_update(
+        &self,
+        ops: Vec<GroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        mut update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> Result<bool, Error>,
+        mut split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+        mut add_on_operations: impl FnMut(
+            &OperationCost,
+            &Option<OpsByLevelPath>,
+        ) -> Result<Vec<GroveDbOp>, Error>,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        if ops.is_empty() {
+            return Ok(()).wrap_with_cost(cost);
+        }
+
+        let mut batch_apply_options = batch_apply_options.unwrap_or_default();
+        if batch_apply_options.batch_pause_height.is_none() {
+            // we default to pausing at the root tree, which is the most common case
+            batch_apply_options.batch_pause_height = Some(1);
+        }
+
+        // Determines whether to check batch operation consistency
+        // return false if the disable option is set to true, returns true for any other
+        // case
+        let check_batch_operation_consistency =
+            !batch_apply_options.disable_operation_consistency_check;
+
+        if check_batch_operation_consistency {
+            let consistency_result = GroveDbOp::verify_consistency_of_operations(&ops);
+            if !consistency_result.is_empty() {
+                return Err(Error::InvalidBatchOperation(
+                    "batch operations fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
+        // `StorageBatch` allows us to collect operations on different subtrees before
+        // execution
+        let storage_batch = StorageBatch::new();
+
+        // With the only one difference (if there is a transaction) do the following:
+        // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
+        //    one subtree and moved to another then add propagation operation to the
+        //    operations tree and drop Merk handle;
+        // 3. Take Merk from temp subtrees or open a new one with batched storage_cost
+        //    context;
+        // 4. Apply operation to the Merk;
+        // 5. Remove operation from the tree, repeat until there are operations to do;
+        // 6. Add root leaves save operation to the batch
+        // 7. Apply storage_cost batch
+        if let Some(tx) = transaction {
+            let left_over_operations = cost_return_on_error!(
+                &mut cost,
+                self.apply_body(
+                    ops,
+                    Some(batch_apply_options.clone()),
+                    &mut update_element_flags_function,
+                    &mut split_removal_bytes_function,
+                    |path, new_merk| {
+                        self.open_batch_transactional_merk_at_path(
+                            &storage_batch,
+                            path.iter().map(|x| x.as_slice()),
+                            tx,
+                            new_merk,
+                        )
+                    }
+                )
+            );
+            // if we paused at the root height, the left over operations would be to replace
+            // a lot of leaf nodes in the root tree
+
+            // let's build the write batch
+            let (mut write_batch, mut pending_costs) = cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .build_write_batch(storage_batch)
+                    .map_err(|e| e.into())
+            );
+
+            let mut total_current_costs = cost.clone().add(pending_costs.clone());
+
+            // todo: estimate root costs
+
+            // at this point we need to send the pending costs back
+            // we will get GroveDB a new set of GroveDBOps
+
+            let new_operations = cost_return_on_error_no_add!(
+                &cost,
+                add_on_operations(&total_current_costs, &left_over_operations)
+            );
+
+            // we are trying to finalize
+            batch_apply_options.batch_pause_height = None;
+
+            let continue_storage_batch = StorageBatch::new();
+
+            cost_return_on_error!(
+                &mut cost,
+                self.continue_partial_apply_body(
+                    left_over_operations,
+                    new_operations,
+                    Some(batch_apply_options),
+                    update_element_flags_function,
+                    split_removal_bytes_function,
+                    |path, new_merk| {
+                        self.open_batch_transactional_merk_at_path(
+                            &continue_storage_batch,
+                            path.iter().map(|x| x.as_slice()),
+                            tx,
+                            new_merk,
+                        )
+                    }
+                )
+            );
+
+            // let's build the write batch
+            let continued_pending_costs = cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .continue_write_batch(&mut write_batch, continue_storage_batch)
+                    .map_err(|e| e.into())
+            );
+
+            pending_costs.add_assign(continued_pending_costs);
+
+            // TODO: compute batch costs
+            cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .commit_db_write_batch(write_batch, pending_costs, Some(tx))
+                    .map_err(|e| e.into())
+            );
+        } else {
+            let left_over_operations = cost_return_on_error!(
+                &mut cost,
+                self.apply_body(
+                    ops,
+                    Some(batch_apply_options.clone()),
+                    &mut update_element_flags_function,
+                    &mut split_removal_bytes_function,
+                    |path, new_merk| {
+                        self.open_batch_merk_at_path(&storage_batch, path, new_merk)
+                    }
+                )
+            );
+
+            // if we paused at the root height, the left over operations would be to replace
+            // a lot of leaf nodes in the root tree
+
+            // let's build the write batch
+            let (mut write_batch, mut pending_costs) = cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .build_write_batch(storage_batch)
+                    .map_err(|e| e.into())
+            );
+
+            let mut total_current_costs = cost.clone().add(pending_costs.clone());
+
+            // at this point we need to send the pending costs back
+            // we will get GroveDB a new set of GroveDBOps
+
+            let new_operations = cost_return_on_error_no_add!(
+                &cost,
+                add_on_operations(&total_current_costs, &left_over_operations)
+            );
+
+            // we are trying to finalize
+            batch_apply_options.batch_pause_height = None;
+
+            let continue_storage_batch = StorageBatch::new();
+
+            cost_return_on_error!(
+                &mut cost,
+                self.continue_partial_apply_body(
+                    left_over_operations,
+                    new_operations,
+                    Some(batch_apply_options),
+                    update_element_flags_function,
+                    split_removal_bytes_function,
+                    |path, new_merk| {
+                        self.open_batch_merk_at_path(&continue_storage_batch, path, new_merk)
+                    }
+                )
+            );
+
+            // let's build the write batch
+            let continued_pending_costs = cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .continue_write_batch(&mut write_batch, continue_storage_batch)
+                    .map_err(|e| e.into())
+            );
+
+            pending_costs.add_assign(continued_pending_costs);
+
+            // TODO: compute batch costs
+            cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .commit_db_write_batch(write_batch, pending_costs, None)
                     .map_err(|e| e.into())
             );
         }
@@ -1900,6 +2207,7 @@ mod tests {
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: true,
                     base_root_storage_is_free: true,
+                    batch_pause_height: None,
                 }),
                 None
             )
@@ -2617,6 +2925,7 @@ mod tests {
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
+                    batch_pause_height: None,
                 }),
                 None
             )
@@ -2655,6 +2964,7 @@ mod tests {
                     validate_insertion_does_not_override: true,
                     deleting_non_empty_trees_returns_error: true,
                     base_root_storage_is_free: true,
+                    batch_pause_height: None,
                 }),
                 None
             )
@@ -2687,6 +2997,7 @@ mod tests {
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
                     base_root_storage_is_free: true,
+                    batch_pause_height: None,
                 }),
                 None
             )

@@ -31,8 +31,9 @@
 use std::{ops::AddAssign, path::Path};
 
 use costs::{
-    cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval,
-    CostContext, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval, CostContext, CostResult,
+    CostsExt, OperationCost,
 };
 use error::Error;
 use integer_encoding::VarInt;
@@ -153,93 +154,33 @@ impl RocksDbStorage {
                 .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u16))
         }
     }
-}
 
-impl<'db> Storage<'db> for RocksDbStorage {
-    type BatchStorageContext = PrefixedRocksDbBatchStorageContext<'db>;
-    type BatchTransactionalStorageContext = PrefixedRocksDbBatchTransactionContext<'db>;
-    type StorageContext = PrefixedRocksDbStorageContext<'db>;
-    type Transaction = Tx<'db>;
-    type TransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
-
-    fn start_transaction(&'db self) -> Self::Transaction {
-        self.db.transaction()
-    }
-
-    fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
-        // All transaction costs were provided on method calls
-        transaction
-            .commit()
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
-    }
-
-    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
-        transaction.rollback().map_err(RocksDBError)
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(RocksDBError)
-    }
-
-    fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-    {
-        Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
-    }
-
-    fn get_transactional_storage_context<'p, P>(
-        &'db self,
-        path: P,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::TransactionalStorageContext>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-    {
-        Self::build_prefix(path)
-            .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
-    }
-
-    fn get_batch_storage_context<'p, P>(
-        &'db self,
-        path: P,
-        batch: &'db StorageBatch,
-    ) -> CostContext<Self::BatchStorageContext>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-    {
-        Self::build_prefix(path)
-            .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
-    }
-
-    fn get_batch_transactional_storage_context<'p, P>(
-        &'db self,
-        path: P,
-        batch: &'db StorageBatch,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::BatchTransactionalStorageContext>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-    {
-        Self::build_prefix(path).map(|prefix| {
-            PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
-        })
-    }
-
-    fn commit_multi_context_batch(
+    /// Returns the write batch, with costs and pending costs
+    /// Pending costs are costs that should only be applied after successful
+    /// write of the write batch.
+    pub fn build_write_batch(
         &self,
-        batch: StorageBatch,
-        transaction: Option<&'db Self::Transaction>,
-    ) -> CostResult<(), Error> {
+        storage_batch: StorageBatch,
+    ) -> CostResult<(WriteBatchWithTransaction<true>, OperationCost), Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
+        self.continue_write_batch(&mut db_batch, storage_batch)
+            .map_ok(|operation_cost| (db_batch, operation_cost))
+    }
 
+    /// Continues the write batch, returning pending costs
+    /// Pending costs are costs that should only be applied after successful
+    /// write of the write batch.
+    pub fn continue_write_batch(
+        &self,
+        db_batch: &mut WriteBatchWithTransaction<true>,
+        storage_batch: StorageBatch,
+    ) -> CostResult<OperationCost, Error> {
         let mut cost = OperationCost::default();
         // Until batch is committed these costs are pending (should not be added in case
         // of early termination).
         let mut pending_costs = OperationCost::default();
 
-        for op in batch.into_iter() {
+        for op in storage_batch.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
                     key,
@@ -440,15 +381,114 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 }
             }
         }
+        Ok(pending_costs).wrap_with_cost(cost)
+    }
 
+    /// Commits a write batch
+    pub fn commit_db_write_batch(
+        &self,
+        db_batch: WriteBatchWithTransaction<true>,
+        pending_costs: OperationCost,
+        transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
+    ) -> CostResult<(), Error> {
         let result = match transaction {
             None => self.db.write(db_batch),
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
         };
 
-        cost.add_assign(pending_costs);
+        if result.is_ok() {
+            result.map_err(RocksDBError).wrap_with_cost(pending_costs)
+        } else {
+            result
+                .map_err(RocksDBError)
+                .wrap_with_cost(OperationCost::default())
+        }
+    }
+}
 
-        result.map_err(RocksDBError).wrap_with_cost(cost)
+impl<'db> Storage<'db> for RocksDbStorage {
+    type BatchStorageContext = PrefixedRocksDbBatchStorageContext<'db>;
+    type BatchTransactionalStorageContext = PrefixedRocksDbBatchTransactionContext<'db>;
+    type StorageContext = PrefixedRocksDbStorageContext<'db>;
+    type Transaction = Tx<'db>;
+    type TransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
+
+    fn start_transaction(&'db self) -> Self::Transaction {
+        self.db.transaction()
+    }
+
+    fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
+        // All transaction costs were provided on method calls
+        transaction
+            .commit()
+            .map_err(RocksDBError)
+            .wrap_with_cost(Default::default())
+    }
+
+    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
+        transaction.rollback().map_err(RocksDBError)
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        self.db.flush().map_err(RocksDBError)
+    }
+
+    fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+    {
+        Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
+    }
+
+    fn get_transactional_storage_context<'p, P>(
+        &'db self,
+        path: P,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::TransactionalStorageContext>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+    {
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
+    }
+
+    fn get_batch_storage_context<'p, P>(
+        &'db self,
+        path: P,
+        batch: &'db StorageBatch,
+    ) -> CostContext<Self::BatchStorageContext>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+    {
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
+    }
+
+    fn get_batch_transactional_storage_context<'p, P>(
+        &'db self,
+        path: P,
+        batch: &'db StorageBatch,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::BatchTransactionalStorageContext>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+    {
+        Self::build_prefix(path).map(|prefix| {
+            PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
+        })
+    }
+
+    fn commit_multi_context_batch(
+        &self,
+        batch: StorageBatch,
+        transaction: Option<&'db Self::Transaction>,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let (db_batch, pending_costs) =
+            cost_return_on_error!(&mut cost, self.build_write_batch(batch));
+
+        self.commit_db_write_batch(db_batch, pending_costs, transaction)
+            .add_cost(cost)
     }
 
     fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {

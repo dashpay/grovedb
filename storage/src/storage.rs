@@ -35,9 +35,10 @@ use std::{
 };
 
 use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
-    CostResult, OperationCost,
+    cost_return_on_error_no_add, storage_cost::key_value_cost::KeyValueStorageCost,
+    ChildrenSizesWithIsSumTree, CostContext, CostResult, OperationCost,
 };
+use rocksdb::WriteBatchWithTransaction;
 use visualize::visualize_to_vec;
 
 use crate::{worst_case_costs::WorstKeyLength, Error};
@@ -120,7 +121,10 @@ pub trait Storage<'db> {
     fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost;
 }
 
+use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 pub use costs::ChildrenSizes;
+
+use crate::Error::RocksDBError;
 
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as
