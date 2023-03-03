@@ -464,6 +464,39 @@ impl GroveDb {
                 .add_cost(cost)
         }
     }
+
+    /// Insert if the value changed
+    /// We return if the value was inserted
+    /// If the value was changed then we return the previous element
+    pub fn insert_if_changed_value<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        element: Element,
+        transaction: TransactionArg,
+    ) -> CostResult<(bool, Option<Element>), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+        let path_iter = path.into_iter();
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_optional(path_iter.clone(), key, transaction)
+        );
+        let needs_insert = match &previous_element {
+            None => true,
+            Some(previous_element) => previous_element != &element,
+        };
+        if !needs_insert {
+            Ok((false, None)).wrap_with_cost(cost)
+        } else {
+            self.insert(path_iter, key, element, None, transaction)
+                .map_ok(|_| (true, previous_element))
+                .add_cost(cost)
+        }
+    }
 }
 
 #[cfg(feature = "full")]
@@ -706,9 +739,9 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 78
+        // Value -> 85
         //   1 for the enum type item
-        //   1 for the value (encoded var vec)
+        //   9 for the value (encoded var vec)
         //   1 for the flag option (but no flags)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
@@ -722,17 +755,17 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 78 + 48 = 163
+        // Total 37 + 85 + 48 = 170
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 5,
                 storage_cost: StorageCost {
-                    added_bytes: 162,
-                    replaced_bytes: 83, // todo: verify
+                    added_bytes: 170,
+                    replaced_bytes: 84, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 148,
+                storage_loaded_bytes: 156,
                 hash_node_calls: 8,
             }
         );
@@ -774,10 +807,10 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 77
+        // Value -> 85
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
-        //   1 for the value (encoded var vec)
+        //   9 for the value (encoded var vec)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
         // 9 for Summed merk
@@ -790,17 +823,17 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 77 + 48 = 162
+        // Total 37 + 85 + 48 = 170
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 7,
                 storage_cost: StorageCost {
-                    added_bytes: 162,
-                    replaced_bytes: 208, // todo: verify
+                    added_bytes: 170,
+                    replaced_bytes: 209, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 229,
+                storage_loaded_bytes: 232,
                 hash_node_calls: 10,
             }
         );
@@ -843,10 +876,10 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 81
+        // Value -> 85
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
-        //   5 for the value (encoded var vec)
+        //   9 for the value (encoded var vec)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
         // 9 for Summed merk
@@ -859,17 +892,17 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 81 + 48 = 166
+        // Total 37 + 85 + 48 = 170
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 7,
                 storage_cost: StorageCost {
-                    added_bytes: 166,
-                    replaced_bytes: 210, // todo: verify
+                    added_bytes: 170,
+                    replaced_bytes: 211, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 236,
+                storage_loaded_bytes: 237,
                 hash_node_calls: 10,
             }
         );
@@ -1001,12 +1034,12 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 46
+        // Value -> 47
         //   1 for the flag option (but no flags)
         //   1 for the enum type tree
         //   1 for empty option
         //   1 for no sum feature
-        //   8 bytes for sum
+        //   9 bytes for sum
         // 32 for node hash
         // 0 for value hash (trees have this for free)
         // 2 byte for the value_size (required space for 98 + x where x can be up to
@@ -1019,7 +1052,7 @@ mod tests {
         // Child Heights 2
         // Sum 1
 
-        // Total 37 + 46 + 40 = 123
+        // Total 37 + 47 + 40 = 124
 
         // Hash node calls
         // 1 for the node hash
@@ -1029,7 +1062,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 123,
+                    added_bytes: 124,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -1517,8 +1550,151 @@ mod tests {
                     replaced_bytes: 190,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 235, // todo verify this
+                storage_loaded_bytes: 230, // todo verify this
                 hash_node_calls: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [0; 32].as_slice(),
+            Element::new_sum_item(15),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                [0; 32].as_slice(),
+                Element::new_sum_item(1000000),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 248,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 266, // todo verify this
+                hash_node_calls: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item_parent_sum_tree_already_big(
+    ) {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [1; 32].as_slice(),
+            Element::new_sum_item(1000000),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [0; 32].as_slice(),
+            Element::new_sum_item(15),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                [0; 32].as_slice(),
+                Element::new_sum_item(1000000),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 9, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 405, // todo: verify this
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 487, // todo verify this
+                hash_node_calls: 11,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_same_cost_in_underlying_sum_tree_smaller_sum_item() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            [0; 32].as_slice(),
+            Element::new_sum_item(1000000),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                [0; 32].as_slice(),
+                Element::new_sum_item(15),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 248,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 276, // todo verify this
+                hash_node_calls: 9,
             }
         );
     }
@@ -1561,7 +1737,7 @@ mod tests {
                     replaced_bytes: 191, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 236,
+                storage_loaded_bytes: 231,
                 hash_node_calls: 8,
             }
         );
@@ -1639,7 +1815,7 @@ mod tests {
                     replaced_bytes: 156,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 232,
+                storage_loaded_bytes: 227,
                 hash_node_calls: 9, // todo: verify this
             }
         );

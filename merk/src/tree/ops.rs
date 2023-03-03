@@ -51,9 +51,9 @@ use Op::*;
 
 #[cfg(feature = "full")]
 use super::{Fetch, Link, Tree, Walker};
-use crate::merk::KeyUpdates;
 #[cfg(feature = "full")]
 use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
+use crate::{merk::KeyUpdates, tree::kv::ValueDefinedCostType::SpecializedValueDefinedCost};
 
 #[cfg(feature = "full")]
 /// An operation to be applied to a key in the store.
@@ -61,6 +61,10 @@ use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, 
 pub enum Op {
     /// Insert or Update an element into the Merk tree
     Put(Vec<u8>, TreeFeatureType),
+    /// Insert or Update an element that is encoded with a special
+    /// cost into the Merk tree. This is ideal for sum items where
+    /// we want sizes to always be fixed
+    PutWithSpecializedCost(Vec<u8>, u32, TreeFeatureType),
     /// Combined references include the value in the node hash
     /// because the value is independent of the reference hash
     /// In GroveDB this is used for references
@@ -78,13 +82,16 @@ pub enum Op {
     ReplaceLayeredReference(Vec<u8>, u32, CryptoHash, TreeFeatureType),
     /// Delete an element from the Merk tree
     Delete,
+    /// Delete an element from the Merk tree knowing the previous value
+    /// costs
+    DeleteMaybeSpecialized,
     /// Delete a layered element from the Merk tree, currently the
     /// only layered elements are GroveDB subtrees. A layered
     /// element uses a different calculation for its costs
     DeleteLayered,
     /// Very close to DeleteLayered. A sum layered
     /// element uses a different calculation for its costs.
-    DeleteLayeredHavingSum,
+    DeleteLayeredMaybeSpecialized,
 }
 
 #[cfg(feature = "full")]
@@ -95,6 +102,9 @@ impl fmt::Debug for Op {
             "{}",
             match self {
                 Put(value, _) => format!("Put({value:?})"),
+                PutWithSpecializedCost(value, cost, feature_type) => format!(
+                    "Put Specialized Cost({value:?}) with cost ({cost:?}) for ({feature_type:?})"
+                ),
                 PutCombinedReference(value, referenced_value, feature_type) => format!(
                     "Put Combined Reference({value:?}) for ({referenced_value:?}). \
                      ({feature_type:?})"
@@ -109,7 +119,8 @@ impl fmt::Debug for Op {
                 ),
                 Delete => "Delete".to_string(),
                 DeleteLayered => "Delete Layered".to_string(),
-                DeleteLayeredHavingSum => "Delete Layered Having Sum".to_string(),
+                DeleteMaybeSpecialized => "Delete Maybe Specialized".to_string(),
+                DeleteLayeredMaybeSpecialized => "Delete Layered Maybe Specialized".to_string(),
             }
         )
     }
@@ -230,7 +241,7 @@ where
         let mid_index = batch.len() / 2;
         let (mid_key, mid_op) = &batch[mid_index];
         let (mid_value, mid_feature_type) = match mid_op {
-            Delete | DeleteLayered | DeleteLayeredHavingSum => {
+            Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                 let left_batch = &batch[..mid_index];
                 let right_batch = &batch[mid_index + 1..];
 
@@ -266,6 +277,7 @@ where
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
             Put(value, feature_type)
+            | PutWithSpecializedCost(value, .., feature_type)
             | PutCombinedReference(value, .., feature_type)
             | PutLayeredReference(value, .., feature_type)
             | ReplaceLayeredReference(value, .., feature_type) => (value.to_vec(), feature_type),
@@ -277,6 +289,14 @@ where
             Put(..) => Tree::new(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
+                None,
+                mid_feature_type.to_owned(),
+            )
+            .unwrap_add_cost(&mut cost),
+            PutWithSpecializedCost(_, value_cost, _) => Tree::new(
+                mid_key.as_ref().to_vec(),
+                mid_value.to_vec(),
+                Some(SpecializedValueDefinedCost(*value_cost)),
                 mid_feature_type.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
@@ -298,7 +318,7 @@ where
                 )
                 .unwrap_add_cost(&mut cost)
             }
-            Delete | DeleteLayered | DeleteLayeredHavingSum => {
+            Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                 unreachable!("cannot get here, should return at the top")
             }
         };
@@ -350,7 +370,7 @@ where
     fn apply_sorted<K: AsRef<[u8]>, C, R>(
         self,
         batch: &MerkBatch<K>,
-        old_tree_cost: &C,
+        old_specialized_cost: &C,
         section_removal_bytes: &mut R,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error>
     where
@@ -373,6 +393,9 @@ where
                 Put(value, feature_type) => self
                     .put_value(value.to_vec(), feature_type.to_owned())
                     .unwrap_add_cost(&mut cost),
+                PutWithSpecializedCost(value, value_cost, feature_type) => self
+                    .put_value_with_fixed_cost(value.to_vec(), *value_cost, feature_type.to_owned())
+                    .unwrap_add_cost(&mut cost),
                 PutCombinedReference(value, referenced_value, feature_type) => self
                     .put_value_and_reference_value_hash(
                         value.to_vec(),
@@ -390,7 +413,7 @@ where
                     )
                     .unwrap_add_cost(&mut cost)
                 }
-                Delete | DeleteLayered | DeleteLayeredHavingSum => {
+                Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
                     let wrap = |maybe_tree: Option<Tree>| {
@@ -401,40 +424,37 @@ where
 
                     let prefixed_key_len = HASH_LENGTH_U32 + key_len;
                     let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
+                    let value = self.tree().value_ref();
 
-                    let deletion_cost = match &batch[index].1 {
-                        Delete | DeleteLayered | DeleteLayeredHavingSum => {
-                            let value = self.tree().value_ref();
-
-                            let old_cost = match &batch[index].1 {
-                                Delete => self.tree().inner.kv.value_byte_cost_size(),
-                                DeleteLayered | DeleteLayeredHavingSum => {
-                                    cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value))
-                                }
-                                _ => 0, // can't get here anyways
-                            };
-
-                            let (r_key_cost, r_value_cost) = cost_return_on_error_no_add!(
-                                &cost,
-                                section_removal_bytes(value, total_key_len, old_cost)
-                            );
-                            Some(KeyValueStorageCost {
-                                key_storage_cost: StorageCost {
-                                    added_bytes: 0,
-                                    replaced_bytes: 0,
-                                    removed_bytes: r_key_cost,
-                                },
-                                value_storage_cost: StorageCost {
-                                    added_bytes: 0,
-                                    replaced_bytes: 0,
-                                    removed_bytes: r_value_cost,
-                                },
-                                new_node: false,
-                                needs_value_verification: false,
-                            })
+                    let old_cost = match &batch[index].1 {
+                        Delete => self.tree().inner.kv.value_byte_cost_size(),
+                        DeleteLayered | DeleteLayeredMaybeSpecialized => {
+                            cost_return_on_error_no_add!(&cost, old_specialized_cost(&key, value))
                         }
-                        _ => None,
+                        DeleteMaybeSpecialized => {
+                            cost_return_on_error_no_add!(&cost, old_specialized_cost(&key, value))
+                        }
+                        _ => 0, // can't get here anyways
                     };
+
+                    let (r_key_cost, r_value_cost) = cost_return_on_error_no_add!(
+                        &cost,
+                        section_removal_bytes(value, total_key_len, old_cost)
+                    );
+                    let deletion_cost = Some(KeyValueStorageCost {
+                        key_storage_cost: StorageCost {
+                            added_bytes: 0,
+                            replaced_bytes: 0,
+                            removed_bytes: r_key_cost,
+                        },
+                        value_storage_cost: StorageCost {
+                            added_bytes: 0,
+                            replaced_bytes: 0,
+                            removed_bytes: r_value_cost,
+                        },
+                        new_node: false,
+                        needs_value_verification: false,
+                    });
 
                     let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
 
@@ -446,7 +466,7 @@ where
                             maybe_tree,
                             &batch[..index],
                             source.clone(),
-                            old_tree_cost,
+                            old_specialized_cost,
                             section_removal_bytes
                         )
                     );
@@ -458,7 +478,7 @@ where
                             maybe_walker,
                             &batch[index + 1..],
                             source.clone(),
-                            old_tree_cost,
+                            old_specialized_cost,
                             section_removal_bytes
                         )
                     );
@@ -499,7 +519,7 @@ where
             mid,
             exclusive,
             KeyUpdates::new(new_keys, updated_keys, LinkedList::default(), None),
-            old_tree_cost,
+            old_specialized_cost,
             section_removal_bytes,
         )
         .add_cost(cost)
@@ -728,7 +748,7 @@ mod test {
     #[test]
     fn simple_insert() {
         let batch = [(b"foo2".to_vec(), Op::Put(b"bar2".to_vec(), BasicMerk))];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         let (maybe_walker, key_updates) = Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -744,7 +764,7 @@ mod test {
     #[test]
     fn simple_update() {
         let batch = [(b"foo".to_vec(), Op::Put(b"bar2".to_vec(), BasicMerk))];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         let (maybe_walker, key_updates) = Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -770,7 +790,7 @@ mod test {
                 hash: [123; 32],
                 sum: None,
                 child_heights: (0, 0),
-                tree: Tree::new(b"foo2".to_vec(), b"bar2".to_vec(), BasicMerk).unwrap(),
+                tree: Tree::new(b"foo2".to_vec(), b"bar2".to_vec(), None, BasicMerk).unwrap(),
             }),
             BasicMerk,
         )
@@ -795,7 +815,7 @@ mod test {
     #[test]
     fn delete_non_existent() {
         let batch = [(b"foo2".to_vec(), Op::Delete)];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -805,7 +825,7 @@ mod test {
     #[test]
     fn delete_only_node() {
         let batch = [(b"foo".to_vec(), Op::Delete)];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap();
         let (maybe_walker, key_updates) = Walker::new(tree, PanicSource {})
             .apply_sorted_without_costs(&batch)
             .unwrap()
@@ -1019,7 +1039,7 @@ mod test {
 
     #[test]
     fn insert_root_single() {
-        let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
+        let tree = Tree::new(vec![5], vec![123], None, BasicMerk).unwrap();
         let batch = vec![(vec![6], Op::Put(vec![123], BasicMerk))];
         let tree = apply_memonly(tree, &batch);
         assert_eq!(tree.key(), &[5]);
@@ -1029,7 +1049,7 @@ mod test {
 
     #[test]
     fn insert_root_double() {
-        let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
+        let tree = Tree::new(vec![5], vec![123], None, BasicMerk).unwrap();
         let batch = vec![
             (vec![4], Op::Put(vec![123], BasicMerk)),
             (vec![6], Op::Put(vec![123], BasicMerk)),
@@ -1042,7 +1062,7 @@ mod test {
 
     #[test]
     fn insert_rebalance() {
-        let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
+        let tree = Tree::new(vec![5], vec![123], None, BasicMerk).unwrap();
 
         let batch = vec![(vec![6], Op::Put(vec![123], BasicMerk))];
         let tree = apply_memonly(tree, &batch);
@@ -1057,7 +1077,7 @@ mod test {
 
     #[test]
     fn insert_100_sequential() {
-        let mut tree = Tree::new(vec![0], vec![123], BasicMerk).unwrap();
+        let mut tree = Tree::new(vec![0], vec![123], None, BasicMerk).unwrap();
 
         for i in 0..100 {
             let batch = vec![(vec![i + 1], Op::Put(vec![123], BasicMerk))];

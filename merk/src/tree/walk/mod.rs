@@ -190,6 +190,21 @@ where
         self.wrap_with_cost(cost)
     }
 
+    /// Similar to `Tree#with_value`.
+    pub fn put_value_with_fixed_cost(
+        mut self,
+        value: Vec<u8>,
+        value_fixed_cost: u32,
+        feature_type: TreeFeatureType,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        self.tree.own(|t| {
+            t.put_value_with_fixed_cost(value, value_fixed_cost, feature_type)
+                .unwrap_add_cost(&mut cost)
+        });
+        self.wrap_with_cost(cost)
+    }
+
     /// Similar to `Tree#with_value_and_value_hash`.
     pub fn put_value_and_reference_value_hash(
         mut self,
@@ -250,17 +265,17 @@ mod test {
 
     impl Fetch for MockSource {
         fn fetch(&self, link: &Link) -> CostResult<Tree, Error> {
-            Tree::new(link.key().to_vec(), b"foo".to_vec(), BasicMerk).map(Ok)
+            Tree::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerk).map(Ok)
         }
     }
 
     #[test]
     fn walk_modified() {
-        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), BasicMerk)
+        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap()),
             );
 
         let source = MockSource {};
@@ -278,11 +293,11 @@ mod test {
 
     #[test]
     fn walk_stored() {
-        let mut tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), BasicMerk)
+        let mut tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap()),
             );
         tree.commit(
             &mut NoopCommit {},
@@ -338,7 +353,7 @@ mod test {
 
     #[test]
     fn walk_none() {
-        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), BasicMerk).unwrap();
+        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk).unwrap();
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);

@@ -28,13 +28,11 @@
 
 //! Common tests
 
-use merk::proofs::query::ProvedKeyValue;
-
-use crate::{Element, Error};
+use crate::{operations::proof::util::ProvedPathKeyValues, Element, Error};
 
 /// Compare result tuples
 pub fn compare_result_tuples(
-    result_set: Vec<ProvedKeyValue>,
+    result_set: ProvedPathKeyValues,
     expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
 ) {
     assert_eq!(expected_result_set.len(), result_set.len());
@@ -53,7 +51,7 @@ fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error
 }
 
 /// Compare result sets
-pub fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &Vec<ProvedKeyValue>) {
+pub fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &ProvedPathKeyValues) {
     for i in 0..elements.len() {
         assert_eq!(
             deserialize_and_extract_item_bytes(&result_set[i].value).unwrap(),

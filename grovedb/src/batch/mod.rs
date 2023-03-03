@@ -43,6 +43,10 @@ mod options;
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
+#[cfg(test)]
+mod single_sum_item_deletion_cost_tests;
+#[cfg(test)]
+mod single_sum_item_insert_cost_tests;
 
 use core::fmt;
 use std::{
@@ -70,7 +74,10 @@ use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
-    tree::{kv::KV, value_hash, NULL_HASH},
+    tree::{
+        kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+        value_hash, NULL_HASH,
+    },
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
 };
 pub use options::BatchApplyOptions;
@@ -84,7 +91,7 @@ use crate::{
     batch::{
         batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
     },
-    element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
@@ -987,7 +994,8 @@ where
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             false,
-                            false,
+                            is_sum_tree, /* we are in a sum tree, this might or might not be a
+                                          * sum item */
                             &mut batch_operations
                         )
                     );
@@ -1066,32 +1074,8 @@ where
                 &[],
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
-                    let element = Element::deserialize(value)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                    let is_sum_tree = element.is_sum_tree();
-                    match element {
-                        Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
-                            let tree_cost_size = if is_sum_tree {
-                                SUM_TREE_COST_SIZE
-                            } else {
-                                TREE_COST_SIZE
-                            };
-                            let flags_len = flags.map_or(0, |flags| {
-                                let flags_len = flags.len() as u32;
-                                flags_len + flags_len.required_space() as u32
-                            });
-                            let value_len = tree_cost_size + flags_len;
-                            let key_len = key.len() as u32;
-                            Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                                key_len,
-                                value_len,
-                                is_sum_tree,
-                            ))
-                        }
-                        _ => Err(MerkError::SpecializedCostsError(
-                            "only trees are supported for specialized costs",
-                        )),
-                    }
+                    Element::specialized_costs_for_key_value(key, value, is_sum_tree)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization
@@ -1131,7 +1115,16 @@ where
                                         let tree_value_cost = tree_cost_size
                                             + flags_len
                                             + flags_len.required_space() as u32;
-                                        Ok((true, Some(tree_value_cost)))
+                                        Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
+                                    }
+                                    Element::SumItem(..) => {
+                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
+                                            + flags_len
+                                            + flags_len.required_space() as u32;
+                                        Ok((
+                                            true,
+                                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
+                                        ))
                                     }
                                     _ => Ok((true, None)),
                                 }
@@ -2926,7 +2919,7 @@ mod tests {
             .prove_query(&path_query)
             .unwrap()
             .expect("should generate proof");
-        let verification_result = GroveDb::verify_query(&proof, &path_query);
+        let verification_result = GroveDb::verify_query_raw(&proof, &path_query);
         assert!(matches!(verification_result, Ok(_)));
 
         // Hit reference limit when you specify max reference hop, lower than actual hop

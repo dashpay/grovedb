@@ -123,6 +123,7 @@ where {
     pub fn get_proved_path_query(
         &self,
         path_query: &PathQuery,
+        is_verbose: bool,
         transaction: TransactionArg,
     ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
@@ -130,6 +131,8 @@ where {
                 "transactions are not currently supported",
             ))
             .wrap_with_cost(Default::default())
+        } else if is_verbose {
+            self.prove_verbose(path_query)
         } else {
             self.prove_query(path_query)
         }
@@ -356,7 +359,7 @@ where {
         transaction: TransactionArg,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
-            Error::NotSupported("limits must be set in query_raw_keys_optional",)
+            Error::NotSupported("limits must be set in query_keys_optional",)
         )) as usize;
         if path_query.query.offset.is_some() {
             return Err(Error::NotSupported(

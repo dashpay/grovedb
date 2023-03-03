@@ -568,7 +568,7 @@ fn test_element_with_flags() {
         .unwrap()
         .expect("should successfully create proof");
     let (root_hash, result_set) =
-        GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
+        GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
     assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
     assert_eq!(
@@ -957,7 +957,7 @@ fn test_proof_for_invalid_path_root_key() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
@@ -973,7 +973,7 @@ fn test_proof_for_invalid_path() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
@@ -990,7 +990,7 @@ fn test_proof_for_invalid_path() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
@@ -1008,7 +1008,7 @@ fn test_proof_for_invalid_path() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
@@ -1026,7 +1026,7 @@ fn test_proof_for_invalid_path() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
@@ -1044,7 +1044,7 @@ fn test_proof_for_non_existent_data() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
@@ -1186,21 +1186,20 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     assert_eq!(
         hex::encode(&proof),
-        "0200000000000000850198ebd6dc7e1c82951c41fcfa6487711cac6a399\
-        ebb01bb979cbe4a51e0b2f08d06046b6579340009000676616c75653100b\
-        f2f052b01c2bb83ff3a40504d42b5b9141c582a3e0c98679189b33a24478\
-        a6f1006046b6579350009000676616c75653400f084ffdbc429a89c9b662\
-        0e7224d73c2ee505eb7e6fb5eb574e1a8dc8b0d088411010000000000000\
-        058040a696e6e6572747265653200080201046b657934008ba21f835b2ff\
-        60f16b7fccfbda107bec3da0c4709357d40de223d769547ec21013a09015\
-        5ea7d14038c7062d94930798f885a19d6ebff8a87489a1debf6656047110\
-        1000000000000005e02cfb7d035b8f4a3631be46c597510a16770c15c743\
-        31b3dc8dcb577a206e49675040a746573745f6c65616632000e02010a696\
-        e6e657274726565320049870f2813c0c3c5c105a988c0ef1372178245152\
-        fa9a43b209a6b6d95589bdc11"
+        "0285010198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb979cb\
+        e4a51e0b2f08d06046b6579340009000676616c75653100bf2f052b01c2b\
+        b83ff3a40504d42b5b9141c582a3e0c98679189b33a24478a6f1006046b6\
+        579350009000676616c75653400f084ffdbc429a89c9b6620e7224d73c2e\
+        e505eb7e6fb5eb574e1a8dc8b0d0884110158040a696e6e6572747265653\
+        200080201046b657934008ba21f835b2ff60f16b7fccfbda107bec3da0c4\
+        709357d40de223d769547ec21013a090155ea7d14038c7062d94930798f8\
+        85a19d6ebff8a87489a1debf665604711015e02cfb7d035b8f4a3631be46\
+        c597510a16770c15c74331b3dc8dcb577a206e49675040a746573745f6c6\
+        5616632000e02010a696e6e657274726565320049870f2813c0c3c5c105a\
+        988c0ef1372178245152fa9a43b209a6b6d95589bdc11"
     );
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
@@ -1315,18 +1314,17 @@ fn test_path_query_proofs_without_subquery() {
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     assert_eq!(
         hex::encode(proof.as_slice()),
-        "02000000000000005503046b6579310009000676616c756531000201865\
-        5e18e4555b0b65bbcec64c749db6b9ad84231969fb4fbe769a3093d10f21\
-        00198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb979cbe4a51e\
-        0b2f08d110100000000000000350409696e6e65727472656500080201046\
-        b657932004910536da659a3dbdbcf68c4a6630e72de4ba20cfc60b08b3dd\
-        45b4225a599b601000000000000005c0409746573745f6c656166000d020\
-        109696e6e65727472656500fafa16d06e8d8696dae443731ae2a4eae521e\
-        4a9a79c331c8a7e22e34c0f1a6e01b55f830550604719833d54ce2bf139a\
-        ff4bb699fa4111b9741633554318792c511",
+        "025503046b6579310009000676616c7565310002018655e18e4555b0b65\
+        bbcec64c749db6b9ad84231969fb4fbe769a3093d10f2100198ebd6dc7e1\
+        c82951c41fcfa6487711cac6a399ebb01bb979cbe4a51e0b2f08d1101350\
+        409696e6e65727472656500080201046b657932004910536da659a3dbdbc\
+        f68c4a6630e72de4ba20cfc60b08b3dd45b4225a599b6015c04097465737\
+        45f6c656166000d020109696e6e65727472656500fafa16d06e8d8696dae\
+        443731ae2a4eae521e4a9a79c331c8a7e22e34c0f1a6e01b55f830550604\
+        719833d54ce2bf139aff4bb699fa4111b9741633554318792c511"
     );
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
@@ -1342,7 +1340,7 @@ fn test_path_query_proofs_without_subquery() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
@@ -1358,7 +1356,7 @@ fn test_path_query_proofs_without_subquery() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
@@ -1374,7 +1372,7 @@ fn test_path_query_proofs_without_subquery() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
@@ -1400,7 +1398,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
@@ -1434,7 +1432,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 2);
@@ -1456,7 +1454,7 @@ fn test_path_query_proofs_with_default_subquery() {
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
-    let (hash, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query).expect(
+    let (hash, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect(
         "should
     execute proof",
     );
@@ -1487,7 +1485,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 11);
@@ -1540,7 +1538,7 @@ fn test_path_query_proofs_with_subquery_path() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
@@ -1564,7 +1562,7 @@ fn test_path_query_proofs_with_subquery_path() {
     let path_query = PathQuery::new_unsized(vec![], query);
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
@@ -1588,7 +1586,7 @@ fn test_path_query_proofs_with_subquery_path() {
         PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()], query);
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 6);
 
@@ -1630,7 +1628,7 @@ fn test_path_query_proofs_with_subquery_path() {
     let path_query = PathQuery::new_unsized(vec![], query);
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 }
@@ -1652,7 +1650,7 @@ fn test_path_query_proofs_with_key_and_subquery() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
@@ -1688,7 +1686,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
 
@@ -1731,7 +1729,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 6);
@@ -1791,7 +1789,7 @@ fn test_path_query_proofs_with_sized_query() {
     );
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
@@ -1834,7 +1832,7 @@ fn test_path_query_proofs_with_direction() {
     );
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
@@ -1862,7 +1860,7 @@ fn test_path_query_proofs_with_direction() {
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
-        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 11);

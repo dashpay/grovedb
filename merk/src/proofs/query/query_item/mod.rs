@@ -493,7 +493,6 @@ impl Eq for QueryItem {}
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Ord for QueryItem {
-    // TODO: Fix this, incorrect
     fn cmp(&self, other: &Self) -> Ordering {
         let self_as_range_set = self.to_range_set();
         let other_as_range_set = other.to_range_set();

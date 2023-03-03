@@ -35,7 +35,7 @@ use std::{
 
 pub use merk::proofs::query::{Key, Path, PathKey};
 
-use crate::{Element, Error};
+use crate::{operations::proof::util::ProvedPathKeyValue, Element, Error};
 
 #[derive(Copy, Clone)]
 /// Query result type
@@ -226,6 +226,47 @@ pub type KeyOptionalElementPair = (Key, Option<Element>);
 /// Type alias for path-key-element common pattern.
 pub type PathKeyElementTrio = (Path, Key, Element);
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for path - key - optional_element common pattern.
 pub type PathKeyOptionalElementTrio = (Path, Key, Option<Element>);
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl TryFrom<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
+    type Error = Error;
+
+    fn try_from(proved_path_key_value: ProvedPathKeyValue) -> Result<Self, Self::Error> {
+        let element = Element::deserialize(proved_path_key_value.value.as_slice())?;
+        Ok((
+            proved_path_key_value.path,
+            proved_path_key_value.key,
+            Some(element),
+        ))
+    }
+}
+
+#[cfg(feature = "full")]
+#[cfg(test)]
+mod tests {
+    use crate::{
+        operations::proof::util::ProvedPathKeyValue, query_result_type::PathKeyOptionalElementTrio,
+        Element,
+    };
+
+    #[test]
+    fn test_single_proved_path_key_value_to_path_key_optional_element() {
+        let path = vec![b"1".to_vec(), b"2".to_vec()];
+        let proved_path_key_value = ProvedPathKeyValue {
+            path: path.clone(),
+            key: b"a".to_vec(),
+            value: vec![0, 1, 4, 0],
+            proof: [0; 32],
+        };
+        let path_key_element_trio: PathKeyOptionalElementTrio = proved_path_key_value
+            .try_into()
+            .expect("should convert to path key optional element trio");
+        assert_eq!(
+            path_key_element_trio,
+            (path, b"a".to_vec(), Some(Element::new_item(vec![4])))
+        );
+    }
+}

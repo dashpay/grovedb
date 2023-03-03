@@ -114,9 +114,40 @@ impl Query {
         Self::new_with_direction(true)
     }
 
+    /// Creates a new query which contains only one key.
+    pub fn new_single_key(key: Vec<u8>) -> Self {
+        Self {
+            items: vec![QueryItem::Key(key)],
+            left_to_right: true,
+            ..Self::default()
+        }
+    }
+
+    /// Creates a new query which contains only one item.
+    pub fn new_single_query_item(query_item: QueryItem) -> Self {
+        Self {
+            items: vec![query_item],
+            left_to_right: true,
+            ..Self::default()
+        }
+    }
+
     /// Creates a new query with a direction specified
     pub fn new_with_direction(left_to_right: bool) -> Self {
         Self {
+            left_to_right,
+            ..Self::default()
+        }
+    }
+
+    /// Creates a new query which contains only one item with the specified
+    /// direction.
+    pub fn new_single_query_item_with_direction(
+        query_item: QueryItem,
+        left_to_right: bool,
+    ) -> Self {
+        Self {
+            items: vec![query_item],
             left_to_right,
             ..Self::default()
         }
@@ -782,10 +813,16 @@ mod test {
     }
 
     fn make_3_node_tree() -> Tree {
-        let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
+        let mut tree = Tree::new(vec![5], vec![5], None, BasicMerk)
             .unwrap()
-            .attach(true, Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()))
-            .attach(false, Some(Tree::new(vec![7], vec![7], BasicMerk).unwrap()));
+            .attach(
+                true,
+                Some(Tree::new(vec![3], vec![3], None, BasicMerk).unwrap()),
+            )
+            .attach(
+                false,
+                Some(Tree::new(vec![7], vec![7], None, BasicMerk).unwrap()),
+            );
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -798,9 +835,9 @@ mod test {
     }
 
     fn make_6_node_tree() -> Tree {
-        let two_tree = Tree::new(vec![2], vec![2], BasicMerk).unwrap();
-        let four_tree = Tree::new(vec![4], vec![4], BasicMerk).unwrap();
-        let mut three_tree = Tree::new(vec![3], vec![3], BasicMerk)
+        let two_tree = Tree::new(vec![2], vec![2], None, BasicMerk).unwrap();
+        let four_tree = Tree::new(vec![4], vec![4], None, BasicMerk).unwrap();
+        let mut three_tree = Tree::new(vec![3], vec![3], None, BasicMerk)
             .unwrap()
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
@@ -814,8 +851,8 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let seven_tree = Tree::new(vec![7], vec![7], BasicMerk).unwrap();
-        let mut eight_tree = Tree::new(vec![8], vec![8], BasicMerk)
+        let seven_tree = Tree::new(vec![7], vec![7], None, BasicMerk).unwrap();
+        let mut eight_tree = Tree::new(vec![8], vec![8], None, BasicMerk)
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
@@ -828,7 +865,7 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let mut root_tree = Tree::new(vec![5], vec![5], BasicMerk)
+        let mut root_tree = Tree::new(vec![5], vec![5], None, BasicMerk)
             .unwrap()
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
@@ -1521,49 +1558,62 @@ mod test {
 
     #[test]
     fn doc_proof() {
-        let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
+        let mut tree = Tree::new(vec![5], vec![5], None, BasicMerk)
             .unwrap()
             .attach(
                 true,
                 Some(
-                    Tree::new(vec![2], vec![2], BasicMerk)
+                    Tree::new(vec![2], vec![2], None, BasicMerk)
                         .unwrap()
-                        .attach(true, Some(Tree::new(vec![1], vec![1], BasicMerk).unwrap()))
+                        .attach(
+                            true,
+                            Some(Tree::new(vec![1], vec![1], None, BasicMerk).unwrap()),
+                        )
                         .attach(
                             false,
-                            Some(Tree::new(vec![4], vec![4], BasicMerk).unwrap().attach(
-                                true,
-                                Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
-                            )),
+                            Some(
+                                Tree::new(vec![4], vec![4], None, BasicMerk)
+                                    .unwrap()
+                                    .attach(
+                                        true,
+                                        Some(Tree::new(vec![3], vec![3], None, BasicMerk).unwrap()),
+                                    ),
+                            ),
                         ),
                 ),
             )
             .attach(
                 false,
                 Some(
-                    Tree::new(vec![9], vec![9], BasicMerk)
+                    Tree::new(vec![9], vec![9], None, BasicMerk)
                         .unwrap()
                         .attach(
                             true,
                             Some(
-                                Tree::new(vec![7], vec![7], BasicMerk)
+                                Tree::new(vec![7], vec![7], None, BasicMerk)
                                     .unwrap()
                                     .attach(
                                         true,
-                                        Some(Tree::new(vec![6], vec![6], BasicMerk).unwrap()),
+                                        Some(Tree::new(vec![6], vec![6], None, BasicMerk).unwrap()),
                                     )
                                     .attach(
                                         false,
-                                        Some(Tree::new(vec![8], vec![8], BasicMerk).unwrap()),
+                                        Some(Tree::new(vec![8], vec![8], None, BasicMerk).unwrap()),
                                     ),
                             ),
                         )
                         .attach(
                             false,
-                            Some(Tree::new(vec![11], vec![11], BasicMerk).unwrap().attach(
-                                true,
-                                Some(Tree::new(vec![10], vec![10], BasicMerk).unwrap()),
-                            )),
+                            Some(
+                                Tree::new(vec![11], vec![11], None, BasicMerk)
+                                    .unwrap()
+                                    .attach(
+                                        true,
+                                        Some(
+                                            Tree::new(vec![10], vec![10], None, BasicMerk).unwrap(),
+                                        ),
+                                    ),
+                            ),
                         ),
                 ),
             );
@@ -5431,6 +5481,226 @@ mod test {
     }
 
     #[test]
+    fn subset_proof() {
+        let mut tree = make_tree_seq(10);
+        let expected_hash = tree.hash().unwrap().to_owned();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        // 1..10 prove range full, subset 7
+        let mut query = Query::new();
+        query.insert_all();
+
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        // subset query
+        let mut query = Query::new();
+        query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 6]);
+
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 1);
+        compare_result_tuples(
+            res.result_set,
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
+        );
+
+        // 1..10 prove (2..=5, 7..10) subset (3..=4, 7..=8)
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 7]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 3]..=vec![0, 0, 0, 0, 0, 0, 0, 4]);
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 7]..=vec![0, 0, 0, 0, 0, 0, 0, 8]);
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 4);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 8], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove (2..=5, 6..10) subset (4..=8)
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 6]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 4]..=vec![0, 0, 0, 0, 0, 0, 0, 8]);
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 5);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 8], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove (1..=3, 2..=5) subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 3]);
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 5);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 1], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 2], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove full (..) limit to 5, subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), Some(5), None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let res = verify_query(bytes.as_slice(), &query, Some(5), None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 5);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 1], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 2], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
+        );
+
+        // 1..10 prove full (..) limit to 5, subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), None, Some(1), true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
+        let res = verify_query(bytes.as_slice(), &query, None, Some(1), true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 4);
+        compare_result_tuples(
+            res.result_set,
+            vec![
+                (vec![0, 0, 0, 0, 0, 0, 0, 2], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn break_subset_proof() {
+        // TODO: move this to where you'd set the constraints for this definition
+        // goal is to show that ones limit and offset values are involved
+        // whether a query is subset or not now also depends on the state
+        // queries essentially highlight parts of the tree, a query
+        // is a subset of another query if all the nodes it highlights
+        // are also highlighted by the original query
+        // with limit and offset the nodes a query highlights now depends on state
+        // hence it's impossible to know if something is subset at definition time
+
+        let mut tree = make_tree_seq(10);
+        let expected_hash = tree.hash().unwrap().to_owned();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        // 1..10 prove full (..) limit to 5, subset (1..=5)
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        let (proof, ..) = walker
+            .create_full_proof(query.items.as_slice(), Some(3), None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        let mut query = Query::new();
+        query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 4]);
+        let res = verify_query(bytes.as_slice(), &query, Some(3), None, true, expected_hash)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(res.result_set.len(), 1);
+        compare_result_tuples(
+            res.result_set,
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60])],
+        );
+    }
+
+    #[test]
     fn query_from_vec() {
         let queryitems = vec![QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
@@ -5475,7 +5745,7 @@ mod test {
 
     #[test]
     fn verify_ops() {
-        let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
+        let mut tree = Tree::new(vec![5], vec![5], None, BasicMerk).unwrap();
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -5506,7 +5776,7 @@ mod test {
     #[test]
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
-        let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
+        let mut tree = Tree::new(vec![5], vec![5], None, BasicMerk).unwrap();
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),

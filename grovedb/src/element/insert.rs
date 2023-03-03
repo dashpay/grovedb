@@ -29,6 +29,7 @@
 //! Insert
 //! Implements functions in Element for inserting into Merk
 
+use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -40,8 +41,9 @@ use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureTyp
 #[cfg(feature = "full")]
 use storage::StorageContext;
 
+use crate::Element::SumItem;
 #[cfg(feature = "full")]
-use crate::{element::TREE_COST_SIZE, Element, Error, Hash};
+use crate::{Element, Error, Hash};
 
 impl Element {
     #[cfg(feature = "full")]
@@ -56,9 +58,7 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let cost = OperationCost::default();
-
-        let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
+        let serialized = cost_return_on_error_default!(self.serialize());
 
         if !merk.is_sum_tree && self.is_sum_item() {
             return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
@@ -66,14 +66,33 @@ impl Element {
         }
 
         let merk_feature_type =
-            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+            cost_return_on_error_default!(self.get_feature_type(merk.is_sum_tree));
+        let batch_operations = if matches!(self, SumItem(..)) {
+            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
 
-        let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
+            let cost = value_cost
+                + self.get_flags().as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+            [(
+                key,
+                Op::PutWithSpecializedCost(serialized, cost, merk_feature_type),
+            )]
+        } else {
+            [(key, Op::Put(serialized, merk_feature_type))]
+        };
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-        })
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                // it is possible that a normal item was being replaced with a
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -91,7 +110,21 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = (key, Op::Put(serialized, feature_type));
+        let entry = if matches!(self, SumItem(..)) {
+            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
+
+            let cost = value_cost
+                + self.get_flags().as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+            (
+                key,
+                Op::PutWithSpecializedCost(serialized, cost, feature_type),
+            )
+        } else {
+            (key, Op::Put(serialized, feature_type))
+        };
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -150,6 +183,73 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Insert an element in Merk under a key if the value is different from
+    /// what already exists; path should be resolved and proper Merk should
+    /// be loaded by this moment If transaction is not passed, the batch
+    /// will be written immediately. If transaction is passed, the operation
+    /// will be committed on the transaction commit.
+    /// The bool represents if we indeed inserted.
+    /// If the value changed we return the old element.
+    pub fn insert_if_changed_value<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        options: Option<MerkOptions>,
+    ) -> CostResult<(bool, Option<Element>), Error> {
+        let mut cost = OperationCost::default();
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_optional_from_storage(&merk.storage, key)
+        );
+        let needs_insert = match &previous_element {
+            None => true,
+            Some(previous_element) => previous_element != self,
+        };
+        if !needs_insert {
+            Ok((false, None)).wrap_with_cost(cost)
+        } else {
+            cost_return_on_error!(&mut cost, self.insert(merk, key, options));
+            Ok((true, previous_element)).wrap_with_cost(cost)
+        }
+    }
+
+    #[cfg(feature = "full")]
+    /// Adds a "Put" op to batch operations with the element and key if the
+    /// value is different from what already exists; Returns CostResult.
+    /// The bool represents if we indeed inserted.
+    /// If the value changed we return the old element.
+    pub fn insert_if_changed_value_into_batch_operations<
+        'db,
+        S: StorageContext<'db>,
+        K: AsRef<[u8]>,
+    >(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+    ) -> CostResult<(bool, Option<Element>), Error> {
+        let mut cost = OperationCost::default();
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_optional_from_storage(&merk.storage, key.as_ref())
+        );
+        let needs_insert = match &previous_element {
+            None => true,
+            Some(previous_element) => previous_element != self,
+        };
+        if !needs_insert {
+            Ok((false, None)).wrap_with_cost(cost)
+        } else {
+            cost_return_on_error!(
+                &mut cost,
+                self.insert_into_batch_operations(key, batch_operations, feature_type)
+            );
+            Ok((true, previous_element)).wrap_with_cost(cost)
+        }
+    }
+
+    #[cfg(feature = "full")]
     /// Insert a reference element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -179,10 +279,15 @@ impl Element {
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-        })
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -231,7 +336,7 @@ impl Element {
         let merk_feature_type =
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
-        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_tree_cost());
+        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_specialized_cost());
 
         let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
@@ -243,10 +348,15 @@ impl Element {
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-        })
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -264,7 +374,10 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let cost = TREE_COST_SIZE
+
+        let tree_cost = cost_return_on_error_default!(self.get_specialized_cost());
+
+        let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
@@ -311,6 +424,82 @@ mod tests {
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
+        );
+    }
+
+    #[test]
+    fn test_insert_if_changed_value_does_not_insert_when_value_does_not_change() {
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey", None)
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"value".to_vec())
+            .insert(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+        let (inserted, previous) = Element::new_item(b"value".to_vec())
+            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+
+        assert!(!inserted);
+        assert_eq!(previous, None);
+        assert_eq!(
+            Element::get(&merk, b"another-key", true)
+                .unwrap()
+                .expect("expected successful get"),
+            Element::new_item(b"value".to_vec()),
+        );
+    }
+
+    #[test]
+    fn test_insert_if_changed_value_inserts_when_value_changed() {
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey", None)
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"value".to_vec())
+            .insert(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+        let (inserted, previous) = Element::new_item(b"value2".to_vec())
+            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+
+        assert!(inserted);
+        assert_eq!(previous, Some(Element::new_item(b"value".to_vec())),);
+
+        assert_eq!(
+            Element::get(&merk, b"another-key", true)
+                .unwrap()
+                .expect("expected successful get"),
+            Element::new_item(b"value2".to_vec()),
+        );
+    }
+
+    #[test]
+    fn test_insert_if_changed_value_inserts_when_no_value() {
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey", None)
+            .unwrap()
+            .expect("expected successful insertion");
+        let (inserted, previous) = Element::new_item(b"value2".to_vec())
+            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+
+        assert!(inserted);
+        assert_eq!(previous, None);
+
+        assert_eq!(
+            Element::get(&merk, b"another-key", true)
+                .unwrap()
+                .expect("expected successful get"),
+            Element::new_item(b"value2".to_vec()),
         );
     }
 }

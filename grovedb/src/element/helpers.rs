@@ -38,6 +38,7 @@ use merk::{
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
+use crate::element::SUM_ITEM_COST_SIZE;
 #[cfg(feature = "full")]
 use crate::{
     element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
@@ -46,35 +47,63 @@ use crate::{
 };
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else
-    pub fn sum_value(&self) -> Option<i64> {
+    pub fn sum_value_or_default(&self) -> i64 {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => Some(*sum_value),
-            _ => Some(0),
+            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => *sum_value,
+            _ => 0,
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumItem element type, returns 0 for
+    /// everything else
+    pub fn as_sum_item_value(&self) -> Result<i64, Error> {
+        match self {
+            Element::SumItem(value, _) => Ok(*value),
+            _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Gives the item value in the Item element type
+    pub fn as_item_bytes(&self) -> Result<&[u8], Error> {
+        match self {
+            Element::Item(value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected an item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Gives the item value in the Item element type
+    pub fn into_item_bytes(self) -> Result<Vec<u8>, Error> {
+        match self {
+            Element::Item(value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected an item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
     pub fn is_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is an item
     pub fn is_item(&self) -> bool {
         matches!(self, Element::Item(..) | Element::SumItem(..))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a sum item
     pub fn is_sum_item(&self) -> bool {
         matches!(self, Element::SumItem(..))
@@ -84,15 +113,7 @@ impl Element {
     /// Get the tree feature type
     pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
-            true => {
-                let sum_value = self.sum_value();
-                match sum_value {
-                    Some(sum) => Ok(SummedMerk(sum)),
-                    None => Err(Error::CorruptedData(String::from(
-                        "cannot decode sum item to i64",
-                    ))),
-                }
-            }
+            true => Ok(SummedMerk(self.sum_value_or_default())),
             false => Ok(BasicMerk),
         }
     }
@@ -221,13 +242,14 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get tree costs for a key value
-    pub fn tree_costs_for_key_value(
+    pub fn specialized_costs_for_key_value(
         key: &Vec<u8>,
         value: &[u8],
         is_sum_node: bool,
     ) -> Result<u32, Error> {
+        // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value)?;
-        match element {
+        let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -235,37 +257,54 @@ impl Element {
                 });
                 let value_len = TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
                     is_sum_node,
-                ))
+                )
             }
             Element::SumTree(_, _sum_value, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = TREE_COST_SIZE + flags_len + 8;
+                let value_len = SUM_TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
                     is_sum_node,
-                ))
+                )
             }
-            _ => Err(Error::CorruptedCodeExecution(
-                "only trees are supported for specialized costs",
-            )),
-        }
+            Element::SumItem(.., flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len,
+                    value_len,
+                    is_sum_node,
+                )
+            }
+            _ => KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
+                key.len() as u32,
+                value.len() as u32,
+                is_sum_node,
+            ),
+        };
+        Ok(cost)
     }
 
     #[cfg(feature = "full")]
     /// Get tree cost for the element
-    pub fn get_tree_cost(&self) -> Result<u32, Error> {
+    pub fn get_specialized_cost(&self) -> Result<u32, Error> {
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
+            Element::SumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),

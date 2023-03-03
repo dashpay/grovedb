@@ -1,7 +1,7 @@
 [package]
 name = "grovedb"
 description = "Fully featured database using balanced hierarchical authenticated data structures"
-version = "0.10.0"
+version = "0.12.2"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
 edition = "2021"
 license = "MIT"
@@ -33,7 +33,7 @@ name = "insertion_benchmark"
 harness = false
 
 [features]
-default = ["full"]
+default = ["verify"]
 full = [
     "merk/full",
     "thiserror",
@@ -55,6 +55,7 @@ verify = [
     "costs",
     "thiserror",
     "serde/derive",
-    "bincode",
     "storage/rocksdb_storage",
+    "bincode",
+    "integer-encoding",
 ]

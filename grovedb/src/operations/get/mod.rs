@@ -38,6 +38,7 @@ mod worst_case;
 #[cfg(feature = "full")]
 use std::collections::HashSet;
 
+use costs::cost_return_on_error_no_add;
 #[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
@@ -203,21 +204,45 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_on_transaction<'p, P>(
+    pub fn get_raw_optional<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
-        transaction: &Transaction,
-    ) -> CostResult<Element, Error>
+        transaction: TransactionArg,
+    ) -> CostResult<Option<Element>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
-        self.get_raw_on_transaction_caching_optional(path, key, true, transaction)
+        self.get_raw_optional_caching_optional(path, key, true, transaction)
     }
 
     /// Get tree item without following references
-    pub fn get_raw_on_transaction_caching_optional<'p, P>(
+    pub fn get_raw_optional_caching_optional<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        allow_cache: bool,
+        transaction: TransactionArg,
+    ) -> CostResult<Option<Element>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        if let Some(transaction) = transaction {
+            self.get_raw_optional_on_transaction_caching_optional(
+                path,
+                key,
+                allow_cache,
+                transaction,
+            )
+        } else {
+            self.get_raw_optional_without_transaction_caching_optional(path, key, allow_cache)
+        }
+    }
+
+    /// Get tree item without following references
+    pub(crate) fn get_raw_on_transaction_caching_optional<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
@@ -245,20 +270,44 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_without_transaction<'p, P>(
+    pub(crate) fn get_raw_optional_on_transaction_caching_optional<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
-    ) -> CostResult<Element, Error>
+        allow_cache: bool,
+        transaction: &Transaction,
+    ) -> CostResult<Option<Element>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
-        self.get_raw_without_transaction_caching_optional(path, key, true)
+        let mut cost = OperationCost::default();
+        let merk_result = self
+            .open_transactional_merk_at_path(path.into_iter(), transaction)
+            .map_err(|e| match e {
+                Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
+                _ => e,
+            })
+            .unwrap_add_cost(&mut cost);
+        let merk: Option<Merk<PrefixedRocksDbTransactionContext>> = cost_return_on_error_no_add!(
+            &cost,
+            match merk_result {
+                Ok(result) => Ok(Some(result)),
+                Err(Error::PathParentLayerNotFound(_)) | Err(Error::InvalidParentLayerPath(_)) =>
+                    Ok(None),
+                Err(e) => Err(e),
+            }
+        );
+
+        if let Some(merk_to_get_from) = merk {
+            Element::get_optional(&merk_to_get_from, key, allow_cache).add_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
     }
 
     /// Get tree item without following references
-    pub fn get_raw_without_transaction_caching_optional<'p, P>(
+    pub(crate) fn get_raw_without_transaction_caching_optional<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
@@ -282,6 +331,42 @@ impl GroveDb {
         );
 
         Element::get(&merk_to_get_from, key, allow_cache).add_cost(cost)
+    }
+
+    /// Get tree item without following references
+    pub(crate) fn get_raw_optional_without_transaction_caching_optional<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        allow_cache: bool,
+    ) -> CostResult<Option<Element>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+        let merk_result = self
+            .open_non_transactional_merk_at_path(path.into_iter())
+            .map_err(|e| match e {
+                Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
+                _ => e,
+            })
+            .unwrap_add_cost(&mut cost);
+        let merk: Option<Merk<PrefixedRocksDbStorageContext>> = cost_return_on_error_no_add!(
+            &cost,
+            match merk_result {
+                Ok(result) => Ok(Some(result)),
+                Err(Error::PathParentLayerNotFound(_)) | Err(Error::InvalidParentLayerPath(_)) =>
+                    Ok(None),
+                Err(e) => Err(e),
+            }
+        );
+
+        if let Some(merk_to_get_from) = merk {
+            Element::get_optional(&merk_to_get_from, key, allow_cache).add_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
     }
 
     /// Does tree element exist without following references

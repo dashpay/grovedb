@@ -49,20 +49,16 @@ impl Element {
         is_layered: bool,
         is_sum: bool,
     ) -> CostResult<(), Error> {
-        // TODO: delete references on this element
-        let op = if is_layered {
-            if is_sum {
-                Op::DeleteLayeredHavingSum
-            } else {
-                Op::DeleteLayered
-            }
-        } else {
-            Op::Delete
+        let op = match (is_sum, is_layered) {
+            (true, true) => Op::DeleteLayeredMaybeSpecialized,
+            (true, false) => Op::DeleteMaybeSpecialized,
+            (false, true) => Op::DeleteLayered,
+            (false, false) => Op::Delete,
         };
         let batch = [(key, op)];
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
+            Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
                 .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
@@ -75,7 +71,7 @@ impl Element {
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
-        is_sum: bool,
+        is_in_sum_tree: bool,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -85,15 +81,11 @@ impl Element {
             MerkError,
         >,
     ) -> CostResult<(), Error> {
-        // TODO: delete references on this element
-        let op = if is_layered {
-            if is_sum {
-                Op::DeleteLayeredHavingSum
-            } else {
-                Op::DeleteLayered
-            }
-        } else {
-            Op::Delete
+        let op = match (is_in_sum_tree, is_layered) {
+            (true, true) => Op::DeleteLayeredMaybeSpecialized,
+            (true, false) => Op::DeleteMaybeSpecialized,
+            (false, true) => Op::DeleteLayered,
+            (false, false) => Op::Delete,
         };
         let batch = [(key, op)];
         let uses_sum_nodes = merk.is_sum_tree;
@@ -102,7 +94,7 @@ impl Element {
             &[],
             merk_options,
             &|key, value| {
-                Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             &mut |_costs, _old_value, _value| Ok((false, None)),
@@ -119,15 +111,11 @@ impl Element {
         is_sum: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
-        let op = if is_layered {
-            if is_sum {
-                Op::DeleteLayeredHavingSum
-            } else {
-                Op::DeleteLayered
-            }
-        } else {
-            // non layered doesn't matter for sum trees
-            Op::Delete
+        let op = match (is_sum, is_layered) {
+            (true, true) => Op::DeleteLayeredMaybeSpecialized,
+            (true, false) => Op::DeleteMaybeSpecialized,
+            (false, true) => Op::DeleteLayered,
+            (false, false) => Op::Delete,
         };
         let entry = (key, op);
         batch_operations.push(entry);
