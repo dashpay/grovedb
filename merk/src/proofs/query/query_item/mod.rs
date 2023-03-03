@@ -1,6 +1,6 @@
+pub mod intersect;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod merge;
-pub mod intersect;
 
 use std::{
     cmp,

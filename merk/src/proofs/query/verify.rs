@@ -4,14 +4,11 @@ use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "full")]
 use crate::proofs::query::{Map, MapBuilder};
-
 use crate::{
-    proofs::{
-        tree::execute,
-        Decoder, Node, Op, Query,
-    },
+    error::Error,
+    proofs::{tree::execute, Decoder, Node, Op, Query},
     tree::value_hash,
-    CryptoHash as MerkHash, CryptoHash, error::Error,
+    CryptoHash as MerkHash, CryptoHash,
 };
 
 #[cfg(feature = "full")]
