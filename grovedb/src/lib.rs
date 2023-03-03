@@ -96,7 +96,7 @@ pub use merk::{
 pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 pub use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 pub use storage::{
@@ -121,8 +121,8 @@ use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 type Hash = [u8; 32];
 
 /// GroveDb
-#[cfg(any(feature = "full", feature = "verify"))]
 pub struct GroveDb {
+    #[cfg(feature = "full")]
     db: RocksDbStorage,
 }
 

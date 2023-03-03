@@ -33,7 +33,7 @@ name = "insertion_benchmark"
 harness = false
 
 [features]
-default = ["verify"]
+default = ["full"]
 full = [
     "merk/full",
     "thiserror",
@@ -55,7 +55,6 @@ verify = [
     "costs",
     "thiserror",
     "serde/derive",
-    "storage/rocksdb_storage",
     "bincode",
     "integer-encoding",
 ]
