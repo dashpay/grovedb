@@ -1,7 +1,5 @@
 #[cfg(any(feature = "full", feature = "verify"))]
 mod merge;
-// TODO: potentially rename
-// mod intersect;
 pub mod intersect;
 
 use std::{
@@ -11,10 +9,13 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use costs::{CostContext, CostsExt, OperationCost};
+#[cfg(feature = "full")]
 use storage::RawIterator;
 
-use crate::Error;
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::error::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
@@ -40,8 +41,8 @@ impl Hash for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
 impl QueryItem {
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn processing_footprint(&self) -> u32 {
         match self {
             QueryItem::Key(key) => key.len() as u32,
@@ -53,6 +54,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), false),
@@ -68,6 +70,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub const fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -83,6 +86,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn upper_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), true),
@@ -98,6 +102,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub const fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -113,6 +118,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
@@ -124,6 +130,7 @@ impl QueryItem {
                 || (Some(key) == upper_bound && upper_bound_inclusive))
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     fn enum_value(&self) -> u32 {
         match self {
             QueryItem::Key(_) => 0,
@@ -139,6 +146,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     fn value_hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
             QueryItem::Key(key) => key.hash(state),
@@ -154,14 +162,17 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub const fn is_key(&self) -> bool {
         matches!(self, QueryItem::Key(_))
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub const fn is_range(&self) -> bool {
         !matches!(self, QueryItem::Key(_))
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub const fn is_unbounded_range(&self) -> bool {
         !matches!(
             self,
@@ -169,6 +180,7 @@ impl QueryItem {
         )
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key.clone()]),
@@ -218,6 +230,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn keys_consume(self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key]),
@@ -267,6 +280,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn seek_for_iter<I: RawIterator>(
         &self,
         iter: &mut I,
@@ -364,6 +378,7 @@ impl QueryItem {
         }
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
         for (ai, bi) in a.iter().zip(b.iter()) {
             match ai.cmp(bi) {
@@ -376,6 +391,7 @@ impl QueryItem {
         a.len().cmp(&b.len())
     }
 
+    #[cfg(feature = "full")]
     pub fn iter_is_valid_for_type<I: RawIterator>(
         &self,
         iter: &I,
@@ -452,6 +468,7 @@ impl QueryItem {
         is_valid.wrap_with_cost(cost)
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn collides_with(&self, other: &Self) -> bool {
         self.intersect(other).in_both.is_some()
     }

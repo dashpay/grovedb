@@ -105,6 +105,7 @@ pub enum Error {
     #[error("client corruption error {0}")]
     ClientCorruptionError(String),
 
+    #[cfg(feature = "full")]
     /// Storage error
     #[error("storage error {0}")]
     StorageError(storage::Error),

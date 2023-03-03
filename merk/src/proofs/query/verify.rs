@@ -2,17 +2,19 @@ use std::collections::LinkedList;
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
+#[cfg(feature = "full")]
+use crate::proofs::query::{Map, MapBuilder};
+
 use crate::{
     proofs::{
-        query::{Map, MapBuilder},
         tree::execute,
         Decoder, Node, Op, Query,
     },
     tree::value_hash,
-    CryptoHash as MerkHash, CryptoHash, Error,
+    CryptoHash as MerkHash, CryptoHash, error::Error,
 };
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
 
 #[cfg(feature = "full")]
