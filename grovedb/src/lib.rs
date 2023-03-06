@@ -90,8 +90,9 @@ pub use merk::{
         },
         worst_case_costs::WorstCaseLayerInformation,
     },
-    proofs::Query,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use merk::proofs::Query;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]
