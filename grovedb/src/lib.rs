@@ -69,7 +69,7 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use element::helpers::raw_decode;
+use crate::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
