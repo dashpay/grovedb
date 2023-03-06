@@ -68,13 +68,13 @@ use ::visualize::DebugByteVectors;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
-use element::helpers::raw_decode;
+#[cfg(any(feature = "full", feature = "verify"))]
+use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use element::Element;
 #[cfg(feature = "full")]
 pub use element::ElementFlags;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use merk::proofs::query::query_item::QueryItem;
 #[cfg(feature = "full")]
 use merk::{

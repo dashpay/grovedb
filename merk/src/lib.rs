@@ -62,7 +62,7 @@ pub mod tree;
 pub mod error;
 
 /// Estimated costs
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod estimated_costs;
 
 #[cfg(feature = "full")]
