@@ -88,6 +88,7 @@ pub use tree_feature_type::TreeFeatureType;
 #[cfg(feature = "full")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+#[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};

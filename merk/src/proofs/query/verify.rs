@@ -11,7 +11,7 @@ use crate::{
     CryptoHash as MerkHash, CryptoHash,
 };
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
 
 #[cfg(feature = "full")]

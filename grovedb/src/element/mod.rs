@@ -49,6 +49,7 @@ mod serialize;
 #[cfg(feature = "full")]
 use core::fmt;
 
+#[cfg(feature = "full")]
 use merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
 use merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
