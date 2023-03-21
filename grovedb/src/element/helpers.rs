@@ -38,14 +38,14 @@ use merk::{
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{element::SUM_ITEM_COST_SIZE, Element, Error};
 #[cfg(feature = "full")]
 use crate::{
     element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     reference_path::{path_from_reference_path_type, ReferencePathType},
     ElementFlags,
 };
-#[cfg(any(feature = "full", feature = "verify"))]
-use crate::{Element, element::{SUM_ITEM_COST_SIZE}, Error};
 
 impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
