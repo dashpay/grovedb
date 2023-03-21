@@ -68,35 +68,34 @@ use ::visualize::DebugByteVectors;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
-use element::helpers::raw_decode;
+#[cfg(any(feature = "full", feature = "verify"))]
+use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use element::Element;
 #[cfg(feature = "full")]
 pub use element::ElementFlags;
 #[cfg(feature = "full")]
+pub use merk::estimated_costs::{
+    average_case_costs::{
+        EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes, EstimatedSumTrees,
+    },
+    worst_case_costs::WorstCaseLayerInformation,
+};
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use merk::proofs::query::query_item::QueryItem;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use merk::proofs::Query;
 #[cfg(feature = "full")]
 use merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-#[cfg(feature = "full")]
-pub use merk::{
-    estimated_costs::{
-        average_case_costs::{
-            EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes, EstimatedSumTrees,
-        },
-        worst_case_costs::WorstCaseLayerInformation,
-    },
-    proofs::Query,
-};
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 pub use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 pub use storage::{
@@ -115,14 +114,16 @@ use storage::{
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
 #[cfg(feature = "full")]
+use crate::helpers::raw_decode;
+#[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
 
 /// GroveDb
-#[cfg(any(feature = "full", feature = "verify"))]
 pub struct GroveDb {
+    #[cfg(feature = "full")]
     db: RocksDbStorage,
 }
 

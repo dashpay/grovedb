@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 thiserror = "1.0.37"
-storage = { path = "../storage" }
+storage = { path = "../storage", optional = true }
 failure = "0.1.8"
 integer-encoding = "3.0.4"
 indexmap = "1.9.2"
@@ -63,7 +63,9 @@ full = ["rand",
         "byteorder",
         "ed",
         "blake3",
-        "jemallocator"
+        "jemallocator",
+        "storage",
+        "storage/rocksdb_storage"
 ]
 verify = [
         "ed",
@@ -72,7 +74,6 @@ verify = [
 
 [dev-dependencies]
 tempfile = "3.3.0"
-storage = { path = "../storage", features = ["rocksdb_storage"] }
 criterion = "0.4.0"
 
 [[bench]]

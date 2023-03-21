@@ -244,6 +244,7 @@ impl TryFrom<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use crate::{

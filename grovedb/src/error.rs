@@ -103,10 +103,12 @@ pub enum Error {
     /// Invalid parameter
     InvalidParameter(&'static str),
 
+    #[cfg(feature = "full")]
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     /// Storage error
     StorageError(#[from] storage::error::Error),
+
     #[error("data corruption error: {0}")]
     /// Corrupted data
     CorruptedData(String),

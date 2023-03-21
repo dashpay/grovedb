@@ -38,7 +38,7 @@ mod delete;
 mod exists;
 #[cfg(feature = "full")]
 mod get;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub(crate) mod helpers;
 #[cfg(feature = "full")]
 mod insert;
@@ -49,6 +49,7 @@ mod serialize;
 #[cfg(feature = "full")]
 use core::fmt;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
 use merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
@@ -72,7 +73,7 @@ pub type MaxReferenceHop = Option<u8>;
 #[cfg(feature = "full")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// The cost of a sum item
 /// It is 11 because we have 9 bytes for the sum value
 /// 1 byte for the item type
