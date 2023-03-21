@@ -63,8 +63,6 @@ mod visualize;
 use std::{collections::HashMap, option::Option::None, path::Path};
 
 #[cfg(feature = "full")]
-use crate::helpers::raw_decode;
-#[cfg(feature = "full")]
 use ::visualize::DebugByteVectors;
 #[cfg(feature = "full")]
 use costs::{
@@ -115,6 +113,8 @@ use storage::{
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
+#[cfg(feature = "full")]
+use crate::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 
