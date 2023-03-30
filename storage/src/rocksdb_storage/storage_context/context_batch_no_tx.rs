@@ -28,12 +28,14 @@
 
 //! Storage context batch implementation without a transaction
 
+use std::{borrow::Borrow, sync::Arc};
+
 use costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
     CostsExt, OperationCost,
 };
 use error::Error;
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
+use rocksdb::{BoundColumnFamily, ColumnFamily, DBRawIteratorWithThreadMode};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{
@@ -64,21 +66,21 @@ impl<'db> PrefixedRocksDbBatchStorageContext<'db> {
 
 impl<'db> PrefixedRocksDbBatchStorageContext<'db> {
     /// Get auxiliary data column family
-    fn cf_aux(&self) -> &'db ColumnFamily {
+    fn cf_aux(&self) -> Arc<BoundColumnFamily> {
         self.storage
             .cf_handle(AUX_CF_NAME)
             .expect("aux column family must exist")
     }
 
     /// Get trees roots data column family
-    fn cf_roots(&self) -> &'db ColumnFamily {
+    fn cf_roots(&self) -> Arc<BoundColumnFamily> {
         self.storage
             .cf_handle(ROOTS_CF_NAME)
             .expect("roots column family must exist")
     }
 
     /// Get metadata column family
-    fn cf_meta(&self) -> &'db ColumnFamily {
+    fn cf_meta(&self) -> Arc<BoundColumnFamily> {
         self.storage
             .cf_handle(META_CF_NAME)
             .expect("meta column family must exist")
@@ -205,7 +207,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.storage
-            .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+            .get_cf(&self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -221,7 +223,10 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.storage
-            .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+            .get_cf(
+                &self.cf_roots(),
+                make_prefixed_key(self.prefix.clone(), key),
+            )
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -237,7 +242,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.storage
-            .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+            .get_cf(&self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,

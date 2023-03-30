@@ -28,7 +28,7 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
-use std::{ops::AddAssign, path::Path};
+use std::{borrow::Borrow, ops::AddAssign, path::Path, sync::Arc};
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
@@ -39,7 +39,7 @@ use error::Error;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
+    checkpoint::Checkpoint, BoundColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction,
 };
 
@@ -207,7 +207,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_aux(&self.db), &key, &value);
+                    db_batch.put_cf(&cf_aux(&self.db), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -226,7 +226,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_roots(&self.db), &key, &value);
+                    db_batch.put_cf(&cf_roots(&self.db), &key, &value);
                     cost.seek_count += 1;
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
@@ -248,7 +248,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_meta(&self.db), &key, &value);
+                    db_batch.put_cf(&cf_meta(&self.db), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -292,7 +292,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteAux { key, cost_info } => {
-                    db_batch.delete_cf(cf_aux(&self.db), &key);
+                    db_batch.delete_cf(&cf_aux(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -303,7 +303,9 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
+                            self.db
+                                .get_cf(&cf_aux(&self.db), &key)
+                                .map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -320,7 +322,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteRoot { key, cost_info } => {
-                    db_batch.delete_cf(cf_roots(&self.db), &key);
+                    db_batch.delete_cf(&cf_roots(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -332,7 +334,7 @@ impl RocksDbStorage {
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
                             self.db
-                                .get_cf(cf_roots(&self.db), &key)
+                                .get_cf(&cf_roots(&self.db), &key)
                                 .map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
@@ -350,7 +352,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteMeta { key, cost_info } => {
-                    db_batch.delete_cf(cf_meta(&self.db), &key);
+                    db_batch.delete_cf(&cf_meta(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -362,7 +364,7 @@ impl RocksDbStorage {
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
                             self.db
-                                .get_cf(cf_meta(&self.db), &key)
+                                .get_cf(&cf_meta(&self.db), &key)
                                 .map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
@@ -510,21 +512,21 @@ impl<'db> Storage<'db> for RocksDbStorage {
 }
 
 /// Get auxiliary data column family
-fn cf_aux(storage: &Db) -> &ColumnFamily {
+fn cf_aux<'a>(storage: &'a Db) -> Arc<BoundColumnFamily<'a>> {
     storage
         .cf_handle(AUX_CF_NAME)
         .expect("aux column family must exist")
 }
 
 /// Get trees roots data column family
-fn cf_roots(storage: &Db) -> &ColumnFamily {
+fn cf_roots<'a>(storage: &'a Db) -> Arc<BoundColumnFamily<'a>> {
     storage
         .cf_handle(ROOTS_CF_NAME)
         .expect("roots column family must exist")
 }
 
 /// Get metadata column family
-fn cf_meta(storage: &Db) -> &ColumnFamily {
+fn cf_meta<'a>(storage: &'a Db) -> Arc<BoundColumnFamily<'a>> {
     storage
         .cf_handle(META_CF_NAME)
         .expect("meta column family must exist")

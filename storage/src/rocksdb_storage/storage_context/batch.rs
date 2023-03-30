@@ -28,11 +28,13 @@
 
 //! Prefixed storage batch implementation for RocksDB backend.
 
+use std::sync::Arc;
+
 use costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, OperationCost,
 };
 use integer_encoding::VarInt;
-use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
+use rocksdb::{BoundColumnFamily, ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
 use crate::{Batch, StorageBatch};
@@ -43,8 +45,8 @@ use crate::{Batch, StorageBatch};
 pub struct PrefixedRocksDbBatch<'db> {
     pub(crate) prefix: Vec<u8>,
     pub(crate) batch: WriteBatchWithTransaction<true>,
-    pub(crate) cf_aux: &'db ColumnFamily,
-    pub(crate) cf_roots: &'db ColumnFamily,
+    pub(crate) cf_aux: Arc<BoundColumnFamily<'db>>,
+    pub(crate) cf_roots: Arc<BoundColumnFamily<'db>>,
 
     /// As a batch to be commited is a RocksDB batch and there is no way to get
     /// what it will do, we collect costs at the moment we append something to
@@ -109,7 +111,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
             cost_info,
         )?;
 
-        self.batch.put_cf(self.cf_aux, prefixed_key, value);
+        self.batch.put_cf(&self.cf_aux, prefixed_key, value);
         Ok(())
     }
 
@@ -132,7 +134,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
             )?;
         }
 
-        self.batch.put_cf(self.cf_roots, prefixed_key, value);
+        self.batch.put_cf(&self.cf_roots, prefixed_key, value);
         Ok(())
     }
 
@@ -157,7 +159,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
             self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
         }
 
-        self.batch.delete_cf(self.cf_aux, prefixed_key);
+        self.batch.delete_cf(&self.cf_aux, prefixed_key);
     }
 
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
@@ -169,7 +171,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
             self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
         }
 
-        self.batch.delete_cf(self.cf_roots, prefixed_key);
+        self.batch.delete_cf(&self.cf_roots, prefixed_key);
     }
 }
 
