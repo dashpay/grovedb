@@ -93,9 +93,15 @@ use storage::{
 };
 use visualize::{Drawer, Visualize};
 
+pub use crate::{
+    batch::{
+        batch_structure::{OpsByLevelPath, OpsByPath},
+    }
+};
+
 use crate::{
     batch::{
-        batch_structure::{BatchStructure, OpsByLevelPath, OpsByPath},
+        batch_structure::BatchStructure,
         estimated_costs::EstimatedCostsType,
         mode::BatchRunMode,
     },
