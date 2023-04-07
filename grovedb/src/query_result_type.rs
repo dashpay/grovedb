@@ -112,6 +112,22 @@ impl QueryResultElements {
             .collect()
     }
 
+    /// To keys
+    pub fn to_keys(self) -> Vec<Key> {
+        self.elements
+            .into_iter()
+            .filter_map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(_) => None,
+                QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
+                    Some(key_element_pair.0)
+                }
+                QueryResultElement::PathKeyElementTrioResultItem(path_key_element_trio) => {
+                    Some(path_key_element_trio.1)
+                }
+            })
+            .collect()
+    }
+
     /// To key elements btree map
     pub fn to_key_elements_btree_map(self) -> BTreeMap<Vec<u8>, Element> {
         self.elements
