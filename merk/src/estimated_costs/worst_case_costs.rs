@@ -108,7 +108,7 @@ pub fn add_worst_case_merk_insert(
         KV::node_byte_cost_size_for_key_and_raw_value_lengths(key_len, value_len, is_sum_node);
     // .. and hash computation for the inserted element itself
     // todo: verify this
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
 }
 
 #[cfg(feature = "full")]
@@ -120,7 +120,7 @@ pub fn add_worst_case_merk_replace_layered(
     is_sum_node: bool,
 ) {
     // todo: verify this
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     cost.storage_cost.replaced_bytes =
         KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
     // 37 + 35 + key_len
@@ -131,7 +131,7 @@ pub fn add_worst_case_merk_replace_layered(
 pub fn add_worst_case_merk_delete_layered(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
     cost.seek_count += 1;
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
 }
 
 #[cfg(feature = "full")]
@@ -139,16 +139,16 @@ pub fn add_worst_case_merk_delete_layered(cost: &mut OperationCost, _key_len: u3
 pub fn add_worst_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
     cost.seek_count += 1;
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
 }
 
 #[cfg(feature = "full")]
-const fn node_hash_update_count() -> u16 {
+const fn node_hash_update_count() -> u32 {
     // It's a hash of node hash, left and right
     let bytes = HASH_LENGTH * 3;
     // todo: verify this
 
-    1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u16
+    1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u32
 }
 
 #[cfg(feature = "full")]
@@ -209,7 +209,7 @@ pub fn add_worst_case_merk_propagate(
     cost.storage_cost.replaced_bytes += nodes_updated * MERK_BIGGEST_VALUE_SIZE;
     cost.storage_loaded_bytes += nodes_updated * (MERK_BIGGEST_VALUE_SIZE + MERK_BIGGEST_KEY_SIZE);
     cost.seek_count += nodes_updated as u16;
-    cost.hash_node_calls += (nodes_updated as u16) * 2;
+    cost.hash_node_calls += nodes_updated * 2;
     Ok(())
 }
 
