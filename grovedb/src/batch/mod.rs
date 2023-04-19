@@ -93,17 +93,10 @@ use storage::{
 };
 use visualize::{Drawer, Visualize};
 
-pub use crate::{
-    batch::{
-        batch_structure::{OpsByLevelPath, OpsByPath},
-    }
-};
-
+pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::{
     batch::{
-        batch_structure::BatchStructure,
-        estimated_costs::EstimatedCostsType,
-        mode::BatchRunMode,
+        batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
     },
     element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     operations::get::MAX_REFERENCE_HOPS,

@@ -378,12 +378,12 @@ pub fn add_average_case_merk_replace_layered(
         KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
 
     // first lets add the value hash
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the combine hash
     cost.hash_node_calls += 1;
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
-    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }
@@ -397,7 +397,7 @@ pub fn add_average_case_merk_delete_layered(
 ) {
     // todo: verify this
     cost.seek_count += 1;
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
 }
 
 #[cfg(feature = "full")]
@@ -405,16 +405,16 @@ pub fn add_average_case_merk_delete_layered(
 pub fn add_average_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
     cost.seek_count += 1;
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
 }
 
 #[cfg(feature = "full")]
-const fn node_hash_update_count() -> u16 {
+const fn node_hash_update_count() -> u32 {
     // It's a hash of node hash, left and right
     let bytes = HASH_LENGTH * 3;
     // todo: verify this
 
-    1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u16
+    1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u32
 }
 
 #[cfg(feature = "full")]
@@ -453,7 +453,7 @@ pub fn add_average_case_merk_propagate(
     }
     cost.seek_count += nodes_updated as u16;
 
-    cost.hash_node_calls += (nodes_updated as u16) * 2;
+    cost.hash_node_calls += nodes_updated * 2;
 
     cost.storage_cost.replaced_bytes += match estimated_layer_sizes {
         EstimatedLayerSizes::AllSubtrees(

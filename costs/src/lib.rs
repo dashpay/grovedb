@@ -89,7 +89,7 @@ pub struct OperationCost {
     /// How many bytes were loaded from hard drive.
     pub storage_loaded_bytes: u32,
     /// How many times node hashing was done (for merkelized tree).
-    pub hash_node_calls: u16,
+    pub hash_node_calls: u32,
 }
 
 impl OperationCost {
@@ -137,7 +137,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `hash_node_calls`.
-    pub fn with_hash_node_calls(hash_node_calls: u16) -> Self {
+    pub fn with_hash_node_calls(hash_node_calls: u32) -> Self {
         OperationCost {
             hash_node_calls,
             ..Default::default()

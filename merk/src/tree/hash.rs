@@ -76,7 +76,7 @@ pub fn value_hash(value: &[u8]) -> CostContext<CryptoHash> {
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: hashes as u16,
+        hash_node_calls: hashes as u32,
         ..Default::default()
     })
 }
@@ -104,7 +104,7 @@ pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<CryptoHash> {
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
 
-    cost.hash_node_calls += hashes as u16;
+    cost.hash_node_calls += hashes as u32;
     hash.wrap_with_cost(cost)
 }
 
@@ -125,7 +125,7 @@ pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &CryptoHash) -> CostContext<
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: hashes as u16,
+        hash_node_calls: hashes as u32,
         ..Default::default()
     })
 }

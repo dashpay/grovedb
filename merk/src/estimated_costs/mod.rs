@@ -89,10 +89,10 @@ pub fn add_cost_case_merk_insert(
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
-    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }
@@ -113,12 +113,12 @@ pub fn add_cost_case_merk_insert_layered(
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the combine hash
     cost.hash_node_calls += 1;
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
-    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }
@@ -137,10 +137,10 @@ pub fn add_cost_case_merk_replace(
     cost.storage_cost.replaced_bytes += KV::node_key_byte_cost_size(key_len);
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
-    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }
@@ -162,10 +162,10 @@ pub fn add_cost_case_merk_replace_same_size(
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
-    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }
@@ -186,12 +186,12 @@ pub fn add_cost_case_merk_replace_layered(
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the combine hash
     cost.hash_node_calls += 1;
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
-    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }
@@ -233,10 +233,10 @@ pub fn add_cost_case_merk_patch(
 
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
-    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
-    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
+    cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32);
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }

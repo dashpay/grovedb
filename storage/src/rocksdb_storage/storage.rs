@@ -151,7 +151,7 @@ impl RocksDbStorage {
             blake3::hash(&body)
                 .as_bytes()
                 .to_vec()
-                .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u16))
+                .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u32))
         }
     }
 
@@ -497,7 +497,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         } else {
             let body_size = Self::worst_case_body_size(path);
             // the block size of blake3 is 64
-            let blocks_num = blake_block_count(body_size) as u16;
+            let blocks_num = blake_block_count(body_size) as u32;
             OperationCost::with_hash_node_calls(blocks_num)
         }
     }
