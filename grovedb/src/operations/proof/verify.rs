@@ -45,6 +45,7 @@ use crate::{
         reduce_limit_and_offset_by, ProvedPathKeyValue, ProvedPathKeyValues,
     },
     query_result_type::PathKeyOptionalElementTrio,
+    versioning::read_and_consume_version,
     SizedQuery,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -54,7 +55,6 @@ use crate::{
     },
     Element, Error, GroveDb, PathQuery,
 };
-use crate::versioning::read_and_consume_version;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub type ProvedKeyValues = Vec<ProvedKeyValue>;
