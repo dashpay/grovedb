@@ -54,6 +54,7 @@ use crate::{
     },
     Element, Error, GroveDb, PathQuery,
 };
+use crate::versioning::read_and_consume_version;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub type ProvedKeyValues = Vec<ProvedKeyValue>;
@@ -246,6 +247,7 @@ impl ProofVerifier {
         query: &PathQuery,
         is_verbose: bool,
     ) -> Result<[u8; 32], Error> {
+        let (proof_version, proof) = read_and_consume_version(proof)?;
         let mut proof_reader = ProofReader::new_with_verbose_status(proof, is_verbose);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();

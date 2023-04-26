@@ -56,6 +56,7 @@ mod replication;
 mod tests;
 #[cfg(feature = "full")]
 mod util;
+mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
 

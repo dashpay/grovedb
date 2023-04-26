@@ -1186,7 +1186,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     assert_eq!(
         hex::encode(&proof),
-        "0285010198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb979cb\
+        "010285010198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb979cb\
         e4a51e0b2f08d06046b6579340009000676616c75653100bf2f052b01c2b\
         b83ff3a40504d42b5b9141c582a3e0c98679189b33a24478a6f1006046b6\
         579350009000676616c75653400f084ffdbc429a89c9b6620e7224d73c2e\
@@ -1314,7 +1314,7 @@ fn test_path_query_proofs_without_subquery() {
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     assert_eq!(
         hex::encode(proof.as_slice()),
-        "025503046b6579310009000676616c7565310002018655e18e4555b0b65\
+        "01025503046b6579310009000676616c7565310002018655e18e4555b0b65\
         bbcec64c749db6b9ad84231969fb4fbe769a3093d10f2100198ebd6dc7e1\
         c82951c41fcfa6487711cac6a399ebb01bb979cbe4a51e0b2f08d1101350\
         409696e6e65727472656500080201046b657932004910536da659a3dbdbc\
