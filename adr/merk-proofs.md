@@ -161,9 +161,9 @@ Op::Push(Node::KV(3, c))
 ```rust
 stack = [
 	3,
-        2
-       /
-      1
+            2
+           /
+          1
 ]
 ```
 
@@ -173,9 +173,9 @@ Op::Push(Node::KV(4, d))
 stack = [
 	4,
 	3,
-			2
-		/
-	1
+            2
+           /
+          1
 ]
 ```
 
@@ -185,9 +185,9 @@ Op::Parent
 stack = [
 	4,
 	3,
-			2
-		/
-	1
+            2
+           /
+          1
 ]
 
 // pop top stack item as the parent
@@ -197,18 +197,18 @@ parent = 4
 child = 3
 
 // attach the child to the left of the parent
-		4
-	/
-3
+        4
+       /
+      3
 
 // push the updated parent to the top of the stack
 stack = [
-			4
-		/
-	3,
-			2
-		/
-	1
+        4
+       /
+      3,
+        2
+       /
+      1
 ]
 ```
 
@@ -217,12 +217,12 @@ Op::Push(Node::KV(5, v5))
 ```rust
 stack = [
 	5,
-			4
-		/
-	3,
-			2
-		/
-	1
+            4
+          /
+        3,
+            2
+          /
+        1
 ]
 ```
 
@@ -231,35 +231,35 @@ Op::Child
 ```rust
 stack = [
 	5,
-			4
-		/
-	3,
-			2
-		/
-	1
+            4
+          /
+        3,
+             2
+           /
+        1
 ]
 
 // pop top stack item as the child
 child = 5
 
 // pop top stack item as the parent
-parent = 	4
-				/
-			3
+parent =    4
+           /
+          3
 
 // attach the child to the right of the parent
-		4
-	/   \
-3      5
+        4
+      /   \
+     3     5
 
 // push the updated parent to the top of the stack
 stack = [
-			4
-		/   \
-	3      5,
-			2
-		/
-	1
+            4
+          /   \
+         3     5,
+            2
+           /
+         1
 ]
 ```
 
@@ -267,38 +267,38 @@ Op::Child
 
 ```rust
 stack = [
-			4
-		/   \
-	3      5,
-			2
-		/
-	1
+          4
+        /   \
+       3     5,
+          2
+         /
+       1
 ]
 
 // pop top stack item as the child
-child  = 		4
-					/   \
-				3      5
+child  =              4
+                    /   \
+                   3     5
 
 // pop top stack item as the parent
-parent = 	2
-				/
-			1
+parent =        2
+              /
+            1
 
 // attach the child to the right of the parent
-		2
-	/   \
-1      4
-			/  \
-		3      5
+        2
+      /   \
+     1     4
+         /   \
+        3     5
 
 // push the updated parent to the top of the stack
 stack = [
-			2
-		/   \
-	1      4
-				/  \
-			3      5
+          2
+        /   \
+       1     4
+            /  \
+           3    5
 ]
 ```
 
