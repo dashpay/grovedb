@@ -499,6 +499,7 @@ Op::Push(Node::KV(1, v1))
 Op::Push(Node::KvHash(2b)) // kv hash of node 2
 Op::Parent
 Op::Push(Node::Hash(4d3c5e)) // node hash of node 4
+Op::Child
 ```
 
 #### Explanation
