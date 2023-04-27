@@ -602,44 +602,44 @@ Simply put, a Merk proof encodes a subset of the tree state that contains all th
 Proof generation algorithm:
 
 - Given a node and a set of keys to include in the proof:
-    - if the query set is empty, append `Op::Push(Node::Hash(node_hash))` to the proof and return
-        - since the query set is empty, it means the current node is not part of our requested keys and we also don’t care about any of it’s child nodes
+    - if the query is empty, append `Op::Push(Node::Hash(node_hash))` to the proof and return
+        - since the query is empty, it means the current node is not part of our requested keys and we also don’t care about any of it’s child nodes
         - this is why we push the node_hash, instead of the kv or kvhash as those give more information than we need for that node
         
-    - if the query set is not empty, perform a binary search of the current node’s key on the query set
+    - if the query is not empty, perform a binary search of the current node’s key on the query
         - the goal is to find the query item that overlaps with the current node key
-        - if the node’s key is found in the query set at index i:
+        - if the node’s key is found in the query at index i:
             - get the query item at index i
-                - if the query item is a key, partition the query set into left and right sub-sets at index i, excluding i
-                    - say the query set is [1..=2, 3, 4..=5] and current node key is 3
+                - if the query item is a key, partition the query into left and right sub-sets at index i, excluding i
+                    - say the query is [1..=2, 3, 4..=5] and current node key is 3
                     - binary search finds overlapping query item at index 1
                     - query item is a key, so we split into left = [1..=2] and right = [4..=5]
                 - if the query item is a range and the range starts before the node key
                     - include the query item in the left sub-batch else exclude it
-                    - say the query set is [1, 2..=4, 5] and the current node key is 3
+                    - say the query is [1, 2..=4, 5] and the current node key is 3
                     - binary search finds overlapping query item at index 1
                     - query item is a range and it’s start value is less than 3
                     - partition left = [1, 2..=4]
                 - if the query item is a range and the range ends after the node key
                     - include the query item in the right sub-batch else exclude it
-                    - say the query set is [1, 2..=4, 5] and the current node key is 3
+                    - say the query is [1, 2..=4, 5] and the current node key is 3
                     - binary search finds overlapping query item at index 1
                     - query item is a range and it’s end value is greater than 3
                     - partition right = [2..=4, 5]
-            - if the node’s key is not found in the query set, but could be inserted at index i
-                - partition the query set into left and right sub-batches at index i
-                    - say the query set is [1,2,4,5] and current node key is 3
+            - if the node’s key is not found in the query, but could be inserted at index i
+                - partition the query into left and right sub-batches at index i
+                    - say the query is [1,2,4,5] and current node key is 3
                     - after performing the binary search, no overlap is detected but we notice the key can be inserted at index 2
                     - so we partition the set into left = [1, 2] and right = [4, 5]
                     - basically splitting the set into half at the given index.
-            - at this point we should have both a left and right partition of the query set
+            - at this point we should have both a left and right partition of the query
             
         - Recurse_left:
-            - if the left query set is empty and we have a left child, then append `Op::Push(Node::Hash(node_hash_left))`
+            - if the left query is empty and we have a left child, then append `Op::Push(Node::Hash(node_hash_left))`
                 - same idea, we don’t care about the left node and any of it’s children, return the smallest info we need for rebuilding the root hash
-            - if the left query set is empty and we have no left child, then append nothing
-            - if the left query set is not empty and we have a left child, recurse with the left node and the left sub-batch
-            - if the left query set is not empty and we have no left child, append nothing
+            - if the left query is empty and we have no left child, then append nothing
+            - if the left query is not empty and we have a left child, recurse with the left node and the left sub-batch
+            - if the left query is not empty and we have no left child, append nothing
                 - we have queries but they can’t be satisfied because the state doesn’t have the node data
         - Handle current node:
             - if the current node found an overlapping query item, then append `Op::Push(Node::KV(node.key, node.value))`
@@ -648,10 +648,10 @@ Proof generation algorithm:
                 - TODO: fix this section with correct explanation
         - if left proof exists, append `Op::Parent` to the proof
         - Recurse_right:
-            - if the right query set is empty and we have a right child, then append `Op::Push(Node::Hash(node_hash_right))`
-            - if the right query set is empty and we have no right child, then append nothing
-            - if the right query set is not empty and we have a right child, recurse with the right node and the right sub-batch
-            - if the right query set is not empty and we have no right child, append nothing
+            - if the right query is empty and we have a right child, then append `Op::Push(Node::Hash(node_hash_right))`
+            - if the right query is empty and we have no right child, then append nothing
+            - if the right query is not empty and we have a right child, recurse with the right node and the right sub-batch
+            - if the right query is not empty and we have no right child, append nothing
                 - we have queries but they can’t be satisfied because the state doesn’t have the node data
         - if the right proof exists, append `Op::Child` to the proof
     
