@@ -2,7 +2,7 @@
 
 Merk is a Merkle AVL tree ([https://en.wikipedia.org/wiki/AVL_tree](https://en.wikipedia.org/wiki/AVL_tree))
 
-******************Structure******************
+#### Structure
 
 A node in a merk tree represents a key-value pair, each node can optionally have a left and right child node. 
 
@@ -16,11 +16,12 @@ node_hash = Hash(kv_hash, left_child_node_hash, right_child_node_hash)
 
 The root hash of the merk structure is the node_hash of the root node. 
 
-******************Encoding and Reconstructing a merk tree******************
+#### Encoding and Reconstructing a merk tree
 
 A merk tree can be encoded into a set of operations for future reconstruction. 
 
-**Operation Types**
+#### Operation Types
+
 
 - Op::Push(Node):
     - Push a node onto the stack
@@ -33,7 +34,7 @@ A merk tree can be encoded into a set of operations for future reconstruction.
     - attaches the child to the right of the parent
     - pushes the updated parent back to the stack
 
-**Node Types**
+#### Node Types
 
 We have five node types relevant to proofs
 
@@ -45,7 +46,7 @@ We have five node types relevant to proofs
 
 By combining the operation types and node types we can encode any tree or tree subset into a set of operations that can be later reconstructed to reproduce the same root hash.
 
-**************Example**************
+#### Example
 
 We can create a tree by inserting 5 elements with keys 1 to 5 and values a to e.
 
@@ -61,7 +62,7 @@ After insertion, the final tree looks like this.
         3   5
 ```
 
-****************Encoding****************
+#### Encoding
 
 To encode we do an in-order traversal, encoding every node as a Node::KV, and inserting the parent/child branch operation markers.
 
@@ -101,7 +102,7 @@ Op::Child
 Op::Child
 ```
 
-****************************Reconstruction****************************
+#### Reconstruction
 
 To reconstruct the tree from the set of operations, we start with an empty stack and just do what the operations tell us to do <link to a description of operation types here or bring it here, might be more relevant here>.  
 
@@ -309,11 +310,11 @@ No further operations, let us check the constraints
 
 Reconstruction completed successfully  ✅
 
-******************************************Implementation Detail******************************************
+#### Implementation Detail
 
 In our implementation, we actually send Node::KVValueHash instead of Node::KV, this doesn’t change how reconstruction works but it’s an important detail for GroveDB *<link to grovedb explanation of tree linking>*
 
-************************************************Calculating the root hash of the tree************************************************
+#### Calculating the root hash of the tree
 
 Recall each node in the tree represents a key-value pair, described by this set:
 
@@ -342,7 +343,7 @@ kv_hash = Hash(key, value_hash)
 
 In our merk implementation, the Hash function is the blake3 hashing algorithm see: [https://github.com/BLAKE3-team/BLAKE3/](https://github.com/BLAKE3-team/BLAKE3/)
 
-************************Simplified Hashing Algorithm************************
+#### Simplified Hashing Algorithm
 
 For the rest of this document, we shall use a simplified hashing algorithm.
 
@@ -444,11 +445,11 @@ graph TD;
 
 Root Hash → 2b1a4d3c5e
 
-**************Encoding a subset of the tree state**************
+#### Encoding a subset of the tree state
 
 We have described the technique for encoding and reconstructing the entire tree state, but sometimes you only care about a subset of the state. 
 
-**********************************************************************Rules for truncating the tree state**********************************************************************
+#### Rules for truncating the tree state
 
 In order to encode a subset of the tree and still get the same root hash on reconstruction, we need to return sufficient information to preserve the root hash.
 
@@ -469,7 +470,7 @@ Essentially, we must be able to calculate the node_hash for every node in the re
     - ignore its children
     - we already have the node_hash
 
-**Example**
+#### Example
 
 Given this tree: 
 
@@ -500,7 +501,7 @@ Op::Parent
 Op::Push(Node::Hash(4d3c5e)) // node hash of node 4
 ```
 
-********Explanation********
+#### Explanation
 
 - We only care about node 1
 - Starting at node 2, we realise we don’t need it’s key value, but something we care about (node 1) might be to the left of it. Return the Node::KvHash (case 2)
@@ -536,7 +537,7 @@ Exactly the same as before!
 
 In the next section, we specify a powerful system for describing the keys we want from a state tree.
 
-****************************************Query System****************************************
+#### Query System
 
 A query is a set of query items that are used to describe keys in a tree. In merk we have 10 query item types. 
 
@@ -566,12 +567,12 @@ We can then combine the query items above to build a query that selects non-cont
 - query = [QueryItem::Key(2), QueryItem::RangeInclusive(4..=5)]
     - this selects 3 nodes with keys [2, 4, 5]
 
-**Query Constraints**
+#### Query Constraints
 
 - A query must have all its query items ordered by key
 - Overlapping query items must be merged
 
-**Example**
+#### Example
 
 query = [QueryItem::Range(2..4), QueryItem::RangeInclusive(3..=5)]
 
@@ -585,9 +586,9 @@ This is equivalent to QueryItem::RangeInclusive(2..=5), hence the query becomes
 
 query = [QueryItem::RangeInclusive(2..=5)]
 
-************Proofs************
+#### Proofs
 
-**Problem Statement**
+#### Problem Statement
 
 I build a query that describes the keys I am interested in, I send that to the prover and the prover sends me back a subset encoding with some guarantees:
 
@@ -654,7 +655,7 @@ Proof generation algorithm:
         - if the right proof exists, append `Op::Child` to the proof
     
 
-************************************Proof Verification************************************
+#### Proof Verification
 
 Proof verification is not as simple as reconstructing the tree and verifying to root hash anymore, as we need to check the proof was constructed correctly based on the query we passed.
 
@@ -672,7 +673,7 @@ Specifically we keep track of:
         - we don’t want this, if some data that represents my query is in state, then it must be returned.
     
 
-************************************Verification algorithm************************************
+#### Verification Algorithm
 
 - if the node is of type Node::KVHash or Node::Hash i.e the node doesn’t contain the raw key and in_range is set to true
     - return an error
@@ -697,7 +698,7 @@ Specifically we keep track of:
         - push the node to the result set
         - we have hit a node whose value we care about
 
-************************Dealing with offsets************************
+#### Dealing with offsets
 
 Offsets specify that you skip the first n values that match the query. 
 
@@ -708,7 +709,7 @@ If we encounter a node that matches the query and the offset value is non-zero, 
 
 Once the offset value is at 0, we can start pushing Node::KV types.
 
-**************************************Dealing with limits**************************************
+#### Dealing with limits
 
 The limit says I  only care about the first n items that match my query. 
 
