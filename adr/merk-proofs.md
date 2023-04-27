@@ -599,8 +599,6 @@ Simply put, a Merk proof encodes a subset of the tree state that contains all th
 
 Proof generation algorithm:
 
-TODO: consider changing query set to batches might be easier to understand
-
 - Given a node and a set of keys to include in the proof:
     - if the query set is empty, append `Op::Push(Node::Hash(node_hash))` to the proof and return
         - since the query set is empty, it means the current node is not part of our requested keys and we also don’t care about any of it’s child nodes
