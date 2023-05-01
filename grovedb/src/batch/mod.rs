@@ -76,7 +76,6 @@ use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
-    proofs::query::Map,
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, NULL_HASH,
@@ -85,10 +84,7 @@ use merk::{
 };
 pub use options::BatchApplyOptions;
 use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
-        WriteBatchWithTransaction,
-    },
+    rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{Drawer, Visualize};
@@ -1862,7 +1858,7 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
-            let mut total_current_costs = cost.clone().add(pending_costs.clone());
+            let total_current_costs = cost.clone().add(pending_costs.clone());
 
             // todo: estimate root costs
 
@@ -1940,7 +1936,7 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
-            let mut total_current_costs = cost.clone().add(pending_costs.clone());
+            let total_current_costs = cost.clone().add(pending_costs.clone());
 
             // at this point we need to send the pending costs back
             // we will get GroveDB a new set of GroveDBOps
