@@ -30,8 +30,11 @@
 
 #![deny(missing_docs)]
 
+mod util;
+
 use core::slice;
-use std::borrow::Cow;
+
+use util::CowLike;
 
 /// Path to a GroveDB's subtree.
 #[derive(Debug)]
@@ -65,16 +68,13 @@ impl<B> Clone for SubtreePathBase<'_, B> {
 
 impl<B> Copy for SubtreePathBase<'_, B> {}
 
-impl<'b, B> SubtreePathBase<'b, B>
-where
-    B: Clone + AsRef<[u8]>,
-{
+impl<'b, B: AsRef<[u8]>> SubtreePathBase<'b, B> {
     /// Get a derivated subtree path for a parent with care for base path slice case.
-    fn parent(&self) -> Option<(SubtreePath<'b, B>, Cow<'b, [u8]>)> {
+    fn parent(&self) -> Option<(SubtreePath<'b, B>, &'b [u8])> {
         match self {
             SubtreePathBase::Slice(path) => path
                 .split_last()
-                .map(|(tail, rest)| (SubtreePath::from_slice(rest), Cow::Borrowed(tail.as_ref()))),
+                .map(|(tail, rest)| (SubtreePath::from_slice(rest), tail.as_ref())),
             SubtreePathBase::DerivedPath(path) => path.derive_parent(),
         }
     }
@@ -97,18 +97,10 @@ enum SubtreePathRelative<'r> {
     /// Equivalent to the base path.
     Empty,
     /// Added one child segment.
-    Single(Cow<'r, [u8]>),
-    /// Added nested path.
-    Multi(Cow<'r, [Cow<'r, [u8]>]>),
-    // /// Went up from some multiple times derivated subtree path and basically
-    // /// we have a slice of a shorter version of its relative path.
-    // MultiBorrowed(&'r [Cow<'r, [u8]>]),
+    Single(CowLike<'r>),
 }
 
-impl<'b, B> SubtreePath<'b, B>
-where
-    B: Clone + AsRef<[u8]>,
-{
+impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     /// Init a subtree path from a slice of path segments.
     pub fn from_slice(slice: &'b [B]) -> Self {
         SubtreePath {
@@ -118,7 +110,7 @@ where
     }
 
     /// Get a derivated path for a parent and a chopped segment.
-    pub fn derive_parent(&'b self) -> Option<(SubtreePath<'b, B>, Cow<'b, [u8]>)> {
+    pub fn derive_parent(&'b self) -> Option<(SubtreePath<'b, B>, &'b [u8])> {
         match &self.relative {
             SubtreePathRelative::Empty => self.base.parent(),
             SubtreePathRelative::Single(relative) => Some((
@@ -126,44 +118,28 @@ where
                     base: self.base,
                     relative: SubtreePathRelative::Empty,
                 },
-                Cow::Borrowed(relative),
+                relative,
             )),
-            SubtreePathRelative::Multi(relative) => {
-                let (tail, rest) = relative
-                    .split_last()
-                    .expect("Empty variant is handled separately");
-
-                if relative.len() == 2 {
-                    Some((
-                        SubtreePath {
-                            base: self.base,
-                            relative: SubtreePathRelative::Single(Cow::Borrowed(rest[0].as_ref())),
-                        },
-                        Cow::Borrowed(tail),
-                    ))
-                } else {
-                    Some((
-                        SubtreePath {
-                            base: self.base,
-                            relative: SubtreePathRelative::Multi(Cow::Borrowed(rest)),
-                        },
-                        Cow::Borrowed(tail),
-                    ))
-                }
-            }
         }
     }
 
     /// Get a derivated path with a child path segment added. The lifetime of the path
     /// will remain the same in case of owned data (segment is a vector) or will match
     /// the slice's lifetime.
-    pub fn derive_child<S>(&'b self, segment: S) -> SubtreePath<'b, B>
-    where
-        S: Into<Cow<'b, [u8]>>,
-    {
+    pub fn derive_child_owned(&'b self, segment: Vec<u8>) -> SubtreePath<'b, B> {
         SubtreePath {
             base: SubtreePathBase::DerivedPath(self),
-            relative: SubtreePathRelative::Single(segment.into()),
+            relative: SubtreePathRelative::Single(CowLike::Owned(segment)),
+        }
+    }
+
+    /// Get a derivated path with a child path segment added. The lifetime of the path
+    /// will remain the same in case of owned data (segment is a vector) or will match
+    /// the slice's lifetime.
+    pub fn derive_child(&'b self, segment: &'b [u8]) -> SubtreePath<'b, B> {
+        SubtreePath {
+            base: SubtreePathBase::DerivedPath(self),
+            relative: SubtreePathRelative::Single(CowLike::Borrowed(segment)),
         }
     }
 
@@ -172,12 +148,9 @@ where
         match &self.relative {
             SubtreePathRelative::Empty => self.base.reverse_iter(),
             SubtreePathRelative::Single(item) => SubtreePathIter {
-                current_iter: CurrentSubtreePathIter::Single(item.as_ref()),
+                current_iter: CurrentSubtreePathIter::Single(item),
                 next_subtree_path: Some(&self.base),
             },
-            SubtreePathRelative::Multi(_) => {
-                todo!()
-            }
         }
     }
 
@@ -193,9 +166,6 @@ where
             SubtreePathRelative::Single(s) => {
                 result.push(s);
             }
-            SubtreePathRelative::Multi(s) => {
-                result.extend(s.iter().map(AsRef::as_ref));
-            }
         }
 
         result
@@ -210,11 +180,7 @@ pub struct SubtreePathIter<'b, 's, B> {
     next_subtree_path: Option<&'s SubtreePathBase<'b, B>>,
 }
 
-impl<'b, 's, B> Iterator for SubtreePathIter<'b, 's, B>
-where
-    B: AsRef<[u8]> + Clone,
-    'b: 's,
-{
+impl<'s, 'b: 's, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, 's, B> {
     type Item = &'s [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -268,18 +234,12 @@ mod tests {
         println!("{formatted}");
     }
 
-    fn derive_child_static<'s, B>(path: &'s SubtreePath<'s, B>) -> SubtreePath<'s, B>
-    where
-        B: Clone + AsRef<[u8]>,
-    {
+    fn derive_child_static<'s, B: AsRef<[u8]>>(path: &'s SubtreePath<'s, B>) -> SubtreePath<'s, B> {
         path.derive_child(b"static".as_ref())
     }
 
-    fn derive_child_owned<'s, B>(path: &'s SubtreePath<'s, B>) -> SubtreePath<'s, B>
-    where
-        B: Clone + AsRef<[u8]>,
-    {
-        path.derive_child(b"owned".to_vec())
+    fn derive_child_owned<'s, B: AsRef<[u8]>>(path: &'s SubtreePath<'s, B>) -> SubtreePath<'s, B> {
+        path.derive_child_owned(b"owned".to_vec())
     }
 
     #[test]
@@ -296,7 +256,7 @@ mod tests {
 
         let base = [b"lol".to_vec(), b"kek".to_vec()];
         let path = SubtreePath::from_slice(&base);
-        let path3 = path.derive_child(b"hmm".to_vec());
+        let path3 = path.derive_child_owned(b"hmm".to_vec());
         print_slice_str(&path3.to_vec());
         let path4 = derive_child_static(&path3);
         print_slice_str(&path4.to_vec());

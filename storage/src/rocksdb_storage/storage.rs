@@ -115,7 +115,7 @@ impl RocksDbStorage {
 
     fn build_prefix_body<B>(path: &SubtreePath<B>) -> (Vec<u8>, usize)
     where
-        B: AsRef<[u8]> + Clone,
+        B: AsRef<[u8]>,
     {
         let segments_iter = path.reverse_iter();
         let mut segments_count: usize = 0;
@@ -141,7 +141,7 @@ impl RocksDbStorage {
     /// in `subtrees` map by tree path;
     pub fn build_prefix<B>(path: &SubtreePath<B>) -> CostContext<Vec<u8>>
     where
-        B: AsRef<[u8]> + Clone,
+        B: AsRef<[u8]>,
     {
         let (body, segments_count) = Self::build_prefix_body(path);
         if segments_count == 0 {
@@ -436,7 +436,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_storage_context<B>(&'db self, path: &SubtreePath<B>) -> CostContext<Self::StorageContext>
     where
-        B: AsRef<[u8]> + Clone,
+        B: AsRef<[u8]>,
     {
         Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
     }
@@ -447,7 +447,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
-        B: AsRef<[u8]> + Clone,
+        B: AsRef<[u8]>,
     {
         Self::build_prefix(path)
             .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
@@ -459,7 +459,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
-        B: AsRef<[u8]> + Clone,
+        B: AsRef<[u8]>,
     {
         Self::build_prefix(path)
             .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
@@ -472,7 +472,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
-        B: AsRef<[u8]> + Clone,
+        B: AsRef<[u8]>,
     {
         Self::build_prefix(path).map(|prefix| {
             PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)

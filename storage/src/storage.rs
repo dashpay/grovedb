@@ -87,7 +87,7 @@ pub trait Storage<'db> {
         path: &SubtreePath<B>,
     ) -> CostContext<Self::StorageContext>
     where
-        B: AsRef<[u8]> + Clone;
+        B: AsRef<[u8]>;
 
     /// Make storage_cost context for a subtree on transactional data
     fn get_transactional_storage_context<B>(
@@ -96,7 +96,7 @@ pub trait Storage<'db> {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
-        B: AsRef<[u8]> + Clone;
+        B: AsRef<[u8]>;
 
     /// Make batch storage_cost context for a subtree with path
     fn get_batch_storage_context<B>(
@@ -105,7 +105,7 @@ pub trait Storage<'db> {
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
-        B: AsRef<[u8]> + Clone;
+        B: AsRef<[u8]>;
 
     /// Make batch storage_cost context for a subtree on transactional data
     fn get_batch_transactional_storage_context<B>(
@@ -115,7 +115,7 @@ pub trait Storage<'db> {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
-        B: AsRef<[u8]> + Clone;
+        B: AsRef<[u8]>;
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;

@@ -62,7 +62,6 @@ mod visualize;
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-use path::SubtreePath;
 #[cfg(feature = "full")]
 use ::visualize::DebugByteVectors;
 #[cfg(feature = "full")]
@@ -92,6 +91,7 @@ use merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]
@@ -144,14 +144,11 @@ impl GroveDb {
     }
 
     /// Opens the transactional Merk at the given path. Returns CostResult.
-    pub fn open_transactional_merk_at_path<'db, P>(
+    pub fn open_transactional_merk_at_path<'db, B: AsRef<[u8]>>(
         &'db self,
-        path: &SubtreePath<P>,
+        path: &SubtreePath<B>,
         tx: &'db Transaction,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
-    where
-        P: AsRef<[u8]> + Clone,
-    {
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
         let mut cost = OperationCost::default();
         let storage = self
             .db
@@ -345,26 +342,22 @@ impl GroveDb {
 
     /// Method to propagate updated subtree key changes one level up inside a
     /// transaction
-    fn propagate_changes_with_transaction<'p, P>(
+    fn propagate_changes_with_transaction<B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>>,
-        path: P,
+        path: &SubtreePath<B>,
         transaction: &Transaction,
-    ) -> CostResult<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut path_iter = path.into_iter();
+        let mut path_iter = path.reverse_iter(); // TODO: caching should be something more ergonomic,
+                                                 // until that it at least should not own the vecvec path
 
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
                 .remove(
                     path_iter
-                        .clone()
                         .map(|k| k.to_vec())
                         .collect::<Vec<Vec<u8>>>()
                         .as_slice()
@@ -374,11 +367,12 @@ impl GroveDb {
                 ))
         );
 
-        while path_iter.len() > 0 {
-            let key = path_iter.next_back().expect("next element is `Some`");
+        let mut parent_path = path.derive_parent();
+
+        while let Some((current_path, current_key)) = parent_path {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(path_iter.clone(), transaction)
+                self.open_transactional_merk_at_path(&current_path, transaction)
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -388,13 +382,14 @@ impl GroveDb {
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
                     &mut parent_tree,
-                    key,
+                    current_key,
                     root_key,
                     root_hash,
                     sum
                 )
             );
             child_tree = parent_tree;
+            parent_path = current_path.derive_parent();
         }
         Ok(()).wrap_with_cost(cost)
     }
