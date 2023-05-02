@@ -46,8 +46,7 @@ pub struct SubtreePath<'b, B> {
 /// The new path is reusing the existing one instead of owning a copy of the same data.
 #[derive(Debug)]
 enum SubtreePathBase<'b, B> {
-    /// The base path is a slice, usually provided at a subroutine entrypoint,
-    /// like a user wants to insert into specific subtree and provides a path.
+    /// The base path is a slice, might a provided by user or a subslice when deriving a parent.
     Slice(&'b [B]),
     /// If the subtree path base cannot be represented as a subset of initially provided slice,
     /// which is handled by [Slice](Self::Slice), this variant is used to refer to other derived

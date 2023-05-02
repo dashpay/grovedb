@@ -15,6 +15,7 @@ costs = { version = "1.0.0", path = "../costs" }
 thiserror = "1.0.37"
 rocksdb = { version = "0.19.0", optional = true }
 hex = "0.4.3"
+path = { path = "../path" }
 
 [features]
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static", "tempfile", "blake3", "integer-encoding"]

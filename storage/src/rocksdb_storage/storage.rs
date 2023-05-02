@@ -28,7 +28,7 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
-use std::{ops::AddAssign, path::Path};
+use std::path::Path;
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
@@ -38,6 +38,7 @@ use costs::{
 use error::Error;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
+use path::SubtreePath;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction,
@@ -112,11 +113,11 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<'a, P>(path: P) -> (Vec<u8>, usize)
+    fn build_prefix_body<B>(path: &SubtreePath<B>) -> (Vec<u8>, usize)
     where
-        P: IntoIterator<Item = &'a [u8]>,
+        B: AsRef<[u8]> + Clone,
     {
-        let segments_iter = path.into_iter();
+        let segments_iter = path.reverse_iter();
         let mut segments_count: usize = 0;
         let mut res = Vec::new();
         let mut lengthes = Vec::new();
@@ -138,9 +139,9 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<'a, P>(path: P) -> CostContext<Vec<u8>>
+    pub fn build_prefix<B>(path: &SubtreePath<B>) -> CostContext<Vec<u8>>
     where
-        P: IntoIterator<Item = &'a [u8]>,
+        B: AsRef<[u8]> + Clone,
     {
         let (body, segments_count) = Self::build_prefix_body(path);
         if segments_count == 0 {
@@ -433,45 +434,45 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.flush().map_err(RocksDBError)
     }
 
-    fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
+    fn get_storage_context<B>(&'db self, path: &SubtreePath<B>) -> CostContext<Self::StorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>,
+        B: AsRef<[u8]> + Clone,
     {
         Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
     }
 
-    fn get_transactional_storage_context<'p, P>(
+    fn get_transactional_storage_context<B>(
         &'db self,
-        path: P,
+        path: &SubtreePath<B>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>,
+        B: AsRef<[u8]> + Clone,
     {
         Self::build_prefix(path)
             .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
     }
 
-    fn get_batch_storage_context<'p, P>(
+    fn get_batch_storage_context<B>(
         &'db self,
-        path: P,
+        path: &SubtreePath<B>,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>,
+        B: AsRef<[u8]> + Clone,
     {
         Self::build_prefix(path)
             .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
     }
 
-    fn get_batch_transactional_storage_context<'p, P>(
+    fn get_batch_transactional_storage_context<B>(
         &'db self,
-        path: P,
+        path: &SubtreePath<B>,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>,
+        B: AsRef<[u8]> + Clone,
     {
         Self::build_prefix(path).map(|prefix| {
             PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
@@ -539,12 +540,12 @@ mod tests {
         let path_a = [b"aa".as_ref(), b"b"];
         let path_b = [b"a".as_ref(), b"ab"];
         assert_ne!(
-            RocksDbStorage::build_prefix(path_a),
-            RocksDbStorage::build_prefix(path_b),
+            RocksDbStorage::build_prefix(&SubtreePath::from_slice(&path_a)),
+            RocksDbStorage::build_prefix(&SubtreePath::from_slice(&path_b)),
         );
         assert_eq!(
-            RocksDbStorage::build_prefix(path_a),
-            RocksDbStorage::build_prefix(path_a),
+            RocksDbStorage::build_prefix(&SubtreePath::from_slice(&path_a)),
+            RocksDbStorage::build_prefix(&SubtreePath::from_slice(&path_a)),
         );
     }
 }

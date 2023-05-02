@@ -62,6 +62,7 @@ mod visualize;
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use ::visualize::DebugByteVectors;
 #[cfg(feature = "full")]
@@ -143,20 +144,18 @@ impl GroveDb {
     }
 
     /// Opens the transactional Merk at the given path. Returns CostResult.
-    pub fn open_transactional_merk_at_path<'db, 'p, P>(
+    pub fn open_transactional_merk_at_path<'db, P>(
         &'db self,
-        path: P,
+        path: &SubtreePath<P>,
         tx: &'db Transaction,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
+        P: AsRef<[u8]> + Clone,
     {
-        let mut path_iter = path.into_iter();
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_transactional_storage_context(path_iter.clone(), tx)
+            .get_transactional_storage_context(path, tx)
             .unwrap_add_cost(&mut cost);
         match path_iter.next_back() {
             Some(key) => {
