@@ -1,5 +1,6 @@
 //! Utilities module for path library.
 
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 /// A smart pointer that follows the semantics of [Cow](std::borrow::Cow) except
@@ -18,5 +19,33 @@ impl Deref for CowLike<'_> {
             Self::Owned(v) => v.as_slice(),
             Self::Borrowed(s) => s,
         }
+    }
+}
+
+impl Hash for CowLike<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.deref().hash(state);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn calculate_hash<T: Hash>(t: &T) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cowlike_hashes() {
+        let owned = CowLike::Owned(vec![1u8, 3, 3, 7]);
+        let borrowed = CowLike::Borrowed(&[1u8, 3, 3, 7]);
+
+        assert_eq!(calculate_hash(&owned), calculate_hash(&borrowed));
     }
 }

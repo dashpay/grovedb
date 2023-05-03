@@ -662,11 +662,11 @@ impl GroveDb {
 
     /// Verifies that the root hash of the given merk and all submerks match
     /// those of the merk and submerks at the given path. Returns any issues.
-    fn verify_merk_and_submerks(
+    fn verify_merk_and_submerks<B: AsRef<[u8]>>(
         &self,
         merk: Merk<PrefixedRocksDbStorageContext>,
-        path: Vec<Vec<u8>>,
-    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+        path: SubtreePath<B>,
+    ) -> HashMap<SubtreePath<B>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
@@ -681,11 +681,10 @@ impl GroveDb {
                     .unwrap()
                     .unwrap()
                     .unwrap();
-                let mut new_path = path.clone();
-                new_path.push(key.to_vec());
+                let mut new_path = path.derive_child(key);
 
                 let inner_merk = self
-                    .open_non_transactional_merk_at_path(new_path.iter().map(|x| x.as_slice()))
+                    .open_non_transactional_merk_at_path(new_path)
                     .unwrap()
                     .expect("should exist");
                 let root_hash = inner_merk.root_hash().unwrap();
@@ -695,7 +694,7 @@ impl GroveDb {
 
                 if combined_value_hash != element_value_hash {
                     issues.insert(
-                        new_path.clone(),
+                        new_path,
                         (root_hash, combined_value_hash, element_value_hash),
                     );
                 }

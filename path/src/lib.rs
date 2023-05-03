@@ -33,6 +33,7 @@
 mod util;
 
 use core::slice;
+use std::hash::{Hash, Hasher};
 
 use util::CowLike;
 
@@ -45,6 +46,21 @@ pub struct SubtreePath<'b, B> {
     relative: SubtreePathRelative<'b>,
 }
 
+impl<'b, B: AsRef<[u8]>> Hash for SubtreePath<'b, B> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.base.hash(state);
+        self.relative.hash(state);
+    }
+}
+
+impl<'b, B: AsRef<[u8]>> PartialEq for SubtreePath<'b, B> {
+    fn eq(&self, other: &Self) -> bool {
+        self.reverse_iter().eq(other.reverse_iter())
+    }
+}
+
+impl<'b, B: AsRef<[u8]>> Eq for SubtreePath<'b, B> {}
+
 /// A variant of a subtree path from which the new path is derived.
 /// The new path is reusing the existing one instead of owning a copy of the same data.
 #[derive(Debug)]
@@ -55,6 +71,15 @@ enum SubtreePathBase<'b, B> {
     /// which is handled by [Slice](Self::Slice), this variant is used to refer to other derived
     /// path.
     DerivedPath(&'b SubtreePath<'b, B>),
+}
+
+impl<'b, B: AsRef<[u8]>> Hash for SubtreePathBase<'b, B> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Slice(slice) => slice.iter().map(AsRef::as_ref).for_each(|s| s.hash(state)),
+            Self::DerivedPath(path) => path.hash(state),
+        }
+    }
 }
 
 impl<B> Clone for SubtreePathBase<'_, B> {
@@ -98,6 +123,17 @@ enum SubtreePathRelative<'r> {
     Empty,
     /// Added one child segment.
     Single(CowLike<'r>),
+}
+
+impl Hash for SubtreePathRelative<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Empty => {}
+            Self::Single(s) => {
+                s.hash(state);
+            }
+        }
+    }
 }
 
 impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
@@ -217,6 +253,8 @@ enum CurrentSubtreePathIter<'b, 's, B> {
 mod tests {
     use std::fmt::Write;
 
+    use crate::util::calculate_hash;
+
     use super::*;
 
     fn print_path<B: AsRef<[u8]>>(path: &SubtreePath<B>) {
@@ -277,5 +315,55 @@ mod tests {
         path2
             .reverse_iter()
             .for_each(|seg| println!("{}", std::str::from_utf8(seg).unwrap()));
+    }
+
+    #[test]
+    fn test_hashes_are_equal() {
+        let path_array = [
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec(),
+            b"four".to_vec(),
+            b"five".to_vec(),
+        ];
+        let path_base_slice_vecs = SubtreePath::from_slice(&path_array);
+        let path_array = [
+            b"one".as_ref(),
+            b"two".as_ref(),
+            b"three".as_ref(),
+            b"four".as_ref(),
+            b"five".as_ref(),
+        ];
+        let path_base_slice_slices = SubtreePath::from_slice(&path_array);
+
+        let path_array = [
+            b"one".as_ref(),
+            b"two".as_ref(),
+            b"three".as_ref(),
+            b"four".as_ref(),
+            b"five".as_ref(),
+            b"six".as_ref(),
+        ];
+        let path_base_slice_too_much = SubtreePath::from_slice(&path_array);
+        let path_base_unfinished = SubtreePath::from_slice(&[b"one", b"two"]);
+        let path_empty = SubtreePath::<[u8; 0]>::from_slice(&[]);
+
+        let path_derived_11 = path_empty.derive_child(b"one");
+        let path_derived_12 = path_derived_11.derive_child(b"two");
+        let path_derived_13 = path_derived_12.derive_child(b"three");
+        let path_derived_14 = path_derived_13.derive_child_owned(b"four".to_vec());
+        let path_derived_1 = path_derived_14.derive_child(b"five");
+
+        let (path_derived_2, _) = path_base_slice_too_much.derive_parent().unwrap();
+
+        let path_derived_31 = path_base_unfinished.derive_child_owned(b"three".to_vec());
+        let path_derived_32 = path_derived_31.derive_child(b"four");
+        let path_derived_3 = path_derived_32.derive_child(b"five");
+
+        let hash = calculate_hash(&path_base_slice_vecs);
+        assert_eq!(calculate_hash(&path_base_slice_slices), hash);
+        assert_eq!(calculate_hash(&path_derived_1), hash);
+        assert_eq!(calculate_hash(&path_derived_2), hash);
+        assert_eq!(calculate_hash(&path_derived_3), hash);
     }
 }
