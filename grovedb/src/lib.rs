@@ -194,56 +194,45 @@ impl GroveDb {
     }
 
     /// Opens the non-transactional Merk at the given path. Returns CostResult.
-    pub fn open_non_transactional_merk_at_path<'p, P>(
+    pub fn open_non_transactional_merk_at_path<B: AsRef<[u8]>>(
         &self,
-        path: P,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
-    {
-        let mut path_iter = path.into_iter();
+        path: &SubtreePath<B>,
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
         let mut cost = OperationCost::default();
-        let storage = self
-            .db
-            .get_storage_context(path_iter.clone())
-            .unwrap_add_cost(&mut cost);
-        match path_iter.next_back() {
-            Some(key) => {
-                let parent_storage = self
-                    .db
-                    .get_storage_context(path_iter.clone())
-                    .unwrap_add_cost(&mut cost);
-                let element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|e| {
-                        Error::InvalidParentLayerPath(format!(
-                            "could not get key {} for parent {:?} of subtree: {}",
-                            hex::encode(key),
-                            DebugByteVectors(path_iter.clone().map(|x| x.to_vec()).collect()),
-                            e
-                        ))
-                    })
-                );
-                let is_sum_tree = element.is_sum_tree();
-                if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                        .map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                        .add_cost(cost)
-                } else {
-                    Err(Error::CorruptedPath(
-                        "cannot open a subtree as parent exists but is not a tree",
+        let storage = self.db.get_storage_context(path).unwrap_add_cost(&mut cost);
+        if let Some((parent_path, parent_key)) = path.derive_parent() {
+            let parent_storage = self
+                .db
+                .get_storage_context(&parent_path)
+                .unwrap_add_cost(&mut cost);
+            let element = cost_return_on_error!(
+                &mut cost,
+                Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
+                    Error::InvalidParentLayerPath(format!(
+                        "could not get key {} for parent {:?} of subtree: {}",
+                        hex::encode(parent_key),
+                        DebugByteVectors(parent_path.to_owned()),
+                        e
                     ))
-                    .wrap_with_cost(cost)
-                }
+                })
+            );
+            let is_sum_tree = element.is_sum_tree();
+            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                    .add_cost(cost)
+            } else {
+                Err(Error::CorruptedPath(
+                    "cannot open a subtree as parent exists but is not a tree",
+                ))
+                .wrap_with_cost(cost)
             }
-            None => Merk::open_base(storage, false)
+        } else {
+            Merk::open_base(storage, false)
                 .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-                .add_cost(cost),
+                .add_cost(cost)
         }
     }
 

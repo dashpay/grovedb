@@ -154,17 +154,17 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         }
     }
 
-    #[cfg(test)]
-    pub fn to_vec(&self) -> Vec<&[u8]> {
+    /// Collect path as a vector of vectors, but this actually negates all the benefits of this library.
+    pub fn to_owned(&self) -> Vec<Vec<u8>> {
         let mut result = match self.base {
-            SubtreePathBase::Slice(s) => s.iter().map(AsRef::as_ref).collect(),
-            SubtreePathBase::DerivedPath(p) => p.to_vec(),
+            SubtreePathBase::Slice(s) => s.iter().map(|x| x.as_ref().to_vec()).collect(),
+            SubtreePathBase::DerivedPath(p) => p.to_owned(),
         };
 
         match &self.relative {
             SubtreePathRelative::Empty => {}
             SubtreePathRelative::Single(s) => {
-                result.push(s);
+                result.push(s.to_vec());
             }
         }
 
@@ -219,13 +219,14 @@ mod tests {
 
     use super::*;
 
-    fn print_slice_str(slice: &[&[u8]]) {
+    fn print_path<B: AsRef<[u8]>>(path: &SubtreePath<B>) {
+        let path_vec = path.to_owned();
         let mut formatted = String::from("[");
-        for s in slice {
+        for s in path_vec {
             write!(
                 &mut formatted,
                 "{}, ",
-                std::str::from_utf8(s).expect("should be a valid utf8 for tests")
+                std::str::from_utf8(&s).expect("should be a valid utf8 for tests")
             )
             .expect("writing into String shouldn't fail");
         }
@@ -246,32 +247,32 @@ mod tests {
     fn compilation_playground() {
         let base: [&'static [u8]; 3] = [b"one", b"two", b"three"];
         let path = SubtreePath::from_slice(&base);
-        print_slice_str(&path.to_vec());
+        print_path(&path);
 
         let base = [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()];
         let path = SubtreePath::from_slice(&base);
         let (path2, segment) = path.derive_parent().unwrap();
-        print_slice_str(&path2.to_vec());
+        print_path(&path2);
         dbg!(std::str::from_utf8(&segment).unwrap());
 
-        let base = [b"lol".to_vec(), b"kek".to_vec()];
+        let base = [b"lol".to_owned(), b"kek".to_owned()];
         let path = SubtreePath::from_slice(&base);
         let path3 = path.derive_child_owned(b"hmm".to_vec());
-        print_slice_str(&path3.to_vec());
+        print_path(&path3);
         let path4 = derive_child_static(&path3);
-        print_slice_str(&path4.to_vec());
+        print_path(&path4);
 
-        let base = [b"lol".to_vec(), b"kek".to_vec()];
+        let base = [b"lol".to_owned(), b"kek".to_owned()];
         let path = SubtreePath::from_slice(&base);
         let (path3, _) = path.derive_parent().unwrap();
-        print_slice_str(&path3.to_vec());
+        print_path(&path3);
         let path4 = derive_child_static(&path3);
-        print_slice_str(&path4.to_vec());
+        print_path(&path4);
 
         let base: [&'static [u8]; 3] = [b"one", b"two", b"three"];
         let path = SubtreePath::from_slice(&base);
         let path2 = derive_child_owned(&path);
-        print_slice_str(&path2.to_vec());
+        print_path(&path2);
 
         path2
             .reverse_iter()
