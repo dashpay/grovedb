@@ -37,6 +37,7 @@ use merk::{
     proofs::{Node, Op},
     Merk, TreeFeatureType,
 };
+use path::SubtreePath;
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
 use crate::{Element, Error, GroveDb, Hash};
@@ -51,13 +52,13 @@ impl GroveDb {
 }
 
 /// Subtree chunks producer.
-pub struct SubtreeChunkProducer<'db> {
+pub struct SubtreeChunkProducer<'db,> {
     grove_db: &'db GroveDb,
     cache: Option<SubtreeChunkProducerCache<'db>>,
 }
 
 struct SubtreeChunkProducerCache<'db> {
-    current_merk_path: Vec<Vec<u8>>,
+    current_merk_path: SubtreePath<'static, [u8; 0]>,
     current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
     // This needed to be an `Option` because it requires a reference on Merk but it's within the
     // same struct and during struct init a referenced Merk would be moved inside a struct,
@@ -82,18 +83,16 @@ impl<'db> SubtreeChunkProducer<'db> {
     }
 
     /// Get chunk
-    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
-    {
-        let path_iter = path.into_iter();
-
+    pub fn get_chunk<B: AsRef<[u8]>>(
+        &mut self,
+        path: &SubtreePath<B>,
+        index: usize,
+    ) -> Result<Vec<Op>, Error> {
         if let Some(SubtreeChunkProducerCache {
             current_merk_path, ..
         }) = &self.cache
         {
-            if !itertools::equal(current_merk_path, path_iter.clone()) {
+            if !current_merk_path == path {
                 self.cache = None;
             }
         }
@@ -302,89 +301,75 @@ impl<'db> SiblingsChunkProducer<'db> {
 
     /// Get a collection of chunks possibly from different Merks with the first
     /// one as requested.
-    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<GroveChunk>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,
-    {
-        let path_iter = path.into_iter();
+    pub fn get_chunk<B: AsRef<[u8]>>(
+        &mut self,
+        path: &SubtreePath<B>,
+        index: usize,
+    ) -> Result<Vec<GroveChunk>, Error> {
         let mut result = Vec::new();
         let mut ops_count = 0;
 
-        if path_iter.len() == 0 {
+        if let Some((parent_path, key)) = path.derive_parent() {
+            // Get siblings on the right to send chunks of multiple Merks if it meets the
+            // limit.
+            let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
+
+            let parent_ctx = self
+                .chunk_producer
+                .grove_db
+                .db
+                .get_storage_context(&parent_path)
+                .unwrap();
+            let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
+
+            siblings_iter.fast_forward(key)?;
+
+            while let Some(element) = siblings_iter.next_element().unwrap()? {
+                if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
+                    siblings_keys.push_back(key);
+                }
+            }
+
+            let mut current_index = index;
+            // Process each subtree
+            while let Some(subtree_key) = siblings_keys.pop_front() {
+                let subtree_path = parent_path.derive_child_owned(subtree_key);
+
+                self.process_subtree_chunks(
+                    &mut result,
+                    &mut ops_count,
+                    subtree_path,
+                    current_index,
+                )?;
+                // Going to a next sibling, should start from 0.
+
+                if ops_count >= OPS_PER_CHUNK {
+                    break;
+                }
+                current_index = 0;
+            }
+
+            Ok(result)
+        } else {
             // We're at the root of GroveDb, no siblings here.
             self.process_subtree_chunks(&mut result, &mut ops_count, empty(), index)?;
             return Ok(result);
-        };
-
-        // Get siblings on the right to send chunks of multiple Merks if it meets the
-        // limit.
-
-        let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
-
-        let mut parent_path = path_iter;
-        let requested_key = parent_path.next_back();
-
-        let parent_ctx = self
-            .chunk_producer
-            .grove_db
-            .db
-            .get_storage_context(parent_path.clone())
-            .unwrap();
-        let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
-
-        if let Some(key) = requested_key {
-            siblings_iter.fast_forward(key)?;
         }
-
-        while let Some(element) = siblings_iter.next_element().unwrap()? {
-            if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
-                siblings_keys.push_back(key);
-            }
-        }
-
-        let mut current_index = index;
-        // Process each subtree
-        while let Some(subtree_key) = siblings_keys.pop_front() {
-            #[allow(clippy::map_identity)]
-            let subtree_path = parent_path
-                .clone()
-                .map(|x| x)
-                .chain(once(subtree_key.as_slice()));
-
-            self.process_subtree_chunks(&mut result, &mut ops_count, subtree_path, current_index)?;
-            // Going to a next sibling, should start from 0.
-
-            if ops_count >= OPS_PER_CHUNK {
-                break;
-            }
-            current_index = 0;
-        }
-
-        Ok(result)
     }
 
     /// Process one subtree's chunks
-    fn process_subtree_chunks<'p, P>(
+    fn process_subtree_chunks<B: AsRef<[u8]>>(
         &mut self,
         result: &mut Vec<GroveChunk>,
         ops_count: &mut usize,
-        subtree_path: P,
+        subtree_path: &SubtreePath<B>,
         from_index: usize,
-    ) -> Result<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
-    {
-        let path_iter = subtree_path.into_iter();
-
+    ) -> Result<(), Error> {
         let mut current_index = from_index;
         let mut subtree_chunks = Vec::new();
 
         loop {
-            let ops = self
-                .chunk_producer
-                .get_chunk(path_iter.clone(), current_index)?;
+            let ops = self.chunk_producer.get_chunk(subtree_path, current_index)?;
 
             *ops_count += ops.len();
             subtree_chunks.push((current_index, ops));

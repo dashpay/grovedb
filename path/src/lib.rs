@@ -206,6 +206,20 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
 
         result
     }
+
+    /// Retuns `true` if the subtree path is empty, so it points to the root tree.
+    pub fn is_root(&self) -> bool {
+        match self {
+            Self {
+                base,
+                relative: SubtreePathRelative::Empty,
+            } => match base {
+                SubtreePathBase::Slice(s) => s.is_empty(),
+                SubtreePathBase::DerivedPath(path) => path.is_root(),
+            },
+            _ => false,
+        }
+    }
 }
 
 /// (Reverse) iterator for a subtree path.
@@ -365,5 +379,17 @@ mod tests {
         assert_eq!(calculate_hash(&path_derived_1), hash);
         assert_eq!(calculate_hash(&path_derived_2), hash);
         assert_eq!(calculate_hash(&path_derived_3), hash);
+    }
+
+    #[test]
+    fn test_is_root() {
+        let path_empty = SubtreePath::<[u8; 0]>::from_slice(&[]);
+        assert!(path_empty.is_root());
+
+        let path_derived = path_empty.derive_child(b"two");
+        assert!(path_derived.derive_parent().unwrap().0.is_root());
+
+        let path_not_empty = SubtreePath::from_slice(&[b"one"]);
+        assert!(path_not_empty.derive_parent().unwrap().0.is_root());
     }
 }
