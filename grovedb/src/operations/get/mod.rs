@@ -66,47 +66,38 @@ impl GroveDb {
     /// Get an element from the backing store
     /// Merk Caching is on by default
     /// use get_caching_optional if no caching is desired
-    pub fn get<'p, P>(
+    pub fn get<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &[B],
+        key: &[u8],
         transaction: TransactionArg,
     ) -> CostResult<Element, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        self.get_caching_optional(path, key, true, transaction)
+        self.get_caching_optional(&path.into(), key, true, transaction)
     }
 
     /// Get an element from the backing store
     /// Merk Caching can be set
-    pub fn get_caching_optional<'p, P>(
+    pub fn get_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
-    ) -> CostResult<Element, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
-
-        let path_iter = path.into_iter();
 
         match cost_return_on_error!(
             &mut cost,
-            self.get_raw_caching_optional(path_iter.clone(), key, allow_cache, transaction)
+            self.get_raw_caching_optional(path, key, allow_cache, transaction)
         ) {
             Element::Reference(reference_path, ..) => {
-                let path = cost_return_on_error!(
+                let path_owned = cost_return_on_error!(
                     &mut cost,
-                    path_from_reference_path_type(reference_path, path_iter, Some(key))
+                    path_from_reference_path_type(reference_path, &path.to_owned(), Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
-                self.follow_reference(path, allow_cache, transaction)
+                self.follow_reference(&path.into(), allow_cache, transaction)
                     .add_cost(cost)
             }
             other => Ok(other).wrap_with_cost(cost),
@@ -114,9 +105,9 @@ impl GroveDb {
     }
 
     /// Follow reference
-    pub fn follow_reference(
+    pub fn follow_reference<B: AsRef<[u8]>>(
         &self,
-        mut path: Vec<Vec<u8>>,
+        path: &SubtreePath<B>,
         allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
@@ -125,16 +116,17 @@ impl GroveDb {
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
         let mut visited = HashSet::new();
+        let mut current_path = path.to_owned(); // TODO, still have to do because of references handling
 
         while hops_left > 0 {
-            if visited.contains(&path) {
+            if visited.contains(&current_path) {
                 return Err(Error::CyclicReference).wrap_with_cost(cost);
             }
-            if let Some((key, path_slice)) = path.split_last() {
+            if let Some((key, path_slice)) = current_path.split_last() {
                 current_element = cost_return_on_error!(
                     &mut cost,
                     self.get_raw_caching_optional(
-                        path_slice.iter().map(|x| x.as_slice()),
+                        &path_slice.into(),
                         key,
                         allow_cache,
                         transaction
@@ -155,12 +147,12 @@ impl GroveDb {
             } else {
                 return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
             }
-            visited.insert(path.clone());
+            visited.insert(current_path.clone());
             match current_element {
                 Element::Reference(reference_path, ..) => {
-                    path = cost_return_on_error!(
+                    current_path = cost_return_on_error!(
                         &mut cost,
-                        path_from_reference_qualified_path_type(reference_path, &path)
+                        path_from_reference_qualified_path_type(reference_path, &current_path)
                             .wrap_with_cost(OperationCost::default())
                     )
                 }
@@ -172,31 +164,23 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw<'p, P>(
+    pub fn get_raw<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         transaction: TransactionArg,
-    ) -> CostResult<Element, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Element, Error> {
         self.get_raw_caching_optional(path, key, true, transaction)
     }
 
     /// Get tree item without following references
-    pub fn get_raw_caching_optional<'p, P>(
+    pub fn get_raw_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
-    ) -> CostResult<Element, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Element, Error> {
         if let Some(transaction) = transaction {
             self.get_raw_on_transaction_caching_optional(path, key, allow_cache, transaction)
         } else {
@@ -207,7 +191,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub fn get_raw_optional<B: AsRef<[u8]>>(
         &self,
-        path: &[B],
+        path: &SubtreePath<B>,
         key: &[u8],
         transaction: TransactionArg,
     ) -> CostResult<Option<Element>, Error> {
@@ -215,17 +199,13 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_optional_caching_optional<'p, P>(
+    pub fn get_raw_optional_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
-    ) -> CostResult<Option<Element>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Option<Element>, Error> {
         if let Some(transaction) = transaction {
             self.get_raw_optional_on_transaction_caching_optional(
                 path,
@@ -239,22 +219,18 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_on_transaction_caching_optional<'p, P>(
+    pub(crate) fn get_raw_on_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,
-    ) -> CostResult<Element, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
         let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.into_iter(), transaction)
+            self.open_transactional_merk_at_path(path, transaction)
                 .map_err(|e| match e {
                     Error::InvalidParentLayerPath(s) => {
                         Error::PathParentLayerNotFound(s)
@@ -267,20 +243,16 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_optional_on_transaction_caching_optional<'p, P>(
+    pub(crate) fn get_raw_optional_on_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,
-    ) -> CostResult<Option<Element>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let merk_result = self
-            .open_transactional_merk_at_path(path.into_iter(), transaction)
+            .open_transactional_merk_at_path(path, transaction)
             .map_err(|e| match e {
                 Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
                 _ => e,
@@ -304,21 +276,17 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_without_transaction_caching_optional<'p, P>(
+    pub(crate) fn get_raw_without_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         allow_cache: bool,
-    ) -> CostResult<Element, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
         let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.into_iter())
+            self.open_non_transactional_merk_at_path(path)
                 .map_err(|e| match e {
                     Error::InvalidParentLayerPath(s) => {
                         Error::PathParentLayerNotFound(s)
@@ -331,19 +299,15 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_optional_without_transaction_caching_optional<'p, P>(
+    pub(crate) fn get_raw_optional_without_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         allow_cache: bool,
-    ) -> CostResult<Option<Element>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let merk_result = self
-            .open_non_transactional_merk_at_path(path.into_iter())
+            .open_non_transactional_merk_at_path(path)
             .map_err(|e| match e {
                 Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
                 _ => e,
@@ -440,15 +404,11 @@ impl GroveDb {
     }
 
     /// Check subtree exists with invalid path error
-    pub fn check_subtree_exists_invalid_path<'p, P>(
+    pub fn check_subtree_exists_invalid_path<B: AsRef<[u8]>>(
         &self,
-        path: P,
+        path: &SubtreePath<B>,
         transaction: TransactionArg,
-    ) -> CostResult<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<(), Error> {
         self.check_subtree_exists(
             path,
             transaction,

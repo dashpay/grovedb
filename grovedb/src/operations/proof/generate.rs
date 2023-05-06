@@ -43,6 +43,7 @@ use merk::{
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 
@@ -208,7 +209,7 @@ impl GroveDb {
                 cost_return_on_error!(
                     &mut cost,
                     self.generate_and_store_merk_proof(
-                        path.iter().copied(),
+                        &path.as_slice().into(),
                         &subtree,
                         &query.query.query,
                         (*current_limit, *current_offset),
@@ -253,7 +254,7 @@ impl GroveDb {
                         cost_return_on_error!(
                             &mut cost,
                             self.generate_and_store_merk_proof(
-                                path.iter().copied(),
+                                &path.as_slice().into(),
                                 &subtree,
                                 &query.query.query,
                                 (None, None),
@@ -284,7 +285,7 @@ impl GroveDb {
                                 cost_return_on_error!(
                                     &mut cost,
                                     self.generate_and_store_merk_proof(
-                                        new_path.iter().copied(),
+                                        &new_path.as_slice().into(),
                                         &inner_subtree,
                                         &key_as_query,
                                         (None, None),
@@ -332,7 +333,7 @@ impl GroveDb {
                             cost_return_on_error!(
                                 &mut cost,
                                 self.generate_and_store_merk_proof(
-                                    new_path.iter().copied(),
+                                    &new_path.as_slice().into(),
                                     &inner_subtree,
                                     &key_as_query,
                                     (None, None),
@@ -410,7 +411,7 @@ impl GroveDb {
             let limit_offset = cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
-                    path.iter().copied(),
+                    &path.as_slice().into(),
                     &subtree,
                     &query.query.query,
                     (*current_limit, *current_offset),
@@ -454,7 +455,7 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
-                    path_slice.iter().copied(),
+                    &path_slice.into(),
                     &subtree,
                     &query,
                     (None, None),
@@ -471,9 +472,9 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_and_store_merk_proof<'a, 'p, S: 'a, P>(
+    fn generate_and_store_merk_proof<'a, S, B>(
         &self,
-        path: P,
+        path: &SubtreePath<B>,
         subtree: &'a Merk<S>,
         query: &Query,
         limit_offset: LimitOffset,
@@ -483,9 +484,8 @@ impl GroveDb {
         key: &[u8],
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
     where
-        S: StorageContext<'a>,
-        P: IntoIterator<Item = &'p [u8]> + Iterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        S: StorageContext<'a> + 'a,
+        B: AsRef<[u8]>,
     {
         if proof_token_type != ProofTokenType::Merk && proof_token_type != ProofTokenType::SizedMerk
         {
@@ -573,7 +573,7 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
-                    current_path.iter().copied(),
+                    &current_path.as_slice().into(),
                     &subtree.expect("confirmed not error above"),
                     &next_key_query,
                     (None, None),
@@ -600,18 +600,12 @@ impl GroveDb {
     /// Converts Items to Node::KV from Node::KVValueHash
     /// Converts References to Node::KVRefValueHash and sets the value to the
     /// referenced element
-    fn post_process_proof<'p, P>(
+    fn post_process_proof<B: AsRef<[u8]>>(
         &self,
-        path: P,
+        path: &SubtreePath<B>,
         proof_result: &mut ProofWithoutEncodingResult,
-    ) -> CostResult<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-
-        let path_iter = path.into_iter().collect::<Vec<_>>();
 
         for op in proof_result.proof.iter_mut() {
             match op {
@@ -620,12 +614,11 @@ impl GroveDb {
                         let elem = Element::deserialize(value);
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
-                                let current_path = path_iter.clone();
                                 let absolute_path = cost_return_on_error!(
                                     &mut cost,
                                     path_from_reference_path_type(
                                         reference_path,
-                                        current_path,
+                                        &path.to_owned(),
                                         Some(key.as_slice())
                                     )
                                     .wrap_with_cost(OperationCost::default())
@@ -633,7 +626,11 @@ impl GroveDb {
 
                                 let referenced_elem = cost_return_on_error!(
                                     &mut cost,
-                                    self.follow_reference(absolute_path, true, None)
+                                    self.follow_reference(
+                                        &absolute_path.as_slice().into(),
+                                        true,
+                                        None
+                                    )
                                 );
 
                                 let serialized_referenced_elem = referenced_elem.serialize();

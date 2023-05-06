@@ -86,43 +86,36 @@ impl InsertOptions {
 #[cfg(feature = "full")]
 impl GroveDb {
     /// Insert operation
-    pub fn insert<'p, P>(
+    pub fn insert<B: AsRef<[u8]>>(
         &self,
-        path: &'p [P],
-        key: &'p [u8],
+        path: &[B],
+        key: &[u8],
         element: Element,
         options: Option<InsertOptions>,
         transaction: TransactionArg,
-    ) -> CostResult<(), Error>
-    where
-        P: AsRef<[u8]> + Clone,
-    {
-        let subtree_path = SubtreePath::from_slice(path);
+    ) -> CostResult<(), Error> {
+        let subtree_path = SubtreePath::from(path);
         if let Some(transaction) = transaction {
             self.insert_on_transaction(
-                subtree_path,
+                &subtree_path,
                 key,
                 element,
                 options.unwrap_or_default(),
                 transaction,
             )
         } else {
-            todo!()
-            // self.insert_without_transaction(subtree_path, key, element, options.unwrap_or_default())
+            self.insert_without_transaction(&subtree_path, key, element, options.unwrap_or_default())
         }
     }
 
-    fn insert_on_transaction<'db, 'p, P>(
+    fn insert_on_transaction<'db, B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<P>,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         element: Element,
         options: InsertOptions,
         transaction: &'db Transaction,
-    ) -> CostResult<(), Error>
-    where
-        P: AsRef<[u8]> + Clone,
-    {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
@@ -132,42 +125,37 @@ impl GroveDb {
             &mut cost,
             self.add_element_on_transaction(&path, key, element, options, transaction)
         );
-        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), merk);
+        merk_cache.insert(path.to_owned(), merk);
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
+            self.propagate_changes_with_transaction(merk_cache, path, transaction)
         );
 
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn insert_without_transaction<'p, P>(
+    fn insert_without_transaction<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         element: Element,
         options: InsertOptions,
-    ) -> CostResult<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-
-        let path_iter = path.into_iter();
 
         let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
 
+        let path_owned = path.to_owned(); // TODO
         let merk = cost_return_on_error!(
             &mut cost,
-            self.add_element_without_transaction(path_iter.clone(), key, element, options)
+            self.add_element_without_transaction(&path_owned, key, element, options)
         );
-        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), merk);
+        merk_cache.insert(path_owned, merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_without_transaction(merk_cache, path_iter)
+            self.propagate_changes_without_transaction(merk_cache, path)
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -178,22 +166,19 @@ impl GroveDb {
     /// first make sure other merk exist
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
-    fn add_element_on_transaction<'db, 'p, P>(
+    fn add_element_on_transaction<'db, B: AsRef<[u8]>>(
         &'db self,
-        path: &'p SubtreePath<P>,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         element: Element,
         options: InsertOptions,
         transaction: &'db Transaction,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
-    where
-        P: AsRef<[u8]> + Clone,
-    {
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
         let mut cost = OperationCost::default();
 
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(&path, transaction)
+            self.open_transactional_merk_at_path(path, transaction)
         );
         // if we don't allow a tree override then we should check
 
@@ -230,17 +215,17 @@ impl GroveDb {
 
         match element {
             Element::Reference(ref reference_path, ..) => {
+                let path = path.to_owned(); // TODO: need for support for references in path library
                 let reference_path = cost_return_on_error!(
                     &mut cost,
-                    path_from_reference_path_type(reference_path.clone(), path_iter, Some(key))
+                    path_from_reference_path_type(reference_path.clone(), &path, Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_transactional_merk_at_path(referenced_path_iter, transaction)
+                    self.open_transactional_merk_at_path(referenced_path, transaction)
                 );
 
                 let referenced_element_value_hash_opt = cost_return_on_error!(
@@ -322,10 +307,8 @@ impl GroveDb {
         options: InsertOptions,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
         let mut cost = OperationCost::default();
-        let mut subtree_to_insert_into: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
-            &mut cost,
-            self.open_non_transactional_merk_at_path(path)
-        );
+        let mut subtree_to_insert_into: Merk<PrefixedRocksDbStorageContext> =
+            cost_return_on_error!(&mut cost, self.open_non_transactional_merk_at_path(path));
 
         if options.checks_for_override() {
             let maybe_element_bytes = cost_return_on_error!(
