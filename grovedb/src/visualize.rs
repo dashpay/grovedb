@@ -162,8 +162,7 @@ impl GroveDb {
                         drawer.write(b"Merk root is: ")?;
                         drawer = element.visualize(drawer)?;
                         drawer.down();
-                        drawer =
-                            self.draw_subtree(drawer, &path.derive_child_owned(key), transaction)?;
+                        drawer = self.draw_subtree(drawer, &path.derive_child(key), transaction)?;
                         drawer.up();
                     }
                     other => {
@@ -184,7 +183,7 @@ impl GroveDb {
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        drawer = self.draw_subtree(drawer, &SubtreePath::<[_; 0]>::from_slice(&[]), transaction)?;
+        drawer = self.draw_subtree(drawer, &SubtreePath::new(), transaction)?;
 
         drawer.up();
         Ok(drawer)

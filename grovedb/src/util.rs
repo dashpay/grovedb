@@ -63,14 +63,14 @@ macro_rules! storage_context_with_parent_optional_tx {
 	    let mut path = $path.clone();
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context(path.clone(), tx)
+                    .get_transactional_storage_context(path, tx)
 		    .unwrap_add_cost(&mut $cost);
-                if let Some(last) = path.next_back() {
-                    let parent_storage = $db.get_transactional_storage_context(path, tx)
+                if let Some((parent_path, parent_key)) = path.derive_parent() {
+                    let parent_storage = $db.get_transactional_storage_context(parent_path, tx)
 			.unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
                         &mut $cost,
-                        Element::get_from_storage(&parent_storage, last).map_err(|e| {
+                        Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
                             Error::PathParentLayerNotFound(
                                 format!(
 				    "could not get key for parent of subtree optional on tx: {}",
@@ -104,14 +104,14 @@ macro_rules! storage_context_with_parent_optional_tx {
                 }
             } else {
                 let $storage = $db
-                    .get_storage_context(path.clone()).unwrap_add_cost(&mut $cost);
-                if let Some(last) = path.next_back() {
+                    .get_storage_context(path).unwrap_add_cost(&mut $cost);
+                if let Some((parent_path, parent_key)) = path.derive_parent() {
                     let parent_storage = $db.get_storage_context(
-			path.clone()
+			parent_path
 		    ).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
                         &mut $cost,
-			Element::get_from_storage(&parent_storage, last).map_err(|e| {
+			Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
                             Error::PathParentLayerNotFound(
                                 format!(
 				    "could not get key for parent of subtree optional no tx: {}",
@@ -156,11 +156,11 @@ macro_rules! meta_storage_context_optional_tx {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context(::std::iter::empty(), tx);
+                    .get_transactional_storage_context(&::path::SubtreePath::new(), tx);
                 $($body)*
             } else {
                 let $storage = $db
-                    .get_storage_context(::std::iter::empty());
+                    .get_storage_context(&::path::SubtreePath::new());
                 $($body)*
             }
         }
@@ -178,9 +178,9 @@ macro_rules! merk_optional_tx {
         $subtree:ident,
         { $($body:tt)* }
     ) => {
-            if $path.peek().is_none() {
+            if $path.is_root() {
 use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, [], $transaction, storage, {
+            storage_context_optional_tx!($db, &::path::SubtreePath::new(), $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
@@ -273,9 +273,8 @@ macro_rules! root_merk_optional_tx {
         { $($body:tt)* }
     ) => {
         {
-            use path::SubtreePath;
             use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, &SubtreePath::<[_; 0]>::from_slice(&[]), $transaction, storage, {
+            storage_context_optional_tx!($db, &::path::SubtreePath::new(), $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)

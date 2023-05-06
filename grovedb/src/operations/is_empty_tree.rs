@@ -30,6 +30,7 @@
 
 #[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use path::SubtreePath;
 
 #[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
@@ -37,23 +38,19 @@ use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 #[cfg(feature = "full")]
 impl GroveDb {
     /// Check if it's an empty tree
-    pub fn is_empty_tree<'p, P>(
+    pub fn is_empty_tree<B: AsRef<[u8]>>(
         &self,
-        path: P,
+        path: &[B],
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,
-    {
+    ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
 
-        let mut path_iter = path.into_iter().peekable();
         cost_return_on_error!(
             &mut cost,
-            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
+            self.check_subtree_exists_path_not_found(&path, transaction)
         );
-        merk_optional_tx!(&mut cost, self.db, path_iter, transaction, subtree, {
+        merk_optional_tx!(&mut cost, self.db, &path, transaction, subtree, {
             Ok(subtree.is_empty_tree().unwrap_add_cost(&mut cost)).wrap_with_cost(cost)
         })
     }

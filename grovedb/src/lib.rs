@@ -94,15 +94,10 @@ use merk::{
 use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-#[cfg(feature = "full")]
-pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+// #[cfg(feature = "full")]
+// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 #[cfg(feature = "full")]
 pub use storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "full")]
-pub use storage::{
-    rocksdb_storage::{self},
-    Storage, StorageContext,
-};
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
@@ -111,6 +106,8 @@ use storage::{
     },
     StorageBatch,
 };
+#[cfg(feature = "full")]
+pub use storage::{Storage, StorageContext};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
@@ -144,12 +141,18 @@ impl GroveDb {
     }
 
     /// Opens the transactional Merk at the given path. Returns CostResult.
-    pub fn open_transactional_merk_at_path<'db, B: AsRef<[u8]>>(
+    fn open_transactional_merk_at_path<'db, 'b, B, P>(
         &'db self,
-        path: &SubtreePath<B>,
+        path: P,
         tx: &'db Transaction,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         let mut cost = OperationCost::default();
+        let path = path.into();
+        
         let storage = self
             .db
             .get_transactional_storage_context(path, tx)
@@ -191,12 +194,17 @@ impl GroveDb {
     }
 
     /// Opens the non-transactional Merk at the given path. Returns CostResult.
-    pub fn open_non_transactional_merk_at_path<B: AsRef<[u8]>>(
+    pub fn open_non_transactional_merk_at_path<'b, B, P>(
         &self,
-        path: &SubtreePath<B>,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
+        path: P,
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         let mut cost = OperationCost::default();
         let storage = self.db.get_storage_context(path).unwrap_add_cost(&mut cost);
+        let path: SubtreePath<B> = path.into();
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
@@ -644,7 +652,7 @@ impl GroveDb {
     pub fn verify_grovedb(
         &self,
     ) -> HashMap<SubtreePath<[u8; 0]>, (CryptoHash, CryptoHash, CryptoHash)> {
-        let path = SubtreePath::from_slice(&[]);
+        let path = SubtreePath::new();
         let root_merk = self
             .open_non_transactional_merk_at_path(&path)
             .unwrap()
@@ -673,7 +681,7 @@ impl GroveDb {
                     .unwrap()
                     .unwrap()
                     .unwrap();
-                let mut new_path = path.derive_child(&key);
+                let mut new_path = path.derive_child(key);
 
                 let inner_merk = self
                     .open_non_transactional_merk_at_path(&new_path)

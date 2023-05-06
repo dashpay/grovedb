@@ -43,6 +43,7 @@ use costs::cost_return_on_error_no_add;
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use merk::Merk;
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
@@ -204,16 +205,12 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_optional<'p, P>(
+    pub fn get_raw_optional<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &[B],
+        key: &[u8],
         transaction: TransactionArg,
-    ) -> CostResult<Option<Element>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> CostResult<Option<Element>, Error> {
         self.get_raw_optional_caching_optional(path, key, true, transaction)
     }
 
@@ -371,83 +368,73 @@ impl GroveDb {
 
     /// Does tree element exist without following references
     /// There is no cache for has_raw
-    pub fn has_raw<'p, P>(
+    pub fn has_raw<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &[B],
+        key: &[u8],
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
-        let path_iter = path.into_iter();
-
+    ) -> CostResult<bool, Error> {
         // Merk's items should be written into data storage and checked accordingly
-        storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
+        storage_context_optional_tx!(self.db, path, transaction, storage, {
             storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
         })
     }
 
-    fn check_subtree_exists<'p, P>(
+    fn check_subtree_exists<'b, B: AsRef<[u8]>>(
         &self,
-        path: P,
+        path: &SubtreePath<B>,
         transaction: TransactionArg,
-        error: Error,
-    ) -> CostResult<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+        error: Error, // TODO: this requires constructing the error for every call
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let path_iter = path.into_iter();
-        if path_iter.len() == 0 {
-            return Ok(()).wrap_with_cost(cost);
-        }
-
-        let mut parent_iter = path_iter;
-        let parent_key = parent_iter.next_back().expect("path is not empty");
-        let element = if let Some(transaction) = transaction {
+        if let Some((parent_path, parent_key)) = path.derive_parent() {
+            let element = if let Some(transaction) = transaction {
             let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(parent_iter, transaction)
+                self.open_transactional_merk_at_path(parent_path, transaction)
             );
 
             Element::get(&merk_to_get_from, parent_key, true)
         } else {
             let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(parent_iter)
+                self.open_non_transactional_merk_at_path(parent_path)
             );
 
             Element::get(&merk_to_get_from, parent_key, true)
         }
         .unwrap_add_cost(&mut cost);
-        match element {
-            Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => Ok(()).wrap_with_cost(cost),
-            Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error).wrap_with_cost(cost),
-            Err(e) => Err(e).wrap_with_cost(cost),
+            match element {
+                Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => Ok(()).wrap_with_cost(cost),
+                Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error).wrap_with_cost(cost),
+                Err(e) => Err(e).wrap_with_cost(cost),
+            }
+        } else {
+            Ok(()).wrap_with_cost(cost)
         }
     }
 
     /// Check that subtree exists with path not found error
-    pub fn check_subtree_exists_path_not_found<'p, P>(
+    pub(crate) fn check_subtree_exists_path_not_found<'b, B, P>(
         &self,
         path: P,
         transaction: TransactionArg,
     ) -> CostResult<(), Error>
     where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
     {
-        let path_iter = path.into_iter();
+        let path = path.into();
         self.check_subtree_exists(
-            path_iter.clone(),
+            &path,
             transaction,
             Error::PathNotFound(format!(
                 "subtree doesn't exist at path {:?}",
-                path_iter.map(hex::encode).collect::<Vec<String>>()
+                path.to_owned()
+                    .into_iter()
+                    .map(hex::encode)
+                    .collect::<Vec<String>>()
             )),
         )
     }

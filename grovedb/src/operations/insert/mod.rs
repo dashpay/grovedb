@@ -99,7 +99,13 @@ impl GroveDb {
     {
         let subtree_path = SubtreePath::from_slice(path);
         if let Some(transaction) = transaction {
-            self.insert_on_transaction(subtree_path, key, element, options.unwrap_or_default(), transaction)
+            self.insert_on_transaction(
+                subtree_path,
+                key,
+                element,
+                options.unwrap_or_default(),
+                transaction,
+            )
         } else {
             todo!()
             // self.insert_without_transaction(subtree_path, key, element, options.unwrap_or_default())
@@ -308,22 +314,17 @@ impl GroveDb {
     /// first make sure other merk exist
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
-    fn add_element_without_transaction<'p, P>(
+    fn add_element_without_transaction<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &[B],
+        key: &[u8],
         element: Element,
         options: InsertOptions,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
         let mut cost = OperationCost::default();
-        let path_iter = path.into_iter();
         let mut subtree_to_insert_into: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path_iter.clone())
+            self.open_non_transactional_merk_at_path(path)
         );
 
         if options.checks_for_override() {
@@ -361,15 +362,14 @@ impl GroveDb {
             Element::Reference(ref reference_path, ..) => {
                 let reference_path = cost_return_on_error!(
                     &mut cost,
-                    path_from_reference_path_type(reference_path.clone(), path_iter, Some(key))
+                    path_from_reference_path_type(reference_path.clone(), path, Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
 
-                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let (referenced_key, referenced_path) = reference_path.split_last().unwrap(); // TODO unwrap?
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(referenced_path_iter)
+                    self.open_non_transactional_merk_at_path(referenced_path)
                 );
 
                 // when there is no transaction, we don't want to use caching
@@ -440,21 +440,16 @@ impl GroveDb {
     }
 
     /// Insert if not exists
-    pub fn insert_if_not_exists<'p, P>(
+    pub fn insert_if_not_exists<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &[B],
+        key: &[u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
 
-        let path_iter = path.into_iter();
-        if cost_return_on_error!(&mut cost, self.has_raw(path_iter.clone(), key, transaction)) {
+        if cost_return_on_error!(&mut cost, self.has_raw(path, key, transaction)) {
             Ok(false).wrap_with_cost(cost)
         } else {
             self.insert(path_iter, key, element, None, transaction)
@@ -463,22 +458,19 @@ impl GroveDb {
         }
     }
 
+    /// TODO: it's called `replace` I guess
     /// Insert if the value changed
     /// We return if the value was inserted
     /// If the value was changed then we return the previous element
-    pub fn insert_if_changed_value<'p, P>(
+    pub fn insert_if_changed_value<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &[B],
+        key: &[u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostResult<(bool, Option<Element>), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<(bool, Option<Element>), Error> {
         let mut cost = OperationCost::default();
-        let path_iter = path.into_iter();
+
         let previous_element = cost_return_on_error!(
             &mut cost,
             self.get_raw_optional(path_iter.clone(), key, transaction)

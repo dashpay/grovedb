@@ -89,33 +89,26 @@ impl fmt::Debug for ReferencePathType {
 #[cfg(feature = "full")]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
-pub fn path_from_reference_qualified_path_type(
+pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
     reference_path_type: ReferencePathType,
-    current_qualified_path: &[Vec<u8>],
+    current_qualified_path: &[B],
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
         None => Err(Error::CorruptedPath(
             "qualified path should always have an element",
         )),
-        Some((key, path)) => {
-            let path_iter = path.iter().map(|k| k.as_slice());
-            path_from_reference_path_type(reference_path_type, path_iter, Some(key.as_slice()))
-        }
+        Some((key, path)) => path_from_reference_path_type(reference_path_type, path, Some(key.as_ref())),
     }
 }
 
 #[cfg(feature = "full")]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
-pub fn path_from_reference_path_type<'p, P>(
+pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     reference_path_type: ReferencePathType,
-    current_path: P,
-    current_key: Option<&'p [u8]>,
-) -> Result<Vec<Vec<u8>>, Error>
-where
-    P: IntoIterator<Item = &'p [u8]>,
-    <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-{
+    current_path: &[B],
+    current_key: Option<&[u8]>,
+) -> Result<Vec<Vec<u8>>, Error> {
     match reference_path_type {
         // No computation required, we already know the absolute path
         ReferencePathType::AbsolutePathReference(path) => Ok(path),
@@ -130,7 +123,7 @@ where
             }
             let mut subpath_as_vec = current_path_iter
                 .take(no_of_elements_to_keep as usize)
-                .map(|x| x.to_vec())
+                .map(|x| x.as_ref().to_vec())
                 .collect::<Vec<_>>();
             subpath_as_vec.append(&mut path);
             Ok(subpath_as_vec)
@@ -151,7 +144,7 @@ where
 
             let mut subpath_as_vec = current_path_iter
                 .take(current_path_len - no_of_elements_to_discard_from_end as usize)
-                .map(|x| x.to_vec())
+                .map(|x| x.as_ref().to_vec())
                 .collect::<Vec<_>>();
             subpath_as_vec.append(&mut path);
             Ok(subpath_as_vec)
@@ -161,7 +154,7 @@ where
         ReferencePathType::CousinReference(cousin_key) => {
             let mut current_path_as_vec = current_path
                 .into_iter()
-                .map(|p| p.to_vec())
+                .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             if current_path_as_vec.is_empty() {
                 return Err(Error::InvalidInput(
@@ -183,7 +176,7 @@ where
         ReferencePathType::RemovedCousinReference(mut cousin_path) => {
             let mut current_path_as_vec = current_path
                 .into_iter()
-                .map(|p| p.to_vec())
+                .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             if current_path_as_vec.is_empty() {
                 return Err(Error::InvalidInput(
@@ -205,7 +198,7 @@ where
         ReferencePathType::SiblingReference(sibling_key) => {
             let mut current_path_as_vec = current_path
                 .into_iter()
-                .map(|p| p.to_vec())
+                .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             current_path_as_vec.push(sibling_key);
             Ok(current_path_as_vec)

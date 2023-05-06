@@ -121,7 +121,7 @@ impl GroveDb {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
         let subtree_exists = self
-            .check_subtree_exists_path_not_found(path_slices.clone(), None)
+            .check_subtree_exists_path_not_found(path_slices.as_slice(), None)
             .unwrap_add_cost(&mut cost);
 
         // if the subtree at the given path doesn't exists, prove that this path
@@ -190,7 +190,10 @@ impl GroveDb {
 
         let mut to_add_to_result_set: u16 = 0;
 
-        let subtree = cost_return_on_error!(&mut cost, self.open_subtree(path.iter().copied()));
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_non_transactional_merk_at_path(path.as_slice())
+        );
         if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
             cost_return_on_error_no_add!(
                 &cost,
@@ -272,7 +275,7 @@ impl GroveDb {
                             for subkey in subquery_path.iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
-                                    self.open_subtree(new_path.iter().copied())
+                                    self.open_non_transactional_merk_at_path(new_path.as_slice())
                                 );
 
                                 let mut key_as_query = Query::new();
@@ -295,7 +298,7 @@ impl GroveDb {
                                 new_path.push(subkey);
 
                                 if self
-                                    .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                    .check_subtree_exists_path_not_found(new_path.as_slice(), None)
                                     .unwrap_add_cost(&mut cost)
                                     .is_err()
                                 {
@@ -320,7 +323,7 @@ impl GroveDb {
                         for subkey in subquery_path.iter() {
                             let inner_subtree = cost_return_on_error!(
                                 &mut cost,
-                                self.open_subtree(new_path.iter().copied())
+                                self.open_non_transactional_merk_at_path(new_path.as_slice())
                             );
 
                             let mut key_as_query = Query::new();
@@ -345,7 +348,7 @@ impl GroveDb {
                             // check if the new path points to a valid subtree
                             // if it does not, we should stop proof generation on this path
                             if self
-                                .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                .check_subtree_exists_path_not_found(new_path.as_slice(), None)
                                 .unwrap_add_cost(&mut cost)
                                 .is_err()
                             {
@@ -371,7 +374,7 @@ impl GroveDb {
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
-                        .check_subtree_exists_path_not_found(new_path.clone(), None)
+                        .check_subtree_exists_path_not_found(new_path.as_slice(), None)
                         .unwrap_add_cost(&mut cost)
                         .is_err()
                     {
@@ -441,8 +444,10 @@ impl GroveDb {
         // generate proof to show that the path leads up to the root
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            let subtree =
-                cost_return_on_error!(&mut cost, self.open_subtree(path_slice.iter().copied()));
+            let subtree = cost_return_on_error!(
+                &mut cost,
+                self.open_non_transactional_merk_at_path(path_slice)
+            );
             let mut query = Query::new();
             query.insert_key(key.to_vec());
 
@@ -549,7 +554,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_first();
         while let Some((key, path_slice)) = split_path {
             let subtree = self
-                .open_subtree(current_path.iter().copied())
+                .open_non_transactional_merk_at_path(current_path.as_slice())
                 .unwrap_add_cost(&mut cost);
 
             if subtree.is_err() {
@@ -657,15 +662,6 @@ impl GroveDb {
             }
         }
         Ok(()).wrap_with_cost(cost)
-    }
-
-    /// Opens merk at a given path without transaction
-    fn open_subtree<'p, P>(&self, path: P) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
-        self.open_non_transactional_merk_at_path(path)
     }
 }
 
