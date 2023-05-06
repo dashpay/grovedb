@@ -82,40 +82,41 @@ pub trait Storage<'db> {
     fn flush(&self) -> Result<(), Error>;
 
     /// Make storage_cost context for a subtree with path
-    fn get_storage_context<B>(
-        &'db self,
-        path: &SubtreePath<B>,
-    ) -> CostContext<Self::StorageContext>
+    fn get_storage_context<'b, B, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
     where
-        B: AsRef<[u8]>;
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>;
 
     /// Make storage_cost context for a subtree on transactional data
-    fn get_transactional_storage_context<B>(
+    fn get_transactional_storage_context<'b, B, P>(
         &'db self,
-        path: &SubtreePath<B>,
+        path: P,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
-        B: AsRef<[u8]>;
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>;
 
     /// Make batch storage_cost context for a subtree with path
-    fn get_batch_storage_context<B>(
+    fn get_batch_storage_context<'b, B, P>(
         &'db self,
-        path: &SubtreePath<B>,
+        path: P,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
-        B: AsRef<[u8]>;
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>;
 
     /// Make batch storage_cost context for a subtree on transactional data
-    fn get_batch_transactional_storage_context<B>(
+    fn get_batch_transactional_storage_context<'b, B, P>(
         &'db self,
-        path: &SubtreePath<B>,
+        path: P,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
-        B: AsRef<[u8]>;
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>;
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;

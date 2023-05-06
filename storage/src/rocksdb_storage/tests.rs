@@ -28,8 +28,6 @@
 
 //! Tests
 
-use path::SubtreePath;
-
 use super::test_utils::TempStorage;
 use crate::Batch;
 
@@ -40,12 +38,8 @@ mod no_transaction {
     #[test]
     fn test_aux_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         context_ayya
             .put_aux(b"key1", b"ayyavalue1", None)
@@ -107,12 +101,8 @@ mod no_transaction {
     #[test]
     fn test_roots_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         context_ayya
             .put_root(b"key1", b"ayyavalue1", None)
@@ -174,12 +164,8 @@ mod no_transaction {
     #[test]
     fn test_meta_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         context_ayya
             .put_meta(b"key1", b"ayyavalue1", None)
@@ -241,12 +227,8 @@ mod no_transaction {
     #[test]
     fn test_default_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         context_ayya
             .put(b"key1", b"ayyavalue1", None, None)
@@ -308,9 +290,7 @@ mod no_transaction {
     #[test]
     fn test_batch() {
         let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
 
         context_ayya
             .put(b"key1", b"ayyavalue1", None, None)
@@ -362,7 +342,7 @@ mod no_transaction {
     fn test_raw_iterator() {
         let storage = TempStorage::new();
         let context = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"someprefix"]))
+            .get_storage_context([b"someprefix"].as_ref())
             .unwrap();
 
         context
@@ -385,7 +365,7 @@ mod no_transaction {
         // Other storages are required to put something into rocksdb with other prefix
         // to see if there will be any conflicts and boundaries are met
         let context_before = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"anothersomeprefix"]))
+            .get_storage_context([b"anothersomeprefix"].as_ref())
             .unwrap();
         context_before
             .put(b"key1", b"value1", None, None)
@@ -396,7 +376,7 @@ mod no_transaction {
             .unwrap()
             .expect("expected successful insertion");
         let context_after = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"zanothersomeprefix"]))
+            .get_storage_context([b"zanothersomeprefix"].as_ref())
             .unwrap();
         context_after
             .put(b"key1", b"value1", None, None)
@@ -440,9 +420,7 @@ mod no_transaction {
         assert!(!iter.valid().unwrap());
 
         // Test `seek_to_last` on empty storage_cost
-        let empty_storage = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"notexist"]))
-            .unwrap();
+        let empty_storage = storage.get_storage_context([b"notexist"].as_ref()).unwrap();
         let mut iter = empty_storage.raw_iter();
         iter.seek_to_last().unwrap();
         assert!(!iter.valid().unwrap());
@@ -460,10 +438,10 @@ mod transaction {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &tx)
+            .get_transactional_storage_context([b"ayya"].as_ref(), &tx)
             .unwrap();
         let context_ayyb = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayyb"]), &tx)
+            .get_transactional_storage_context([b"ayyb"].as_ref(), &tx)
             .unwrap();
 
         context_ayya
@@ -500,11 +478,9 @@ mod transaction {
 
         let tx2 = storage.start_transaction();
         let context_ayya_after_tx = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &tx2)
+            .get_transactional_storage_context([b"ayya"].as_ref(), &tx2)
             .unwrap();
-        let context_ayya_after_no_tx = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
+        let context_ayya_after_no_tx = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
 
         context_ayya_after_tx
             .delete_aux(b"key1", None)
@@ -548,10 +524,10 @@ mod transaction {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &tx)
+            .get_transactional_storage_context([b"ayya"].as_ref(), &tx)
             .unwrap();
         let context_ayyb = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayyb"]), &tx)
+            .get_transactional_storage_context([b"ayyb"].as_ref(), &tx)
             .unwrap();
 
         context_ayya
@@ -588,11 +564,9 @@ mod transaction {
 
         let tx2 = storage.start_transaction();
         let context_ayya_after_tx = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &tx2)
+            .get_transactional_storage_context([b"ayya"].as_ref(), &tx2)
             .unwrap();
-        let context_ayya_after_no_tx = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
+        let context_ayya_after_no_tx = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
 
         context_ayya_after_tx
             .delete_root(b"key1", None)
@@ -634,12 +608,8 @@ mod transaction {
     #[test]
     fn test_meta_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         context_ayya
             .put_meta(b"key1", b"ayyavalue1", None)
@@ -701,12 +671,8 @@ mod transaction {
     #[test]
     fn test_default_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         context_ayya
             .put(b"key1", b"ayyavalue1", None, None)
@@ -770,7 +736,7 @@ mod transaction {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &tx)
+            .get_transactional_storage_context([b"ayya"].as_ref(), &tx)
             .unwrap();
 
         context_ayya
@@ -814,9 +780,7 @@ mod transaction {
             .unwrap()
             .expect("cannot commit transaction");
 
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
         assert_eq!(
             context_ayya
                 .get(b"key3")
@@ -837,7 +801,7 @@ mod transaction {
     fn test_raw_iterator() {
         let storage = TempStorage::new();
         let context = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"someprefix"]))
+            .get_storage_context([b"someprefix"].as_ref())
             .unwrap();
 
         context
@@ -860,7 +824,7 @@ mod transaction {
         // Other storages are required to put something into rocksdb with other prefix
         // to see if there will be any conflicts and boundaries are met
         let context_before = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"anothersomeprefix"]))
+            .get_storage_context([b"anothersomeprefix"].as_ref())
             .unwrap();
         context_before
             .put(b"key1", b"value1", None, None)
@@ -871,7 +835,7 @@ mod transaction {
             .unwrap()
             .expect("expected successful insertion");
         let context_after = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"zanothersomeprefix"]))
+            .get_storage_context([b"zanothersomeprefix"].as_ref())
             .unwrap();
         context_after
             .put(b"key1", b"value1", None, None)
@@ -886,7 +850,7 @@ mod transaction {
         {
             let tx = storage.start_transaction();
             let context_tx = storage
-                .get_transactional_storage_context(&SubtreePath::from_slice(&[b"someprefix"]), &tx)
+                .get_transactional_storage_context([b"someprefix"].as_ref(), &tx)
                 .unwrap();
 
             context_tx
@@ -964,10 +928,10 @@ mod batch_no_transaction {
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
         let context_ayya = storage
-            .get_batch_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &batch)
+            .get_batch_storage_context([b"ayya"].as_ref(), &batch)
             .unwrap();
         let context_ayyb = storage
-            .get_batch_storage_context(&SubtreePath::from_slice(&[b"ayyb"]), &batch)
+            .get_batch_storage_context([b"ayyb"].as_ref(), &batch)
             .unwrap();
 
         context_ayya
@@ -1018,12 +982,8 @@ mod batch_no_transaction {
             .unwrap()
             .expect("cannot commit batch");
 
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         assert_eq!(
             context_ayya
@@ -1105,10 +1065,10 @@ mod batch_no_transaction {
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
         let context_ayya = storage
-            .get_batch_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &batch)
+            .get_batch_storage_context([b"ayya"].as_ref(), &batch)
             .unwrap();
         let context_ayyb = storage
-            .get_batch_storage_context(&SubtreePath::from_slice(&[b"ayyb"]), &batch)
+            .get_batch_storage_context([b"ayyb"].as_ref(), &batch)
             .unwrap();
 
         context_ayya
@@ -1168,9 +1128,7 @@ mod batch_no_transaction {
             .unwrap()
             .expect("cannot commit multi context batch");
 
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
         assert_eq!(
             context_ayya
                 .get(b"key3")
@@ -1192,17 +1150,13 @@ mod batch_transaction {
         let storage = TempStorage::new();
         let transaction = storage.start_transaction();
 
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
         let context_ayya_tx = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &transaction)
+            .get_transactional_storage_context([b"ayya"].as_ref(), &transaction)
             .unwrap();
         let context_ayyb_tx = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayyb"]), &transaction)
+            .get_transactional_storage_context([b"ayyb"].as_ref(), &transaction)
             .unwrap();
 
         // Data should be visible in transaction...
@@ -1251,18 +1205,10 @@ mod batch_transaction {
 
         let batch = StorageBatch::new();
         let context_ayya_batch = storage
-            .get_batch_transactional_storage_context(
-                &SubtreePath::from_slice(&[b"ayya"]),
-                &batch,
-                &transaction,
-            )
+            .get_batch_transactional_storage_context([b"ayya"].as_ref(), &batch, &transaction)
             .unwrap();
         let context_ayyb_batch = storage
-            .get_batch_transactional_storage_context(
-                &SubtreePath::from_slice(&[b"ayyb"]),
-                &batch,
-                &transaction,
-            )
+            .get_batch_transactional_storage_context([b"ayyb"].as_ref(), &batch, &transaction)
             .unwrap();
         context_ayya_batch
             .put_aux(b"key2", b"ayyavalue2", None)
@@ -1340,18 +1286,10 @@ mod batch_transaction {
         let batch = StorageBatch::new();
 
         let context_ayya = storage
-            .get_batch_transactional_storage_context(
-                &SubtreePath::from_slice(&[b"ayya"]),
-                &batch,
-                &transaction,
-            )
+            .get_batch_transactional_storage_context([b"ayya"].as_ref(), &batch, &transaction)
             .unwrap();
         let context_ayyb = storage
-            .get_batch_transactional_storage_context(
-                &SubtreePath::from_slice(&[b"ayyb"]),
-                &batch,
-                &transaction,
-            )
+            .get_batch_transactional_storage_context([b"ayyb"].as_ref(), &batch, &transaction)
             .unwrap();
 
         let mut db_batch_a = context_ayya.new_batch();
@@ -1394,10 +1332,10 @@ mod batch_transaction {
         // Obtaining new contexts outside a commited batch but still within a
         // transaction
         let context_ayya = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayya"]), &transaction)
+            .get_transactional_storage_context([b"ayya"].as_ref(), &transaction)
             .unwrap();
         let context_ayyb = storage
-            .get_transactional_storage_context(&SubtreePath::from_slice(&[b"ayyb"]), &transaction)
+            .get_transactional_storage_context([b"ayyb"].as_ref(), &transaction)
             .unwrap();
 
         assert_eq!(
@@ -1410,12 +1348,8 @@ mod batch_transaction {
         );
 
         // And still no data in the database until transaction is commited
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         let mut iter = context_ayya.raw_iter();
         iter.seek_to_first().unwrap();
@@ -1430,12 +1364,8 @@ mod batch_transaction {
             .unwrap()
             .expect("cannot commit transaction");
 
-        let context_ayya = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayya"]))
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context(&SubtreePath::from_slice(&[b"ayyb"]))
-            .unwrap();
+        let context_ayya = storage.get_storage_context([b"ayya"].as_ref()).unwrap();
+        let context_ayyb = storage.get_storage_context([b"ayyb"].as_ref()).unwrap();
 
         assert_eq!(
             context_ayya.get(b"key1").unwrap().expect("cannot get data"),

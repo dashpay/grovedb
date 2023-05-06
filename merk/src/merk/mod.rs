@@ -1433,9 +1433,8 @@ impl Commit for MerkCommitter {
 
 #[cfg(test)]
 mod test {
-    use std::iter::empty;
-
     use costs::OperationCost;
+    use path::SubtreePath;
     use storage::{
         rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
         RawIterator, Storage, StorageContext,
@@ -1459,9 +1458,10 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
+        let test_prefix = [b"ayy"];
+
         let mut merk = Merk::open_base(
-            storage.get_storage_context(test_prefix.clone()).unwrap(),
+            storage.get_storage_context(test_prefix.as_ref()).unwrap(),
             false,
         )
         .unwrap()
@@ -1477,9 +1477,12 @@ mod test {
 
         let root_hash = merk.root_hash();
         drop(merk);
-        let merk = Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false)
-            .unwrap()
-            .unwrap();
+        let merk = Merk::open_base(
+            storage.get_storage_context(test_prefix.as_ref()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(merk.root_hash(), root_hash);
     }
 
@@ -1488,9 +1491,10 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
+        let test_prefix = [b"ayy"];
+
         let merk_fee_context = Merk::open_base(
-            storage.get_storage_context(test_prefix.clone()).unwrap(),
+            storage.get_storage_context(test_prefix.as_ref()).unwrap(),
             false,
         );
 
@@ -1512,8 +1516,10 @@ mod test {
 
         drop(merk);
 
-        let merk_fee_context =
-            Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false);
+        let merk_fee_context = Merk::open_base(
+            storage.get_storage_context(test_prefix.as_ref()).unwrap(),
+            false,
+        );
 
         // Opening existing merk should cost two seeks. (except context creation)
         assert!(matches!(
@@ -1700,9 +1706,12 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let mut merk = Merk::open_base(
+            storage.get_storage_context(&SubtreePath::new()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
         merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
@@ -1718,9 +1727,12 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let mut merk = Merk::open_base(
+            storage.get_storage_context(&SubtreePath::new()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
         merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
@@ -1748,9 +1760,12 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-                .unwrap()
-                .expect("cannot open merk");
+            let mut merk = Merk::open_base(
+                storage.get_storage_context(&SubtreePath::new()).unwrap(),
+                false,
+            )
+            .unwrap()
+            .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
             merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
                 .unwrap()
@@ -1765,9 +1780,12 @@ mod test {
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let merk = Merk::open_base(
+            storage.get_storage_context(&SubtreePath::new()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
         let mut tree = merk.tree.take().unwrap();
         let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -1799,9 +1817,12 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-                .unwrap()
-                .expect("cannot open merk");
+            let mut merk = Merk::open_base(
+                storage.get_storage_context(&SubtreePath::new()).unwrap(),
+                false,
+            )
+            .unwrap()
+            .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
             merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
                 .unwrap()
@@ -1813,9 +1834,12 @@ mod test {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let merk = Merk::open_base(
+            storage.get_storage_context(&SubtreePath::new()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         let mut reopen_nodes = vec![];
         collect(&mut merk.storage.raw_iter(), &mut reopen_nodes);
@@ -1828,9 +1852,12 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let mut merk = Merk::open_base(
+            storage.get_storage_context(&SubtreePath::new()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         merk.apply::<_, Vec<_>>(
             &[(b"9".to_vec(), Op::Put(b"a".to_vec(), BasicMerk))],
@@ -1869,9 +1896,12 @@ mod test {
 
         drop(merk);
 
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let mut merk = Merk::open_base(
+            storage.get_storage_context(&SubtreePath::new()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         // Update the node after dropping merk
         merk.apply::<_, Vec<_>>(
