@@ -49,8 +49,8 @@ mod query;
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
-#[cfg(feature = "full")]
-mod replication;
+// #[cfg(feature = "full")]
+// mod replication; TODO: decided that current implementation is too ineffective to use it
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests;

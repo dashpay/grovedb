@@ -6,7 +6,7 @@ use std::ops::Deref;
 /// A smart pointer that follows the semantics of [Cow](std::borrow::Cow) except
 /// provides no means for mutability and thus doesn't require [Clone].
 #[derive(Debug)]
-pub(crate) enum CowLike<'b> {
+pub enum CowLike<'b> {
     Owned(Vec<u8>),
     Borrowed(&'b [u8]),
 }
@@ -25,6 +25,18 @@ impl Deref for CowLike<'_> {
 impl Hash for CowLike<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.deref().hash(state);
+    }
+}
+
+impl<'b> From<Vec<u8>> for CowLike<'static> {
+    fn from(value: Vec<u8>) -> Self {
+        Self::Owned(value)
+    }
+}
+
+impl<'b> From<&'b [u8]> for CowLike<'b> {
+    fn from(value: &'b [u8]) -> Self {
+        Self::Borrowed(value)
     }
 }
 
