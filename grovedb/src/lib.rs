@@ -152,7 +152,7 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
         let path = path.into();
-        
+
         let storage = self
             .db
             .get_transactional_storage_context(path, tx)

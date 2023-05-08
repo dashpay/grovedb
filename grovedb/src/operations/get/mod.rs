@@ -71,8 +71,7 @@ impl GroveDb {
         path: &[B],
         key: &[u8],
         transaction: TransactionArg,
-    ) -> CostResult<Element, Error>
-    {
+    ) -> CostResult<Element, Error> {
         self.get_caching_optional(&path.into(), key, true, transaction)
     }
 

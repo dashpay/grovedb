@@ -104,7 +104,12 @@ impl GroveDb {
                 transaction,
             )
         } else {
-            self.insert_without_transaction(&subtree_path, key, element, options.unwrap_or_default())
+            self.insert_without_transaction(
+                &subtree_path,
+                key,
+                element,
+                options.unwrap_or_default(),
+            )
         }
     }
 

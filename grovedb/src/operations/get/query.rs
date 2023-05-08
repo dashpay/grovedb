@@ -75,7 +75,11 @@ impl GroveDb {
                             // external costs accumulator instead of
                             // returning costs from `map` call.
                             let maybe_item = self
-                                .follow_reference(absolute_path, allow_cache, transaction)
+                                .follow_reference(
+                                    &absolute_path.as_slice().into(),
+                                    allow_cache,
+                                    transaction,
+                                )
                                 .unwrap_add_cost(&mut cost)?;
 
                             match maybe_item {
@@ -155,7 +159,11 @@ where {
                         // external costs accumulator instead of
                         // returning costs from `map` call.
                         let maybe_item = self
-                            .follow_reference(absolute_path, allow_cache, transaction)
+                            .follow_reference(
+                                &absolute_path.as_slice().into(),
+                                allow_cache,
+                                transaction,
+                            )
                             .unwrap_add_cost(cost)?;
 
                         if maybe_item.is_item() {
@@ -238,7 +246,11 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(absolute_path, allow_cache, transaction)
+                                        .follow_reference(
+                                            &absolute_path.as_slice().into(),
+                                            allow_cache,
+                                            transaction,
+                                        )
                                         .unwrap_add_cost(&mut cost)?;
 
                                     match maybe_item {
@@ -304,7 +316,11 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(absolute_path, allow_cache, transaction)
+                                        .follow_reference(
+                                            &absolute_path.as_slice().into(),
+                                            allow_cache,
+                                            transaction,
+                                        )
                                         .unwrap_add_cost(&mut cost)?;
 
                                     if let Element::SumItem(item, _) = maybe_item {

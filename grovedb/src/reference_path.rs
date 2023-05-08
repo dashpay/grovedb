@@ -97,7 +97,9 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
         None => Err(Error::CorruptedPath(
             "qualified path should always have an element",
         )),
-        Some((key, path)) => path_from_reference_path_type(reference_path_type, path, Some(key.as_ref())),
+        Some((key, path)) => {
+            path_from_reference_path_type(reference_path_type, path, Some(key.as_ref()))
+        }
     }
 }
 
