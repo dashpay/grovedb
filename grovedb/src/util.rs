@@ -60,12 +60,11 @@ macro_rules! storage_context_with_parent_optional_tx {
     ) => {
         {
             use ::storage::Storage;
-	    let mut path = $path.clone();
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context(path, tx)
+                    .get_transactional_storage_context($path, tx)
 		    .unwrap_add_cost(&mut $cost);
-                if let Some((parent_path, parent_key)) = path.derive_parent() {
+                if let Some((parent_path, parent_key)) = $path.derive_parent() {
                     let parent_storage = $db.get_transactional_storage_context(parent_path, tx)
 			.unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(

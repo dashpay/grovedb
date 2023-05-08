@@ -83,6 +83,7 @@ use merk::{
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
 };
 pub use options::BatchApplyOptions;
+use path::SubtreePath;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
@@ -1534,98 +1535,88 @@ impl GroveDb {
 
     /// Opens transactional merk at path with given storage batch context.
     /// Returns CostResult.
-    pub fn open_batch_transactional_merk_at_path<'db, 'p, P>(
+    pub fn open_batch_transactional_merk_at_path<'db, B: AsRef<[u8]>>(
         &'db self,
         storage_batch: &'db StorageBatch,
-        path: P,
+        path: &SubtreePath<B>,
         tx: &'db Transaction,
         new_merk: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
-    {
-        let mut path_iter = path.into_iter();
+    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error> {
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_transactional_storage_context(path_iter.clone(), storage_batch, tx)
+            .get_batch_transactional_storage_context(path, storage_batch, tx)
             .unwrap_add_cost(&mut cost);
 
-        match path_iter.next_back() {
-            Some(key) => {
-                if new_merk {
-                    // TODO: can this be a sum tree
-                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk, false)).wrap_with_cost(cost)
-                } else {
-                    let parent_storage = self
-                        .db
-                        .get_transactional_storage_context(path_iter.clone(), tx)
-                        .unwrap_add_cost(&mut cost);
-                    let element = cost_return_on_error!(
-                        &mut cost,
-                        Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                            Error::InvalidPath(format!(
-                                "could not get key for parent of subtree for batch at path {}",
-                                path_iter.map(hex::encode).join("/")
-                            ))
-                        })
-                    );
-                    let is_sum_tree = element.is_sum_tree();
-                    if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                        Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                            .map_err(|_| {
-                                Error::CorruptedData(
-                                    "cannot open a subtree with given root key".to_owned(),
-                                )
-                            })
-                            .add_cost(cost)
-                    } else {
-                        Err(Error::CorruptedPath(
-                            "cannot open a subtree as parent exists but is not a tree",
+        if let Some((parent_path, parent_key)) = path.derive_parent() {
+            if new_merk {
+                // TODO: can this be a sum tree
+                Ok(Merk::open_empty(storage, MerkType::LayeredMerk, false)).wrap_with_cost(cost)
+            } else {
+                let parent_storage = self
+                    .db
+                    .get_transactional_storage_context(path_iter.clone(), tx)
+                    .unwrap_add_cost(&mut cost);
+                let element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
+                        Error::InvalidPath(format!(
+                            "could not get key for parent of subtree for batch at path {}",
+                            path_iter.map(hex::encode).join("/")
                         ))
-                        .wrap_with_cost(OperationCost::default())
-                    }
-                }
-            }
-            None => {
-                if new_merk {
-                    Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
-                } else {
-                    Merk::open_base(storage, false)
+                    })
+                );
+                let is_sum_tree = element.is_sum_tree();
+                if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
                         .map_err(|_| {
-                            Error::CorruptedData("cannot open a the root subtree".to_owned())
+                            Error::CorruptedData(
+                                "cannot open a subtree with given root key".to_owned(),
+                            )
                         })
                         .add_cost(cost)
+                } else {
+                    Err(Error::CorruptedPath(
+                        "cannot open a subtree as parent exists but is not a tree",
+                    ))
+                    .wrap_with_cost(OperationCost::default())
                 }
+            }
+        } else {
+            if new_merk {
+                Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
+            } else {
+                Merk::open_base(storage, false)
+                    .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+                    .add_cost(cost)
             }
         }
     }
 
     /// Opens merk at path with given storage batch context. Returns CostResult.
-    pub fn open_batch_merk_at_path<'a>(
+    pub fn open_batch_merk_at_path<'a, B: AsRef<[u8]>>(
         &'a self,
         storage_batch: &'a StorageBatch,
-        path: &[Vec<u8>],
+        path: &SubtreePath<B>,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_storage_context(path.iter().map(|x| x.as_slice()), storage_batch)
+            .get_batch_storage_context(path, storage_batch)
             .unwrap_add_cost(&mut local_cost);
 
         if new_merk {
-            let merk_type = if path.is_empty() {
+            let merk_type = if path.is_root() {
                 MerkType::BaseMerk
             } else {
                 MerkType::LayeredMerk
             };
             Ok(Merk::open_empty(storage, merk_type, false)).wrap_with_cost(local_cost)
-        } else if let Some((last, base_path)) = path.split_last() {
+        } else if let Some((base_path, last)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(base_path.iter().map(|x| x.as_slice()))
+                .get_storage_context(base_path)
                 .unwrap_add_cost(&mut local_cost);
             let element = cost_return_on_error!(
                 &mut local_cost,

@@ -275,43 +275,34 @@ impl GroveDb {
 
     /// Method to propagate updated subtree key changes one level up inside a
     /// transaction
-    fn propagate_changes_with_batch_transaction<'p, P>(
+    fn propagate_changes_with_batch_transaction<B: AsRef<[u8]>>(
         &self,
         storage_batch: &StorageBatch,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbBatchTransactionContext>>,
-        path: P,
+        path: &SubtreePath<B>,
         transaction: &Transaction,
-    ) -> CostResult<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-
-        let mut path_iter = path.into_iter();
 
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
                 .remove(
-                    path_iter
-                        .clone()
-                        .map(|k| k.to_vec())
-                        .collect::<Vec<Vec<u8>>>()
-                        .as_slice()
+                    &path.to_owned(), // TODO oof
                 )
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
                 ))
         );
 
-        while path_iter.len() > 0 {
-            let key = path_iter.next_back().expect("next element is `Some`");
+        let mut current_path = path.derive_parent();
+
+        while let Some((parent_path, parent_key)) = current_path {
             let mut parent_tree = cost_return_on_error!(
                 &mut cost,
                 self.open_batch_transactional_merk_at_path(
                     storage_batch,
-                    path_iter.clone(),
+                    &parent_path,
                     transaction,
                     false
                 )
@@ -324,13 +315,14 @@ impl GroveDb {
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
                     &mut parent_tree,
-                    key,
+                    parent_key,
                     root_key,
                     root_hash,
                     sum
                 )
             );
             child_tree = parent_tree;
+            current_path = parent_path.derive_parent();
         }
         Ok(()).wrap_with_cost(cost)
     }

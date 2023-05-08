@@ -33,6 +33,7 @@ use costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
+use path::SubtreePath;
 
 use crate::{
     batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
@@ -199,37 +200,33 @@ impl GroveDb {
 
     /// Adds operations to "delete operations" for delete up tree while empty
     /// for each level. Returns a vector of GroveDb ops.
-    pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
+    pub fn add_delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
-    ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<Option<Vec<GroveDbOp>>, Error> {
         let mut cost = OperationCost::default();
 
-        let mut path_iter = path.into_iter();
         if let Some(stop_path_height) = options.stop_path_height {
-            if stop_path_height == path_iter.clone().len() as u16 {
+            if stop_path_height == path.to_owned().len() as u16 {
+                // TODO investigate how necessary it is to have path length
                 return Ok(None).wrap_with_cost(cost);
             }
         }
         if options.validate_tree_at_path_exists {
             cost_return_on_error!(
                 &mut cost,
-                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
+                self.check_subtree_exists_path_not_found(path, transaction)
             );
         }
         if let Some(delete_operation_this_level) = cost_return_on_error!(
             &mut cost,
             self.delete_operation_for_delete_internal(
-                path_iter.clone(),
+                path,
                 key,
                 &options.to_delete_options(),
                 is_known_to_be_subtree_with_sum,
@@ -238,7 +235,7 @@ impl GroveDb {
             )
         ) {
             let mut delete_operations = vec![delete_operation_this_level.clone()];
-            if let Some(last) = path_iter.next_back() {
+            if let Some((parent_path, parent_key)) = path.derive_parent() {
                 current_batch_operations.push(delete_operation_this_level);
                 let mut new_options = options.clone();
                 // we should not give an error from now on
@@ -247,8 +244,8 @@ impl GroveDb {
                 if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
                     &mut cost,
                     self.add_delete_operations_for_delete_up_tree_while_empty(
-                        path_iter,
-                        last,
+                        &parent_path,
+                        parent_key,
                         &new_options,
                         None, // todo: maybe we can know this?
                         current_batch_operations,
