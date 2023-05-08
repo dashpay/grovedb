@@ -73,7 +73,6 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use integer_encoding::VarInt;
-use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     tree::{
@@ -1831,7 +1830,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
-                            path.iter().map(|x| x.as_slice()),
+                            &path.into(),
                             tx,
                             new_merk,
                         )

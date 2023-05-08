@@ -38,6 +38,7 @@ use costs::{
 use merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::Query;
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
@@ -348,12 +349,15 @@ impl Element {
                         &subquery_path.split_last()
                     {
                         path_vec.extend(subquery_path_front_keys.iter().map(|k| k.as_slice()));
+
+                        let subtree_path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+
                         match result_type {
                             QueryElementResultType => {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied().peekable(),
+                                    &subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -375,7 +379,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied().peekable(),
+                                    &subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -400,7 +404,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied().peekable(),
+                                    &subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -525,7 +529,6 @@ impl Element {
 
     #[cfg(feature = "full")]
     // TODO: refactor
-    #[allow(clippy::too_many_arguments)]
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
@@ -542,17 +545,15 @@ impl Element {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
+        let subtree_path: SubtreePath<&[u8]> = path.into();
+
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res = merk_optional_tx!(
-                    &mut cost,
-                    storage,
-                    path.iter().copied().peekable(),
-                    transaction,
-                    subtree,
-                    { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }
-                );
+                let element_res =
+                    merk_optional_tx!(&mut cost, storage, &subtree_path, transaction, subtree, {
+                        Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost)
+                    });
                 match element_res {
                     Ok(element) => {
                         let (subquery_path, subquery) =
@@ -585,7 +586,7 @@ impl Element {
             }
         } else {
             // this is a query on a range
-            storage_context_optional_tx!(storage, path.iter().copied(), transaction, ctx, {
+            storage_context_optional_tx!(storage, &subtree_path, transaction, ctx, {
                 let ctx = ctx.unwrap_add_cost(&mut cost);
                 let mut iter = ctx.raw_iter();
 

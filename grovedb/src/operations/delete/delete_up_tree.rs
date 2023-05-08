@@ -85,17 +85,13 @@ impl DeleteUpTreeOptions {
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
-    pub fn delete_up_tree_while_empty<'p, P>(
+    pub fn delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
-    ) -> CostResult<u16, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<u16, Error> {
         self.delete_up_tree_while_empty_with_sectional_storage(
             path,
             key,
@@ -112,10 +108,10 @@ impl GroveDb {
 
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
-    pub fn delete_up_tree_while_empty_with_sectional_storage<'p, P>(
+    pub fn delete_up_tree_while_empty_with_sectional_storage<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
         split_removal_bytes_function: impl FnMut(
@@ -126,19 +122,14 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-    ) -> CostResult<u16, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<u16, Error> {
         let mut cost = OperationCost::default();
         let mut batch_operations: Vec<GroveDbOp> = Vec::new();
-        let path_iter = path.into_iter();
-        let path_len = path_iter.len();
+
         let maybe_ops = cost_return_on_error!(
             &mut cost,
             self.add_delete_operations_for_delete_up_tree_while_empty(
-                path_iter,
+                path,
                 key,
                 options,
                 None,
@@ -152,8 +143,8 @@ impl GroveDb {
             if let Some(stop_path_height) = options.stop_path_height {
                 maybe_ops.ok_or_else(|| {
                     Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(
-                        "stop path height {} more than path size of {}",
-                        stop_path_height, path_len
+                        "stop path height {} is too much",
+                        stop_path_height,
                     ))
                 })
             } else {
@@ -174,19 +165,15 @@ impl GroveDb {
     }
 
     /// Returns a vector of GroveDb ops
-    pub fn delete_operations_for_delete_up_tree_while_empty<'p, P>(
+    pub fn delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
-        path: P,
-        key: &'p [u8],
+        path: &SubtreePath<B>,
+        key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
-    ) -> CostResult<Vec<GroveDbOp>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<Vec<GroveDbOp>, Error> {
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
             key,
