@@ -5661,7 +5661,6 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
     fn break_subset_proof() {
         // TODO: move this to where you'd set the constraints for this definition
         // goal is to show that ones limit and offset values are involved
@@ -5676,7 +5675,7 @@ mod test {
         let expected_hash = tree.hash().unwrap().to_owned();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        // 1..10 prove full (..) limit to 5, subset (1..=5)
+        // 1..10 prove full (..) limit to 3, subset (1..=3)
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         let (proof, ..) = walker
@@ -5687,16 +5686,32 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
 
+        // Try to query 4
         let mut query = Query::new();
         query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 4]);
-        let res = verify_query(bytes.as_slice(), &query, Some(3), None, true, expected_hash)
-            .unwrap()
-            .unwrap();
+        assert!(
+            verify_query(bytes.as_slice(), &query, Some(3), None, true, expected_hash)
+                .unwrap()
+                .is_err()
+        );
 
-        assert_eq!(res.result_set.len(), 1);
-        compare_result_tuples(
-            res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60])],
+        // if limit offset parameters are different from generation then proof verification returns an error
+        // Try superset proof with increased limit
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        assert!(
+            verify_query(bytes.as_slice(), &query, Some(4), None, true, expected_hash)
+                .unwrap()
+                .is_err()
+        );
+
+        // Try superset proof with less limit
+        let mut query = Query::new();
+        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
+        assert!(
+            verify_query(bytes.as_slice(), &query, Some(2), None, true, expected_hash)
+                .unwrap()
+                .is_err()
         );
     }
 
