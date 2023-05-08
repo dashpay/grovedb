@@ -103,8 +103,8 @@ macro_rules! storage_context_with_parent_optional_tx {
                 }
             } else {
                 let $storage = $db
-                    .get_storage_context(path).unwrap_add_cost(&mut $cost);
-                if let Some((parent_path, parent_key)) = path.derive_parent() {
+                    .get_storage_context($path).unwrap_add_cost(&mut $cost);
+                if let Some((parent_path, parent_key)) = $path.derive_parent() {
                     let parent_storage = $db.get_storage_context(
 			parent_path
 		    ).unwrap_add_cost(&mut $cost);

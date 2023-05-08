@@ -440,7 +440,7 @@ impl GroveDb {
         if cost_return_on_error!(&mut cost, self.has_raw(path, key, transaction)) {
             Ok(false).wrap_with_cost(cost)
         } else {
-            self.insert(path_iter, key, element, None, transaction)
+            self.insert(path, key, element, None, transaction)
                 .map_ok(|_| true)
                 .add_cost(cost)
         }
@@ -461,7 +461,7 @@ impl GroveDb {
 
         let previous_element = cost_return_on_error!(
             &mut cost,
-            self.get_raw_optional(path_iter.clone(), key, transaction)
+            self.get_raw_optional(&path.into(), key, transaction)
         );
         let needs_insert = match &previous_element {
             None => true,
@@ -470,7 +470,7 @@ impl GroveDb {
         if !needs_insert {
             Ok((false, None)).wrap_with_cost(cost)
         } else {
-            self.insert(path_iter, key, element, None, transaction)
+            self.insert(path, key, element, None, transaction)
                 .map_ok(|_| (true, previous_element))
                 .add_cost(cost)
         }

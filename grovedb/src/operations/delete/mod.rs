@@ -338,7 +338,7 @@ impl GroveDb {
                     }
                 } else if is_empty {
                     Ok(Some(GroveDbOp::delete_tree_op(
-                        path_iter.map(|x| x.to_vec()).collect(),
+                        path.to_owned(),
                         key.to_vec(),
                         is_subtree_with_sum,
                     )))
@@ -349,11 +349,7 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(GroveDbOp::delete_op(
-                    path_iter.map(|x| x.to_vec()).collect(),
-                    key.to_vec(),
-                )))
-                .wrap_with_cost(cost)
+                Ok(Some(GroveDbOp::delete_op(path.to_owned(), key.to_vec()))).wrap_with_cost(cost)
             }
         }
     }
@@ -515,13 +511,10 @@ impl GroveDb {
                 );
                 let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
                     HashMap::default();
-                merk_cache.insert(
-                    path_iter.clone().map(|k| k.to_vec()).collect(),
-                    subtree_to_delete_from,
-                );
+                merk_cache.insert(path.to_owned(), subtree_to_delete_from);
                 cost_return_on_error!(
                     &mut cost,
-                    self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
+                    self.propagate_changes_with_transaction(merk_cache, path, transaction)
                 );
             }
         } else {
@@ -538,13 +531,10 @@ impl GroveDb {
             );
             let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
                 HashMap::default();
-            merk_cache.insert(
-                path_iter.clone().map(|k| k.to_vec()).collect(),
-                subtree_to_delete_from,
-            );
+            merk_cache.insert(path.to_owned(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,
-                self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
+                self.propagate_changes_with_transaction(merk_cache, path, transaction)
             );
         }
 

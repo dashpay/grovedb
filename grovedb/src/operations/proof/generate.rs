@@ -45,7 +45,7 @@ use merk::{
 };
 use path::SubtreePath;
 #[cfg(feature = "full")]
-use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
+use storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;

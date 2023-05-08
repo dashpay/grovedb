@@ -73,6 +73,7 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use integer_encoding::VarInt;
+use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     tree::{
@@ -901,12 +902,11 @@ where
                                     .get_feature_type(is_sum_tree)
                                     .wrap_with_cost(OperationCost::default())
                             );
-                            let path_iter = path.iter().map(|x| x.as_slice());
                             let path_reference = cost_return_on_error!(
                                 &mut cost,
                                 path_from_reference_path_type(
                                     path_reference.clone(),
-                                    path_iter,
+                                    path,
                                     Some(key_info.as_slice())
                                 )
                                 .wrap_with_cost(OperationCost::default())
@@ -1454,11 +1454,11 @@ impl GroveDb {
             match op.op {
                 Op::Insert { element } | Op::Replace { element } => {
                     let path_slices: Vec<&[u8]> =
-                        op.path.iterator().map(|p| p.as_slice()).collect();
+                        op.path.iterator().map(|p| p.as_slice()).collect(); // TODO: paths in batches is something to think about
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(
-                            path_slices,
+                            &path_slices,
                             op.key.as_slice(),
                             element.to_owned(),
                             options.clone().map(|o| o.as_insert_options()),
@@ -1472,7 +1472,7 @@ impl GroveDb {
                     cost_return_on_error!(
                         &mut cost,
                         self.delete(
-                            path_slices,
+                            &path_slices.as_slice().into(),
                             op.key.as_slice(),
                             options.clone().map(|o| o.as_delete_options()),
                             transaction
@@ -1554,14 +1554,18 @@ impl GroveDb {
             } else {
                 let parent_storage = self
                     .db
-                    .get_transactional_storage_context(path_iter.clone(), tx)
+                    .get_transactional_storage_context(&parent_path, tx)
                     .unwrap_add_cost(&mut cost);
                 let element = cost_return_on_error!(
                     &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
+                    Element::get_from_storage(&parent_storage, parent_key).map_err(|_| {
                         Error::InvalidPath(format!(
                             "could not get key for parent of subtree for batch at path {}",
-                            path_iter.map(hex::encode).join("/")
+                            parent_path
+                                .to_owned()
+                                .into_iter()
+                                .map(hex::encode)
+                                .join("/")
                         ))
                     })
                 );
@@ -1710,7 +1714,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
-                            path.iter().map(|x| x.as_slice()),
+                            &path.into(),
                             tx,
                             new_merk,
                         )
@@ -1734,7 +1738,7 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&storage_batch, path, new_merk)
+                        self.open_batch_merk_at_path(&storage_batch, &path.into(), new_merk)
                     }
                 )
             );
@@ -1876,7 +1880,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &continue_storage_batch,
-                            path.iter().map(|x| x.as_slice()),
+                            &path.into(),
                             tx,
                             new_merk,
                         )
@@ -1910,7 +1914,7 @@ impl GroveDb {
                     &mut update_element_flags_function,
                     &mut split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&storage_batch, path, new_merk)
+                        self.open_batch_merk_at_path(&storage_batch, &path.into(), new_merk)
                     }
                 )
             );
@@ -1950,7 +1954,11 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&continue_storage_batch, path, new_merk)
+                        self.open_batch_merk_at_path(
+                            &continue_storage_batch,
+                            &path.into(),
+                            new_merk,
+                        )
                     }
                 )
             );
