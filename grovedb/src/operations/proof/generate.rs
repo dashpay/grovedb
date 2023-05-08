@@ -103,6 +103,7 @@ impl GroveDb {
         let mut limit: Option<u16> = query.query.limit;
         let mut offset: Option<u16> = query.query.offset;
 
+        // TODO: add again?
         // We prevent the generation of verbose proofs for path queries that have a
         // limit or offset.
         // This is because once they are set, the subset nature
@@ -111,12 +112,12 @@ impl GroveDb {
         // Meaning a path query that could have been a valid subset could potentially
         // not be due to the current state.
         // Hence verification errors due to non subset issues will not be deterministic.
-        if (limit.is_some() || offset.is_some()) && is_verbose {
-            return Err(Error::InvalidInput(
-                "cannot generate verbose proof for path-query with a limit or offset value",
-            ))
-            .wrap_with_cost(cost);
-        }
+        // if (limit.is_some() || offset.is_some()) && is_verbose {
+        //     return Err(Error::InvalidInput(
+        //         "cannot generate verbose proof for path-query with a limit or offset value",
+        //     ))
+        //     .wrap_with_cost(cost);
+        // }
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
