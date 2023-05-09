@@ -5695,8 +5695,8 @@ mod test {
                 .is_err()
         );
 
-        // if limit offset parameters are different from generation then proof verification returns an error
-        // Try superset proof with increased limit
+        // if limit offset parameters are different from generation then proof
+        // verification returns an error Try superset proof with increased limit
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         assert!(
