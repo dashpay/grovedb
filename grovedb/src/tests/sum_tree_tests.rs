@@ -290,11 +290,17 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
 
     // Perform the same test on regular trees
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("should insert tree");
     db.insert(
-        [TEST_LEAF, b"key"],
+        [TEST_LEAF].as_ref(),
+        b"key",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"key"].as_ref(),
         b"item1",
         Element::new_item(vec![30]),
         None,
@@ -303,7 +309,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     .unwrap()
     .expect("should insert item");
     db.insert(
-        [TEST_LEAF, b"key"],
+        [TEST_LEAF, b"key"].as_ref(),
         b"item2",
         Element::new_item(vec![10]),
         None,

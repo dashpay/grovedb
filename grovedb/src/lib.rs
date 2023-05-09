@@ -52,8 +52,7 @@ pub mod reference_path;
 // #[cfg(feature = "full")]
 // mod replication; TODO: decided that current implementation is too ineffective
 // to use it
-#[cfg(feature = "full")]
-#[cfg(test)]
+#[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
 mod util;

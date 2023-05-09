@@ -699,6 +699,7 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
     };
+    use path::SubtreePath;
     use pretty_assertions::assert_eq;
 
     use crate::{
@@ -707,32 +708,46 @@ mod tests {
         Element, Error,
     };
 
+    const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
+
     #[test]
     fn test_empty_subtree_deletion_without_transaction() {
         let _element = Element::new_item(b"ayy".to_vec());
         let db = make_test_grovedb();
         // Insert some nested subtrees
-        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree 1 insert");
-        db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree 3 insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 1 insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key4",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 3 insert");
 
         let root_hash = db.root_hash(None).unwrap().unwrap();
-        db.delete([TEST_LEAF], b"key1", None, None)
+        db.delete([TEST_LEAF].as_ref(), b"key1", None, None)
             .unwrap()
             .expect("unable to delete subtree");
         assert!(matches!(
-            db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
                 .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         // assert_eq!(db.subtrees.len().unwrap(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
         // TEST_LEAF.key4 stay
-        assert!(db.get([], TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get([], ANOTHER_TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get([TEST_LEAF], b"key4", None).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, TEST_LEAF, None).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, ANOTHER_TEST_LEAF, None).unwrap().is_ok());
+        assert!(db.get([TEST_LEAF].as_ref(), b"key4", None).unwrap().is_ok());
         assert_ne!(root_hash, db.root_hash(None).unwrap().unwrap());
     }
 
@@ -745,7 +760,7 @@ mod tests {
 
         // Insert some nested subtrees
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"key1",
             Element::empty_tree(),
             None,
@@ -754,7 +769,7 @@ mod tests {
         .unwrap()
         .expect("successful subtree 1 insert");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"key4",
             Element::empty_tree(),
             None,
@@ -763,20 +778,27 @@ mod tests {
         .unwrap()
         .expect("successful subtree 3 insert");
 
-        db.delete([TEST_LEAF], b"key1", None, Some(&transaction))
+        db.delete([TEST_LEAF].as_ref(), b"key1", None, Some(&transaction))
             .unwrap()
             .expect("unable to delete subtree");
         assert!(matches!(
-            db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction))
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"key1", b"key2"].as_ref(),
+                b"key3",
+                Some(&transaction)
+            )
+            .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         transaction.commit().expect("cannot commit transaction");
         assert!(matches!(
-            db.get([TEST_LEAF], b"key1", None).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key1", None).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(matches!(db.get([TEST_LEAF], b"key4", None).unwrap(), Ok(_)));
+        assert!(matches!(
+            db.get([TEST_LEAF].as_ref(), b"key4", None).unwrap(),
+            Ok(_)
+        ));
     }
 
     #[test]
@@ -788,7 +810,7 @@ mod tests {
 
         // Insert some nested subtrees
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"level1-A",
             Element::empty_tree(),
             None,
@@ -797,7 +819,7 @@ mod tests {
         .unwrap()
         .expect("successful subtree insert A on level 1");
         db.insert(
-            [TEST_LEAF, b"level1-A"],
+            [TEST_LEAF, b"level1-A"].as_ref(),
             b"level2-A",
             Element::empty_tree(),
             None,
@@ -806,7 +828,7 @@ mod tests {
         .unwrap()
         .expect("successful subtree insert A on level 2");
         db.insert(
-            [TEST_LEAF, b"level1-A"],
+            [TEST_LEAF, b"level1-A"].as_ref(),
             b"level2-B",
             Element::empty_tree(),
             None,
@@ -816,7 +838,7 @@ mod tests {
         .expect("successful subtree insert B on level 2");
         // Insert an element into subtree
         db.insert(
-            [TEST_LEAF, b"level1-A", b"level2-A"],
+            [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
             b"level3-A",
             element,
             None,
@@ -825,7 +847,7 @@ mod tests {
         .unwrap()
         .expect("successful value insert");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"level1-B",
             Element::empty_tree(),
             None,
@@ -848,14 +870,14 @@ mod tests {
         let transaction = db.start_transaction();
 
         let deleted = db
-            .delete_if_empty_tree([TEST_LEAF], b"level1-A", Some(&transaction))
+            .delete_if_empty_tree([TEST_LEAF].as_ref(), b"level1-A", Some(&transaction))
             .unwrap()
             .expect("unable to delete subtree");
         assert!(!deleted);
 
         let deleted = db
             .delete_up_tree_while_empty(
-                [TEST_LEAF, b"level1-A", b"level2-A"],
+                [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
                 b"level3-A",
                 &DeleteUpTreeOptions {
                     stop_path_height: Some(0),
@@ -869,7 +891,7 @@ mod tests {
 
         assert!(matches!(
             db.get(
-                [TEST_LEAF, b"level1-A", b"level2-A"],
+                [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
                 b"level3-A",
                 Some(&transaction)
             )
@@ -878,13 +900,17 @@ mod tests {
         ));
 
         assert!(matches!(
-            db.get([TEST_LEAF, b"level1-A"], b"level2-A", Some(&transaction))
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"level1-A"].as_ref(),
+                b"level2-A",
+                Some(&transaction)
+            )
+            .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
 
         assert!(matches!(
-            db.get([TEST_LEAF], b"level1-A", Some(&transaction))
+            db.get([TEST_LEAF].as_ref(), b"level1-A", Some(&transaction))
                 .unwrap(),
             Ok(Element::Tree(..)),
         ));
@@ -896,11 +922,17 @@ mod tests {
         let db = make_test_grovedb();
 
         // Insert some nested subtrees
-        db.insert([TEST_LEAF], b"level1-A", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert A on level 1");
         db.insert(
-            [TEST_LEAF, b"level1-A"],
+            [TEST_LEAF].as_ref(),
+            b"level1-A",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert A on level 1");
+        db.insert(
+            [TEST_LEAF, b"level1-A"].as_ref(),
             b"level2-A",
             Element::empty_tree(),
             None,
@@ -909,7 +941,7 @@ mod tests {
         .unwrap()
         .expect("successful subtree insert A on level 2");
         db.insert(
-            [TEST_LEAF, b"level1-A"],
+            [TEST_LEAF, b"level1-A"].as_ref(),
             b"level2-B",
             Element::empty_tree(),
             None,
@@ -919,7 +951,7 @@ mod tests {
         .expect("successful subtree insert B on level 2");
         // Insert an element into subtree
         db.insert(
-            [TEST_LEAF, b"level1-A", b"level2-A"],
+            [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
             b"level3-A",
             element,
             None,
@@ -927,9 +959,15 @@ mod tests {
         )
         .unwrap()
         .expect("successful value insert");
-        db.insert([TEST_LEAF], b"level1-B", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert B on level 1");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"level1-B",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert B on level 1");
 
         // Currently we have:
         // Level 1:            A
@@ -939,14 +977,14 @@ mod tests {
         // Level 3:          A: value
 
         let deleted = db
-            .delete_if_empty_tree([TEST_LEAF], b"level1-A", None)
+            .delete_if_empty_tree([TEST_LEAF].as_ref(), b"level1-A", None)
             .unwrap()
             .expect("unable to delete subtree");
         assert!(!deleted);
 
         let deleted = db
             .delete_up_tree_while_empty(
-                [TEST_LEAF, b"level1-A", b"level2-A"],
+                [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
                 b"level3-A",
                 &DeleteUpTreeOptions {
                     stop_path_height: Some(0),
@@ -959,18 +997,23 @@ mod tests {
         assert_eq!(deleted, 2);
 
         assert!(matches!(
-            db.get([TEST_LEAF, b"level1-A", b"level2-A"], b"level3-A", None,)
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
+                b"level3-A",
+                None,
+            )
+            .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
 
         assert!(matches!(
-            db.get([TEST_LEAF, b"level1-A"], b"level2-A", None).unwrap(),
+            db.get([TEST_LEAF, b"level1-A"].as_ref(), b"level2-A", None)
+                .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
 
         assert!(matches!(
-            db.get([TEST_LEAF], b"level1-A", None).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"level1-A", None).unwrap(),
             Ok(Element::Tree(..)),
         ));
     }
@@ -984,7 +1027,7 @@ mod tests {
 
         // Insert some nested subtrees
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"key1",
             Element::empty_tree(),
             None,
@@ -993,7 +1036,7 @@ mod tests {
         .unwrap()
         .expect("successful subtree 1 insert");
         db.insert(
-            [TEST_LEAF, b"key1"],
+            [TEST_LEAF, b"key1"].as_ref(),
             b"key2",
             Element::empty_tree(),
             None,
@@ -1004,7 +1047,7 @@ mod tests {
 
         // Insert an element into subtree
         db.insert(
-            [TEST_LEAF, b"key1", b"key2"],
+            [TEST_LEAF, b"key1", b"key2"].as_ref(),
             b"key3",
             element,
             None,
@@ -1013,7 +1056,7 @@ mod tests {
         .unwrap()
         .expect("successful value insert");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"key4",
             Element::empty_tree(),
             None,
@@ -1023,7 +1066,7 @@ mod tests {
         .expect("successful subtree 3 insert");
 
         db.delete(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"key1",
             Some(DeleteOptions {
                 allow_deleting_non_empty_trees: true,
@@ -1035,16 +1078,20 @@ mod tests {
         .unwrap()
         .expect("unable to delete subtree");
         assert!(matches!(
-            db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction))
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"key1", b"key2"].as_ref(),
+                b"key3",
+                Some(&transaction)
+            )
+            .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         transaction.commit().expect("cannot commit transaction");
         assert!(matches!(
-            db.get([TEST_LEAF], b"key1", None).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key1", None).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        db.get([TEST_LEAF], b"key4", None)
+        db.get([TEST_LEAF].as_ref(), b"key4", None)
             .unwrap()
             .expect("expected to get key4");
     }
@@ -1056,11 +1103,17 @@ mod tests {
         let db = make_test_grovedb();
 
         // Insert some nested subtrees
-        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree 1 insert");
         db.insert(
-            [TEST_LEAF, b"key1"],
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 1 insert");
+        db.insert(
+            [TEST_LEAF, b"key1"].as_ref(),
             b"key2",
             Element::empty_tree(),
             None,
@@ -1070,15 +1123,27 @@ mod tests {
         .expect("successful subtree 2 insert");
 
         // Insert an element into subtree
-        db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, None, None)
-            .unwrap()
-            .expect("successful value insert");
-        db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree 3 insert");
+        db.insert(
+            [TEST_LEAF, b"key1", b"key2"].as_ref(),
+            b"key3",
+            element,
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful value insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key4",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 3 insert");
 
         db.delete(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"key1",
             Some(DeleteOptions {
                 allow_deleting_non_empty_trees: true,
@@ -1090,28 +1155,34 @@ mod tests {
         .unwrap()
         .expect("unable to delete subtree");
         assert!(matches!(
-            db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
                 .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         assert!(matches!(
-            db.get([TEST_LEAF], b"key1", None).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key1", None).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(matches!(db.get([TEST_LEAF], b"key4", None).unwrap(), Ok(_)));
+        assert!(matches!(
+            db.get([TEST_LEAF].as_ref(), b"key4", None).unwrap(),
+            Ok(_)
+        ));
     }
 
     #[test]
     fn test_item_deletion() {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
-        db.insert([TEST_LEAF], b"key", element, None, None)
+        db.insert([TEST_LEAF].as_ref(), b"key", element, None, None)
             .unwrap()
             .expect("successful insert");
         let root_hash = db.root_hash(None).unwrap().unwrap();
-        assert!(db.delete([TEST_LEAF], b"key", None, None).unwrap().is_ok());
+        assert!(db
+            .delete([TEST_LEAF].as_ref(), b"key", None, None)
+            .unwrap()
+            .is_ok());
         assert!(matches!(
-            db.get([TEST_LEAF], b"key", None).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key", None).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
         assert_ne!(root_hash, db.root_hash(None).unwrap().unwrap());
@@ -1124,7 +1195,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item(b"cat".to_vec()),
                 None,
@@ -1134,7 +1205,7 @@ mod tests {
             .expect("expected to insert");
 
         let cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete");
 
@@ -1191,7 +1262,7 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(
-            vec![],
+            EMPTY_PATH,
             b"sum_tree",
             Element::empty_sum_tree(),
             None,
@@ -1202,7 +1273,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                [b"sum_tree".as_slice()],
+                [b"sum_tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_sum_item(15000),
                 None,
@@ -1212,7 +1283,7 @@ mod tests {
             .expect("expected to insert");
 
         let cost = db
-            .delete([b"sum_tree".as_slice()], b"key1", None, Some(&tx))
+            .delete([b"sum_tree".as_slice()].as_ref(), b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete");
 
@@ -1268,7 +1339,7 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(
-            vec![],
+            EMPTY_PATH,
             b"sum_tree",
             Element::empty_sum_tree(),
             None,
@@ -1279,7 +1350,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                [b"sum_tree".as_slice()],
+                [b"sum_tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_item(b"hello".to_vec()),
                 None,
@@ -1289,7 +1360,7 @@ mod tests {
             .expect("expected to insert");
 
         let cost = db
-            .delete([b"sum_tree".as_slice()], b"key1", None, Some(&tx))
+            .delete([b"sum_tree".as_slice()].as_ref(), b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete");
 

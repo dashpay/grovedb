@@ -259,7 +259,7 @@ mod tests {
         // selects the first 2 elements from the stored path and appends the new path.
         let ref1 =
             ReferencePathType::UpstreamRootHeightReference(2, vec![b"c".to_vec(), b"d".to_vec()]);
-        let final_path = path_from_reference_path_type(ref1, stored_path, None).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
@@ -274,7 +274,7 @@ mod tests {
             1,
             vec![b"c".to_vec(), b"d".to_vec()],
         );
-        let final_path = path_from_reference_path_type(ref1, stored_path, None).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
@@ -286,7 +286,7 @@ mod tests {
         let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::CousinReference(b"c".to_vec());
-        let final_path = path_from_reference_path_type(ref1, stored_path, None);
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None);
         assert!(final_path.is_err());
     }
 
@@ -296,7 +296,7 @@ mod tests {
         let key = b"m".as_ref();
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::CousinReference(b"c".to_vec());
-        let final_path = path_from_reference_path_type(ref1, stored_path, Some(key)).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, Some(key)).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"c".to_vec(), b"m".to_vec()]
@@ -308,7 +308,7 @@ mod tests {
         let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::RemovedCousinReference(vec![b"c".to_vec(), b"d".to_vec()]);
-        let final_path = path_from_reference_path_type(ref1, stored_path, None);
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None);
         assert!(final_path.is_err());
     }
 
@@ -318,7 +318,7 @@ mod tests {
         let key = b"m".as_ref();
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::RemovedCousinReference(vec![b"c".to_vec(), b"d".to_vec()]);
-        let final_path = path_from_reference_path_type(ref1, stored_path, Some(key)).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, Some(key)).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"c".to_vec(), b"d".to_vec(), b"m".to_vec()]
@@ -330,7 +330,7 @@ mod tests {
         let stored_path = vec![b"a".as_ref(), b"b".as_ref()];
         let key = b"m".as_ref();
         let ref1 = ReferencePathType::SiblingReference(b"c".to_vec());
-        let final_path = path_from_reference_path_type(ref1, stored_path, Some(key)).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, Some(key)).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
@@ -342,7 +342,7 @@ mod tests {
         let db = make_deep_tree();
 
         db.insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"ref1",
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
@@ -356,7 +356,7 @@ mod tests {
         .expect("should insert successfully");
 
         db.insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"ref2",
             Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
                 1,
@@ -369,7 +369,7 @@ mod tests {
         .expect("should insert successfully");
 
         db.insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"ref3",
             Element::new_reference(ReferencePathType::UpstreamFromElementHeightReference(
                 1,

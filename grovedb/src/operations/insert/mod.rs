@@ -487,6 +487,7 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
+    use path::SubtreePath;
     use pretty_assertions::assert_eq;
 
     use crate::{
@@ -495,15 +496,17 @@ mod tests {
         Element, Error,
     };
 
+    const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
+
     #[test]
     fn test_non_root_insert_item_without_transaction() {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
-        db.insert([TEST_LEAF], b"key", element.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), b"key", element.clone(), None, None)
             .unwrap()
             .expect("successful insert");
         assert_eq!(
-            db.get([TEST_LEAF], b"key", None)
+            db.get([TEST_LEAF].as_ref(), b"key", None)
                 .unwrap()
                 .expect("successful get"),
             element
@@ -516,15 +519,27 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
 
         // Insert a subtree first
-        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
         // Insert an element into subtree
-        db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None, None)
-            .unwrap()
-            .expect("successful value insert");
+        db.insert(
+            [TEST_LEAF, b"key1"].as_ref(),
+            b"key2",
+            element.clone(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful value insert");
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"], b"key2", None)
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
                 .unwrap()
                 .expect("successful get"),
             element
@@ -539,22 +554,28 @@ mod tests {
         let transaction = db.start_transaction();
 
         // Check that there's no such key in the DB
-        let result = db.get([TEST_LEAF], item_key, None).unwrap();
+        let result = db.get([TEST_LEAF].as_ref(), item_key, None).unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
         let element1 = Element::new_item(b"ayy".to_vec());
 
-        db.insert([TEST_LEAF], item_key, element1, None, Some(&transaction))
-            .unwrap()
-            .expect("cannot insert an item into GroveDB");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            item_key,
+            element1,
+            None,
+            Some(&transaction),
+        )
+        .unwrap()
+        .expect("cannot insert an item into GroveDB");
 
         // The key was inserted inside the transaction, so it shouldn't be
         // possible to get it back without committing or using transaction
-        let result = db.get([TEST_LEAF], item_key, None).unwrap();
+        let result = db.get([TEST_LEAF].as_ref(), item_key, None).unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
         // Check that the element can be retrieved when transaction is passed
         let result_with_transaction = db
-            .get([TEST_LEAF], item_key, Some(&transaction))
+            .get([TEST_LEAF].as_ref(), item_key, Some(&transaction))
             .unwrap()
             .expect("Expected to work");
         assert_eq!(result_with_transaction, Element::new_item(b"ayy".to_vec()));
@@ -564,7 +585,7 @@ mod tests {
 
         // Check that the change was committed
         let result = db
-            .get([TEST_LEAF], item_key, None)
+            .get([TEST_LEAF].as_ref(), item_key, None)
             .unwrap()
             .expect("Expected transaction to work");
         assert_eq!(result, Element::new_item(b"ayy".to_vec()));
@@ -578,11 +599,11 @@ mod tests {
         let transaction = db.start_transaction();
 
         // Check that there's no such key in the DB
-        let result = db.get([TEST_LEAF], subtree_key, None).unwrap();
+        let result = db.get([TEST_LEAF].as_ref(), subtree_key, None).unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             subtree_key,
             Element::empty_tree(),
             None,
@@ -591,11 +612,11 @@ mod tests {
         .unwrap()
         .expect("cannot insert an item into GroveDB");
 
-        let result = db.get([TEST_LEAF], subtree_key, None).unwrap();
+        let result = db.get([TEST_LEAF].as_ref(), subtree_key, None).unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
         let result_with_transaction = db
-            .get([TEST_LEAF], subtree_key, Some(&transaction))
+            .get([TEST_LEAF].as_ref(), subtree_key, Some(&transaction))
             .unwrap()
             .expect("Expected to work");
         assert_eq!(result_with_transaction, Element::empty_tree());
@@ -603,7 +624,7 @@ mod tests {
         db.commit_transaction(transaction).unwrap().unwrap();
 
         let result = db
-            .get([TEST_LEAF], subtree_key, None)
+            .get([TEST_LEAF].as_ref(), subtree_key, None)
             .unwrap()
             .expect("Expected transaction to work");
         assert_eq!(result, Element::empty_tree());
@@ -615,18 +636,18 @@ mod tests {
 
         // Insert twice at the same path
         assert!(db
-            .insert_if_not_exists([TEST_LEAF], b"key1", Element::empty_tree(), None)
+            .insert_if_not_exists([TEST_LEAF].as_ref(), b"key1", Element::empty_tree(), None)
             .unwrap()
             .expect("Provided valid path"));
         assert!(!db
-            .insert_if_not_exists([TEST_LEAF], b"key1", Element::empty_tree(), None)
+            .insert_if_not_exists([TEST_LEAF].as_ref(), b"key1", Element::empty_tree(), None)
             .unwrap()
             .expect("Provided valid path"));
 
         // Should propagate errors from insertion
         let result = db
             .insert_if_not_exists(
-                [TEST_LEAF, b"unknown"],
+                [TEST_LEAF, b"unknown"].as_ref(),
                 b"key1",
                 Element::empty_tree(),
                 None,
@@ -642,7 +663,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item(b"cat".to_vec()),
                 None,
@@ -699,13 +720,13 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"s", Element::empty_sum_tree(), None, Some(&tx))
             .unwrap()
             .expect("expected to add upper tree");
 
         let cost = db
             .insert(
-                vec![b"s".as_slice()],
+                [b"s".as_slice()].as_ref(),
                 b"key1",
                 Element::new_sum_item(5),
                 None,
@@ -757,12 +778,12 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"s", Element::empty_sum_tree(), None, Some(&tx))
             .unwrap()
             .expect("expected to add upper tree");
 
         db.insert(
-            vec![b"s".as_slice()],
+            [b"s".as_slice()].as_ref(),
             b"key1",
             Element::new_sum_item(5),
             None,
@@ -773,7 +794,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"s".as_slice()],
+                [b"s".as_slice()].as_ref(),
                 b"key2",
                 Element::new_sum_item(6),
                 None,
@@ -825,12 +846,12 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"s", Element::empty_sum_tree(), None, Some(&tx))
             .unwrap()
             .expect("expected to add upper tree");
 
         db.insert(
-            vec![b"s".as_slice()],
+            [b"s".as_slice()].as_ref(),
             b"key1",
             Element::new_sum_item(126),
             None,
@@ -842,7 +863,7 @@ mod tests {
         // the cost of the varint goes up by 2 after 126 and another 2 at 32768
         let cost = db
             .insert(
-                vec![b"s".as_slice()],
+                [b"s".as_slice()].as_ref(),
                 b"key2",
                 Element::new_sum_item(32768),
                 None,
@@ -896,7 +917,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"dog".to_vec())),
                 None,
@@ -954,7 +975,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
         // Explanation for 183 storage_written_bytes
 
@@ -1006,7 +1027,13 @@ mod tests {
         let tx = db.start_transaction();
 
         let cost = db
-            .insert(vec![], b"key1", Element::empty_sum_tree(), None, Some(&tx))
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_sum_tree(),
+                None,
+                Some(&tx),
+            )
             .cost;
         // Explanation for 183 storage_written_bytes
 
@@ -1060,7 +1087,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::empty_tree_with_flags(Some(b"cat".to_vec())),
                 None,
@@ -1120,13 +1147,13 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .unwrap();
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_item(b"test".to_vec()),
                 None,
@@ -1193,7 +1220,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
                 None,
@@ -1254,13 +1281,13 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .unwrap();
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
                 None,
@@ -1340,7 +1367,7 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(
-            vec![],
+            EMPTY_PATH,
             b"tree",
             Element::empty_tree_with_flags(Some(b"cat".to_vec())),
             None,
@@ -1351,7 +1378,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
                 None,
@@ -1433,7 +1460,7 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(
-            vec![],
+            EMPTY_PATH,
             b"key1",
             Element::new_item(b"cat".to_vec()),
             None,
@@ -1444,7 +1471,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item(b"dog".to_vec()),
                 None,
@@ -1498,12 +1525,12 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .unwrap();
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_item(b"cat".to_vec()),
             None,
@@ -1514,7 +1541,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_item(b"dog".to_vec()),
                 None,
@@ -1542,12 +1569,18 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             [0; 32].as_slice(),
             Element::new_sum_item(15),
             None,
@@ -1558,7 +1591,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 [0; 32].as_slice(),
                 Element::new_sum_item(1000000),
                 None,
@@ -1587,12 +1620,18 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             [1; 32].as_slice(),
             Element::new_sum_item(1000000),
             None,
@@ -1602,7 +1641,7 @@ mod tests {
         .unwrap();
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             [0; 32].as_slice(),
             Element::new_sum_item(15),
             None,
@@ -1613,7 +1652,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 [0; 32].as_slice(),
                 Element::new_sum_item(1000000),
                 None,
@@ -1641,12 +1680,18 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .unwrap();
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             [0; 32].as_slice(),
             Element::new_sum_item(1000000),
             None,
@@ -1657,7 +1702,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 [0; 32].as_slice(),
                 Element::new_sum_item(15),
                 None,
@@ -1685,12 +1730,12 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .unwrap();
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_item(b"test".to_vec()),
             None,
@@ -1701,7 +1746,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_item(b"test1".to_vec()),
                 None,
@@ -1729,12 +1774,12 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .unwrap();
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_tree(None),
             None,
@@ -1745,7 +1790,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![b"tree".as_slice()],
+                [b"tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_tree_with_flags(None, Some(b"cat".to_vec())),
                 Some(InsertOptions {
