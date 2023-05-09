@@ -86,30 +86,28 @@ impl InsertOptions {
 #[cfg(feature = "full")]
 impl GroveDb {
     /// Insert operation
-    pub fn insert<B: AsRef<[u8]>>(
+    pub fn insert<'b, B, P>(
         &self,
-        path: &[B],
+        path: P,
         key: &[u8],
         element: Element,
         options: Option<InsertOptions>,
         transaction: TransactionArg,
-    ) -> CostResult<(), Error> {
-        let subtree_path = SubtreePath::from(path);
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         if let Some(transaction) = transaction {
             self.insert_on_transaction(
-                &subtree_path,
+                &path.into(),
                 key,
                 element,
                 options.unwrap_or_default(),
                 transaction,
             )
         } else {
-            self.insert_without_transaction(
-                &subtree_path,
-                key,
-                element,
-                options.unwrap_or_default(),
-            )
+            self.insert_without_transaction(&path.into(), key, element, options.unwrap_or_default())
         }
     }
 
@@ -428,19 +426,24 @@ impl GroveDb {
     }
 
     /// Insert if not exists
-    pub fn insert_if_not_exists<B: AsRef<[u8]>>(
+    pub fn insert_if_not_exists<'b, B, P>(
         &self,
-        path: &[B],
+        path: P,
         key: &[u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error> {
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         let mut cost = OperationCost::default();
+        let subtree_path: SubtreePath<_> = path.into();
 
-        if cost_return_on_error!(&mut cost, self.has_raw(path, key, transaction)) {
+        if cost_return_on_error!(&mut cost, self.has_raw(&subtree_path, key, transaction)) {
             Ok(false).wrap_with_cost(cost)
         } else {
-            self.insert(path, key, element, None, transaction)
+            self.insert(&subtree_path, key, element, None, transaction)
                 .map_ok(|_| true)
                 .add_cost(cost)
         }

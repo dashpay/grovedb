@@ -164,7 +164,7 @@ impl<'b, 'a: 'b, B> From<&'a SubtreePath<'b, B>> for SubtreePath<'b, B> {
 
 impl SubtreePath<'static, [u8; 0]> {
     /// Creates empty subtree path
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         SubtreePath {
             base: SubtreePathBase::Slice(&[]),
             relative: SubtreePathRelative::Empty,

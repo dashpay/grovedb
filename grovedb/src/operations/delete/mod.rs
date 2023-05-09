@@ -108,16 +108,20 @@ type EstimatedKeyAndElementSize = (u32, u32);
 #[cfg(feature = "full")]
 impl GroveDb {
     /// Delete element in GroveDb
-    pub fn delete<B: AsRef<[u8]>>(
+    pub fn delete<'b, B, P>(
         &self,
-        path: &SubtreePath<B>,
+        path: P,
         key: &[u8],
         options: Option<DeleteOptions>,
         transaction: TransactionArg,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         let options = options.unwrap_or_default();
         self.delete_internal(
-            path,
+            &path.into(),
             key,
             &options,
             transaction,

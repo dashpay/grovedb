@@ -66,12 +66,16 @@ impl GroveDb {
     /// Get an element from the backing store
     /// Merk Caching is on by default
     /// use get_caching_optional if no caching is desired
-    pub fn get<B: AsRef<[u8]>>(
+    pub fn get<'b, B, P>(
         &self,
-        path: &[B],
+        path: P,
         key: &[u8],
         transaction: TransactionArg,
-    ) -> CostResult<Element, Error> {
+    ) -> CostResult<Element, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         self.get_caching_optional(&path.into(), key, true, transaction)
     }
 
@@ -331,12 +335,16 @@ impl GroveDb {
 
     /// Does tree element exist without following references
     /// There is no cache for has_raw
-    pub fn has_raw<B: AsRef<[u8]>>(
+    pub fn has_raw<'b, B, P>(
         &self,
-        path: &[B],
+        path: P,
         key: &[u8],
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error> {
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         // Merk's items should be written into data storage and checked accordingly
         storage_context_optional_tx!(self.db, path, transaction, storage, {
             storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))

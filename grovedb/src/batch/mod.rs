@@ -1458,7 +1458,7 @@ impl GroveDb {
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(
-                            &path_slices,
+                            path_slices.as_slice(),
                             op.key.as_slice(),
                             element.to_owned(),
                             options.clone().map(|o| o.as_insert_options()),
@@ -1472,7 +1472,7 @@ impl GroveDb {
                     cost_return_on_error!(
                         &mut cost,
                         self.delete(
-                            &path_slices.as_slice().into(),
+                            path_slices.as_slice(),
                             op.key.as_slice(),
                             options.clone().map(|o| o.as_delete_options()),
                             transaction
