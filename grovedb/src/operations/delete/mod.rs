@@ -281,7 +281,7 @@ impl GroveDb {
 
             if is_subtree {
                 let subtree_merk_path = path.derive_child(key);
-                let subtree_merk_path_vec = subtree_merk_path.to_owned();
+                let subtree_merk_path_vec = subtree_merk_path.to_vec();
                 // let subtree_merk_path_vec = subtree_merk_path
                 //     .clone()
                 //     .map(|x| x.to_vec())
@@ -309,7 +309,7 @@ impl GroveDb {
                 let mut is_empty = merk_optional_tx_path_not_empty!(
                     &mut cost,
                     self.db,
-                    subtree_merk_path,
+                    &subtree_merk_path,
                     transaction,
                     subtree,
                     {
@@ -338,7 +338,7 @@ impl GroveDb {
                     }
                 } else if is_empty {
                     Ok(Some(GroveDbOp::delete_tree_op(
-                        path.to_owned(),
+                        path.to_vec(),
                         key.to_vec(),
                         is_subtree_with_sum,
                     )))
@@ -349,7 +349,7 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(GroveDbOp::delete_op(path.to_owned(), key.to_vec()))).wrap_with_cost(cost)
+                Ok(Some(GroveDbOp::delete_op(path.to_vec(), key.to_vec()))).wrap_with_cost(cost)
             }
         }
     }
@@ -407,7 +407,7 @@ impl GroveDb {
 
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(subtree_merk_path, transaction)
+                self.open_transactional_merk_at_path(&subtree_merk_path, transaction)
             );
             let is_empty = subtree_of_tree_we_are_deleting
                 .is_empty_tree()
@@ -479,7 +479,7 @@ impl GroveDb {
                     Vec<Vec<u8>>,
                     Merk<PrefixedRocksDbBatchTransactionContext>,
                 > = HashMap::default();
-                merk_cache.insert(path.to_owned(), merk_to_delete_tree_from);
+                merk_cache.insert(path.to_vec(), merk_to_delete_tree_from);
                 cost_return_on_error!(
                     &mut cost,
                     self.propagate_changes_with_batch_transaction(
@@ -511,7 +511,7 @@ impl GroveDb {
                 );
                 let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
                     HashMap::default();
-                merk_cache.insert(path.to_owned(), subtree_to_delete_from);
+                merk_cache.insert(path.to_vec(), subtree_to_delete_from);
                 cost_return_on_error!(
                     &mut cost,
                     self.propagate_changes_with_transaction(merk_cache, path, transaction)
@@ -531,7 +531,7 @@ impl GroveDb {
             );
             let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
                 HashMap::default();
-            merk_cache.insert(path.to_owned(), subtree_to_delete_from);
+            merk_cache.insert(path.to_vec(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,
                 self.propagate_changes_with_transaction(merk_cache, path, transaction)
@@ -567,7 +567,7 @@ impl GroveDb {
             let subtree_merk_path = path.derive_child(key);
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(subtree_merk_path)
+                self.open_non_transactional_merk_at_path(&subtree_merk_path)
             );
             let is_empty = subtree_of_tree_we_are_deleting
                 .is_empty_tree()
@@ -632,7 +632,7 @@ impl GroveDb {
                 )
             );
         }
-        merk_cache.insert(path.to_owned(), subtree_to_delete_from);
+        merk_cache.insert(path.to_vec(), subtree_to_delete_from);
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_without_transaction(merk_cache, path)
@@ -663,7 +663,7 @@ impl GroveDb {
         // Update: there are pinned views into RocksDB to return slices of data, perhaps
         // there is something for iterators
 
-        let mut queue: Vec<Vec<Vec<u8>>> = vec![path.to_owned()];
+        let mut queue: Vec<Vec<Vec<u8>>> = vec![path.to_vec()];
         let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
 
         while let Some(q) = queue.pop() {

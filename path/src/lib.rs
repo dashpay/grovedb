@@ -100,11 +100,11 @@ impl<B> Copy for SubtreePathBase<'_, B> {}
 
 impl<'b, B: AsRef<[u8]>> SubtreePathBase<'b, B> {
     /// Get a derivated subtree path for a parent with care for base path slice case.
-    fn parent(&self) -> Option<(SubtreePath<'b, B>, &'b [u8])> {
+    fn derive_parent(&self) -> Option<(SubtreePath<'b, B>, CowLike<'b>)> {
         match self {
             SubtreePathBase::Slice(path) => path
                 .split_last()
-                .map(|(tail, rest)| (SubtreePath::from(rest), tail.as_ref())),
+                .map(|(tail, rest)| (SubtreePath::from(rest), CowLike::Borrowed(tail.as_ref()))),
             SubtreePathBase::DerivedPath(path) => path.derive_parent(),
         }
     }
@@ -174,15 +174,15 @@ impl SubtreePath<'static, [u8; 0]> {
 
 impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     /// Get a derivated path for a parent and a chopped segment.
-    pub fn derive_parent(&'b self) -> Option<(SubtreePath<'b, B>, &'b [u8])> {
+    pub fn derive_parent(&self) -> Option<(SubtreePath<'b, B>, CowLike<'b>)> {
         match &self.relative {
-            SubtreePathRelative::Empty => self.base.parent(),
+            SubtreePathRelative::Empty => self.base.derive_parent(),
             SubtreePathRelative::Single(relative) => Some((
                 SubtreePath {
                     base: self.base,
                     relative: SubtreePathRelative::Empty,
                 },
-                relative,
+                relative.clone(),
             )),
         }
     }
@@ -213,10 +213,10 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     }
 
     /// Collect path as a vector of vectors, but this actually negates all the benefits of this library.
-    pub fn to_owned(&self) -> Vec<Vec<u8>> {
+    pub fn to_vec(&self) -> Vec<Vec<u8>> {
         let mut result = match self.base {
             SubtreePathBase::Slice(s) => s.iter().map(|x| x.as_ref().to_vec()).collect(),
-            SubtreePathBase::DerivedPath(p) => p.to_owned(),
+            SubtreePathBase::DerivedPath(p) => p.to_vec(),
         };
 
         match &self.relative {
@@ -294,7 +294,7 @@ mod tests {
     use super::*;
 
     fn print_path<B: AsRef<[u8]>>(path: &SubtreePath<B>) {
-        let path_vec = path.to_owned();
+        let path_vec = path.to_vec();
         let mut formatted = String::from("[");
         for s in path_vec {
             write!(

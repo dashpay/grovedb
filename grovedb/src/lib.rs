@@ -50,7 +50,8 @@ pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
 // #[cfg(feature = "full")]
-// mod replication; TODO: decided that current implementation is too ineffective to use it
+// mod replication; TODO: decided that current implementation is too ineffective
+// to use it
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests;
@@ -95,7 +96,8 @@ use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 // #[cfg(feature = "full")]
-// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer,
+// SubtreeChunkProducer};
 #[cfg(feature = "full")]
 pub use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
@@ -155,7 +157,7 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_transactional_storage_context(path, tx)
+            .get_transactional_storage_context(&path, tx)
             .unwrap_add_cost(&mut cost);
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
@@ -164,11 +166,11 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
+                Element::get_from_storage(&parent_storage, &parent_key).map_err(|e| {
                     Error::InvalidParentLayerPath(format!(
                         "could not get key {} for parent {:?} of subtree: {}",
                         hex::encode(parent_key),
-                        DebugByteVectors(parent_path.to_owned()),
+                        DebugByteVectors(parent_path.to_vec()),
                         e
                     ))
                 })
@@ -203,8 +205,12 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         let mut cost = OperationCost::default();
-        let storage = self.db.get_storage_context(path).unwrap_add_cost(&mut cost);
         let path: SubtreePath<B> = path.into();
+
+        let storage = self
+            .db
+            .get_storage_context(&path)
+            .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
@@ -213,11 +219,11 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
+                Element::get_from_storage(&parent_storage, &parent_key).map_err(|e| {
                     Error::InvalidParentLayerPath(format!(
                         "could not get key {} for parent {:?} of subtree: {}",
                         hex::encode(parent_key),
-                        DebugByteVectors(parent_path.to_owned()),
+                        DebugByteVectors(parent_path.to_vec()),
                         e
                     ))
                 })
@@ -288,7 +294,7 @@ impl GroveDb {
             &cost,
             merk_cache
                 .remove(
-                    &path.to_owned(), // TODO oof
+                    &path.to_vec(), // TODO oof
                 )
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
@@ -337,26 +343,19 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut path_iter = path.reverse_iter(); // TODO: caching should be something more ergonomic,
-                                                 // until that it at least should not own the vecvec path
-
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
-                .remove(
-                    path_iter
-                        .map(|k| k.to_vec())
-                        .collect::<Vec<Vec<u8>>>()
-                        .as_slice()
-                )
+                 // TODO: do something about this and caching in general
+                .remove(&path.to_vec())
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
                 ))
         );
 
-        let mut parent_path = path.derive_parent();
+        let mut parent = path.derive_parent();
 
-        while let Some((current_path, current_key)) = parent_path {
+        while let Some((current_path, current_key)) = parent {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(&current_path, transaction)
@@ -376,7 +375,7 @@ impl GroveDb {
                 )
             );
             child_tree = parent_tree;
-            parent_path = current_path.derive_parent();
+            parent = current_path.derive_parent();
         }
         Ok(()).wrap_with_cost(cost)
     }
@@ -392,7 +391,7 @@ impl GroveDb {
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
-                .remove(&path.to_owned()) // TODO: merk_cache to use SubtreePath
+                .remove(&path.to_vec()) // TODO: merk_cache to use SubtreePath
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
                 ))
@@ -426,21 +425,19 @@ impl GroveDb {
     }
 
     /// Updates a tree item and preserves flags. Returns CostResult.
-    pub(crate) fn update_tree_item_preserve_flag<
-        'db,
-        K: AsRef<[u8]> + Copy,
-        S: StorageContext<'db>,
-    >(
+    pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         parent_tree: &mut Merk<S>,
         key: K,
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
         sum: Option<i64>,
     ) -> CostResult<(), Error> {
-        Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
+        let key_ref = key.as_ref();
+
+        Self::get_element_from_subtree(parent_tree, key_ref).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
+                tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None)
             } else if let Element::SumTree(.., flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
                     maybe_root_key,
@@ -641,15 +638,13 @@ impl GroveDb {
 
     /// Method to check that the value_hash of Element::Tree nodes are computed
     /// correctly.
-    pub fn verify_grovedb(
-        &self,
-    ) -> HashMap<SubtreePath<[u8; 0]>, (CryptoHash, CryptoHash, CryptoHash)> {
+    pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let path = SubtreePath::new();
         let root_merk = self
             .open_non_transactional_merk_at_path(&path)
             .unwrap()
             .expect("should exist");
-        self.verify_merk_and_submerks(root_merk, path)
+        self.verify_merk_and_submerks(root_merk, &path)
     }
 
     /// Verifies that the root hash of the given merk and all submerks match
@@ -657,8 +652,8 @@ impl GroveDb {
     fn verify_merk_and_submerks<B: AsRef<[u8]>>(
         &self,
         merk: Merk<PrefixedRocksDbStorageContext>,
-        path: SubtreePath<B>,
-    ) -> HashMap<SubtreePath<B>, (CryptoHash, CryptoHash, CryptoHash)> {
+        path: &SubtreePath<B>,
+    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
@@ -673,7 +668,7 @@ impl GroveDb {
                     .unwrap()
                     .unwrap()
                     .unwrap();
-                let mut new_path = path.derive_child(key);
+                let new_path = path.derive_child(key);
 
                 let inner_merk = self
                     .open_non_transactional_merk_at_path(&new_path)
@@ -686,11 +681,11 @@ impl GroveDb {
 
                 if combined_value_hash != element_value_hash {
                     issues.insert(
-                        new_path,
+                        new_path.to_vec(),
                         (root_hash, combined_value_hash, element_value_hash),
                     );
                 }
-                issues.extend(self.verify_merk_and_submerks(inner_merk, new_path));
+                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path));
             }
         }
         issues

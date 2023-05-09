@@ -618,7 +618,7 @@ impl GroveDb {
                                     &mut cost,
                                     path_from_reference_path_type(
                                         reference_path,
-                                        &path.to_owned(),
+                                        &path.to_vec(),
                                         Some(key.as_slice())
                                     )
                                     .wrap_with_cost(OperationCost::default())

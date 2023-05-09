@@ -199,7 +199,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         if let Some(stop_path_height) = options.stop_path_height {
-            if stop_path_height == path.to_owned().len() as u16 {
+            if stop_path_height == path.to_vec().len() as u16 {
                 // TODO investigate how necessary it is to have path length
                 return Ok(None).wrap_with_cost(cost);
             }
@@ -232,7 +232,7 @@ impl GroveDb {
                     &mut cost,
                     self.add_delete_operations_for_delete_up_tree_while_empty(
                         &parent_path,
-                        parent_key,
+                        &parent_key,
                         &new_options,
                         None, // todo: maybe we can know this?
                         current_batch_operations,

@@ -1561,11 +1561,7 @@ impl GroveDb {
                     Element::get_from_storage(&parent_storage, parent_key).map_err(|_| {
                         Error::InvalidPath(format!(
                             "could not get key for parent of subtree for batch at path {}",
-                            parent_path
-                                .to_owned()
-                                .into_iter()
-                                .map(hex::encode)
-                                .join("/")
+                            parent_path.to_vec().into_iter().map(hex::encode).join("/")
                         ))
                     })
                 );

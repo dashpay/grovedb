@@ -93,10 +93,10 @@ impl GroveDb {
             Element::Reference(reference_path, ..) => {
                 let path_owned = cost_return_on_error!(
                     &mut cost,
-                    path_from_reference_path_type(reference_path, &path.to_owned(), Some(key))
+                    path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
-                self.follow_reference(&path.into(), allow_cache, transaction)
+                self.follow_reference(&path_owned.as_slice().into(), allow_cache, transaction)
                     .add_cost(cost)
             }
             other => Ok(other).wrap_with_cost(cost),
@@ -115,7 +115,7 @@ impl GroveDb {
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
         let mut visited = HashSet::new();
-        let mut current_path = path.to_owned(); // TODO, still have to do because of references handling
+        let mut current_path = path.to_vec(); // TODO, still have to do because of references handling
 
         while hops_left > 0 {
             if visited.contains(&current_path) {
@@ -394,7 +394,7 @@ impl GroveDb {
             transaction,
             Error::PathNotFound(format!(
                 "subtree doesn't exist at path {:?}",
-                path.to_owned()
+                path.to_vec()
                     .into_iter()
                     .map(hex::encode)
                     .collect::<Vec<String>>()

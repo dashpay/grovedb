@@ -130,7 +130,7 @@ impl GroveDb {
             &mut cost,
             self.add_element_on_transaction(&path, key, element, options, transaction)
         );
-        merk_cache.insert(path.to_owned(), merk);
+        merk_cache.insert(path.to_vec(), merk);
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_with_transaction(merk_cache, path, transaction)
@@ -151,7 +151,7 @@ impl GroveDb {
         let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
 
-        let path_owned = path.to_owned(); // TODO
+        let path_owned = path.to_vec(); // TODO
         let merk = cost_return_on_error!(
             &mut cost,
             self.add_element_without_transaction(&path_owned, key, element, options)
@@ -220,7 +220,7 @@ impl GroveDb {
 
         match element {
             Element::Reference(ref reference_path, ..) => {
-                let path = path.to_owned(); // TODO: need for support for references in path library
+                let path = path.to_vec(); // TODO: need for support for references in path library
                 let reference_path = cost_return_on_error!(
                     &mut cost,
                     path_from_reference_path_type(reference_path.clone(), &path, Some(key))
