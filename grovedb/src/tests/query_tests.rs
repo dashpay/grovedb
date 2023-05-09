@@ -2545,6 +2545,9 @@ fn test_query_b_depends_on_query_a() {
         }
     });
 
+    // add limit to path query one
+    path_query_one.query.limit = Some(1);
+
     let (_, result_set) = GroveDb::verify_query_with_chained_path_queries(
         proof.as_slice(),
         &path_query_one,
