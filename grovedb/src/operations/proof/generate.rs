@@ -114,8 +114,8 @@ impl GroveDb {
         // Hence verification errors due to non subset issues will not be deterministic.
         // if (limit.is_some() || offset.is_some()) && is_verbose {
         //     return Err(Error::InvalidInput(
-        //         "cannot generate verbose proof for path-query with a limit or offset value",
-        //     ))
+        //         "cannot generate verbose proof for path-query with a limit or offset
+        // value",     ))
         //     .wrap_with_cost(cost);
         // }
 

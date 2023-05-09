@@ -32,13 +32,13 @@ use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
 use tempfile::TempDir;
 
-use crate::tests::ANOTHER_TEST_LEAF;
 use crate::{
     batch::GroveDbOp,
     query_result_type::{PathKeyOptionalElementTrio, QueryResultType},
     reference_path::ReferencePathType,
     tests::{
-        common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb, TEST_LEAF,
+        common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb,
+        ANOTHER_TEST_LEAF, TEST_LEAF,
     },
     Element, Error, GroveDb, PathQuery, SizedQuery,
 };
@@ -2238,12 +2238,12 @@ fn test_subset_proof_verification() {
     //     cloned_path_query.query.limit = Some(10);
     //     cloned_path_query
     // };
-    // let verbose_proof_result = db.prove_verbose(&path_query_with_limit).unwrap();
-    // assert!(matches!(
+    // let verbose_proof_result =
+    // db.prove_verbose(&path_query_with_limit).unwrap(); assert!(matches!(
     //     verbose_proof_result,
     //     Err(Error::InvalidInput(
-    //         "cannot generate verbose proof for path-query with a limit or offset value"
-    //     ))
+    //         "cannot generate verbose proof for path-query with a limit or
+    // offset value"     ))
     // ));
 
     // TODO: enable again?
@@ -2253,12 +2253,12 @@ fn test_subset_proof_verification() {
     //     cloned_path_query.query.offset = Some(10);
     //     cloned_path_query
     // };
-    // let verbose_proof_result = db.prove_verbose(&path_query_with_offset).unwrap();
-    // assert!(matches!(
+    // let verbose_proof_result =
+    // db.prove_verbose(&path_query_with_offset).unwrap(); assert!(matches!(
     //     verbose_proof_result,
     //     Err(Error::InvalidInput(
-    //         "cannot generate verbose proof for path-query with a limit or offset value"
-    //     ))
+    //         "cannot generate verbose proof for path-query with a limit or
+    // offset value"     ))
     // ));
 }
 
