@@ -156,6 +156,7 @@ impl GroveDb {
         );
         merk_cache.insert(path_owned, merk);
 
+
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_without_transaction(merk_cache, path)

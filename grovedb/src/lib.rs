@@ -352,12 +352,12 @@ impl GroveDb {
                 ))
         );
 
-        let mut parent = path.derive_parent();
+        let mut current_path = path.derive_parent();
 
-        while let Some((current_path, current_key)) = parent {
+        while let Some((parent_path, parent_key)) = current_path {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(&current_path, transaction)
+                self.open_transactional_merk_at_path(&parent_path, transaction)
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -367,14 +367,14 @@ impl GroveDb {
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
                     &mut parent_tree,
-                    current_key,
+                    parent_key,
                     root_key,
                     root_hash,
                     sum
                 )
             );
             child_tree = parent_tree;
-            parent = current_path.derive_parent();
+            current_path = parent_path.derive_parent();
         }
         Ok(()).wrap_with_cost(cost)
     }
@@ -385,6 +385,7 @@ impl GroveDb {
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
         path: &SubtreePath<B>,
     ) -> CostResult<(), Error> {
+
         let mut cost = OperationCost::default();
 
         let mut child_tree = cost_return_on_error_no_add!(
@@ -418,7 +419,7 @@ impl GroveDb {
                 )
             );
             child_tree = parent_tree;
-            current_path = path.derive_parent();
+            current_path = parent_path.derive_parent();
         }
         Ok(()).wrap_with_cost(cost)
     }
