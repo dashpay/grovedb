@@ -720,7 +720,10 @@ mod tests {
         assert_eq!(result_set.result_set.len(), 3);
 
         // what is the key is empty??
-        let merk = db.open_non_transactional_merk_at_path(EMPTY_PATH).unwrap().unwrap();
+        let merk = db
+            .open_non_transactional_merk_at_path(EMPTY_PATH)
+            .unwrap()
+            .unwrap();
         let expected_root_hash = merk.root_hash().unwrap();
 
         let mut proof = vec![];

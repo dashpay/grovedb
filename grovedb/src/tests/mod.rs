@@ -2900,7 +2900,14 @@ fn test_tree_value_exists_method_tx() {
     db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, Some(&tx))
         .unwrap()
         .expect("cannot insert item");
-    (*db).insert([b"yeet"].as_ref(), b"leaf", Element::empty_tree(), None, Some(&tx))
+    (*db)
+        .insert(
+            [b"yeet"].as_ref(),
+            b"leaf",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+        )
         .unwrap()
         .expect("cannot insert item");
     assert!(db

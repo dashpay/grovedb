@@ -2056,7 +2056,9 @@ mod tests {
     use super::*;
     use crate::{
         reference_path::ReferencePathType,
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF, common::EMPTY_PATH},
+        tests::{
+            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+        },
         PathQuery,
     };
 
@@ -2266,14 +2268,22 @@ mod tests {
         db.get([b"key1".as_ref(), b"key2"].as_ref(), b"key3", Some(&tx))
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", Some(&tx))
-            .unwrap()
-            .expect("cannot get element");
+        db.get(
+            [b"key1".as_ref(), b"key2", b"key3"].as_ref(),
+            b"key4",
+            Some(&tx),
+        )
+        .unwrap()
+        .expect("cannot get element");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", Some(&tx))
-                .unwrap()
-                .expect("cannot get element"),
+            db.get(
+                [b"key1".as_ref(), b"key2", b"key3"].as_ref(),
+                b"key4",
+                Some(&tx)
+            )
+            .unwrap()
+            .expect("cannot get element"),
             element
         );
         assert_eq!(
@@ -2737,7 +2747,10 @@ mod tests {
             ),
         ];
         assert!(db.apply_batch(ops, None, None).unwrap().is_err());
-        assert!(db.get([b"key1".as_ref()].as_ref(), b"key2", None).unwrap().is_err());
+        assert!(db
+            .get([b"key1".as_ref()].as_ref(), b"key2", None)
+            .unwrap()
+            .is_err());
     }
 
     #[test]
@@ -2768,7 +2781,10 @@ mod tests {
             ),
         ];
         assert!(db.apply_batch(ops, None, None).unwrap().is_err());
-        assert!(db.get([b"key1".as_ref()].as_ref(), b"key2", None).unwrap().is_err());
+        assert!(db
+            .get([b"key1".as_ref()].as_ref(), b"key2", None)
+            .unwrap()
+            .is_err());
         assert!(db
             .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
             .unwrap()
@@ -2845,12 +2861,24 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([TEST_LEAF].as_ref(), b"invalid", element.clone(), None, None)
-            .unwrap()
-            .expect("cannot insert value");
-        db.insert([TEST_LEAF].as_ref(), b"valid", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("cannot insert value");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"invalid",
+            element.clone(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert value");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"valid",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert value");
 
         // Insertion into scalar is invalid
         let ops = vec![GroveDbOp::insert_op(
@@ -2891,9 +2919,15 @@ mod tests {
         )
         .unwrap()
         .expect("cannot insert a subtree");
-        db.insert([TEST_LEAF, b"key_subtree"].as_ref(), b"key2", element, None, None)
-            .unwrap()
-            .expect("cannot insert an item");
+        db.insert(
+            [TEST_LEAF, b"key_subtree"].as_ref(),
+            b"key2",
+            element,
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an item");
 
         // TEST_LEAF can not be overwritten
         let ops = vec![
@@ -2999,12 +3033,24 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([TEST_LEAF].as_ref(), b"key1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("cannot insert a subtree");
-        db.insert([TEST_LEAF, b"key1"].as_ref(), b"key2", element.clone(), None, None)
-            .unwrap()
-            .expect("cannot insert an item");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert a subtree");
+        db.insert(
+            [TEST_LEAF, b"key1"].as_ref(),
+            b"key2",
+            element.clone(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an item");
         let ops = vec![GroveDbOp::insert_op(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
@@ -3072,7 +3118,10 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
 
-        assert!(db.get([ANOTHER_TEST_LEAF].as_ref(), b"key1", None).unwrap().is_err());
+        assert!(db
+            .get([ANOTHER_TEST_LEAF].as_ref(), b"key1", None)
+            .unwrap()
+            .is_err());
 
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None)
@@ -3112,15 +3161,9 @@ mod tests {
         ];
         let mut acc_path: Vec<Vec<u8>> = vec![];
         for p in full_path.into_iter() {
-            db.insert(
-                acc_path.as_slice(),
-                &p,
-                Element::empty_tree(),
-                None,
-                None,
-            )
-            .unwrap()
-            .expect("expected to insert");
+            db.insert(acc_path.as_slice(), &p, Element::empty_tree(), None, None)
+                .unwrap()
+                .expect("expected to insert");
             acc_path.push(p);
         }
 
@@ -3146,15 +3189,9 @@ mod tests {
         let full_path = vec![b"leaf1".to_vec(), b"sub1".to_vec()];
         let mut acc_path: Vec<Vec<u8>> = vec![];
         for p in full_path.into_iter() {
-            db.insert(
-                acc_path.as_slice(),
-                &p,
-                Element::empty_tree(),
-                None,
-                None,
-            )
-            .unwrap()
-            .expect("expected to insert");
+            db.insert(acc_path.as_slice(), &p, Element::empty_tree(), None, None)
+                .unwrap()
+                .expect("expected to insert");
             acc_path.push(p);
         }
 
@@ -3209,7 +3246,12 @@ mod tests {
             ),
         ];
         assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Ok(_)));
-        assert_eq!(db.get([TEST_LEAF].as_ref(), b"key1", None).unwrap().unwrap(), elem);
+        assert_eq!(
+            db.get([TEST_LEAF].as_ref(), b"key1", None)
+                .unwrap()
+                .unwrap(),
+            elem
+        );
 
         // should successfully prove reference as the value hash is valid
         let mut reference_key_query = Query::new();

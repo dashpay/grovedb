@@ -94,7 +94,7 @@ impl GroveDb {
     ) -> CostResult<u16, Error>
     where
         B: AsRef<[u8]> + 'b,
-    P: Into<SubtreePath<'b, B>>
+        P: Into<SubtreePath<'b, B>>,
     {
         self.delete_up_tree_while_empty_with_sectional_storage(
             &path.into(),

@@ -40,7 +40,7 @@ use crate::{
         common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb,
         ANOTHER_TEST_LEAF, TEST_LEAF,
     },
-    Element, Error, GroveDb, PathQuery, SizedQuery,
+    Element, GroveDb, PathQuery, SizedQuery,
 };
 
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
@@ -2510,7 +2510,7 @@ fn test_query_b_depends_on_query_a() {
 
     // TEST_LEAF contains the id to name mapping
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[1],
         Element::new_item(b"d".to_vec()),
         None,
@@ -2519,7 +2519,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[2],
         Element::new_item(b"b".to_vec()),
         None,
@@ -2528,7 +2528,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[3],
         Element::new_item(b"c".to_vec()),
         None,
@@ -2537,7 +2537,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[4],
         Element::new_item(b"a".to_vec()),
         None,
@@ -2548,7 +2548,7 @@ fn test_query_b_depends_on_query_a() {
 
     // ANOTHER_TEST_LEAF contains the name to age mapping
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"a",
         Element::new_item(vec![10]),
         None,
@@ -2557,7 +2557,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"b",
         Element::new_item(vec![30]),
         None,
@@ -2566,7 +2566,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"c",
         Element::new_item(vec![12]),
         None,
@@ -2575,7 +2575,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"d",
         Element::new_item(vec![46]),
         None,
@@ -2608,7 +2608,7 @@ fn test_query_b_depends_on_query_a() {
     // next query should return the age for elements above b
     let mut query = Query::new();
     query.insert_range_after(b"b".to_vec()..);
-    let mut path_query_two = PathQuery::new_unsized(vec![ANOTHER_TEST_LEAF.to_vec()], query);
+    let path_query_two = PathQuery::new_unsized(vec![ANOTHER_TEST_LEAF.to_vec()], query);
 
     // show that we get the correct output
     let proof = db.prove_query(&path_query_two).unwrap().unwrap();

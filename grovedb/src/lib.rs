@@ -385,7 +385,6 @@ impl GroveDb {
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
         path: &SubtreePath<B>,
     ) -> CostResult<(), Error> {
-
         let mut cost = OperationCost::default();
 
         let mut child_tree = cost_return_on_error_no_add!(

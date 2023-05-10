@@ -156,7 +156,6 @@ impl GroveDb {
         );
         merk_cache.insert(path_owned, merk);
 
-
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_without_transaction(merk_cache, path)
@@ -492,7 +491,7 @@ mod tests {
 
     use crate::{
         operations::insert::InsertOptions,
-        tests::{make_empty_grovedb, make_test_grovedb, TEST_LEAF, common::EMPTY_PATH},
+        tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
         Element, Error,
     };
 
