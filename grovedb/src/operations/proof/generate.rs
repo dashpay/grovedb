@@ -654,15 +654,12 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use merk::{execute_proof, proofs::Query};
-    use path::SubtreePath;
 
     use crate::{
         operations::proof::util::{ProofReader, ProofTokenType},
-        tests::{make_deep_tree, TEST_LEAF},
+        tests::{common::EMPTY_PATH, make_deep_tree, TEST_LEAF},
         GroveDb,
     };
-
-    const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
 
     #[test]
     fn test_path_info_encoding_and_decoding() {
@@ -735,7 +732,7 @@ mod tests {
             ProofTokenType::Merk,
             &mut proof,
             true,
-            path.iter().last().unwrap_or(&(&[][..])),
+            &[],
         )
         .unwrap()
         .unwrap();
