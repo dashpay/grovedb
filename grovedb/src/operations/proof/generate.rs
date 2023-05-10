@@ -93,7 +93,8 @@ impl GroveDb {
     /// allows for subset verification
     pub fn prove_verbose(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
         // TODO: we need to solve the localized limit and offset problem.
-        //      to get expected behaviour with this you need to know exactly
+        //      when using a path query that has a limit and offset value,
+        //      to get the expected behaviour, you need to know exactly
         //      how the proving internals work and how your state looks.
         self.prove_internal(query, true)
     }
