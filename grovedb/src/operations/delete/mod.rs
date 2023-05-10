@@ -179,14 +179,18 @@ impl GroveDb {
     }
 
     /// Delete if an empty tree
-    pub fn delete_if_empty_tree<B: AsRef<[u8]>>(
+    pub fn delete_if_empty_tree<'b, B, P>(
         &self,
-        path: &SubtreePath<B>,
+        path: P,
         key: &[u8],
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error> {
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
         self.delete_if_empty_tree_with_sectional_storage_function(
-            path,
+            &path.into(),
             key,
             transaction,
             &mut |_, removed_key_bytes, removed_value_bytes| {
@@ -704,11 +708,11 @@ mod tests {
 
     use crate::{
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, DeleteOptions},
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        tests::{
+            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+        },
         Element, Error,
     };
-
-    const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
 
     #[test]
     fn test_empty_subtree_deletion_without_transaction() {

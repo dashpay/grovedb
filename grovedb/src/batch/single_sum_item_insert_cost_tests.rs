@@ -35,20 +35,30 @@ mod tests {
         OperationCost,
     };
 
-    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
+    use crate::{
+        batch::GroveDbOp,
+        tests::{common::EMPTY_PATH, make_empty_grovedb},
+        Element,
+    };
 
     #[test]
     fn test_batch_one_sum_item_insert_costs_match_non_batch() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"sum_tree", Element::empty_sum_tree(), None, None)
-            .unwrap()
-            .expect("expected to insert sum tree");
+        db.insert(
+            EMPTY_PATH,
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("expected to insert sum tree");
 
         let non_batch_cost = db
             .insert(
-                [b"sum_tree".as_slice()],
+                [b"sum_tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_sum_item(150),
                 None,
@@ -135,7 +145,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -213,7 +223,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_sum_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_sum_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -291,7 +301,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -373,7 +383,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_sum_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_sum_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -457,7 +467,7 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(
-            [],
+            EMPTY_PATH,
             b"sum_tree".as_slice(),
             Element::empty_sum_tree(),
             None,
@@ -530,7 +540,7 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(
-            [],
+            EMPTY_PATH,
             b"sum_tree".as_slice(),
             Element::empty_sum_tree(),
             None,
@@ -601,12 +611,12 @@ mod tests {
     fn test_batch_one_update_sum_item_bigger_no_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_sum_item_with_flags(100, None),
             None,
@@ -657,12 +667,12 @@ mod tests {
     fn test_batch_one_update_sum_item_bigger_with_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_sum_item_with_flags(100, Some(vec![0])),
             None,
@@ -713,12 +723,12 @@ mod tests {
     fn test_batch_one_update_sum_item_smaller_no_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_sum_item_with_flags(1000000, None),
             None,
@@ -769,12 +779,12 @@ mod tests {
     fn test_batch_one_update_sum_item_smaller_with_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_sum_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_sum_item_with_flags(10000000, Some(vec![0])),
             None,

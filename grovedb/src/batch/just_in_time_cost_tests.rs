@@ -41,7 +41,7 @@ mod tests {
     use crate::{
         batch::GroveDbOp,
         reference_path::ReferencePathType::{SiblingReference, UpstreamFromElementHeightReference},
-        tests::make_empty_grovedb,
+        tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
     };
 
@@ -50,10 +50,10 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"documents", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"documents", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
-        db.insert(vec![], b"balances", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"balances", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
         let ops = vec![
@@ -87,16 +87,16 @@ mod tests {
             .unwrap()
             .expect("expected to get root hash");
 
-        db.get([b"documents".as_slice()], b"key2", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key2", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
-        db.get([b"documents".as_slice()], b"key3", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key3", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
         db.get(
-            [b"documents".as_slice(), b"key3".as_slice()],
+            [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
             Some(&tx),
         )
@@ -115,16 +115,16 @@ mod tests {
             .unwrap()
             .expect("expected to get root hash");
 
-        db.get([b"documents".as_slice()], b"key2", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key2", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
-        db.get([b"documents".as_slice()], b"key3", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key3", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
         db.get(
-            [b"documents".as_slice(), b"key3".as_slice()],
+            [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
             Some(&tx),
         )
@@ -141,12 +141,18 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"documents", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"documents", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
-        db.insert(vec![], b"balances", Element::empty_sum_tree(), None, None)
-            .cost_as_result()
-            .expect("expected to insert successfully");
+        db.insert(
+            EMPTY_PATH,
+            b"balances",
+            Element::empty_sum_tree(),
+            None,
+            None,
+        )
+        .cost_as_result()
+        .expect("expected to insert successfully");
         let ops = vec![
             GroveDbOp::insert_op(
                 vec![b"documents".to_vec()],
@@ -178,16 +184,16 @@ mod tests {
             .unwrap()
             .expect("expected to get root hash");
 
-        db.get([b"documents".as_slice()], b"key2", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key2", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
-        db.get([b"documents".as_slice()], b"key3", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key3", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
         db.get(
-            [b"documents".as_slice(), b"key3".as_slice()],
+            [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
             Some(&tx),
         )
@@ -226,16 +232,16 @@ mod tests {
             .unwrap()
             .expect("expected to get root hash");
 
-        db.get([b"documents".as_slice()], b"key2", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key2", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
-        db.get([b"documents".as_slice()], b"key3", Some(&tx))
+        db.get([b"documents".as_slice()].as_ref(), b"key3", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 
         db.get(
-            [b"documents".as_slice(), b"key3".as_slice()],
+            [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
             Some(&tx),
         )
@@ -243,7 +249,7 @@ mod tests {
         .expect("cannot get element");
 
         let balance = db
-            .get([b"balances".as_slice()], b"person", Some(&tx))
+            .get([b"balances".as_slice()].as_ref(), b"person", Some(&tx))
             .unwrap()
             .expect("cannot get element");
 

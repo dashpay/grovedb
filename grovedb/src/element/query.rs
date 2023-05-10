@@ -719,7 +719,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"d",
             Element::new_item(b"ayyd".to_vec()),
             None,
@@ -728,7 +728,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"c",
             Element::new_item(b"ayyc".to_vec()),
             None,
@@ -737,7 +737,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"a",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -746,7 +746,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"b",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -822,7 +822,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"d",
             Element::new_item(b"ayyd".to_vec()),
             None,
@@ -831,7 +831,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"c",
             Element::new_item(b"ayyc".to_vec()),
             None,
@@ -840,7 +840,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"a",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -849,7 +849,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"b",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -894,7 +894,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF])
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref())
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -992,7 +992,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_non_transactional_merk_at_path([TEST_LEAF])
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref())
             .unwrap()
             .expect("cannot open Merk");
 
@@ -1092,7 +1092,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"d",
             Element::new_item(b"ayyd".to_vec()),
             None,
@@ -1101,7 +1101,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"c",
             Element::new_item(b"ayyc".to_vec()),
             None,
@@ -1110,7 +1110,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"a",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -1119,7 +1119,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"b",
             Element::new_item(b"ayyb".to_vec()),
             None,

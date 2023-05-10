@@ -46,7 +46,11 @@ mod tests {
     use integer_encoding::VarInt;
     use intmap::IntMap;
 
-    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
+    use crate::{
+        batch::GroveDbOp,
+        tests::{common::EMPTY_PATH, make_empty_grovedb},
+        Element,
+    };
 
     #[test]
     fn test_batch_one_insert_costs_match_non_batch() {
@@ -54,7 +58,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::insert_op(
@@ -200,7 +204,7 @@ mod tests {
 
         let cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"0",
                 Element::new_item(b"cat".to_vec()),
                 None,
@@ -292,7 +296,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -369,7 +373,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -573,12 +577,12 @@ mod tests {
     fn test_batch_root_one_update_item_bigger_cost_no_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
             None,
@@ -629,12 +633,12 @@ mod tests {
     fn test_batch_root_one_update_item_bigger_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
             None,
@@ -708,12 +712,12 @@ mod tests {
     fn test_batch_root_one_update_item_smaller_cost_no_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
             None,
@@ -763,12 +767,12 @@ mod tests {
     fn test_batch_root_one_update_item_smaller_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
             None,
@@ -843,12 +847,12 @@ mod tests {
     fn test_batch_root_one_update_tree_bigger_flags_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
         db.insert(
-            vec![b"tree".as_slice()],
+            [b"tree".as_slice()].as_ref(),
             b"key1",
             Element::new_tree_with_flags(None, Some(vec![0, 0])),
             None,

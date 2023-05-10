@@ -492,11 +492,9 @@ mod tests {
 
     use crate::{
         operations::insert::InsertOptions,
-        tests::{make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        tests::{make_empty_grovedb, make_test_grovedb, TEST_LEAF, common::EMPTY_PATH},
         Element, Error,
     };
-
-    const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
 
     #[test]
     fn test_non_root_insert_item_without_transaction() {

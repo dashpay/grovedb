@@ -85,15 +85,19 @@ impl DeleteUpTreeOptions {
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
-    pub fn delete_up_tree_while_empty<B: AsRef<[u8]>>(
+    pub fn delete_up_tree_while_empty<'b, B, P>(
         &self,
-        path: &SubtreePath<B>,
+        path: P,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
-    ) -> CostResult<u16, Error> {
+    ) -> CostResult<u16, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    P: Into<SubtreePath<'b, B>>
+    {
         self.delete_up_tree_while_empty_with_sectional_storage(
-            path,
+            &path.into(),
             key,
             options,
             transaction,

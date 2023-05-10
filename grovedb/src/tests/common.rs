@@ -28,6 +28,8 @@
 
 //! Common tests
 
+use path::SubtreePath;
+
 use crate::{operations::proof::util::ProvedPathKeyValues, Element, Error};
 
 /// Compare result tuples
@@ -59,3 +61,5 @@ pub fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &ProvedPathKeyVa
         )
     }
 }
+
+pub(crate) const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();

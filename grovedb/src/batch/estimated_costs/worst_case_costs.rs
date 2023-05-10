@@ -250,7 +250,7 @@ mod tests {
             estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo, GroveDbOp,
             KeyInfoPath,
         },
-        tests::make_empty_grovedb,
+        tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,
     };
 
@@ -418,7 +418,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -475,7 +475,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -530,7 +530,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"keyb", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"keyb", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 

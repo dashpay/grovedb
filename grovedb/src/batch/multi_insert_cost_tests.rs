@@ -40,7 +40,7 @@ mod tests {
     use crate::{
         batch::GroveDbOp,
         reference_path::ReferencePathType::{SiblingReference, UpstreamFromElementHeightReference},
-        tests::make_empty_grovedb,
+        tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
     };
 
@@ -50,10 +50,10 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost_1 = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
         let non_batch_cost_2 = db
-            .insert(vec![], b"key2", Element::empty_tree(), None, Some(&tx))
+            .insert(EMPTY_PATH, b"key2", Element::empty_tree(), None, Some(&tx))
             .cost;
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2);
         tx.rollback().expect("expected to rollback");
@@ -76,11 +76,11 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost_1 = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
         let non_batch_cost_2 = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key2",
                 Element::new_item_with_flags(b"pizza".to_vec(), Some([0, 1].to_vec())),
                 None,
@@ -89,7 +89,7 @@ mod tests {
             .cost;
         let non_batch_cost_3 = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key3",
                 Element::new_reference(SiblingReference(b"key2".to_vec())),
                 None,
@@ -126,11 +126,11 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost_1 = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
         let non_batch_cost_2 = db
             .insert(
-                vec![b"key1".as_slice()],
+                [b"key1".as_slice()].as_ref(),
                 b"key2",
                 Element::new_item_with_flags(b"pizza".to_vec(), Some([0, 1].to_vec())),
                 None,
@@ -139,7 +139,7 @@ mod tests {
             .cost;
         let non_batch_cost_3 = db
             .insert(
-                vec![b"key1".as_slice()],
+                [b"key1".as_slice()].as_ref(),
                 b"key3",
                 Element::empty_tree(),
                 None,
@@ -148,7 +148,7 @@ mod tests {
             .cost;
         let non_batch_cost_4 = db
             .insert(
-                vec![b"key1".as_slice(), b"key3".as_slice()],
+                [b"key1".as_slice(), b"key3".as_slice()].as_ref(),
                 b"key4",
                 Element::new_reference(UpstreamFromElementHeightReference(
                     1,

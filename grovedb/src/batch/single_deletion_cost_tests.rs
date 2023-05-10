@@ -37,21 +37,25 @@ mod tests {
     };
     use intmap::IntMap;
 
-    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
+    use crate::{
+        batch::GroveDbOp,
+        tests::{common::EMPTY_PATH, make_empty_grovedb},
+        Element,
+    };
 
     #[test]
     fn test_batch_one_deletion_tree_costs_match_non_batch_on_transaction() {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, None)
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -101,7 +105,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item(b"cat".to_vec()),
                 None,
@@ -113,7 +117,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -163,12 +167,12 @@ mod tests {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, None)
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -206,7 +210,7 @@ mod tests {
         let db = make_empty_grovedb();
 
         let _insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, None)
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -224,7 +228,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item(b"cat".to_vec()),
                 None,
@@ -234,7 +238,7 @@ mod tests {
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -274,7 +278,7 @@ mod tests {
 
         let _insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item(b"cat".to_vec()),
                 None,
@@ -297,7 +301,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
@@ -309,7 +313,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -365,7 +369,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::empty_tree_with_flags(Some(vec![0, 0])),
                 None,
@@ -378,7 +382,7 @@ mod tests {
 
         let non_batch_cost = db
             .delete_with_sectional_storage_function(
-                vec![],
+                &EMPTY_PATH,
                 b"key1",
                 None,
                 Some(&tx),
@@ -481,7 +485,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
@@ -493,7 +497,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -544,7 +548,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
@@ -554,7 +558,7 @@ mod tests {
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -598,7 +602,7 @@ mod tests {
 
         let _insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
@@ -621,7 +625,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
@@ -631,7 +635,7 @@ mod tests {
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -671,7 +675,7 @@ mod tests {
 
         let _insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
