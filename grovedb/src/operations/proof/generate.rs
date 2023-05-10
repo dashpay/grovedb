@@ -92,6 +92,10 @@ impl GroveDb {
     /// Generate a verbose proof for a given path query
     /// allows for subset verification
     pub fn prove_verbose(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
+        // TODO: we need to solve the localized limit and offset problem.
+        //      when using a path query that has a limit and offset value,
+        //      to get the expected behaviour, you need to know exactly
+        //      how the proving internals work and how your state looks.
         self.prove_internal(query, true)
     }
 
@@ -102,22 +106,6 @@ impl GroveDb {
         let mut proof_result: Vec<u8> = vec![];
         let mut limit: Option<u16> = query.query.limit;
         let mut offset: Option<u16> = query.query.offset;
-
-        // TODO: add again?
-        // We prevent the generation of verbose proofs for path queries that have a
-        // limit or offset.
-        // This is because once they are set, the subset nature
-        // of the path query now depends not only on the path query definition,
-        // but also on the current state of the db.
-        // Meaning a path query that could have been a valid subset could potentially
-        // not be due to the current state.
-        // Hence verification errors due to non subset issues will not be deterministic.
-        // if (limit.is_some() || offset.is_some()) && is_verbose {
-        //     return Err(Error::InvalidInput(
-        //         "cannot generate verbose proof for path-query with a limit or offset
-        // value",     ))
-        //     .wrap_with_cost(cost);
-        // }
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
