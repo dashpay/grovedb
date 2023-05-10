@@ -280,7 +280,7 @@ pub fn execute_proof(
                 // remaining query items
                 _ => {
                     return Err(Error::InvalidProofError(
-                        "Proof is missing data for query a".to_string(),
+                        "Proof is missing data for query".to_string(),
                     ))
                     .wrap_with_cost(cost)
                 }
