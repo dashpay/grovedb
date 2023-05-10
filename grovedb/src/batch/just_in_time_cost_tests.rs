@@ -31,16 +31,11 @@
 
 #[cfg(feature = "full")]
 mod tests {
-    use std::{ops::Add, option::Option::None};
-
-    use costs::{
-        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
-        OperationCost,
-    };
+    use std::option::Option::None;
 
     use crate::{
         batch::GroveDbOp,
-        reference_path::ReferencePathType::{SiblingReference, UpstreamFromElementHeightReference},
+        reference_path::ReferencePathType::UpstreamFromElementHeightReference,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
     };
@@ -106,7 +101,7 @@ mod tests {
         tx.rollback().expect("expected to rollback");
 
         let cost = db
-            .apply_partial_batch(ops, None, |cost, left_over_ops| Ok(vec![]), Some(&tx))
+            .apply_partial_batch(ops, None, |_cost, _left_over_ops| Ok(vec![]), Some(&tx))
             .cost_as_result()
             .expect("expected to apply batch");
 
@@ -206,7 +201,7 @@ mod tests {
             .apply_partial_batch(
                 ops,
                 None,
-                |cost, left_over_ops| {
+                |_cost, left_over_ops| {
                     assert!(left_over_ops.is_some());
                     assert_eq!(left_over_ops.as_ref().unwrap().len(), 1);
                     let ops_by_root_path = left_over_ops

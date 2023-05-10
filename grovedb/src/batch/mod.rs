@@ -2052,7 +2052,6 @@ impl GroveDb {
 mod tests {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use merk::proofs::Query;
-    use path::SubtreePath;
 
     use super::*;
     use crate::{

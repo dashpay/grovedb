@@ -703,7 +703,6 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
     };
-    use path::SubtreePath;
     use pretty_assertions::assert_eq;
 
     use crate::{

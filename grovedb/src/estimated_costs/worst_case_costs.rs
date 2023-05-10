@@ -412,7 +412,6 @@ mod test {
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
         test_utils::make_batch_seq, Merk,
     };
-    use path::SubtreePath;
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
 
