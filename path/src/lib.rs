@@ -95,16 +95,16 @@ impl<B> Clone for SubtreePathBase<'_, B> {
     }
 }
 
-/// Base path doesn't have any owned data and mostly a pointer, so it's cheap to be [Copy].
+/// Base path doesn't have any owned data and basically a pointer, so it's cheap to be [Copy].
 impl<B> Copy for SubtreePathBase<'_, B> {}
 
 impl<'b, B: AsRef<[u8]>> SubtreePathBase<'b, B> {
-    /// Get a derivated subtree path for a parent with care for base path slice case.
-    fn derive_parent(&self) -> Option<(SubtreePath<'b, B>, CowLike<'b>)> {
+    /// Get a derived subtree path for a parent with care for base path slice case.
+    fn derive_parent(&self) -> Option<(SubtreePath<'b, B>, &'b [u8])> {
         match self {
             SubtreePathBase::Slice(path) => path
                 .split_last()
-                .map(|(tail, rest)| (SubtreePath::from(rest), CowLike::Borrowed(tail.as_ref()))),
+                .map(|(tail, rest)| (SubtreePath::from(rest), tail.as_ref())),
             SubtreePathBase::DerivedPath(path) => path.derive_parent(),
         }
     }
@@ -173,8 +173,16 @@ impl SubtreePath<'static, [u8; 0]> {
 }
 
 impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
-    /// Get a derivated path for a parent and a chopped segment.
-    pub fn derive_parent(&self) -> Option<(SubtreePath<'b, B>, CowLike<'b>)> {
+    /// Get a derived path that will use another subtree path as it's base.
+    pub fn derive(&'b self) -> SubtreePath<'b, B> {
+        SubtreePath {
+            base: SubtreePathBase::DerivedPath(self),
+            relative: SubtreePathRelative::Empty,
+        }
+    }
+
+    /// Get a derived path for a parent and a chopped segment.
+    pub fn derive_parent<'s>(&'s self) -> Option<(SubtreePath<'b, B>, &'s [u8])> {
         match &self.relative {
             SubtreePathRelative::Empty => self.base.derive_parent(),
             SubtreePathRelative::Single(relative) => Some((
@@ -182,12 +190,12 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
                     base: self.base,
                     relative: SubtreePathRelative::Empty,
                 },
-                relative.clone(),
+                relative.as_ref(),
             )),
         }
     }
 
-    /// Get a derivated path with a child path segment added. The lifetime of the path
+    /// Get a derived path with a child path segment added. The lifetime of the path
     /// will remain the same in case of owned data (segment is a vector) or will match
     /// the slice's lifetime.
     pub fn derive_child<'s, S>(&'b self, segment: S) -> SubtreePath<'b, B>

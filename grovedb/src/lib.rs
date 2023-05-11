@@ -300,9 +300,9 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive_parent();
+        let mut current_path = path.derive();
 
-        while let Some((parent_path, parent_key)) = current_path {
+        while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree = cost_return_on_error!(
                 &mut cost,
                 self.open_batch_transactional_merk_at_path(
@@ -327,7 +327,7 @@ impl GroveDb {
                 )
             );
             child_tree = parent_tree;
-            current_path = parent_path.derive_parent();
+            current_path = parent_path;
         }
         Ok(()).wrap_with_cost(cost)
     }
@@ -352,9 +352,9 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive_parent();
+        let mut current_path = path.derive();
 
-        while let Some((parent_path, parent_key)) = current_path {
+        while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(&parent_path, transaction)
@@ -374,7 +374,7 @@ impl GroveDb {
                 )
             );
             child_tree = parent_tree;
-            current_path = parent_path.derive_parent();
+            current_path = parent_path;
         }
         Ok(()).wrap_with_cost(cost)
     }
@@ -396,9 +396,9 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive_parent();
+        let mut current_path = path.derive();
 
-        while let Some((parent_path, parent_key)) = current_path {
+        while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(&parent_path)
@@ -418,7 +418,7 @@ impl GroveDb {
                 )
             );
             child_tree = parent_tree;
-            current_path = parent_path.derive_parent();
+            current_path = parent_path;
         }
         Ok(()).wrap_with_cost(cost)
     }

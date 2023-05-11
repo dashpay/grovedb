@@ -2,13 +2,12 @@
 
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::rc::Rc;
 
 /// A smart pointer that follows the semantics of [Cow](std::borrow::Cow) except
 /// provides no means for mutability and thus doesn't require [Clone].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum CowLike<'b> {
-    Owned(Rc<Vec<u8>>),
+    Owned(Vec<u8>),
     Borrowed(&'b [u8]),
 }
 
@@ -37,7 +36,7 @@ impl Hash for CowLike<'_> {
 
 impl<'b> From<Vec<u8>> for CowLike<'static> {
     fn from(value: Vec<u8>) -> Self {
-        Self::Owned(Rc::new(value))
+        Self::Owned(value)
     }
 }
 
@@ -62,7 +61,7 @@ mod tests {
 
     #[test]
     fn test_cowlike_hashes() {
-        let owned = CowLike::Owned(Rc::new(vec![1u8, 3, 3, 7]));
+        let owned = CowLike::Owned(vec![1u8, 3, 3, 7]);
         let borrowed = CowLike::Borrowed(&[1u8, 3, 3, 7]);
 
         assert_eq!(calculate_hash(&owned), calculate_hash(&borrowed));
