@@ -64,15 +64,16 @@ impl<'b, B: AsRef<[u8]>> PartialEq for SubtreePath<'b, B> {
 impl<'b, B: AsRef<[u8]>> Eq for SubtreePath<'b, B> {}
 
 /// A variant of a subtree path from which the new path is derived.
-/// The new path is reusing the existing one instead of owning a copy of the same data.
+/// The new path is reusing the existing one instead of owning a copy of the
+/// same data.
 #[derive(Debug)]
 enum SubtreePathBase<'b, B> {
     /// The base path is a slice, might a provided by user or a subslice when
     /// deriving a parent.
     Slice(&'b [B]),
     /// If the subtree path base cannot be represented as a subset of initially
-    /// provided slice, which is handled by [Slice](Self::Slice), this variant is
-    /// used to refer to other derived path.
+    /// provided slice, which is handled by [Slice](Self::Slice), this variant
+    /// is used to refer to other derived path.
     DerivedPath(&'b SubtreePath<'b, B>),
 }
 
@@ -85,7 +86,8 @@ impl<'b, B: AsRef<[u8]>> Hash for SubtreePathBase<'b, B> {
     }
 }
 
-/// For the same reason as for `Hash` implementation, derived impl requires generics to carry /// trait bounds that actually don't needed.
+/// For the same reason as for `Hash` implementation, derived impl requires
+/// generics to carry /// trait bounds that actually don't needed.
 impl<B> Clone for SubtreePathBase<'_, B> {
     fn clone(&self) -> Self {
         match self {
@@ -95,11 +97,13 @@ impl<B> Clone for SubtreePathBase<'_, B> {
     }
 }
 
-/// Base path doesn't have any owned data and basically a pointer, so it's cheap to be [Copy].
+/// Base path doesn't have any owned data and basically a pointer, so it's cheap
+/// to be [Copy].
 impl<B> Copy for SubtreePathBase<'_, B> {}
 
 impl<'b, B: AsRef<[u8]>> SubtreePathBase<'b, B> {
-    /// Get a derived subtree path for a parent with care for base path slice case.
+    /// Get a derived subtree path for a parent with care for base path slice
+    /// case.
     fn derive_parent(&self) -> Option<(SubtreePath<'b, B>, &'b [u8])> {
         match self {
             SubtreePathBase::Slice(path) => path
@@ -151,8 +155,8 @@ impl<'b, B> From<&'b [B]> for SubtreePath<'b, B> {
     }
 }
 
-/// Creates a [SubtreePath] from a [SubtreePath] reference. This way functions could be
-/// generic over different ways of representing subtree path.
+/// Creates a [SubtreePath] from a [SubtreePath] reference. This way functions
+/// could be generic over different ways of representing subtree path.
 impl<'b, 'a: 'b, B> From<&'a SubtreePath<'b, B>> for SubtreePath<'b, B> {
     fn from(value: &'a SubtreePath<'b, B>) -> Self {
         SubtreePath {
@@ -195,9 +199,9 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         }
     }
 
-    /// Get a derived path with a child path segment added. The lifetime of the path
-    /// will remain the same in case of owned data (segment is a vector) or will match
-    /// the slice's lifetime.
+    /// Get a derived path with a child path segment added. The lifetime of the
+    /// path will remain the same in case of owned data (segment is a
+    /// vector) or will match the slice's lifetime.
     pub fn derive_child<'s, S>(&'b self, segment: S) -> SubtreePath<'b, B>
     where
         S: Into<CowLike<'s>>,
@@ -220,7 +224,8 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         }
     }
 
-    /// Collect path as a vector of vectors, but this actually negates all the benefits of this library.
+    /// Collect path as a vector of vectors, but this actually negates all the
+    /// benefits of this library.
     pub fn to_vec(&self) -> Vec<Vec<u8>> {
         let mut result = match self.base {
             SubtreePathBase::Slice(s) => s.iter().map(|x| x.as_ref().to_vec()).collect(),
@@ -237,7 +242,8 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         result
     }
 
-    /// Retuns `true` if the subtree path is empty, so it points to the root tree.
+    /// Retuns `true` if the subtree path is empty, so it points to the root
+    /// tree.
     pub fn is_root(&self) -> bool {
         match self {
             Self {
@@ -253,8 +259,8 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
 }
 
 /// (Reverse) iterator for a subtree path.
-/// Due to implementation details it cannot effectively iterate from the most shallow
-/// path segment to the deepest, so it have to go in reverse direction.
+/// Due to implementation details it cannot effectively iterate from the most
+/// shallow path segment to the deepest, so it have to go in reverse direction.
 pub struct SubtreePathIter<'b, 's, B> {
     current_iter: CurrentSubtreePathIter<'b, 's, B>,
     next_subtree_path: Option<&'s SubtreePathBase<'b, B>>,
@@ -295,71 +301,8 @@ enum CurrentSubtreePathIter<'b, 's, B> {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write;
-
-    use crate::util::calculate_hash;
-
     use super::*;
-
-    fn print_path<B: AsRef<[u8]>>(path: &SubtreePath<B>) {
-        let path_vec = path.to_vec();
-        let mut formatted = String::from("[");
-        for s in path_vec {
-            write!(
-                &mut formatted,
-                "{}, ",
-                std::str::from_utf8(&s).expect("should be a valid utf8 for tests")
-            )
-            .expect("writing into String shouldn't fail");
-        }
-        write!(&mut formatted, "]").expect("writing into String shouldn't fail");
-
-        println!("{formatted}");
-    }
-
-    fn derive_child_static<'s, B: AsRef<[u8]>>(path: &'s SubtreePath<'s, B>) -> SubtreePath<'s, B> {
-        path.derive_child(b"static".as_ref())
-    }
-
-    fn derive_child_owned<'s, B: AsRef<[u8]>>(path: &'s SubtreePath<'s, B>) -> SubtreePath<'s, B> {
-        path.derive_child(b"owned".to_vec())
-    }
-
-    #[test]
-    fn compilation_playground() {
-        let base: [&'static [u8]; 3] = [b"one", b"two", b"three"];
-        let path = SubtreePath::from(base.as_ref());
-        print_path(&path);
-
-        let base = [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()];
-        let path = SubtreePath::from(base.as_ref());
-        let (path2, segment) = path.derive_parent().unwrap();
-        print_path(&path2);
-        dbg!(std::str::from_utf8(&segment).unwrap());
-
-        let base = [b"lol".to_owned(), b"kek".to_owned()];
-        let path = SubtreePath::from(base.as_ref());
-        let path3 = path.derive_child(b"hmm".to_vec());
-        print_path(&path3);
-        let path4 = derive_child_static(&path3);
-        print_path(&path4);
-
-        let base = [b"lol".to_owned(), b"kek".to_owned()];
-        let path = SubtreePath::from(base.as_ref());
-        let (path3, _) = path.derive_parent().unwrap();
-        print_path(&path3);
-        let path4 = derive_child_static(&path3);
-        print_path(&path4);
-
-        let base: [&'static [u8]; 3] = [b"one", b"two", b"three"];
-        let path = SubtreePath::from(base.as_ref());
-        let path2 = derive_child_owned(&path);
-        print_path(&path2);
-
-        path2
-            .reverse_iter()
-            .for_each(|seg| println!("{}", std::str::from_utf8(seg).unwrap()));
-    }
+    use crate::util::calculate_hash;
 
     #[test]
     fn test_hashes_are_equal() {

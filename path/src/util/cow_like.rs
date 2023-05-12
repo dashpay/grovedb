@@ -1,0 +1,63 @@
+//! Module for [CowLike]: simple abstraction over owned and borrowed bytes.
+
+use std::{
+    hash::{Hash, Hasher},
+    ops::Deref,
+};
+
+/// A smart pointer that follows the semantics of [Cow](std::borrow::Cow) except
+/// provides no means for mutability and thus doesn't require [Clone].
+#[derive(Debug)]
+pub enum CowLike<'b> {
+    Owned(Vec<u8>),
+    Borrowed(&'b [u8]),
+}
+
+impl Deref for CowLike<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(v) => v.as_slice(),
+            Self::Borrowed(s) => s,
+        }
+    }
+}
+
+impl AsRef<[u8]> for CowLike<'_> {
+    fn as_ref(&self) -> &[u8] {
+        &self
+    }
+}
+
+impl Hash for CowLike<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.deref().hash(state);
+    }
+}
+
+impl<'b> From<Vec<u8>> for CowLike<'static> {
+    fn from(value: Vec<u8>) -> Self {
+        Self::Owned(value)
+    }
+}
+
+impl<'b> From<&'b [u8]> for CowLike<'b> {
+    fn from(value: &'b [u8]) -> Self {
+        Self::Borrowed(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::calculate_hash;
+
+    #[test]
+    fn test_cowlike_hashes() {
+        let owned = CowLike::Owned(vec![1u8, 3, 3, 7]);
+        let borrowed = CowLike::Borrowed(&[1u8, 3, 3, 7]);
+
+        assert_eq!(calculate_hash(&owned), calculate_hash(&borrowed));
+    }
+}
