@@ -129,8 +129,8 @@ impl<B> Clone for SubtreePathRef<'_, B> {
 
 impl SubtreePathRef<'static, [u8; 0]> {
     /// Get empty subtree path (meaning it'll point to the root tree).
-    pub fn empty() -> Self {
-        SubtreePathRefInner::Slice(&[]).into()
+    pub const fn empty() -> Self {
+        SubtreePathRef(SubtreePathRefInner::Slice(&[]))
     }
 }
 

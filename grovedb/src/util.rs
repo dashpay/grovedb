@@ -273,7 +273,7 @@ macro_rules! root_merk_optional_tx {
     ) => {
         {
             use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, &::path::SubtreePath::new(), $transaction, storage, {
+            storage_context_optional_tx!($db, &::path::SubtreePathRef::empty(), $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)

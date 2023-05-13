@@ -139,15 +139,15 @@ impl Visualize for ReferencePathType {
 }
 
 impl GroveDb {
-    fn draw_subtree<W: Write, B: AsRef<[u8]>>(
+    fn draw_subtree<'b, W: Write, B: AsRef<[u8]>>(
         &self,
         mut drawer: Drawer<W>,
-        path: &SubtreePath<B>,
+        path: &SubtreePath<'b, B>,
         transaction: TransactionArg,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        storage_context_optional_tx!(self.db, path, transaction, storage, {
+        storage_context_optional_tx!(self.db, &path.into(), transaction, storage, {
             let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
             while let Some((key, element)) = iter
                 .next_element()

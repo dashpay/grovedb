@@ -43,7 +43,7 @@ use costs::cost_return_on_error_no_add;
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use merk::Merk;
-use path::SubtreePath;
+use path::{SubtreePath, SubtreePathRef};
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
@@ -108,9 +108,9 @@ impl GroveDb {
     }
 
     /// Follow reference
-    pub fn follow_reference<B: AsRef<[u8]>>(
+    pub fn follow_reference<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
@@ -167,9 +167,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw<B: AsRef<[u8]>>(
+    pub fn get_raw<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
@@ -177,9 +177,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_caching_optional<B: AsRef<[u8]>>(
+    pub fn get_raw_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
@@ -222,9 +222,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_on_transaction_caching_optional<B: AsRef<[u8]>>(
+    pub(crate) fn get_raw_on_transaction_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,
@@ -246,9 +246,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_optional_on_transaction_caching_optional<B: AsRef<[u8]>>(
+    pub(crate) fn get_raw_optional_on_transaction_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,

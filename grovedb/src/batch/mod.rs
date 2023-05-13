@@ -83,7 +83,7 @@ use merk::{
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
 };
 pub use options::BatchApplyOptions;
-use path::SubtreePath;
+use path::{SubtreePath, SubtreePathRef};
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
@@ -1534,10 +1534,10 @@ impl GroveDb {
 
     /// Opens transactional merk at path with given storage batch context.
     /// Returns CostResult.
-    pub fn open_batch_transactional_merk_at_path<'db, B: AsRef<[u8]>>(
+    pub fn open_batch_transactional_merk_at_path<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         storage_batch: &'db StorageBatch,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         tx: &'db Transaction,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error> {
