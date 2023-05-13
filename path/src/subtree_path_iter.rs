@@ -30,7 +30,7 @@
 
 use std::slice;
 
-use crate::{subtree_path::SubtreePathRef, util::TwoDimensionalBytesIter};
+use crate::{subtree_path_ref::SubtreePathRef, util::TwoDimensionalBytesIter};
 
 /// (Reverse) iterator for a subtree path.
 /// Because of implementation details (one way link between derivations) it

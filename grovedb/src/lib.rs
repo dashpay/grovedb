@@ -300,7 +300,7 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive_editable();
+        let mut current_path = path.derive_owned();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree = cost_return_on_error!(
@@ -352,7 +352,7 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive_editable();
+        let mut current_path = path.derive_owned();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
@@ -396,7 +396,7 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive_editable();
+        let mut current_path = path.derive_owned();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
@@ -676,7 +676,7 @@ impl GroveDb {
                     .unwrap()
                     .unwrap()
                     .unwrap();
-                let new_path = path.derive_child(key);
+                let new_path = path.derive_owned_with_child(key);
 
                 let inner_merk = self
                     .open_non_transactional_merk_at_path(&new_path)

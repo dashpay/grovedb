@@ -26,22 +26,24 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Difinitions of versatile type representing a path to a subtree.
+//! Difinitions of versatile type representing a path to a subtree that can own
+//! certain path segments.
 
 use std::hash::{Hash, Hasher};
 
 use crate::{
+    subtree_path_ref::SubtreePathRefInner,
     util::{CowLike, TwoDimensionalBytes},
-    SubtreePathIter,
+    SubtreePathIter, SubtreePathRef,
 };
 
 /// Path to a GroveDB's subtree.
 #[derive(Debug)]
 pub struct SubtreePath<'b, B> {
     /// Derivation starting point.
-    base: SubtreePathRef<'b, B>,
+    pub(crate) base: SubtreePathRef<'b, B>,
     /// Path information relative to [base](Self::base).
-    relative: SubtreePathRelative<'b>,
+    pub(crate) relative: SubtreePathRelative<'b>,
 }
 
 /// Hash order is the same as iteration order: from most deep path segment up to
@@ -63,7 +65,17 @@ where
     }
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePathRef<'br, BR>> for SubtreePathRef<'bl, BL>
+impl<'bl, 'br, BL, BR> PartialEq<SubtreePath<'br, BR>> for SubtreePathRef<'bl, BL>
+where
+    BL: AsRef<[u8]>,
+    BR: AsRef<[u8]>,
+{
+    fn eq(&self, other: &SubtreePath<'br, BR>) -> bool {
+        self.reverse_iter().eq(other.reverse_iter())
+    }
+}
+
+impl<'bl, 'br, BL, BR> PartialEq<SubtreePathRef<'br, BR>> for SubtreePath<'bl, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -75,145 +87,18 @@ where
 
 impl<'b, B: AsRef<[u8]>> Eq for SubtreePath<'b, B> {}
 
-/// Path to a GroveDB's subtree with no owned data.
-#[derive(Debug)]
-pub struct SubtreePathRef<'b, B>(SubtreePathRefInner<'b, B>);
-
-/// Wrapped inner representation of subtree path ref.
-#[derive(Debug)]
-enum SubtreePathRefInner<'b, B> {
-    /// The referred path is a slice, might a provided by user or a subslice
-    /// when deriving a parent.
-    Slice(&'b [B]),
-    /// Links to an existing subtree path that became a derivation point.
-    SubtreePath(&'b SubtreePath<'b, B>),
-    /// Links to an existing subtree path with owned segments using it's
-    /// iterator to support parent derivations.
-    SubtreePathIter(SubtreePathIter<'b, 'b, B>),
-}
-
-impl<'b, B> From<SubtreePathRefInner<'b, B>> for SubtreePathRef<'b, B> {
-    fn from(value: SubtreePathRefInner<'b, B>) -> Self {
-        Self(value)
-    }
-}
-
-/// Hash order is the same as iteration order: from most deep path segment up to
-/// root.
-impl<'b, B: AsRef<[u8]>> Hash for SubtreePathRef<'b, B> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match &self.0 {
-            SubtreePathRefInner::Slice(slice) => slice
-                .iter()
-                .map(AsRef::as_ref)
-                .rev()
-                .for_each(|s| s.hash(state)),
-            SubtreePathRefInner::SubtreePath(path) => path.hash(state),
-            SubtreePathRefInner::SubtreePathIter(path_iter) => {
-                path_iter.clone().for_each(|s| s.hash(state))
-            }
-        }
-    }
-}
-
-/// For the same reason as for `Hash` implementation, derived impl requires
-/// generics to carry /// trait bounds that actually don't needed.
-impl<B> Clone for SubtreePathRef<'_, B> {
-    fn clone(&self) -> Self {
-        match &self.0 {
-            SubtreePathRefInner::Slice(x) => SubtreePathRefInner::Slice(x),
-            SubtreePathRefInner::SubtreePath(x) => SubtreePathRefInner::SubtreePath(x),
-            SubtreePathRefInner::SubtreePathIter(x) => {
-                SubtreePathRefInner::SubtreePathIter(x.clone())
-            }
-        }
-        .into()
-    }
-}
-
-impl<'b, B: AsRef<[u8]>> SubtreePathRef<'b, B> {
-    /// Get a derived path that will reuse this [Self] as it's base path and
-    /// capable of owning data.
-    pub fn derive_editable(&self) -> SubtreePath<'b, B> {
+impl<'s, 'b, B> From<&'s SubtreePathRef<'b, B>> for SubtreePath<'b, B> {
+    fn from(value: &'s SubtreePathRef<'b, B>) -> Self {
         SubtreePath {
-            base: self.clone(),
+            base: value.clone(),
             relative: SubtreePathRelative::Empty,
-        }
-    }
-
-    /// Get a derived path with a child path segment added.
-    pub fn derive_child<'s, S>(&'b self, segment: S) -> SubtreePath<'b, B>
-    where
-        S: Into<CowLike<'s>>,
-        's: 'b,
-    {
-        SubtreePath {
-            base: self.clone(),
-            relative: SubtreePathRelative::Single(segment.into()),
-        }
-    }
-
-    /// Get a derived subtree path for a parent with care for base path slice
-    /// case. The main difference from [SubtreePath::derive_parent] is that
-    /// lifetime of returned [Self] if not limited to the scope where this
-    /// function was called so it's possible to follow to ancestor paths
-    /// without keeping previous result as it still will link to `'b`
-    /// (latest [SubtreePath] or initial slice of data).
-    pub fn derive_parent(&self) -> Option<(SubtreePathRef<'b, B>, &'b [u8])> {
-        match &self.0 {
-            SubtreePathRefInner::Slice(path) => path
-                .split_last()
-                .map(|(tail, rest)| (SubtreePathRefInner::Slice(rest).into(), tail.as_ref())),
-            SubtreePathRefInner::SubtreePath(path) => path.derive_parent(),
-            SubtreePathRefInner::SubtreePathIter(iter) => {
-                let mut derived_iter = iter.clone();
-                derived_iter.next().map(|segment| {
-                    (
-                        SubtreePathRefInner::SubtreePathIter(derived_iter).into(),
-                        segment,
-                    )
-                })
-            }
-        }
-    }
-
-    /// Get a reverse path segments iterator.
-    pub fn reverse_iter<'s>(&'s self) -> SubtreePathIter<'b, 's, B> {
-        match &self.0 {
-            SubtreePathRefInner::Slice(slice) => SubtreePathIter::new(slice.iter()),
-            SubtreePathRefInner::SubtreePath(path) => path.reverse_iter(),
-            SubtreePathRefInner::SubtreePathIter(iter) => iter.clone(),
-        }
-    }
-
-    /// Retuns `true` if the subtree path is empty, so it points to the root
-    /// tree.
-    pub fn is_root(&self) -> bool {
-        match &self.0 {
-            SubtreePathRefInner::Slice(s) => s.is_empty(),
-            SubtreePathRefInner::SubtreePath(path) => path.is_root(),
-            SubtreePathRefInner::SubtreePathIter(iter) => iter.is_empty(),
-        }
-    }
-
-    /// Collect path as a vector of vectors, but this actually negates all the
-    /// benefits of this library.
-    pub fn to_vec(&self) -> Vec<Vec<u8>> {
-        match &self.0 {
-            SubtreePathRefInner::Slice(slice) => {
-                slice.iter().map(|x| x.as_ref().to_vec()).collect()
-            }
-            SubtreePathRefInner::SubtreePath(path) => path.to_vec(),
-            SubtreePathRefInner::SubtreePathIter(iter) => {
-                iter.clone().map(|x| x.as_ref().to_vec()).collect()
-            }
         }
     }
 }
 
 /// Derived subtree path on top of base path.
 #[derive(Debug)]
-enum SubtreePathRelative<'r> {
+pub(crate) enum SubtreePathRelative<'r> {
     /// Equivalent to the base path.
     Empty,
     /// Added one child segment.
@@ -235,22 +120,10 @@ impl Hash for SubtreePathRelative<'_> {
     }
 }
 
-/// Creates a [SubtreePath] from slice.
-impl<'b, B> From<&'b [B]> for SubtreePathRef<'b, B> {
-    fn from(value: &'b [B]) -> Self {
-        SubtreePathRefInner::Slice(value).into()
-    }
-}
-
-impl<'b, B, const N: usize> From<&'b [B; N]> for SubtreePathRef<'b, B> {
-    fn from(value: &'b [B; N]) -> Self {
-        SubtreePathRefInner::Slice(value).into()
-    }
-}
-
 // /// Creates a [SubtreePath] from a [SubtreePath] reference. This way
-// functions /// could be generic over different ways of representing subtree
-// path. impl<'b, 'a: 'b, B: AsRef<[u8]>> From<&'a SubtreePath<'b, B>> for
+// // functions could be generic over different ways of representing subtree
+// // path.
+// impl<'b, 'a: 'b, B: AsRef<[u8]>> From<&'a SubtreePath<'b, B>> for
 // SubtreePath<'b, B> {     fn from(value: &'a SubtreePath<'b, B>) -> Self {
 //         value.derive_editable()
 //     }
@@ -260,7 +133,7 @@ impl SubtreePath<'static, [u8; 0]> {
     /// Creates empty subtree path
     pub fn new() -> Self {
         SubtreePath {
-            base: SubtreePathRefInner::Slice(&[]).into(),
+            base: (&[]).into(),
             relative: SubtreePathRelative::Empty,
         }
     }
@@ -269,10 +142,10 @@ impl SubtreePath<'static, [u8; 0]> {
 impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     /// Get a derived path that will use another subtree path (or reuse the base
     /// slice) as it's base, then could be edited in place.
-    pub fn derive_editable(&'b self) -> SubtreePath<'b, B> {
+    pub fn derive_owned(&'b self) -> SubtreePath<'b, B> {
         match self.relative {
             // If this derived path makes no difference, derive from base
-            SubtreePathRelative::Empty => self.base.derive_editable(),
+            SubtreePathRelative::Empty => self.base.derive_owned(),
             // Otherwise a new derived subtree path must point to this one as it's base
             _ => SubtreePath {
                 base: SubtreePathRefInner::SubtreePath(self).into(),
@@ -281,10 +154,10 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         }
     }
 
-    /// Immutable branch from a subtree path with no added information.
-    pub fn derive(&'b self) -> SubtreePathRef<'b, B> {
-        SubtreePathRefInner::SubtreePath(&self).into()
-    }
+    // /// Immutable branch from a subtree path with no added information.
+    // pub fn derive(&'b self) -> SubtreePathRef<'b, B> {
+    //     SubtreePathRefInner::SubtreePath(&self).into()
+    // }
 
     /// Get a derived path for a parent and a chopped segment. Returned
     /// [SubtreePathRef] will be linked to this [SubtreePath] because it might
@@ -302,7 +175,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     }
 
     /// Get a derived path with a child path segment added.
-    pub fn derive_child<'s, S>(&'b self, segment: S) -> SubtreePath<'b, B>
+    pub fn derive_owned_with_child<'s, S>(&'b self, segment: S) -> SubtreePath<'b, B>
     where
         S: Into<CowLike<'s>>,
         's: 'b,

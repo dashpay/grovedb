@@ -38,7 +38,7 @@ use costs::{
 use error::Error;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
-use path::SubtreePath;
+use path::SubtreePathRef;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction,
@@ -113,7 +113,7 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<B>(path: &SubtreePath<B>) -> (Vec<u8>, usize)
+    fn build_prefix_body<B>(path: &SubtreePathRef<B>) -> (Vec<u8>, usize)
     where
         B: AsRef<[u8]>,
     {
@@ -139,7 +139,7 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<B>(path: &SubtreePath<B>) -> CostContext<Vec<u8>>
+    pub fn build_prefix<B>(path: &SubtreePathRef<B>) -> CostContext<Vec<u8>>
     where
         B: AsRef<[u8]>,
     {
@@ -437,7 +437,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     fn get_storage_context<'b, B, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
         Self::build_prefix(&path.into())
             .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
@@ -450,7 +450,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     ) -> CostContext<Self::TransactionalStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
         Self::build_prefix(&path.into())
             .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
@@ -463,7 +463,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     ) -> CostContext<Self::BatchStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
         Self::build_prefix(&path.into())
             .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
@@ -477,7 +477,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
         Self::build_prefix(&path.into()).map(|prefix| {
             PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
@@ -545,12 +545,12 @@ mod tests {
         let path_a = [b"aa".as_ref(), b"b"];
         let path_b = [b"a".as_ref(), b"ab"];
         assert_ne!(
-            RocksDbStorage::build_prefix(&SubtreePath::from(path_a.as_ref())),
-            RocksDbStorage::build_prefix(&SubtreePath::from(path_b.as_ref())),
+            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_a.as_ref())),
+            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_b.as_ref())),
         );
         assert_eq!(
-            RocksDbStorage::build_prefix(&SubtreePath::from(path_a.as_ref())),
-            RocksDbStorage::build_prefix(&SubtreePath::from(path_a.as_ref())),
+            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_a.as_ref())),
+            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_a.as_ref())),
         );
     }
 }

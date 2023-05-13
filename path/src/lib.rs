@@ -32,10 +32,12 @@
 
 mod subtree_path;
 mod subtree_path_iter;
+mod subtree_path_ref;
 mod util;
 
-pub use subtree_path::{SubtreePath, SubtreePathRef};
+pub use subtree_path::SubtreePath;
 pub use subtree_path_iter::SubtreePathIter;
+pub use subtree_path_ref::SubtreePathRef;
 
 #[cfg(test)]
 mod tests {
@@ -73,17 +75,17 @@ mod tests {
         let path_base_unfinished = SubtreePathRef::from([b"one", b"two"].as_ref());
         let path_empty = SubtreePath::new();
 
-        let path_derived_11 = path_empty.derive_child(b"one".as_ref());
-        let path_derived_12 = path_derived_11.derive_child(b"two".as_ref());
-        let path_derived_13 = path_derived_12.derive_child(b"three".as_ref());
-        let path_derived_14 = path_derived_13.derive_child(b"four".to_vec());
-        let path_derived_1 = path_derived_14.derive_child(b"five".as_ref());
+        let path_derived_11 = path_empty.derive_owned_with_child(b"one".as_ref());
+        let path_derived_12 = path_derived_11.derive_owned_with_child(b"two".as_ref());
+        let path_derived_13 = path_derived_12.derive_owned_with_child(b"three".as_ref());
+        let path_derived_14 = path_derived_13.derive_owned_with_child(b"four".to_vec());
+        let path_derived_1 = path_derived_14.derive_owned_with_child(b"five".as_ref());
 
         let (path_derived_2, _) = path_base_slice_too_much.derive_parent().unwrap();
 
-        let path_derived_31 = path_base_unfinished.derive_child(b"three".to_vec());
-        let path_derived_32 = path_derived_31.derive_child(b"four".as_ref());
-        let path_derived_3 = path_derived_32.derive_child(b"five".as_ref());
+        let path_derived_31 = path_base_unfinished.derive_owned_with_child(b"three".to_vec());
+        let path_derived_32 = path_derived_31.derive_owned_with_child(b"four".as_ref());
+        let path_derived_3 = path_derived_32.derive_owned_with_child(b"five".as_ref());
 
         // Compare hashes
         let hash = calculate_hash(&path_base_slice_vecs);
@@ -94,9 +96,9 @@ mod tests {
         // Check for equality
         let reference = path_base_slice_vecs;
         assert_eq!(&path_base_slice_slices, &reference);
-        assert_eq!(&path_derived_1.derive(), &reference);
+        assert_eq!(&path_derived_1, &reference);
         assert_eq!(&path_derived_2, &reference);
-        assert_eq!(&path_derived_3.derive(), &reference);
+        assert_eq!(&path_derived_3, &reference);
     }
 
     #[test]
@@ -104,7 +106,7 @@ mod tests {
         let path_empty = SubtreePath::new();
         assert!(path_empty.is_root());
 
-        let path_derived = path_empty.derive_child(b"two".as_ref());
+        let path_derived = path_empty.derive_owned_with_child(b"two".as_ref());
         assert!(path_derived.derive_parent().unwrap().0.is_root());
 
         let path_not_empty = SubtreePathRef::from([b"one"].as_ref());
@@ -115,8 +117,8 @@ mod tests {
     fn test_complex_derivation() {
         // Append only operations:
         let base = SubtreePathRef::from([b"one", b"two"].as_ref());
-        let with_child_1 = base.derive_child(b"three".to_vec());
-        let mut with_child_inplace = with_child_1.derive_child(b"four");
+        let with_child_1 = base.derive_owned_with_child(b"three".to_vec());
+        let mut with_child_inplace = with_child_1.derive_owned_with_child(b"four");
         with_child_inplace.push_segment(b"five");
         with_child_inplace.push_segment(b"six");
         with_child_inplace.push_segment(b"seven");
@@ -154,9 +156,9 @@ mod tests {
         assert!(points_five.reverse_iter().eq(five_reference.reverse_iter()));
 
         // And add a couple of other derivations
-        let after_five_1 = points_five.derive_child(b"four");
-        let after_five_2 = after_five_1.derive_child(b"twenty");
-        let mut after_five_3 = after_five_2.derive_editable();
+        let after_five_1 = points_five.derive_owned_with_child(b"four");
+        let after_five_2 = after_five_1.derive_owned_with_child(b"twenty");
+        let mut after_five_3 = after_five_2.derive_owned();
         after_five_3.push_segment(b"thirteen");
         after_five_3.push_segment(b"thirtyseven");
 
@@ -181,6 +183,6 @@ mod tests {
         assert_eq!(after_five_3.to_vec(), reference.to_vec());
         assert!(after_five_3.reverse_iter().eq(reference.reverse_iter()));
         assert_eq!(calculate_hash(&after_five_3), calculate_hash(&reference));
-        assert_eq!(after_five_3.derive(), reference);
+        assert_eq!(after_five_3, reference);
     }
 }

@@ -38,7 +38,7 @@ use costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
     CostResult, OperationCost,
 };
-use path::SubtreePath;
+use path::SubtreePathRef;
 use visualize::visualize_to_vec;
 
 use crate::{worst_case_costs::WorstKeyLength, Error};
@@ -85,7 +85,7 @@ pub trait Storage<'db> {
     fn get_storage_context<'b, B, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>;
+        P: Into<SubtreePathRef<'b, B>>;
 
     /// Make storage_cost context for a subtree on transactional data
     fn get_transactional_storage_context<'b, B, P>(
@@ -95,7 +95,7 @@ pub trait Storage<'db> {
     ) -> CostContext<Self::TransactionalStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>;
+        P: Into<SubtreePathRef<'b, B>>;
 
     /// Make batch storage_cost context for a subtree with path
     fn get_batch_storage_context<'b, B, P>(
@@ -105,7 +105,7 @@ pub trait Storage<'db> {
     ) -> CostContext<Self::BatchStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>;
+        P: Into<SubtreePathRef<'b, B>>;
 
     /// Make batch storage_cost context for a subtree on transactional data
     fn get_batch_transactional_storage_context<'b, B, P>(
@@ -116,7 +116,7 @@ pub trait Storage<'db> {
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>;
+        P: Into<SubtreePathRef<'b, B>>;
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;

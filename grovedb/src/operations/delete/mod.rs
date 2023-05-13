@@ -288,7 +288,7 @@ impl GroveDb {
             };
 
             if is_subtree {
-                let subtree_merk_path = path.derive_child(key);
+                let subtree_merk_path = path.derive_owned_with_child(key);
                 let subtree_merk_path_vec = subtree_merk_path.to_vec();
                 // let subtree_merk_path_vec = subtree_merk_path
                 //     .clone()
@@ -411,7 +411,7 @@ impl GroveDb {
         );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
-            let subtree_merk_path = path.derive_child(key);
+            let subtree_merk_path = path.derive_owned_with_child(key);
 
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
@@ -572,7 +572,7 @@ impl GroveDb {
             cost_return_on_error!(&mut cost, self.open_non_transactional_merk_at_path(path));
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
-            let subtree_merk_path = path.derive_child(key);
+            let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(&subtree_merk_path)
