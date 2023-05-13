@@ -51,7 +51,7 @@ mod tests {
             b"four".to_vec(),
             b"five".to_vec(),
         ];
-        let path_base_slice_vecs = SubtreePath::from(path_array.as_ref());
+        let path_base_slice_vecs = SubtreePathRef::from(path_array.as_ref());
         let path_array = [
             b"one".as_ref(),
             b"two".as_ref(),
@@ -59,7 +59,7 @@ mod tests {
             b"four".as_ref(),
             b"five".as_ref(),
         ];
-        let path_base_slice_slices = SubtreePath::from(path_array.as_ref());
+        let path_base_slice_slices = SubtreePathRef::from(path_array.as_ref());
 
         let path_array = [
             b"one".as_ref(),
@@ -69,8 +69,8 @@ mod tests {
             b"five".as_ref(),
             b"six".as_ref(),
         ];
-        let path_base_slice_too_much = SubtreePath::from(path_array.as_ref());
-        let path_base_unfinished = SubtreePath::from([b"one", b"two"].as_ref());
+        let path_base_slice_too_much = SubtreePathRef::from(path_array.as_ref());
+        let path_base_unfinished = SubtreePathRef::from([b"one", b"two"].as_ref());
         let path_empty = SubtreePath::new();
 
         let path_derived_11 = path_empty.derive_child(b"one".as_ref());
@@ -92,8 +92,8 @@ mod tests {
         assert_eq!(calculate_hash(&path_derived_2), hash);
         assert_eq!(calculate_hash(&path_derived_3), hash);
         // Check for equality
-        let reference = path_base_slice_vecs.derive();
-        assert_eq!(&path_base_slice_slices.derive(), &reference);
+        let reference = path_base_slice_vecs;
+        assert_eq!(&path_base_slice_slices, &reference);
         assert_eq!(&path_derived_1.derive(), &reference);
         assert_eq!(&path_derived_2, &reference);
         assert_eq!(&path_derived_3.derive(), &reference);
@@ -101,13 +101,86 @@ mod tests {
 
     #[test]
     fn test_is_root() {
-        let path_empty = SubtreePath::<[u8; 0]>::from([].as_ref());
+        let path_empty = SubtreePath::new();
         assert!(path_empty.is_root());
 
         let path_derived = path_empty.derive_child(b"two".as_ref());
         assert!(path_derived.derive_parent().unwrap().0.is_root());
 
-        let path_not_empty = SubtreePath::from([b"one"].as_ref());
+        let path_not_empty = SubtreePathRef::from([b"one"].as_ref());
         assert!(path_not_empty.derive_parent().unwrap().0.is_root());
+    }
+
+    #[test]
+    fn test_complex_derivation() {
+        // Append only operations:
+        let base = SubtreePathRef::from([b"one", b"two"].as_ref());
+        let with_child_1 = base.derive_child(b"three".to_vec());
+        let mut with_child_inplace = with_child_1.derive_child(b"four");
+        with_child_inplace.push_segment(b"five");
+        with_child_inplace.push_segment(b"six");
+        with_child_inplace.push_segment(b"seven");
+        with_child_inplace.push_segment(b"eight");
+
+        // `with_child_inplace` should be like (substituted for digits for short):
+        // [1, 2] -> 3 -> [4, 5, 6, 7, 8]
+        assert_eq!(
+            with_child_inplace.reverse_iter().fold(0, |acc, _| acc + 1),
+            8
+        );
+
+        // Now go to ancestors (note that intermediate derivations are dropped and
+        // is still compiles, as [SubtreePathRef]s are intended for):
+        let points_five = with_child_inplace
+            .derive_parent()
+            .unwrap()
+            .0
+            .derive_parent()
+            .unwrap()
+            .0
+            .derive_parent()
+            .unwrap()
+            .0;
+
+        let five_reference_slice = [
+            b"one".as_ref(),
+            b"two".as_ref(),
+            b"three".as_ref(),
+            b"four".as_ref(),
+            b"five".as_ref(),
+        ];
+        let five_reference: SubtreePathRef<_> = (&five_reference_slice).into();
+
+        assert!(points_five.reverse_iter().eq(five_reference.reverse_iter()));
+
+        // And add a couple of other derivations
+        let after_five_1 = points_five.derive_child(b"four");
+        let after_five_2 = after_five_1.derive_child(b"twenty");
+        let mut after_five_3 = after_five_2.derive_editable();
+        after_five_3.push_segment(b"thirteen");
+        after_five_3.push_segment(b"thirtyseven");
+
+        // `after_five_3` should be like this:
+        // [1, 2] -> 3 -> [4, 5, 6, 7, 8]
+        //                    ^-> 4 -> 20 -> [13, 37]
+
+        // Verify it behaves as a basic [SubtreePathRef] made from a slice.
+        let reference_slice = [
+            b"one".as_ref(),
+            b"two".as_ref(),
+            b"three".as_ref(),
+            b"four".as_ref(),
+            b"five".as_ref(),
+            b"four".as_ref(),
+            b"twenty".as_ref(),
+            b"thirteen".as_ref(),
+            b"thirtyseven".as_ref(),
+        ];
+        let reference: SubtreePathRef<_> = (&reference_slice).into();
+
+        assert_eq!(after_five_3.to_vec(), reference.to_vec());
+        assert!(after_five_3.reverse_iter().eq(reference.reverse_iter()));
+        assert_eq!(calculate_hash(&after_five_3), calculate_hash(&reference));
+        assert_eq!(after_five_3.derive(), reference);
     }
 }

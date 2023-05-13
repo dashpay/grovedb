@@ -55,6 +55,7 @@ impl TwoDimensionalBytes {
         self.n_segments += 1;
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.n_segments
     }

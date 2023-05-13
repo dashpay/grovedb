@@ -27,16 +27,15 @@
 // DEALINGS IN THE SOFTWARE.
 
 //! Reverse iterator for a subtree path definition and implementation.
-//!
-//! Due to implementation details (one way link between derivations) it cannot
-//! effectively iterate from the most shallow path segment to the deepest, so it
-//! have to go in reverse direction.
 
 use std::slice;
 
 use crate::{subtree_path::SubtreePathRef, util::TwoDimensionalBytesIter};
 
 /// (Reverse) iterator for a subtree path.
+/// Because of implementation details (one way link between derivations) it
+/// cannot effectively iterate from the most shallow path segment to the
+/// deepest, so it have to go in reverse direction.
 #[derive(Debug)]
 pub struct SubtreePathIter<'b, 's, B> {
     current_iter: CurrentSubtreePathIter<'b, 's, B>,

@@ -44,12 +44,12 @@ pub struct SubtreePath<'b, B> {
     relative: SubtreePathRelative<'b>,
 }
 
-/// Does what derived implementation would do, but moving trait bounds away from
-/// structure definition.
+/// Hash order is the same as iteration order: from most deep path segment up to
+/// root.
 impl<'b, B: AsRef<[u8]>> Hash for SubtreePath<'b, B> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.base.hash(state);
         self.relative.hash(state);
+        self.base.hash(state);
     }
 }
 
@@ -98,12 +98,16 @@ impl<'b, B> From<SubtreePathRefInner<'b, B>> for SubtreePathRef<'b, B> {
     }
 }
 
+/// Hash order is the same as iteration order: from most deep path segment up to
+/// root.
 impl<'b, B: AsRef<[u8]>> Hash for SubtreePathRef<'b, B> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match &self.0 {
-            SubtreePathRefInner::Slice(slice) => {
-                slice.iter().map(AsRef::as_ref).for_each(|s| s.hash(state))
-            }
+            SubtreePathRefInner::Slice(slice) => slice
+                .iter()
+                .map(AsRef::as_ref)
+                .rev()
+                .for_each(|s| s.hash(state)),
             SubtreePathRefInner::SubtreePath(path) => path.hash(state),
             SubtreePathRefInner::SubtreePathIter(path_iter) => {
                 path_iter.clone().for_each(|s| s.hash(state))
@@ -137,14 +141,25 @@ impl<'b, B: AsRef<[u8]>> SubtreePathRef<'b, B> {
         }
     }
 
-    /// Immutable branch from a subtree path with no added information.
-    pub fn derive(&'b self) -> SubtreePathRef<'b, B> {
-        self.clone()
+    /// Get a derived path with a child path segment added.
+    pub fn derive_child<'s, S>(&'b self, segment: S) -> SubtreePath<'b, B>
+    where
+        S: Into<CowLike<'s>>,
+        's: 'b,
+    {
+        SubtreePath {
+            base: self.clone(),
+            relative: SubtreePathRelative::Single(segment.into()),
+        }
     }
 
     /// Get a derived subtree path for a parent with care for base path slice
-    /// case.
-    pub fn derive_parent(&'b self) -> Option<(SubtreePathRef<'b, B>, &'b [u8])> {
+    /// case. The main difference from [SubtreePath::derive_parent] is that
+    /// lifetime of returned [Self] if not limited to the scope where this
+    /// function was called so it's possible to follow to ancestor paths
+    /// without keeping previous result as it still will link to `'b`
+    /// (latest [SubtreePath] or initial slice of data).
+    pub fn derive_parent(&self) -> Option<(SubtreePathRef<'b, B>, &'b [u8])> {
         match &self.0 {
             SubtreePathRefInner::Slice(path) => path
                 .split_last()
@@ -212,28 +227,34 @@ impl Hash for SubtreePathRelative<'_> {
         match self {
             SubtreePathRelative::Empty => {}
             SubtreePathRelative::Single(segment) => segment.hash(state),
-            SubtreePathRelative::Multi(bytes) => bytes.into_iter().for_each(|s| s.hash(state)),
+            SubtreePathRelative::Multi(bytes) => bytes
+                .into_iter()
+                .rev()
+                .for_each(|segment| segment.hash(state)),
         }
     }
 }
 
 /// Creates a [SubtreePath] from slice.
-impl<'b, B> From<&'b [B]> for SubtreePath<'b, B> {
+impl<'b, B> From<&'b [B]> for SubtreePathRef<'b, B> {
     fn from(value: &'b [B]) -> Self {
-        SubtreePath {
-            base: SubtreePathRefInner::Slice(value).into(),
-            relative: SubtreePathRelative::Empty,
-        }
+        SubtreePathRefInner::Slice(value).into()
     }
 }
 
-/// Creates a [SubtreePath] from a [SubtreePath] reference. This way functions
-/// could be generic over different ways of representing subtree path.
-impl<'b, 'a: 'b, B: AsRef<[u8]>> From<&'a SubtreePath<'b, B>> for SubtreePath<'b, B> {
-    fn from(value: &'a SubtreePath<'b, B>) -> Self {
-        value.derive_editable()
+impl<'b, B, const N: usize> From<&'b [B; N]> for SubtreePathRef<'b, B> {
+    fn from(value: &'b [B; N]) -> Self {
+        SubtreePathRefInner::Slice(value).into()
     }
 }
+
+// /// Creates a [SubtreePath] from a [SubtreePath] reference. This way
+// functions /// could be generic over different ways of representing subtree
+// path. impl<'b, 'a: 'b, B: AsRef<[u8]>> From<&'a SubtreePath<'b, B>> for
+// SubtreePath<'b, B> {     fn from(value: &'a SubtreePath<'b, B>) -> Self {
+//         value.derive_editable()
+//     }
+// }
 
 impl SubtreePath<'static, [u8; 0]> {
     /// Creates empty subtree path
@@ -265,7 +286,9 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         SubtreePathRefInner::SubtreePath(&self).into()
     }
 
-    /// Get a derived path for a parent and a chopped segment.
+    /// Get a derived path for a parent and a chopped segment. Returned
+    /// [SubtreePathRef] will be linked to this [SubtreePath] because it might
+    /// contain owned data and it has to outlive [SubtreePathRef].
     pub fn derive_parent<'s>(&'s self) -> Option<(SubtreePathRef<'s, B>, &'s [u8])> {
         match &self.relative {
             SubtreePathRelative::Empty => self.base.derive_parent(),
@@ -278,9 +301,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         }
     }
 
-    /// Get a derived path with a child path segment added. The lifetime of the
-    /// path will remain the same in case of owned data (segment is a
-    /// vector) or will match the slice's lifetime.
+    /// Get a derived path with a child path segment added.
     pub fn derive_child<'s, S>(&'b self, segment: S) -> SubtreePath<'b, B>
     where
         S: Into<CowLike<'s>>,
@@ -295,7 +316,11 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     /// Adds path segment in place.
     pub fn push_segment(&mut self, segment: &[u8]) {
         match &mut self.relative {
-            SubtreePathRelative::Empty => {}
+            SubtreePathRelative::Empty => {
+                let mut bytes = TwoDimensionalBytes::new();
+                bytes.add_segment(segment);
+                self.relative = SubtreePathRelative::Multi(bytes);
+            }
             SubtreePathRelative::Single(old_segment) => {
                 let mut bytes = TwoDimensionalBytes::new();
                 bytes.add_segment(old_segment);
@@ -328,7 +353,12 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
             }
             SubtreePathRefInner::SubtreePath(path) => path.to_vec(),
             SubtreePathRefInner::SubtreePathIter(iter) => {
-                iter.clone().map(|x| x.as_ref().to_vec()).collect()
+                let mut base_vec = iter
+                    .clone()
+                    .map(|x| x.as_ref().to_vec())
+                    .collect::<Vec<_>>();
+                base_vec.reverse();
+                base_vec
             }
         };
 

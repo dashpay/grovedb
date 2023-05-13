@@ -76,6 +76,12 @@ impl<'b> From<&'b [u8]> for CowLike<'b> {
     }
 }
 
+impl<'b, const N: usize> From<&'b [u8; N]> for CowLike<'b> {
+    fn from(value: &'b [u8; N]) -> Self {
+        Self::Borrowed(value.as_ref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
