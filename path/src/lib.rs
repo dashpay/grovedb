@@ -34,7 +34,7 @@ mod subtree_path;
 mod subtree_path_iter;
 mod util;
 
-pub use subtree_path::SubtreePath;
+pub use subtree_path::{SubtreePath, SubtreePathRef};
 pub use subtree_path_iter::SubtreePathIter;
 
 #[cfg(test)]
@@ -92,10 +92,11 @@ mod tests {
         assert_eq!(calculate_hash(&path_derived_2), hash);
         assert_eq!(calculate_hash(&path_derived_3), hash);
         // Check for equality
-        assert_eq!(&path_base_slice_slices, &path_base_slice_vecs);
-        assert_eq!(&path_derived_1, &path_base_slice_vecs);
-        assert_eq!(&path_derived_2, &path_base_slice_vecs);
-        assert_eq!(&path_derived_3, &path_base_slice_vecs);
+        let reference = path_base_slice_vecs.derive();
+        assert_eq!(&path_base_slice_slices.derive(), &reference);
+        assert_eq!(&path_derived_1.derive(), &reference);
+        assert_eq!(&path_derived_2, &reference);
+        assert_eq!(&path_derived_3.derive(), &reference);
     }
 
     #[test]

@@ -34,12 +34,22 @@
 
 use std::slice;
 
-use crate::{subtree_path::SubtreePathBase, util::TwoDimensionalBytesIter};
+use crate::{subtree_path::SubtreePathRef, util::TwoDimensionalBytesIter};
 
 /// (Reverse) iterator for a subtree path.
+#[derive(Debug)]
 pub struct SubtreePathIter<'b, 's, B> {
     current_iter: CurrentSubtreePathIter<'b, 's, B>,
-    next_subtree_path: Option<&'s SubtreePathBase<'b, B>>,
+    next_subtree_path: Option<&'s SubtreePathRef<'b, B>>,
+}
+
+impl<'b, 's, B> Clone for SubtreePathIter<'b, 's, B> {
+    fn clone(&self) -> Self {
+        SubtreePathIter {
+            current_iter: self.current_iter.clone(),
+            next_subtree_path: self.next_subtree_path.clone(),
+        }
+    }
 }
 
 impl<'b, 's, B> SubtreePathIter<'b, 's, B> {
@@ -53,7 +63,7 @@ impl<'b, 's, B> SubtreePathIter<'b, 's, B> {
         }
     }
 
-    pub(crate) fn new_with_next<I>(iter: I, next: &'s SubtreePathBase<'b, B>) -> Self
+    pub(crate) fn new_with_next<I>(iter: I, next: &'s SubtreePathRef<'b, B>) -> Self
     where
         I: Into<CurrentSubtreePathIter<'b, 's, B>>,
     {
@@ -61,6 +71,15 @@ impl<'b, 's, B> SubtreePathIter<'b, 's, B> {
             current_iter: iter.into(),
             next_subtree_path: Some(next),
         }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.next_subtree_path.is_none()
+            && match &self.current_iter {
+                CurrentSubtreePathIter::Single(_) => false,
+                CurrentSubtreePathIter::Slice(slice) => slice.len() == 0,
+                CurrentSubtreePathIter::OwnedBytes(bytes_iter) => bytes_iter.len() == 0,
+            }
     }
 }
 
@@ -104,10 +123,21 @@ impl<'s, 'b: 's, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, 's, B> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum CurrentSubtreePathIter<'b, 's, B> {
     Single(&'s [u8]),
     Slice(slice::Iter<'b, B>),
     OwnedBytes(TwoDimensionalBytesIter<'s>),
+}
+
+impl<'b, 's, B> Clone for CurrentSubtreePathIter<'b, 's, B> {
+    fn clone(&self) -> Self {
+        match self {
+            CurrentSubtreePathIter::Single(x) => CurrentSubtreePathIter::Single(x),
+            CurrentSubtreePathIter::Slice(x) => CurrentSubtreePathIter::Slice(x.clone()),
+            CurrentSubtreePathIter::OwnedBytes(x) => CurrentSubtreePathIter::OwnedBytes(x.clone()),
+        }
+    }
 }
 
 impl<'b, 's, B> From<TwoDimensionalBytesIter<'s>> for CurrentSubtreePathIter<'b, 's, B> {

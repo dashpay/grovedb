@@ -91,7 +91,7 @@ use merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-use path::SubtreePath;
+use path::{SubtreePath, SubtreePathRef};
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 // #[cfg(feature = "full")]
@@ -300,7 +300,7 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive();
+        let mut current_path = path.derive_editable();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree = cost_return_on_error!(
@@ -352,7 +352,7 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive();
+        let mut current_path = path.derive_editable();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
@@ -383,7 +383,7 @@ impl GroveDb {
     fn propagate_changes_without_transaction<B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<B>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -396,7 +396,7 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path = path.derive();
+        let mut current_path = path.derive_editable();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(

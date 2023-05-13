@@ -69,14 +69,17 @@ impl<'a> IntoIterator for &'a TwoDimensionalBytes {
             bytes: self,
             offset: 0,
             offset_back: self.data.len(),
+            n_segments_left: self.n_segments,
         }
     }
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct TwoDimensionalBytesIter<'a> {
     bytes: &'a TwoDimensionalBytes,
     offset: usize,
     offset_back: usize,
+    n_segments_left: usize,
 }
 
 impl TwoDimensionalBytesIter<'_> {
@@ -115,7 +118,14 @@ impl<'a> Iterator for TwoDimensionalBytesIter<'a> {
         // move offset to the next segment data (must point to it's size)
         self.offset += length_size + segment_length;
 
+        // Decrease iterator's size
+        self.n_segments_left -= 1;
+
         Some(segment)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.n_segments_left, Some(self.n_segments_left))
     }
 }
 
@@ -144,9 +154,14 @@ impl<'a> DoubleEndedIterator for TwoDimensionalBytesIter<'a> {
         // point to it's size)
         self.offset_back -= length_size + segment_length;
 
+        // Decrease iterator's size
+        self.n_segments_left -= 1;
+
         Some(segment)
     }
 }
+
+impl ExactSizeIterator for TwoDimensionalBytesIter<'_> {}
 
 #[cfg(test)]
 mod tests {
@@ -174,6 +189,9 @@ mod tests {
         let mut iter = bytes.into_iter();
         assert_eq!(iter.next(), Some(b"ayya".as_ref()));
         assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
+
+        assert_eq!(iter.len(), 2);
+
         assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
         assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
         assert_eq!(iter.next(), None);
@@ -184,6 +202,9 @@ mod tests {
 
         let mut iter = bytes.into_iter();
         assert_eq!(iter.next(), Some(b"ayya".as_ref()));
+
+        assert_eq!(iter.len(), 3);
+
         assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
         assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
         assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
@@ -204,6 +225,9 @@ mod tests {
         let mut iter = bytes.into_iter().rev();
         assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
         assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
+
+        assert_eq!(iter.len(), 2);
+
         assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
         assert_eq!(iter.next(), Some(b"ayya".as_ref()));
         assert_eq!(iter.next(), None);
@@ -214,6 +238,9 @@ mod tests {
 
         let mut iter = bytes.into_iter().rev();
         assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
+
+        assert_eq!(iter.len(), 3);
+
         assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
         assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
         assert_eq!(iter.next(), Some(b"ayya".as_ref()));
