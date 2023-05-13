@@ -127,6 +127,13 @@ impl<B> Clone for SubtreePathRef<'_, B> {
     }
 }
 
+impl SubtreePathRef<'static, [u8; 0]> {
+    /// Get empty subtree path (meaning it'll point to the root tree).
+    pub fn empty() -> Self {
+        SubtreePathRefInner::Slice(&[]).into()
+    }
+}
+
 impl<'b, B: AsRef<[u8]>> SubtreePathRef<'b, B> {
     /// Get a derived path that will reuse this [Self] as it's base path and
     /// capable of owning data.

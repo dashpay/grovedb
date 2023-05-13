@@ -206,7 +206,7 @@ where
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use path::SubtreePath;
+    use path::SubtreePathRef;
     use storage::{rocksdb_storage::RocksDbStorage, Storage};
     use tempfile::TempDir;
 
@@ -268,7 +268,9 @@ mod tests {
                 .expect("cannot open rocksdb storage");
 
             let mut merk = Merk::open_base(
-                storage.get_storage_context(&SubtreePath::new()).unwrap(),
+                storage
+                    .get_storage_context(&SubtreePathRef::empty())
+                    .unwrap(),
                 false,
             )
             .unwrap()
@@ -286,7 +288,9 @@ mod tests {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
-            storage.get_storage_context(&SubtreePath::new()).unwrap(),
+            storage
+                .get_storage_context(&SubtreePathRef::empty())
+                .unwrap(),
             false,
         )
         .unwrap()

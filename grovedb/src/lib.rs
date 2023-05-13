@@ -201,10 +201,10 @@ impl GroveDb {
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
         let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
+        let path: SubtreePathRef<B> = path.into();
 
         let storage = self
             .db

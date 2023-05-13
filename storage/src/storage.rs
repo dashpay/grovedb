@@ -82,41 +82,40 @@ pub trait Storage<'db> {
     fn flush(&self) -> Result<(), Error>;
 
     /// Make storage_cost context for a subtree with path
-    fn get_storage_context<'b, B, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
+    fn get_storage_context<'b, B>(
+        &'db self,
+        path: &SubtreePathRef<'b, B>,
+    ) -> CostContext<Self::StorageContext>
     where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>;
+        B: AsRef<[u8]> + 'b;
 
     /// Make storage_cost context for a subtree on transactional data
-    fn get_transactional_storage_context<'b, B, P>(
+    fn get_transactional_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: &SubtreePathRef<'b, B>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>;
+        B: AsRef<[u8]> + 'b;
 
     /// Make batch storage_cost context for a subtree with path
-    fn get_batch_storage_context<'b, B, P>(
+    fn get_batch_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: &SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>;
+        B: AsRef<[u8]> + 'b;
 
     /// Make batch storage_cost context for a subtree on transactional data
-    fn get_batch_transactional_storage_context<'b, B, P>(
+    fn get_batch_transactional_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: &SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>;
+        B: AsRef<[u8]> + 'b;
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;

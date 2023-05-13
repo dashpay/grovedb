@@ -434,52 +434,50 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.flush().map_err(RocksDBError)
     }
 
-    fn get_storage_context<'b, B, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
+    fn get_storage_context<'b, B>(
+        &'db self,
+        path: &SubtreePathRef<'b, B>,
+    ) -> CostContext<Self::StorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
     {
-        Self::build_prefix(&path.into())
-            .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
+        Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
     }
 
-    fn get_transactional_storage_context<'b, B, P>(
+    fn get_transactional_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: &SubtreePathRef<'b, B>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
     {
-        Self::build_prefix(&path.into())
+        Self::build_prefix(path)
             .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
     }
 
-    fn get_batch_storage_context<'b, B, P>(
+    fn get_batch_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: &SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
     {
-        Self::build_prefix(&path.into())
+        Self::build_prefix(path)
             .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
     }
 
-    fn get_batch_transactional_storage_context<'b, B, P>(
+    fn get_batch_transactional_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: &SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
     {
-        Self::build_prefix(&path.into()).map(|prefix| {
+        Self::build_prefix(path).map(|prefix| {
             PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
         })
     }
