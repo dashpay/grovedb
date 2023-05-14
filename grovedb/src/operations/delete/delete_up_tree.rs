@@ -33,7 +33,7 @@ use costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use path::SubtreePath;
+use path::SubtreePathRef;
 
 use crate::{
     batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
@@ -94,7 +94,7 @@ impl GroveDb {
     ) -> CostResult<u16, Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
         self.delete_up_tree_while_empty_with_sectional_storage(
             &path.into(),
@@ -112,9 +112,9 @@ impl GroveDb {
 
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
-    pub fn delete_up_tree_while_empty_with_sectional_storage<B: AsRef<[u8]>>(
+    pub fn delete_up_tree_while_empty_with_sectional_storage<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
@@ -169,9 +169,9 @@ impl GroveDb {
     }
 
     /// Returns a vector of GroveDb ops
-    pub fn delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
+    pub fn delete_operations_for_delete_up_tree_while_empty<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
@@ -193,7 +193,7 @@ impl GroveDb {
     /// for each level. Returns a vector of GroveDb ops.
     pub fn add_delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,

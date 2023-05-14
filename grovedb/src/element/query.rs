@@ -38,7 +38,7 @@ use costs::{
 use merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::Query;
-use path::SubtreePath;
+use path::SubtreePathRef;
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
@@ -350,7 +350,7 @@ impl Element {
                     {
                         path_vec.extend(subquery_path_front_keys.iter().map(|k| k.as_slice()));
 
-                        let subtree_path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+                        let subtree_path: SubtreePathRef<_> = path_vec.as_slice().into();
 
                         match result_type {
                             QueryElementResultType => {
@@ -545,7 +545,7 @@ impl Element {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let subtree_path: SubtreePath<&[u8]> = path.into();
+        let subtree_path: SubtreePathRef<_> = path.into();
 
         if !item.is_range() {
             // this is a query on a key

@@ -37,7 +37,7 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use merk::{tree::NULL_HASH, Merk, MerkOptions};
-use path::SubtreePath;
+use path::SubtreePathRef;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
@@ -96,24 +96,31 @@ impl GroveDb {
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
+        let subtree_path: SubtreePathRef<B> = path.into();
+
         if let Some(transaction) = transaction {
             self.insert_on_transaction(
-                &path.into(),
+                &subtree_path,
                 key,
                 element,
                 options.unwrap_or_default(),
                 transaction,
             )
         } else {
-            self.insert_without_transaction(&path.into(), key, element, options.unwrap_or_default())
+            self.insert_without_transaction(
+                &subtree_path,
+                key,
+                element,
+                options.unwrap_or_default(),
+            )
         }
     }
 
-    fn insert_on_transaction<'db, B: AsRef<[u8]>>(
+    fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -137,9 +144,9 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn insert_without_transaction<B: AsRef<[u8]>>(
+    fn insert_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -169,9 +176,9 @@ impl GroveDb {
     /// first make sure other merk exist
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
-    fn add_element_on_transaction<'db, B: AsRef<[u8]>>(
+    fn add_element_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -228,7 +235,7 @@ impl GroveDb {
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_transactional_merk_at_path(referenced_path, transaction)
+                    self.open_transactional_merk_at_path(&referenced_path.into(), transaction)
                 );
 
                 let referenced_element_value_hash_opt = cost_return_on_error!(
@@ -310,8 +317,10 @@ impl GroveDb {
         options: InsertOptions,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
         let mut cost = OperationCost::default();
-        let mut subtree_to_insert_into: Merk<PrefixedRocksDbStorageContext> =
-            cost_return_on_error!(&mut cost, self.open_non_transactional_merk_at_path(path));
+        let mut subtree_to_insert_into: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_non_transactional_merk_at_path(&path.into())
+        );
 
         if options.checks_for_override() {
             let maybe_element_bytes = cost_return_on_error!(
@@ -355,7 +364,7 @@ impl GroveDb {
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap(); // TODO unwrap?
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(referenced_path)
+                    self.open_non_transactional_merk_at_path(&referenced_path.into())
                 );
 
                 // when there is no transaction, we don't want to use caching
@@ -435,15 +444,18 @@ impl GroveDb {
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
+        P: Into<SubtreePathRef<'b, B>>,
     {
         let mut cost = OperationCost::default();
-        let subtree_path: SubtreePath<_> = path.into();
+        let subtree_path: SubtreePathRef<_> = path.into();
 
-        if cost_return_on_error!(&mut cost, self.has_raw(&subtree_path, key, transaction)) {
+        if cost_return_on_error!(
+            &mut cost,
+            self.has_raw(subtree_path.clone(), key, transaction)
+        ) {
             Ok(false).wrap_with_cost(cost)
         } else {
-            self.insert(&subtree_path, key, element, None, transaction)
+            self.insert(subtree_path, key, element, None, transaction)
                 .map_ok(|_| true)
                 .add_cost(cost)
         }
@@ -453,18 +465,23 @@ impl GroveDb {
     /// Insert if the value changed
     /// We return if the value was inserted
     /// If the value was changed then we return the previous element
-    pub fn insert_if_changed_value<B: AsRef<[u8]>>(
+    pub fn insert_if_changed_value<'b, B, P>(
         &self,
-        path: &[B],
+        path: P,
         key: &[u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostResult<(bool, Option<Element>), Error> {
+    ) -> CostResult<(bool, Option<Element>), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePathRef<'b, B>>,
+    {
         let mut cost = OperationCost::default();
+        let subtree_path: SubtreePathRef<B> = path.into();
 
         let previous_element = cost_return_on_error!(
             &mut cost,
-            self.get_raw_optional(&path.into(), key, transaction)
+            self.get_raw_optional(&subtree_path, key, transaction)
         );
         let needs_insert = match &previous_element {
             None => true,
@@ -473,7 +490,7 @@ impl GroveDb {
         if !needs_insert {
             Ok((false, None)).wrap_with_cost(cost)
         } else {
-            self.insert(path, key, element, None, transaction)
+            self.insert(subtree_path, key, element, None, transaction)
                 .map_ok(|_| (true, previous_element))
                 .add_cost(cost)
         }

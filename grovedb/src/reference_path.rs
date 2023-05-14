@@ -106,7 +106,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
 #[cfg(feature = "full")]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
-pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
+pub fn path_from_reference_path_type<'b, B: AsRef<[u8]>>(
     reference_path_type: ReferencePathType,
     current_path: &[B],
     current_key: Option<&[u8]>,

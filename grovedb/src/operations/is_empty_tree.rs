@@ -30,7 +30,7 @@
 
 #[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use path::SubtreePath;
+use path::SubtreePathRef;
 
 #[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
@@ -38,13 +38,17 @@ use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 #[cfg(feature = "full")]
 impl GroveDb {
     /// Check if it's an empty tree
-    pub fn is_empty_tree<B: AsRef<[u8]>>(
+    pub fn is_empty_tree<'b, B, P>(
         &self,
-        path: &[B],
+        path: P,
         transaction: TransactionArg,
-    ) -> CostResult<bool, Error> {
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePathRef<'b, B>>,
+    {
         let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
+        let path: SubtreePathRef<B> = path.into();
 
         cost_return_on_error!(
             &mut cost,

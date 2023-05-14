@@ -83,7 +83,7 @@ use merk::{
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
 };
 pub use options::BatchApplyOptions;
-use path::{SubtreePath, SubtreePathRef};
+use path::SubtreePathRef;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
@@ -1593,10 +1593,10 @@ impl GroveDb {
     }
 
     /// Opens merk at path with given storage batch context. Returns CostResult.
-    pub fn open_batch_merk_at_path<'a, B: AsRef<[u8]>>(
+    pub fn open_batch_merk_at_path<'a, 'b, B: AsRef<[u8]>>(
         &'a self,
         storage_batch: &'a StorageBatch,
-        path: &SubtreePath<B>,
+        path: &SubtreePathRef<'b, B>,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
         let mut local_cost = OperationCost::default();
@@ -1615,7 +1615,7 @@ impl GroveDb {
         } else if let Some((base_path, last)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(base_path)
+                .get_storage_context(&base_path)
                 .unwrap_add_cost(&mut local_cost);
             let element = cost_return_on_error!(
                 &mut local_cost,

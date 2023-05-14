@@ -91,7 +91,7 @@ use merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-use path::{SubtreePath, SubtreePathRef};
+use path::SubtreePathRef;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 // #[cfg(feature = "full")]
@@ -376,10 +376,10 @@ impl GroveDb {
     }
 
     /// Method to propagate updated subtree key changes one level up
-    fn propagate_changes_without_transaction<B: AsRef<[u8]>>(
+    fn propagate_changes_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
-        path: &SubtreePathRef<B>,
+        path: &SubtreePathRef<'b, B>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
