@@ -489,10 +489,10 @@ impl GroveDb {
                     )
                 );
                 let mut merk_cache: HashMap<
-                    Vec<Vec<u8>>,
+                    SubtreePath<'b, B>,
                     Merk<PrefixedRocksDbBatchTransactionContext>,
                 > = HashMap::default();
-                merk_cache.insert(path.to_vec(), merk_to_delete_tree_from);
+                merk_cache.insert(path.clone(), merk_to_delete_tree_from);
                 cost_return_on_error!(
                     &mut cost,
                     self.propagate_changes_with_batch_transaction(
@@ -522,9 +522,11 @@ impl GroveDb {
                         sectioned_removal
                     )
                 );
-                let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
-                    HashMap::default();
-                merk_cache.insert(path.to_vec(), subtree_to_delete_from);
+                let mut merk_cache: HashMap<
+                    SubtreePath<'b, B>,
+                    Merk<PrefixedRocksDbTransactionContext>,
+                > = HashMap::default();
+                merk_cache.insert(path.clone(), subtree_to_delete_from);
                 cost_return_on_error!(
                     &mut cost,
                     self.propagate_changes_with_transaction(merk_cache, path, transaction)
@@ -542,9 +544,11 @@ impl GroveDb {
                     sectioned_removal,
                 )
             );
-            let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
-            merk_cache.insert(path.to_vec(), subtree_to_delete_from);
+            let mut merk_cache: HashMap<
+                SubtreePath<'b, B>,
+                Merk<PrefixedRocksDbTransactionContext>,
+            > = HashMap::default();
+            merk_cache.insert(path.clone(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,
                 self.propagate_changes_with_transaction(merk_cache, path, transaction)
@@ -572,7 +576,7 @@ impl GroveDb {
 
         let element =
             cost_return_on_error!(&mut cost, self.get_raw(path.clone(), key.as_ref(), None));
-        let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
+        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
         let mut subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
             &mut cost,
@@ -648,7 +652,7 @@ impl GroveDb {
                 )
             );
         }
-        merk_cache.insert(path.to_vec(), subtree_to_delete_from);
+        merk_cache.insert(path.clone(), subtree_to_delete_from);
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_without_transaction(merk_cache, path)

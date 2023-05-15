@@ -279,7 +279,7 @@ impl GroveDb {
     fn propagate_changes_with_batch_transaction<'b, B: AsRef<[u8]>>(
         &self,
         storage_batch: &StorageBatch,
-        mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbBatchTransactionContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchTransactionContext>>,
         path: &SubtreePath<'b, B>,
         transaction: &Transaction,
     ) -> CostResult<(), Error> {
@@ -287,13 +287,9 @@ impl GroveDb {
 
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
-            merk_cache
-                .remove(
-                    &path.to_vec(), // TODO oof
-                )
-                .ok_or(Error::CorruptedCodeExecution(
-                    "Merk Cache should always contain the last path",
-                ))
+            merk_cache.remove(path).ok_or(Error::CorruptedCodeExecution(
+                "Merk Cache should always contain the last path",
+            ))
         );
 
         let mut current_path = path.clone();
@@ -332,7 +328,7 @@ impl GroveDb {
     /// transaction
     fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: SubtreePath<'b, B>,
         transaction: &Transaction,
     ) -> CostResult<(), Error> {
@@ -341,8 +337,8 @@ impl GroveDb {
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
-                 // TODO: do something about this and caching in general
-                .remove(&path.to_vec())
+                 // TODO: do something about caching in general
+                .remove(&path)
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
                 ))
@@ -378,7 +374,7 @@ impl GroveDb {
     /// Method to propagate updated subtree key changes one level up
     fn propagate_changes_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>>,
         path: SubtreePath<'b, B>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -386,13 +382,13 @@ impl GroveDb {
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
-                .remove(&path.to_vec()) // TODO: merk_cache to use SubtreePath
+                .remove(&path) // TODO: merk_cache to use SubtreePath
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
                 ))
         );
 
-        let mut current_path: SubtreePath<B> = path.clone();
+        let mut current_path: SubtreePath<B> = path;
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(

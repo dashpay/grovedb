@@ -123,14 +123,14 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
+        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
             HashMap::default();
 
         let merk = cost_return_on_error!(
             &mut cost,
             self.add_element_on_transaction(path.clone(), key, element, options, transaction)
         );
-        merk_cache.insert(path.to_vec(), merk);
+        merk_cache.insert(path.clone(), merk);
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_with_transaction(merk_cache, path, transaction)
@@ -148,15 +148,14 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
+        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
 
-        let path_owned = path.to_vec(); // TODO
         let merk = cost_return_on_error!(
             &mut cost,
-            self.add_element_without_transaction(&path_owned, key, element, options)
+            self.add_element_without_transaction(&path.to_vec(), key, element, options)
         );
-        merk_cache.insert(path_owned, merk);
+        merk_cache.insert(path.clone(), merk);
 
         cost_return_on_error!(
             &mut cost,

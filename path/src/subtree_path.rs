@@ -73,6 +73,8 @@ where
     }
 }
 
+impl<'b, B: AsRef<[u8]>> Eq for SubtreePath<'b, B> {}
+
 impl<'b, B> From<SubtreePathInner<'b, B>> for SubtreePath<'b, B> {
     fn from(ref_variant: SubtreePathInner<'b, B>) -> Self {
         Self { ref_variant }
