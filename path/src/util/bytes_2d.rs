@@ -45,14 +45,20 @@ impl TwoDimensionalBytes {
 
     /// Append bytes segment.
     pub fn add_segment(&mut self, segment: &[u8]) {
-        // First it goes byte representation of the segment length
-        let length_bytes = segment.len().to_ne_bytes();
-        self.data.extend_from_slice(&length_bytes);
-        // Next the bytes segment itself
+        // Because the iteration will go backwards, a segment is inserted an odd way:
+        // First it goes the segment itself
         self.data.extend_from_slice(segment);
-        // Again, segment length to be able to iterate in both sides
-        self.data.extend_from_slice(&length_bytes);
+        // Next it will be it's length
+        self.data.extend_from_slice(&segment.len().to_ne_bytes());
         self.n_segments += 1;
+    }
+
+    pub fn reverse_iter(&self) -> TwoDimensionalBytesIter {
+        TwoDimensionalBytesIter {
+            bytes: self,
+            offset_back: self.data.len(),
+            n_segments_left: self.n_segments,
+        }
     }
 
     #[cfg(test)]
@@ -61,78 +67,80 @@ impl TwoDimensionalBytes {
     }
 }
 
-impl<'a> IntoIterator for &'a TwoDimensionalBytes {
-    type IntoIter = TwoDimensionalBytesIter<'a>;
-    type Item = &'a [u8];
+// impl<'a> IntoIterator for &'a TwoDimensionalBytes {
+//     type IntoIter = TwoDimensionalBytesIter<'a>;
+//     type Item = &'a [u8];
 
-    fn into_iter(self) -> Self::IntoIter {
-        TwoDimensionalBytesIter {
-            bytes: self,
-            offset: 0,
-            offset_back: self.data.len(),
-            n_segments_left: self.n_segments,
-        }
-    }
-}
+//     fn into_iter(self) -> Self::IntoIter {
+//         TwoDimensionalBytesIter {
+//             bytes: self,
+//             offset: 0,
+//             offset_back: self.data.len(),
+//             n_segments_left: self.n_segments,
+//         }
+//     }
+// }
 
 #[derive(Debug, Clone)]
 pub(crate) struct TwoDimensionalBytesIter<'a> {
     bytes: &'a TwoDimensionalBytes,
-    offset: usize,
     offset_back: usize,
     n_segments_left: usize,
 }
 
-impl TwoDimensionalBytesIter<'_> {
-    /// Check if the iterator is finished.
-    /// Per [DoubleEndediterator] docs: "It is important to note that both back
-    /// and forth work on the same range, and do not cross: iteration is
-    /// over when they meet in the middle."
-    fn is_ended(&self) -> bool {
-        self.offset >= self.offset_back
-    }
-}
+// impl TwoDimensionalBytesIter<'_> {
+//     /// Check if the iterator is finished.
+//     /// Per [DoubleEndediterator] docs: "It is important to note that both back
+//     /// and forth work on the same range, and do not cross: iteration is
+//     /// over when they meet in the middle."
+//     fn is_ended(&self) -> bool {
+//         self.offset >= self.offset_back
+//     }
+// }
+
+// impl<'a> Iterator for TwoDimensionalBytesIter<'a> {
+//     type Item = &'a [u8];
+
+//     fn next(&mut self) -> Option<Self::Item> {
+//         panic!("kek");
+//         if self.is_ended() {
+//             return None;
+//         }
+
+//         // Like [Self::add_segment], but reverse: first we get N bytes, where N
+//         // is the size of usize and build segment length
+//         let length_size = mem::size_of::<usize>();
+//         let segment_length = usize::from_ne_bytes(
+//             self.bytes.data[self.offset..self.offset + length_size]
+//                 .try_into()
+//                 .expect("internal structure bug"),
+//         );
+//         // Read segment length, moving offset forward
+//         self.offset += length_size;
+
+//         // Reading segment data starting from new offset
+//         let segment = &self.bytes.data[self.offset..self.offset + segment_length];
+
+//         // Ignore segment length bytes that were intended for reverse iteration and
+//         // move offset to the next segment data (must point to it's size)
+//         self.offset += length_size + segment_length;
+
+//         // Decrease iterator's size
+//         self.n_segments_left -= 1;
+
+//         Some(segment)
+//     }
+
+//     fn size_hint(&self) -> (usize, Option<usize>) {
+//         (self.n_segments_left, Some(self.n_segments_left))
+//     }
+// }
 
 impl<'a> Iterator for TwoDimensionalBytesIter<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.is_ended() {
-            return None;
-        }
-
-        // Like [Self::add_segment], but reverse: first we get N bytes, where N
-        // is the size of usize and build segment length
-        let length_size = mem::size_of::<usize>();
-        let segment_length = usize::from_ne_bytes(
-            self.bytes.data[self.offset..self.offset + length_size]
-                .try_into()
-                .expect("internal structure bug"),
-        );
-        // Read segment length, moving offset forward
-        self.offset += length_size;
-
-        // Reading segment data starting from new offset
-        let segment = &self.bytes.data[self.offset..self.offset + segment_length];
-
-        // Ignore segment length bytes that were intended for reverse iteration and
-        // move offset to the next segment data (must point to it's size)
-        self.offset += length_size + segment_length;
-
-        // Decrease iterator's size
-        self.n_segments_left -= 1;
-
-        Some(segment)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.n_segments_left, Some(self.n_segments_left))
-    }
-}
-
-impl<'a> DoubleEndedIterator for TwoDimensionalBytesIter<'a> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.is_ended() {
+        if self.offset_back == 0 {
             return None;
         }
 
@@ -150,15 +158,18 @@ impl<'a> DoubleEndedIterator for TwoDimensionalBytesIter<'a> {
         // Reading segment data starting from new offset
         let segment = &self.bytes.data[self.offset_back - segment_length..self.offset_back];
 
-        // Ignore segment length bytes that were intended for reverse iteration and
-        // move offset to the next (according to iteration direction) segment data (must
+        // Move offset to the next (according to iteration direction) segment data (must
         // point to it's size)
-        self.offset_back -= length_size + segment_length;
+        self.offset_back -= segment_length;
 
         // Decrease iterator's size
         self.n_segments_left -= 1;
 
         Some(segment)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.n_segments_left, Some(self.n_segments_left))
     }
 }
 
@@ -173,45 +184,45 @@ mod tests {
         let bytes = TwoDimensionalBytes::new();
         assert_eq!(bytes.len(), 0);
 
-        let mut iter = bytes.into_iter();
+        let mut iter = bytes.reverse_iter();
         assert_eq!(iter.next(), None);
     }
 
-    #[test]
-    fn non_empty_two_dimensional_bytes_forward_iterator() {
-        let mut bytes = TwoDimensionalBytes::default();
-        bytes.add_segment(b"ayya");
-        bytes.add_segment(b"ayyb");
-        bytes.add_segment(b"didn'texpectthat!");
-        bytes.add_segment(b"ayyd");
+    // #[test]
+    // fn non_empty_two_dimensional_bytes_forward_iterator() {
+    //     let mut bytes = TwoDimensionalBytes::default();
+    //     bytes.add_segment(b"ayya");
+    //     bytes.add_segment(b"ayyb");
+    //     bytes.add_segment(b"didn'texpectthat!");
+    //     bytes.add_segment(b"ayyd");
 
-        assert_eq!(bytes.len(), 4);
+    //     assert_eq!(bytes.len(), 4);
 
-        let mut iter = bytes.into_iter();
-        assert_eq!(iter.next(), Some(b"ayya".as_ref()));
-        assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
+    //     let mut iter = bytes.into_iter();
+    //     assert_eq!(iter.next(), Some(b"ayya".as_ref()));
+    //     assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
 
-        assert_eq!(iter.len(), 2);
+    //     assert_eq!(iter.len(), 2);
 
-        assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
-        assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
+    //     assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
+    //     assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
+    //     assert_eq!(iter.next(), None);
+    //     assert_eq!(iter.next(), None);
 
-        // Can do it twice
-        assert_eq!(bytes.len(), 4);
+    //     // Can do it twice
+    //     assert_eq!(bytes.len(), 4);
 
-        let mut iter = bytes.into_iter();
-        assert_eq!(iter.next(), Some(b"ayya".as_ref()));
+    //     let mut iter = bytes.into_iter();
+    //     assert_eq!(iter.next(), Some(b"ayya".as_ref()));
 
-        assert_eq!(iter.len(), 3);
+    //     assert_eq!(iter.len(), 3);
 
-        assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
-        assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
-        assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
-    }
+    //     assert_eq!(iter.next(), Some(b"ayyb".as_ref()));
+    //     assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
+    //     assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
+    //     assert_eq!(iter.next(), None);
+    //     assert_eq!(iter.next(), None);
+    // }
 
     #[test]
     fn non_empty_two_dimensional_bytes_backward_iterator() {
@@ -223,7 +234,7 @@ mod tests {
 
         assert_eq!(bytes.len(), 4);
 
-        let mut iter = bytes.into_iter().rev();
+        let mut iter = bytes.reverse_iter();
         assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
         assert_eq!(iter.next(), Some(b"didn'texpectthat!".as_ref()));
 
@@ -237,7 +248,7 @@ mod tests {
         // Can do it twice
         assert_eq!(bytes.len(), 4);
 
-        let mut iter = bytes.into_iter().rev();
+        let mut iter = bytes.reverse_iter();
         assert_eq!(iter.next(), Some(b"ayyd".as_ref()));
 
         assert_eq!(iter.len(), 3);

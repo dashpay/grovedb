@@ -107,7 +107,7 @@ impl<'s, 'b: 's, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, 's, B> {
                 }
             }
             CurrentSubtreePathIter::OwnedBytes(bytes_iter) => {
-                if let Some(item) = bytes_iter.next_back() {
+                if let Some(item) = bytes_iter.next() {
                     Some(item)
                 } else {
                     if let Some(next_path) = self.next_subtree_path {

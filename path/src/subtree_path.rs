@@ -112,10 +112,9 @@ impl Hash for SubtreePathRelative<'_> {
         match self {
             SubtreePathRelative::Empty => {}
             SubtreePathRelative::Single(segment) => segment.hash(state),
-            SubtreePathRelative::Multi(bytes) => bytes
-                .into_iter()
-                .rev()
-                .for_each(|segment| segment.hash(state)),
+            SubtreePathRelative::Multi(bytes) => {
+                bytes.reverse_iter().for_each(|segment| segment.hash(state))
+            }
         }
     }
 }
@@ -212,7 +211,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
                 SubtreePathIter::new_with_next(item.as_ref(), &self.base)
             }
             SubtreePathRelative::Multi(bytes) => {
-                SubtreePathIter::new_with_next(bytes.into_iter(), &self.base)
+                SubtreePathIter::new_with_next(bytes.reverse_iter(), &self.base)
             }
         }
     }
@@ -220,29 +219,32 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     /// Collect path as a vector of vectors, but this actually negates all the
     /// benefits of this library.
     pub fn to_vec(&self) -> Vec<Vec<u8>> {
-        let mut result = match &self.base.0 {
-            SubtreePathRefInner::Slice(slice) => {
-                slice.iter().map(|x| x.as_ref().to_vec()).collect()
-            }
-            SubtreePathRefInner::SubtreePath(path) => path.to_vec(),
-            SubtreePathRefInner::SubtreePathIter(iter) => {
-                let mut base_vec = iter
-                    .clone()
-                    .map(|x| x.as_ref().to_vec())
-                    .collect::<Vec<_>>();
-                base_vec.reverse();
-                base_vec
-            }
-        };
+        let mut result = Vec::new();
 
+        // Because of the nature of this library, the vector will be built
+        // from it's end
         match &self.relative {
             SubtreePathRelative::Empty => {}
             SubtreePathRelative::Single(s) => result.push(s.to_vec()),
             SubtreePathRelative::Multi(bytes) => {
-                bytes.into_iter().for_each(|s| result.push(s.to_vec()))
+                bytes.reverse_iter().for_each(|s| result.push(s.to_vec()))
             }
         }
 
+        match &self.base.0 {
+            SubtreePathRefInner::Slice(slice) => slice
+                .iter()
+                .rev()
+                .for_each(|x| result.push(x.as_ref().to_vec())),
+            SubtreePathRefInner::SubtreePath(path) => {
+                path.reverse_iter().for_each(|x| result.push(x.to_vec()))
+            }
+            SubtreePathRefInner::SubtreePathIter(iter) => {
+                iter.clone().for_each(|x| result.push(x.as_ref().to_vec()))
+            }
+        };
+
+        result.reverse();
         result
     }
 
