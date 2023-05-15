@@ -113,7 +113,7 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<B>(path: &SubtreePathRef<B>) -> (Vec<u8>, usize)
+    fn build_prefix_body<B>(path: SubtreePathRef<B>) -> (Vec<u8>, usize)
     where
         B: AsRef<[u8]>,
     {
@@ -139,7 +139,7 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<B>(path: &SubtreePathRef<B>) -> CostContext<Vec<u8>>
+    pub fn build_prefix<B>(path: SubtreePathRef<B>) -> CostContext<Vec<u8>>
     where
         B: AsRef<[u8]>,
     {
@@ -436,7 +436,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
     ) -> CostContext<Self::StorageContext>
     where
         B: AsRef<[u8]> + 'b,
@@ -446,7 +446,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_transactional_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
@@ -458,7 +458,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_batch_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
@@ -470,7 +470,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_batch_transactional_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
@@ -543,12 +543,12 @@ mod tests {
         let path_a = [b"aa".as_ref(), b"b"];
         let path_b = [b"a".as_ref(), b"ab"];
         assert_ne!(
-            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_a.as_ref())),
-            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_b.as_ref())),
+            RocksDbStorage::build_prefix(path_a.as_ref().into()),
+            RocksDbStorage::build_prefix(path_b.as_ref().into()),
         );
         assert_eq!(
-            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_a.as_ref())),
-            RocksDbStorage::build_prefix(&SubtreePathRef::from(path_a.as_ref())),
+            RocksDbStorage::build_prefix(path_a.as_ref().into()),
+            RocksDbStorage::build_prefix(path_a.as_ref().into()),
         );
     }
 }

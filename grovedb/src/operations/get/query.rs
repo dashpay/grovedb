@@ -76,7 +76,7 @@ impl GroveDb {
                             // returning costs from `map` call.
                             let maybe_item = self
                                 .follow_reference(
-                                    &absolute_path.as_slice().into(),
+                                    absolute_path.as_slice().into(),
                                     allow_cache,
                                     transaction,
                                 )
@@ -160,7 +160,7 @@ where {
                         // returning costs from `map` call.
                         let maybe_item = self
                             .follow_reference(
-                                &absolute_path.as_slice().into(),
+                                absolute_path.as_slice().into(),
                                 allow_cache,
                                 transaction,
                             )
@@ -247,7 +247,7 @@ where {
                                     // returning costs from `map` call.
                                     let maybe_item = self
                                         .follow_reference(
-                                            &absolute_path.as_slice().into(),
+                                            absolute_path.as_slice().into(),
                                             allow_cache,
                                             transaction,
                                         )
@@ -317,7 +317,7 @@ where {
                                     // returning costs from `map` call.
                                     let maybe_item = self
                                         .follow_reference(
-                                            &absolute_path.as_slice().into(),
+                                            absolute_path.as_slice().into(),
                                             allow_cache,
                                             transaction,
                                         )

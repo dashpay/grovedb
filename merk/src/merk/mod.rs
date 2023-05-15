@@ -1462,7 +1462,7 @@ mod test {
 
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::from(&test_prefix))
+                .get_storage_context(SubtreePathRef::from(&test_prefix))
                 .unwrap(),
             false,
         )
@@ -1481,7 +1481,7 @@ mod test {
         drop(merk);
         let merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::from(&test_prefix))
+                .get_storage_context(SubtreePathRef::from(&test_prefix))
                 .unwrap(),
             false,
         )
@@ -1499,7 +1499,7 @@ mod test {
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::from(&test_prefix))
+                .get_storage_context(SubtreePathRef::from(&test_prefix))
                 .unwrap(),
             false,
         );
@@ -1524,7 +1524,7 @@ mod test {
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::from(&test_prefix))
+                .get_storage_context(SubtreePathRef::from(&test_prefix))
                 .unwrap(),
             false,
         );
@@ -1716,7 +1716,7 @@ mod test {
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::empty())
+                .get_storage_context(SubtreePathRef::empty())
                 .unwrap(),
             false,
         )
@@ -1739,7 +1739,7 @@ mod test {
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::empty())
+                .get_storage_context(SubtreePathRef::empty())
                 .unwrap(),
             false,
         )
@@ -1774,7 +1774,7 @@ mod test {
                 .expect("cannot open rocksdb storage");
             let mut merk = Merk::open_base(
                 storage
-                    .get_storage_context(&SubtreePathRef::empty())
+                    .get_storage_context(SubtreePathRef::empty())
                     .unwrap(),
                 false,
             )
@@ -1796,7 +1796,7 @@ mod test {
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::empty())
+                .get_storage_context(SubtreePathRef::empty())
                 .unwrap(),
             false,
         )
@@ -1835,7 +1835,7 @@ mod test {
                 .expect("cannot open rocksdb storage");
             let mut merk = Merk::open_base(
                 storage
-                    .get_storage_context(&SubtreePathRef::empty())
+                    .get_storage_context(SubtreePathRef::empty())
                     .unwrap(),
                 false,
             )
@@ -1854,7 +1854,7 @@ mod test {
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::empty())
+                .get_storage_context(SubtreePathRef::empty())
                 .unwrap(),
             false,
         )
@@ -1874,7 +1874,7 @@ mod test {
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::empty())
+                .get_storage_context(SubtreePathRef::empty())
                 .unwrap(),
             false,
         )
@@ -1920,7 +1920,7 @@ mod test {
 
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::empty())
+                .get_storage_context(SubtreePathRef::empty())
                 .unwrap(),
             false,
         )

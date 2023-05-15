@@ -144,7 +144,7 @@ impl GroveDb {
     /// Opens the transactional Merk at the given path. Returns CostResult.
     fn open_transactional_merk_at_path<'db, 'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         tx: &'db Transaction,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
@@ -154,12 +154,12 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_transactional_storage_context(&path, tx)
+            .get_transactional_storage_context(path.clone(), tx)
             .unwrap_add_cost(&mut cost);
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_transactional_storage_context(&parent_path, tx)
+                .get_transactional_storage_context(parent_path.clone(), tx)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -195,7 +195,7 @@ impl GroveDb {
     /// Opens the non-transactional Merk at the given path. Returns CostResult.
     pub fn open_non_transactional_merk_at_path<'b, B>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -204,13 +204,13 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_storage_context(&path)
+            .get_storage_context(path.clone())
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(&parent_path)
+                .get_storage_context(parent_path.clone())
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -303,7 +303,7 @@ impl GroveDb {
                 &mut cost,
                 self.open_batch_transactional_merk_at_path(
                     storage_batch,
-                    &parent_path,
+                    parent_path.clone(),
                     transaction,
                     false
                 )
@@ -333,7 +333,7 @@ impl GroveDb {
     fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>>,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         transaction: &Transaction,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -353,7 +353,7 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(&parent_path, transaction)
+                self.open_transactional_merk_at_path(parent_path.clone(), transaction)
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -379,7 +379,7 @@ impl GroveDb {
     fn propagate_changes_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -397,7 +397,7 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(&parent_path)
+                self.open_non_transactional_merk_at_path(parent_path.clone())
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -644,7 +644,7 @@ impl GroveDb {
     /// correctly.
     pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let root_merk = self
-            .open_non_transactional_merk_at_path(&SubtreePathRef::empty())
+            .open_non_transactional_merk_at_path(SubtreePathRef::empty())
             .unwrap()
             .expect("should exist");
         self.verify_merk_and_submerks(root_merk, &SubtreePathRef::empty())
@@ -675,7 +675,7 @@ impl GroveDb {
                 let new_path_ref = SubtreePathRef::from(&new_path);
 
                 let inner_merk = self
-                    .open_non_transactional_merk_at_path(&new_path_ref)
+                    .open_non_transactional_merk_at_path(new_path_ref.clone())
                     .unwrap()
                     .expect("should exist");
                 let root_hash = inner_merk.root_hash().unwrap();

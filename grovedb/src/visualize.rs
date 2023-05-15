@@ -142,12 +142,12 @@ impl GroveDb {
     fn draw_subtree<'b, W: Write, B: AsRef<[u8]>>(
         &self,
         mut drawer: Drawer<W>,
-        path: &SubtreePath<'b, B>,
+        path: SubtreePath<'b, B>,
         transaction: TransactionArg,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        storage_context_optional_tx!(self.db, &path.into(), transaction, storage, {
+        storage_context_optional_tx!(self.db, (&path).into(), transaction, storage, {
             let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
             while let Some((key, element)) = iter
                 .next_element()
@@ -164,7 +164,7 @@ impl GroveDb {
                         drawer.down();
                         drawer = self.draw_subtree(
                             drawer,
-                            &path.derive_owned_with_child(key),
+                            path.derive_owned_with_child(key),
                             transaction,
                         )?;
                         drawer.up();
@@ -187,7 +187,7 @@ impl GroveDb {
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        drawer = self.draw_subtree(drawer, &SubtreePath::new(), transaction)?;
+        drawer = self.draw_subtree(drawer, SubtreePath::new(), transaction)?;
 
         drawer.up();
         Ok(drawer)

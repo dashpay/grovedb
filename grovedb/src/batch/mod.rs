@@ -1537,14 +1537,14 @@ impl GroveDb {
     pub fn open_batch_transactional_merk_at_path<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         storage_batch: &'db StorageBatch,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         tx: &'db Transaction,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error> {
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_transactional_storage_context(path, storage_batch, tx)
+            .get_batch_transactional_storage_context(path.clone(), storage_batch, tx)
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
@@ -1554,7 +1554,7 @@ impl GroveDb {
             } else {
                 let parent_storage = self
                     .db
-                    .get_transactional_storage_context(&parent_path, tx)
+                    .get_transactional_storage_context(parent_path.clone(), tx)
                     .unwrap_add_cost(&mut cost);
                 let element = cost_return_on_error!(
                     &mut cost,
@@ -1596,13 +1596,13 @@ impl GroveDb {
     pub fn open_batch_merk_at_path<'a, 'b, B: AsRef<[u8]>>(
         &'a self,
         storage_batch: &'a StorageBatch,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_storage_context(path, storage_batch)
+            .get_batch_storage_context(path.clone(), storage_batch)
             .unwrap_add_cost(&mut local_cost);
 
         if new_merk {
@@ -1615,7 +1615,7 @@ impl GroveDb {
         } else if let Some((base_path, last)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(&base_path)
+                .get_storage_context(base_path)
                 .unwrap_add_cost(&mut local_cost);
             let element = cost_return_on_error!(
                 &mut local_cost,
@@ -1710,7 +1710,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
-                            &path.into(),
+                            path.into(),
                             tx,
                             new_merk,
                         )
@@ -1734,7 +1734,7 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&storage_batch, &path.into(), new_merk)
+                        self.open_batch_merk_at_path(&storage_batch, path.into(), new_merk)
                     }
                 )
             );
@@ -1830,7 +1830,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
-                            &path.into(),
+                            path.into(),
                             tx,
                             new_merk,
                         )
@@ -1876,7 +1876,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &continue_storage_batch,
-                            &path.into(),
+                            path.into(),
                             tx,
                             new_merk,
                         )
@@ -1910,7 +1910,7 @@ impl GroveDb {
                     &mut update_element_flags_function,
                     &mut split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&storage_batch, &path.into(), new_merk)
+                        self.open_batch_merk_at_path(&storage_batch, path.into(), new_merk)
                     }
                 )
             );
@@ -1952,7 +1952,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_merk_at_path(
                             &continue_storage_batch,
-                            &path.into(),
+                            path.into(),
                             new_merk,
                         )
                     }

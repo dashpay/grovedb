@@ -357,7 +357,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    &subtree_path,
+                                    subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -379,7 +379,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    &subtree_path,
+                                    subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -404,7 +404,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    &subtree_path,
+                                    subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -551,7 +551,7 @@ impl Element {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
                 let element_res =
-                    merk_optional_tx!(&mut cost, storage, &subtree_path, transaction, subtree, {
+                    merk_optional_tx!(&mut cost, storage, subtree_path, transaction, subtree, {
                         Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost)
                     });
                 match element_res {
@@ -586,7 +586,7 @@ impl Element {
             }
         } else {
             // this is a query on a range
-            storage_context_optional_tx!(storage, &subtree_path, transaction, ctx, {
+            storage_context_optional_tx!(storage, subtree_path, transaction, ctx, {
                 let ctx = ctx.unwrap_add_cost(&mut cost);
                 let mut iter = ctx.raw_iter();
 

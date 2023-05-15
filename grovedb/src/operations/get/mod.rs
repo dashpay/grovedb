@@ -76,14 +76,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePathRef<'b, B>>,
     {
-        self.get_caching_optional(&path.into(), key, true, transaction)
+        self.get_caching_optional(path.into(), key, true, transaction)
     }
 
     /// Get an element from the backing store
     /// Merk Caching can be set
     pub fn get_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
@@ -92,7 +92,7 @@ impl GroveDb {
 
         match cost_return_on_error!(
             &mut cost,
-            self.get_raw_caching_optional(path, key, allow_cache, transaction)
+            self.get_raw_caching_optional(path.clone(), key, allow_cache, transaction)
         ) {
             Element::Reference(reference_path, ..) => {
                 let path_owned = cost_return_on_error!(
@@ -100,7 +100,7 @@ impl GroveDb {
                     path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
-                self.follow_reference(&path_owned.as_slice().into(), allow_cache, transaction)
+                self.follow_reference(path_owned.as_slice().into(), allow_cache, transaction)
                     .add_cost(cost)
             }
             other => Ok(other).wrap_with_cost(cost),
@@ -110,7 +110,7 @@ impl GroveDb {
     /// Follow reference
     pub fn follow_reference<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
@@ -129,7 +129,7 @@ impl GroveDb {
                 current_element = cost_return_on_error!(
                     &mut cost,
                     self.get_raw_caching_optional(
-                        &path_slice.into(),
+                        path_slice.into(),
                         key,
                         allow_cache,
                         transaction
@@ -169,7 +169,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub fn get_raw<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
@@ -179,7 +179,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub fn get_raw_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
@@ -194,7 +194,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub fn get_raw_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         transaction: TransactionArg,
     ) -> CostResult<Option<Element>, Error> {
@@ -204,7 +204,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub fn get_raw_optional_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
@@ -224,7 +224,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub(crate) fn get_raw_on_transaction_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,
@@ -248,7 +248,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub(crate) fn get_raw_optional_on_transaction_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,
@@ -281,7 +281,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub(crate) fn get_raw_without_transaction_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
     ) -> CostResult<Element, Error> {
@@ -304,7 +304,7 @@ impl GroveDb {
     /// Get tree item without following references
     pub(crate) fn get_raw_optional_without_transaction_caching_optional<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         allow_cache: bool,
     ) -> CostResult<Option<Element>, Error> {
@@ -346,14 +346,14 @@ impl GroveDb {
         P: Into<SubtreePathRef<'b, B>>,
     {
         // Merk's items should be written into data storage and checked accordingly
-        storage_context_optional_tx!(self.db, &path.into(), transaction, storage, {
+        storage_context_optional_tx!(self.db, path.into(), transaction, storage, {
             storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
         })
     }
 
     fn check_subtree_exists<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         transaction: TransactionArg,
         error_fn: impl FnOnce() -> Error,
     ) -> CostResult<(), Error> {
@@ -363,14 +363,14 @@ impl GroveDb {
             let element = if let Some(transaction) = transaction {
             let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(&parent_path, transaction)
+                self.open_transactional_merk_at_path(parent_path, transaction)
             );
 
             Element::get(&merk_to_get_from, parent_key, true)
         } else {
             let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(&parent_path)
+                self.open_non_transactional_merk_at_path(parent_path)
             );
 
             Element::get(&merk_to_get_from, parent_key, true)
@@ -389,13 +389,13 @@ impl GroveDb {
     /// Check that subtree exists with path not found error
     pub(crate) fn check_subtree_exists_path_not_found<'b, B>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
     {
-        self.check_subtree_exists(&path, transaction, || {
+        self.check_subtree_exists(path.clone(), transaction, || {
             Error::PathNotFound(format!(
                 "subtree doesn't exist at path {:?}",
                 path.to_vec()
@@ -409,7 +409,7 @@ impl GroveDb {
     /// Check subtree exists with invalid path error
     pub fn check_subtree_exists_invalid_path<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         self.check_subtree_exists(path, transaction, || {

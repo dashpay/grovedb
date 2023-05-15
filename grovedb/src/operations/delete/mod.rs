@@ -121,7 +121,7 @@ impl GroveDb {
     {
         let options = options.unwrap_or_default();
         self.delete_internal(
-            &path.into(),
+            path.into(),
             key,
             &options,
             transaction,
@@ -138,7 +138,7 @@ impl GroveDb {
     /// Delete element with sectional storage function
     pub fn delete_with_sectional_storage_function<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         options: Option<DeleteOptions>,
         transaction: TransactionArg,
@@ -190,7 +190,7 @@ impl GroveDb {
         P: Into<SubtreePathRef<'b, B>>,
     {
         self.delete_if_empty_tree_with_sectional_storage_function(
-            &path.into(),
+            path.into(),
             key,
             transaction,
             &mut |_, removed_key_bytes, removed_value_bytes| {
@@ -205,7 +205,7 @@ impl GroveDb {
     /// Delete if an empty tree with section storage function
     pub fn delete_if_empty_tree_with_sectional_storage_function<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         transaction: TransactionArg,
         split_removal_bytes_function: &mut impl FnMut(
@@ -250,7 +250,7 @@ impl GroveDb {
     /// Delete operation for delete internal
     pub fn delete_operation_for_delete_internal<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
@@ -269,14 +269,14 @@ impl GroveDb {
             if options.validate_tree_at_path_exists {
                 cost_return_on_error!(
                     &mut cost,
-                    self.check_subtree_exists_path_not_found(path, transaction)
+                    self.check_subtree_exists_path_not_found(path.clone(), transaction)
                 );
             }
             let (is_subtree, is_subtree_with_sum) = match is_known_to_be_subtree_with_sum {
                 None => {
                     let element = cost_return_on_error!(
                         &mut cost,
-                        self.get_raw(path, key.as_ref(), transaction)
+                        self.get_raw(path.clone(), key.as_ref(), transaction)
                     );
                     match element {
                         Element::Tree(..) => (true, false),
@@ -317,7 +317,7 @@ impl GroveDb {
                 let mut is_empty = merk_optional_tx_path_not_empty!(
                     &mut cost,
                     self.db,
-                    &SubtreePathRef::from(&subtree_merk_path),
+                    SubtreePathRef::from(&subtree_merk_path),
                     transaction,
                     subtree,
                     {
@@ -364,7 +364,7 @@ impl GroveDb {
 
     fn delete_internal<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteOptions,
         transaction: TransactionArg,
@@ -386,7 +386,7 @@ impl GroveDb {
 
     fn delete_internal_on_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteOptions,
         transaction: &Transaction,
@@ -403,11 +403,11 @@ impl GroveDb {
 
         let element = cost_return_on_error!(
             &mut cost,
-            self.get_raw(path, key.as_ref(), Some(transaction))
+            self.get_raw(path.clone(), key.as_ref(), Some(transaction))
         );
         let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path, transaction)
+            self.open_transactional_merk_at_path(path.clone(), transaction)
         );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
@@ -416,7 +416,7 @@ impl GroveDb {
 
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(&subtree_merk_path_ref, transaction)
+                self.open_transactional_merk_at_path(subtree_merk_path_ref.clone(), transaction)
             );
             let is_empty = subtree_of_tree_we_are_deleting
                 .is_empty_tree()
@@ -442,7 +442,7 @@ impl GroveDb {
                     let p: SubtreePathRef<_> = subtree_path.as_slice().into();
                     let mut storage = self
                         .db
-                        .get_batch_transactional_storage_context(&p, &storage_batch, transaction)
+                        .get_batch_transactional_storage_context(p, &storage_batch, transaction)
                         .unwrap_add_cost(&mut cost);
 
                     cost_return_on_error!(
@@ -458,7 +458,7 @@ impl GroveDb {
                 // todo: verify why we need to open the same? merk again
                 let storage = self
                     .db
-                    .get_batch_transactional_storage_context(path, &storage_batch, transaction)
+                    .get_batch_transactional_storage_context(path.clone(), &storage_batch, transaction)
                     .unwrap_add_cost(&mut cost);
 
                 let mut merk_to_delete_tree_from = cost_return_on_error!(
@@ -494,7 +494,7 @@ impl GroveDb {
                     self.propagate_changes_with_batch_transaction(
                         &storage_batch,
                         merk_cache,
-                        path,
+                        &path,
                         transaction
                     )
                 );
@@ -552,7 +552,7 @@ impl GroveDb {
 
     fn delete_internal_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteOptions,
         sectioned_removal: &mut impl FnMut(
@@ -566,17 +566,20 @@ impl GroveDb {
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
 
-        let element = cost_return_on_error!(&mut cost, self.get_raw(path, key.as_ref(), None));
+        let element =
+            cost_return_on_error!(&mut cost, self.get_raw(path.clone(), key.as_ref(), None));
         let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
-        let mut subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> =
-            cost_return_on_error!(&mut cost, self.open_non_transactional_merk_at_path(path));
+        let mut subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_non_transactional_merk_at_path(path.clone())
+        );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(&SubtreePathRef::from(&subtree_merk_path))
+                self.open_non_transactional_merk_at_path(SubtreePathRef::from(&subtree_merk_path))
             );
             let is_empty = subtree_of_tree_we_are_deleting
                 .is_empty_tree()
@@ -603,7 +606,7 @@ impl GroveDb {
                         let p: SubtreePathRef<_> = subtree_path.as_slice().into();
                         let mut inner_subtree_to_delete_from = cost_return_on_error!(
                             &mut cost,
-                            self.open_non_transactional_merk_at_path(&p)
+                            self.open_non_transactional_merk_at_path(p)
                         );
                         cost_return_on_error!(
                             &mut cost,
@@ -678,7 +681,7 @@ impl GroveDb {
         while let Some(q) = queue.pop() {
             let subtree_path: SubtreePathRef<Vec<u8>> = q.as_slice().into();
             // Get the correct subtree with q_ref as path
-            storage_context_optional_tx!(self.db, &subtree_path, transaction, storage, {
+            storage_context_optional_tx!(self.db, subtree_path, transaction, storage, {
                 let storage = storage.unwrap_add_cost(&mut cost);
                 let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
                 while let Some((key, value)) =

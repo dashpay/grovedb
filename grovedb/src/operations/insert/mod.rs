@@ -102,7 +102,7 @@ impl GroveDb {
 
         if let Some(transaction) = transaction {
             self.insert_on_transaction(
-                &subtree_path,
+                subtree_path,
                 key,
                 element,
                 options.unwrap_or_default(),
@@ -110,7 +110,7 @@ impl GroveDb {
             )
         } else {
             self.insert_without_transaction(
-                &subtree_path,
+                subtree_path,
                 key,
                 element,
                 options.unwrap_or_default(),
@@ -120,7 +120,7 @@ impl GroveDb {
 
     fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -133,7 +133,7 @@ impl GroveDb {
 
         let merk = cost_return_on_error!(
             &mut cost,
-            self.add_element_on_transaction(&path, key, element, options, transaction)
+            self.add_element_on_transaction(path.clone(), key, element, options, transaction)
         );
         merk_cache.insert(path.to_vec(), merk);
         cost_return_on_error!(
@@ -146,7 +146,7 @@ impl GroveDb {
 
     fn insert_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -178,7 +178,7 @@ impl GroveDb {
     /// we only care about root hash of merk to be inserted
     fn add_element_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -188,7 +188,7 @@ impl GroveDb {
 
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path, transaction)
+            self.open_transactional_merk_at_path(path.clone(), transaction)
         );
         // if we don't allow a tree override then we should check
 
@@ -235,7 +235,7 @@ impl GroveDb {
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_transactional_merk_at_path(&referenced_path.into(), transaction)
+                    self.open_transactional_merk_at_path(referenced_path.into(), transaction)
                 );
 
                 let referenced_element_value_hash_opt = cost_return_on_error!(
@@ -319,7 +319,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let mut subtree_to_insert_into: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(&path.into())
+            self.open_non_transactional_merk_at_path(path.into())
         );
 
         if options.checks_for_override() {
@@ -364,7 +364,7 @@ impl GroveDb {
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap(); // TODO unwrap?
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(&referenced_path.into())
+                    self.open_non_transactional_merk_at_path(referenced_path.into())
                 );
 
                 // when there is no transaction, we don't want to use caching
@@ -481,7 +481,7 @@ impl GroveDb {
 
         let previous_element = cost_return_on_error!(
             &mut cost,
-            self.get_raw_optional(&subtree_path, key, transaction)
+            self.get_raw_optional(subtree_path.clone(), key, transaction)
         );
         let needs_insert = match &previous_element {
             None => true,

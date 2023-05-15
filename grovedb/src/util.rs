@@ -62,10 +62,10 @@ macro_rules! storage_context_with_parent_optional_tx {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context($path, tx)
+                    .get_transactional_storage_context($path.clone(), tx)
 		    .unwrap_add_cost(&mut $cost);
                 if let Some((parent_path, parent_key)) = $path.derive_parent() {
-                    let parent_storage = $db.get_transactional_storage_context(&parent_path, tx)
+                    let parent_storage = $db.get_transactional_storage_context(parent_path, tx)
 			.unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
                         &mut $cost,
@@ -103,10 +103,10 @@ macro_rules! storage_context_with_parent_optional_tx {
                 }
             } else {
                 let $storage = $db
-                    .get_storage_context($path).unwrap_add_cost(&mut $cost);
+                    .get_storage_context($path.clone()).unwrap_add_cost(&mut $cost);
                 if let Some((parent_path, parent_key)) = $path.derive_parent() {
                     let parent_storage = $db.get_storage_context(
-			&parent_path
+			parent_path
 		    ).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
                         &mut $cost,
@@ -155,11 +155,11 @@ macro_rules! meta_storage_context_optional_tx {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context(&::path::SubtreePathRef::empty(), tx);
+                    .get_transactional_storage_context(::path::SubtreePathRef::empty(), tx);
                 $($body)*
             } else {
                 let $storage = $db
-                    .get_storage_context(&::path::SubtreePathRef::empty());
+                    .get_storage_context(::path::SubtreePathRef::empty());
                 $($body)*
             }
         }
@@ -179,7 +179,7 @@ macro_rules! merk_optional_tx {
     ) => {
             if $path.is_root() {
 use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, &::path::SubtreePathRef::empty(), $transaction, storage, {
+            storage_context_optional_tx!($db, ::path::SubtreePathRef::empty(), $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
@@ -273,7 +273,7 @@ macro_rules! root_merk_optional_tx {
     ) => {
         {
             use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, &::path::SubtreePathRef::empty(), $transaction, storage, {
+            storage_context_optional_tx!($db, ::path::SubtreePathRef::empty(), $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)

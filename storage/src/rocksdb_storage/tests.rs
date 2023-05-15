@@ -39,10 +39,10 @@ mod no_transaction {
     fn test_aux_cf_methods() {
         let storage = TempStorage::new();
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         context_ayya
@@ -106,10 +106,10 @@ mod no_transaction {
     fn test_roots_cf_methods() {
         let storage = TempStorage::new();
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         context_ayya
@@ -173,10 +173,10 @@ mod no_transaction {
     fn test_meta_cf_methods() {
         let storage = TempStorage::new();
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         context_ayya
@@ -240,10 +240,10 @@ mod no_transaction {
     fn test_default_cf_methods() {
         let storage = TempStorage::new();
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         context_ayya
@@ -307,7 +307,7 @@ mod no_transaction {
     fn test_batch() {
         let storage = TempStorage::new();
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
 
         context_ayya
@@ -360,7 +360,7 @@ mod no_transaction {
     fn test_raw_iterator() {
         let storage = TempStorage::new();
         let context = storage
-            .get_storage_context(&[b"someprefix"].as_ref().into())
+            .get_storage_context([b"someprefix"].as_ref().into())
             .unwrap();
 
         context
@@ -383,7 +383,7 @@ mod no_transaction {
         // Other storages are required to put something into rocksdb with other prefix
         // to see if there will be any conflicts and boundaries are met
         let context_before = storage
-            .get_storage_context(&[b"anothersomeprefix"].as_ref().into())
+            .get_storage_context([b"anothersomeprefix"].as_ref().into())
             .unwrap();
         context_before
             .put(b"key1", b"value1", None, None)
@@ -394,7 +394,7 @@ mod no_transaction {
             .unwrap()
             .expect("expected successful insertion");
         let context_after = storage
-            .get_storage_context(&[b"zanothersomeprefix"].as_ref().into())
+            .get_storage_context([b"zanothersomeprefix"].as_ref().into())
             .unwrap();
         context_after
             .put(b"key1", b"value1", None, None)
@@ -439,7 +439,7 @@ mod no_transaction {
 
         // Test `seek_to_last` on empty storage_cost
         let empty_storage = storage
-            .get_storage_context(&[b"notexist"].as_ref().into())
+            .get_storage_context([b"notexist"].as_ref().into())
             .unwrap();
         let mut iter = empty_storage.raw_iter();
         iter.seek_to_last().unwrap();
@@ -458,10 +458,10 @@ mod transaction {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_transactional_storage_context(&[b"ayya"].as_ref().into(), &tx)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx)
             .unwrap();
         let context_ayyb = storage
-            .get_transactional_storage_context(&[b"ayyb"].as_ref().into(), &tx)
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &tx)
             .unwrap();
 
         context_ayya
@@ -498,10 +498,10 @@ mod transaction {
 
         let tx2 = storage.start_transaction();
         let context_ayya_after_tx = storage
-            .get_transactional_storage_context(&[b"ayya"].as_ref().into(), &tx2)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx2)
             .unwrap();
         let context_ayya_after_no_tx = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
 
         context_ayya_after_tx
@@ -546,10 +546,10 @@ mod transaction {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_transactional_storage_context(&[b"ayya"].as_ref().into(), &tx)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx)
             .unwrap();
         let context_ayyb = storage
-            .get_transactional_storage_context(&[b"ayyb"].as_ref().into(), &tx)
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &tx)
             .unwrap();
 
         context_ayya
@@ -586,10 +586,10 @@ mod transaction {
 
         let tx2 = storage.start_transaction();
         let context_ayya_after_tx = storage
-            .get_transactional_storage_context(&[b"ayya"].as_ref().into(), &tx2)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx2)
             .unwrap();
         let context_ayya_after_no_tx = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
 
         context_ayya_after_tx
@@ -633,10 +633,10 @@ mod transaction {
     fn test_meta_cf_methods() {
         let storage = TempStorage::new();
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         context_ayya
@@ -700,10 +700,10 @@ mod transaction {
     fn test_default_cf_methods() {
         let storage = TempStorage::new();
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         context_ayya
@@ -768,7 +768,7 @@ mod transaction {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_transactional_storage_context(&[b"ayya"].as_ref().into(), &tx)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx)
             .unwrap();
 
         context_ayya
@@ -813,7 +813,7 @@ mod transaction {
             .expect("cannot commit transaction");
 
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         assert_eq!(
             context_ayya
@@ -835,7 +835,7 @@ mod transaction {
     fn test_raw_iterator() {
         let storage = TempStorage::new();
         let context = storage
-            .get_storage_context(&[b"someprefix"].as_ref().into())
+            .get_storage_context([b"someprefix"].as_ref().into())
             .unwrap();
 
         context
@@ -858,7 +858,7 @@ mod transaction {
         // Other storages are required to put something into rocksdb with other prefix
         // to see if there will be any conflicts and boundaries are met
         let context_before = storage
-            .get_storage_context(&[b"anothersomeprefix"].as_ref().into())
+            .get_storage_context([b"anothersomeprefix"].as_ref().into())
             .unwrap();
         context_before
             .put(b"key1", b"value1", None, None)
@@ -869,7 +869,7 @@ mod transaction {
             .unwrap()
             .expect("expected successful insertion");
         let context_after = storage
-            .get_storage_context(&[b"zanothersomeprefix"].as_ref().into())
+            .get_storage_context([b"zanothersomeprefix"].as_ref().into())
             .unwrap();
         context_after
             .put(b"key1", b"value1", None, None)
@@ -884,7 +884,7 @@ mod transaction {
         {
             let tx = storage.start_transaction();
             let context_tx = storage
-                .get_transactional_storage_context(&[b"someprefix"].as_ref().into(), &tx)
+                .get_transactional_storage_context([b"someprefix"].as_ref().into(), &tx)
                 .unwrap();
 
             context_tx
@@ -962,10 +962,10 @@ mod batch_no_transaction {
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
         let context_ayya = storage
-            .get_batch_storage_context(&[b"ayya"].as_ref().into(), &batch)
+            .get_batch_storage_context([b"ayya"].as_ref().into(), &batch)
             .unwrap();
         let context_ayyb = storage
-            .get_batch_storage_context(&[b"ayyb"].as_ref().into(), &batch)
+            .get_batch_storage_context([b"ayyb"].as_ref().into(), &batch)
             .unwrap();
 
         context_ayya
@@ -1017,10 +1017,10 @@ mod batch_no_transaction {
             .expect("cannot commit batch");
 
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         assert_eq!(
@@ -1103,10 +1103,10 @@ mod batch_no_transaction {
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
         let context_ayya = storage
-            .get_batch_storage_context(&[b"ayya"].as_ref().into(), &batch)
+            .get_batch_storage_context([b"ayya"].as_ref().into(), &batch)
             .unwrap();
         let context_ayyb = storage
-            .get_batch_storage_context(&[b"ayyb"].as_ref().into(), &batch)
+            .get_batch_storage_context([b"ayyb"].as_ref().into(), &batch)
             .unwrap();
 
         context_ayya
@@ -1167,7 +1167,7 @@ mod batch_no_transaction {
             .expect("cannot commit multi context batch");
 
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         assert_eq!(
             context_ayya
@@ -1191,16 +1191,16 @@ mod batch_transaction {
         let transaction = storage.start_transaction();
 
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
         let context_ayya_tx = storage
-            .get_transactional_storage_context(&[b"ayya"].as_ref().into(), &transaction)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), &transaction)
             .unwrap();
         let context_ayyb_tx = storage
-            .get_transactional_storage_context(&[b"ayyb"].as_ref().into(), &transaction)
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &transaction)
             .unwrap();
 
         // Data should be visible in transaction...
@@ -1250,14 +1250,14 @@ mod batch_transaction {
         let batch = StorageBatch::new();
         let context_ayya_batch = storage
             .get_batch_transactional_storage_context(
-                &[b"ayya"].as_ref().into(),
+                [b"ayya"].as_ref().into(),
                 &batch,
                 &transaction,
             )
             .unwrap();
         let context_ayyb_batch = storage
             .get_batch_transactional_storage_context(
-                &[b"ayyb"].as_ref().into(),
+                [b"ayyb"].as_ref().into(),
                 &batch,
                 &transaction,
             )
@@ -1339,14 +1339,14 @@ mod batch_transaction {
 
         let context_ayya = storage
             .get_batch_transactional_storage_context(
-                &[b"ayya"].as_ref().into(),
+                [b"ayya"].as_ref().into(),
                 &batch,
                 &transaction,
             )
             .unwrap();
         let context_ayyb = storage
             .get_batch_transactional_storage_context(
-                &[b"ayyb"].as_ref().into(),
+                [b"ayyb"].as_ref().into(),
                 &batch,
                 &transaction,
             )
@@ -1392,10 +1392,10 @@ mod batch_transaction {
         // Obtaining new contexts outside a commited batch but still within a
         // transaction
         let context_ayya = storage
-            .get_transactional_storage_context(&[b"ayya"].as_ref().into(), &transaction)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), &transaction)
             .unwrap();
         let context_ayyb = storage
-            .get_transactional_storage_context(&[b"ayyb"].as_ref().into(), &transaction)
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &transaction)
             .unwrap();
 
         assert_eq!(
@@ -1409,10 +1409,10 @@ mod batch_transaction {
 
         // And still no data in the database until transaction is commited
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         let mut iter = context_ayya.raw_iter();
@@ -1429,10 +1429,10 @@ mod batch_transaction {
             .expect("cannot commit transaction");
 
         let context_ayya = storage
-            .get_storage_context(&[b"ayya"].as_ref().into())
+            .get_storage_context([b"ayya"].as_ref().into())
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context(&[b"ayyb"].as_ref().into())
+            .get_storage_context([b"ayyb"].as_ref().into())
             .unwrap();
 
         assert_eq!(

@@ -55,7 +55,7 @@ impl TempMerk {
     pub fn new() -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let context = storage
-            .get_storage_context(&SubtreePathRef::empty())
+            .get_storage_context(SubtreePathRef::empty())
             .unwrap();
         let merk = Merk::open_base(context, false).unwrap().unwrap();
         TempMerk { storage, merk }

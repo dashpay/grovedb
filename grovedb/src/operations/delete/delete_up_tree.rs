@@ -97,7 +97,7 @@ impl GroveDb {
         P: Into<SubtreePathRef<'b, B>>,
     {
         self.delete_up_tree_while_empty_with_sectional_storage(
-            &path.into(),
+            path.into(),
             key,
             options,
             transaction,
@@ -114,7 +114,7 @@ impl GroveDb {
     /// tree.
     pub fn delete_up_tree_while_empty_with_sectional_storage<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
@@ -171,7 +171,7 @@ impl GroveDb {
     /// Returns a vector of GroveDb ops
     pub fn delete_operations_for_delete_up_tree_while_empty<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
@@ -193,7 +193,7 @@ impl GroveDb {
     /// for each level. Returns a vector of GroveDb ops.
     pub fn add_delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<B>,
+        path: SubtreePathRef<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
@@ -211,13 +211,13 @@ impl GroveDb {
         if options.validate_tree_at_path_exists {
             cost_return_on_error!(
                 &mut cost,
-                self.check_subtree_exists_path_not_found(path, transaction)
+                self.check_subtree_exists_path_not_found(path.clone(), transaction)
             );
         }
         if let Some(delete_operation_this_level) = cost_return_on_error!(
             &mut cost,
             self.delete_operation_for_delete_internal(
-                path,
+                path.clone(),
                 key,
                 &options.to_delete_options(),
                 is_known_to_be_subtree_with_sum,
@@ -235,7 +235,7 @@ impl GroveDb {
                 if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
                     &mut cost,
                     self.add_delete_operations_for_delete_up_tree_while_empty(
-                        &parent_path,
+                        parent_path,
                         &parent_key,
                         &new_options,
                         None, // todo: maybe we can know this?

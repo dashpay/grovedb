@@ -269,7 +269,7 @@ mod tests {
 
             let mut merk = Merk::open_base(
                 storage
-                    .get_storage_context(&SubtreePathRef::empty())
+                    .get_storage_context(SubtreePathRef::empty())
                     .unwrap(),
                 false,
             )
@@ -289,7 +289,7 @@ mod tests {
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
             storage
-                .get_storage_context(&SubtreePathRef::empty())
+                .get_storage_context(SubtreePathRef::empty())
                 .unwrap(),
             false,
         )

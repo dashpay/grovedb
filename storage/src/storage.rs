@@ -84,7 +84,7 @@ pub trait Storage<'db> {
     /// Make storage_cost context for a subtree with path
     fn get_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
     ) -> CostContext<Self::StorageContext>
     where
         B: AsRef<[u8]> + 'b;
@@ -92,7 +92,7 @@ pub trait Storage<'db> {
     /// Make storage_cost context for a subtree on transactional data
     fn get_transactional_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
@@ -101,7 +101,7 @@ pub trait Storage<'db> {
     /// Make batch storage_cost context for a subtree with path
     fn get_batch_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
@@ -110,7 +110,7 @@ pub trait Storage<'db> {
     /// Make batch storage_cost context for a subtree on transactional data
     fn get_batch_transactional_storage_context<'b, B>(
         &'db self,
-        path: &SubtreePathRef<'b, B>,
+        path: SubtreePathRef<'b, B>,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
