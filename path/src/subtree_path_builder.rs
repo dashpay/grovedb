@@ -33,7 +33,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::{
     subtree_path::SubtreePathInner,
-    util::{CowLike, TwoDimensionalBytes},
+    util::{CompactBytes, CowLike},
     SubtreePath, SubtreePathIter,
 };
 
@@ -104,7 +104,7 @@ pub(crate) enum SubtreePathRelative<'r> {
     /// Added one child segment.
     Single(CowLike<'r>),
     /// Derivation with multiple owned path segments at once
-    Multi(TwoDimensionalBytes),
+    Multi(CompactBytes),
 }
 
 impl Hash for SubtreePathRelative<'_> {
@@ -129,6 +129,12 @@ impl SubtreePathBuilder<'static, [u8; 0]> {
     }
 }
 
+impl Default for SubtreePathBuilder<'static, [u8; 0]> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
     /// Get a derived path that will use another subtree path (or reuse the base
     /// slice) as it's base, then could be edited in place.
@@ -147,7 +153,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
     /// Get a derived path for a parent and a chopped segment. Returned
     /// [SubtreePathRef] will be linked to this [SubtreePath] because it might
     /// contain owned data and it has to outlive [SubtreePathRef].
-    pub fn derive_parent<'s>(&'s self) -> Option<(SubtreePath<'s, B>, &'s [u8])> {
+    pub fn derive_parent(&self) -> Option<(SubtreePath<B>, &[u8])> {
         match &self.relative {
             SubtreePathRelative::Empty => self.base.derive_parent(),
             SubtreePathRelative::Single(relative) => Some((self.base.clone(), relative.as_ref())),
@@ -175,12 +181,12 @@ impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
     pub fn push_segment(&mut self, segment: &[u8]) {
         match &mut self.relative {
             SubtreePathRelative::Empty => {
-                let mut bytes = TwoDimensionalBytes::new();
+                let mut bytes = CompactBytes::new();
                 bytes.add_segment(segment);
                 self.relative = SubtreePathRelative::Multi(bytes);
             }
             SubtreePathRelative::Single(old_segment) => {
-                let mut bytes = TwoDimensionalBytes::new();
+                let mut bytes = CompactBytes::new();
                 bytes.add_segment(old_segment);
                 bytes.add_segment(segment);
                 self.relative = SubtreePathRelative::Multi(bytes);

@@ -413,9 +413,7 @@ mod tests {
         let chunks = original.chunks().unwrap();
 
         let storage = TempStorage::default();
-        let ctx = storage
-            .get_storage_context(SubtreePath::empty())
-            .unwrap();
+        let ctx = storage.get_storage_context(SubtreePath::empty()).unwrap();
         let merk = Merk::open_base(ctx, false).unwrap().unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 

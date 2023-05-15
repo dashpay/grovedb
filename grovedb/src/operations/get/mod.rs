@@ -119,7 +119,8 @@ impl GroveDb {
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
         let mut visited = HashSet::new();
-        let mut current_path = path.to_vec(); // TODO, still have to do because of references handling
+        // TODO, still have to do because of references handling
+        let mut current_path = path.to_vec();
 
         while hops_left > 0 {
             if visited.contains(&current_path) {

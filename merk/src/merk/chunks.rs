@@ -268,9 +268,7 @@ mod tests {
                 .expect("cannot open rocksdb storage");
 
             let mut merk = Merk::open_base(
-                storage
-                    .get_storage_context(SubtreePath::empty())
-                    .unwrap(),
+                storage.get_storage_context(SubtreePath::empty()).unwrap(),
                 false,
             )
             .unwrap()
@@ -288,9 +286,7 @@ mod tests {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
-            storage
-                .get_storage_context(SubtreePath::empty())
-                .unwrap(),
+            storage.get_storage_context(SubtreePath::empty()).unwrap(),
             false,
         )
         .unwrap()

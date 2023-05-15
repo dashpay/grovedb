@@ -343,10 +343,9 @@ impl GroveDbWrapper {
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
-            let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db
                 .get(
-                    path_slice,
+                    path.as_slice(),
                     &key,
                     using_transaction.then_some(transaction).flatten(),
                 )
@@ -392,10 +391,9 @@ impl GroveDbWrapper {
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
-            let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db
                 .delete(
-                    path_slice,
+                    path.as_slice(),
                     &key,
                     None,
                     using_transaction.then_some(transaction).flatten(),
@@ -441,10 +439,9 @@ impl GroveDbWrapper {
         let db = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
-            let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db
                 .insert(
-                    path_slice,
+                    path.as_slice(),
                     &key,
                     element,
                     None,
@@ -485,10 +482,9 @@ impl GroveDbWrapper {
         let db = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
-            let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db
                 .insert_if_not_exists(
-                    path_slice,
+                    path.as_slice(),
                     &key,
                     element,
                     using_transaction.then_some(transaction).flatten(),

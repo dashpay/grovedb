@@ -55,9 +55,7 @@ impl CrashMerk {
     /// does not exist.
     pub fn open_base() -> Result<CrashMerk, Error> {
         let storage = Box::leak(Box::new(TempStorage::new()));
-        let context = storage
-            .get_storage_context(SubtreePath::empty())
-            .unwrap();
+        let context = storage.get_storage_context(SubtreePath::empty()).unwrap();
         let merk = Merk::open_base(context, false).unwrap().unwrap();
         Ok(CrashMerk { merk, storage })
     }

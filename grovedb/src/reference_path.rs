@@ -106,7 +106,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
 #[cfg(feature = "full")]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
-pub fn path_from_reference_path_type<'b, B: AsRef<[u8]>>(
+pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     reference_path_type: ReferencePathType,
     current_path: &[B],
     current_key: Option<&[u8]>,
@@ -117,7 +117,7 @@ pub fn path_from_reference_path_type<'b, B: AsRef<[u8]>>(
 
         // Take the first n elements from current path, append new path to subpath
         ReferencePathType::UpstreamRootHeightReference(no_of_elements_to_keep, mut path) => {
-            let current_path_iter = current_path.into_iter();
+            let current_path_iter = current_path.iter();
             if usize::from(no_of_elements_to_keep) > current_path_iter.len() {
                 return Err(Error::InvalidInput(
                     "reference stored path cannot satisfy reference constraints",
@@ -136,7 +136,7 @@ pub fn path_from_reference_path_type<'b, B: AsRef<[u8]>>(
             no_of_elements_to_discard_from_end,
             mut path,
         ) => {
-            let current_path_iter = current_path.into_iter();
+            let current_path_iter = current_path.iter();
             let current_path_len = current_path_iter.len();
             if usize::from(no_of_elements_to_discard_from_end) > current_path_len {
                 return Err(Error::InvalidInput(
@@ -155,7 +155,7 @@ pub fn path_from_reference_path_type<'b, B: AsRef<[u8]>>(
         // Pop child, swap parent, reattach child
         ReferencePathType::CousinReference(cousin_key) => {
             let mut current_path_as_vec = current_path
-                .into_iter()
+                .iter()
                 .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             if current_path_as_vec.is_empty() {
@@ -177,7 +177,7 @@ pub fn path_from_reference_path_type<'b, B: AsRef<[u8]>>(
         // Pop child, swap parent, reattach child
         ReferencePathType::RemovedCousinReference(mut cousin_path) => {
             let mut current_path_as_vec = current_path
-                .into_iter()
+                .iter()
                 .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             if current_path_as_vec.is_empty() {
@@ -199,7 +199,7 @@ pub fn path_from_reference_path_type<'b, B: AsRef<[u8]>>(
         // Pop child, attach new child
         ReferencePathType::SiblingReference(sibling_key) => {
             let mut current_path_as_vec = current_path
-                .into_iter()
+                .iter()
                 .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             current_path_as_vec.push(sibling_key);

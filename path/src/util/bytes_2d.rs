@@ -32,12 +32,12 @@ use std::mem;
 
 /// Bytes vector wrapper to have multiple byte arrays allocated continuosuly.
 #[derive(Debug, Default)]
-pub(crate) struct TwoDimensionalBytes {
+pub(crate) struct CompactBytes {
     n_segments: usize,
     data: Vec<u8>,
 }
 
-impl TwoDimensionalBytes {
+impl CompactBytes {
     /// Create empty structure.
     pub fn new() -> Self {
         Self::default()
@@ -69,7 +69,7 @@ impl TwoDimensionalBytes {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TwoDimensionalBytesIter<'a> {
-    bytes: &'a TwoDimensionalBytes,
+    bytes: &'a CompactBytes,
     offset_back: usize,
     n_segments_left: usize,
 }
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn empty_two_dimensional_bytes() {
-        let bytes = TwoDimensionalBytes::new();
+        let bytes = CompactBytes::new();
         assert_eq!(bytes.len(), 0);
 
         let mut iter = bytes.reverse_iter();
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn non_empty_two_dimensional_bytes_backward_iterator() {
-        let mut bytes = TwoDimensionalBytes::default();
+        let mut bytes = CompactBytes::default();
         bytes.add_segment(b"ayya");
         bytes.add_segment(b"ayyb");
         bytes.add_segment(b"didn'texpectthat!");

@@ -46,7 +46,7 @@ impl<'b, B> Clone for SubtreePathIter<'b, B> {
     fn clone(&self) -> Self {
         SubtreePathIter {
             current_iter: self.current_iter.clone(),
-            next_subtree_path: self.next_subtree_path.clone(),
+            next_subtree_path: self.next_subtree_path,
         }
     }
 }
@@ -97,25 +97,21 @@ impl<'b, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, B> {
             CurrentSubtreePathIter::Slice(slice_iter) => {
                 if let Some(item) = slice_iter.next_back() {
                     Some(item.as_ref())
+                } else if let Some(next_path) = self.next_subtree_path {
+                    *self = next_path.clone().into_reverse_iter();
+                    self.next()
                 } else {
-                    if let Some(next_path) = self.next_subtree_path {
-                        *self = next_path.clone().into_reverse_iter();
-                        self.next()
-                    } else {
-                        None
-                    }
+                    None
                 }
             }
             CurrentSubtreePathIter::OwnedBytes(bytes_iter) => {
                 if let Some(item) = bytes_iter.next() {
                     Some(item)
+                } else if let Some(next_path) = self.next_subtree_path {
+                    *self = next_path.clone().into_reverse_iter();
+                    self.next()
                 } else {
-                    if let Some(next_path) = self.next_subtree_path {
-                        *self = next_path.clone().into_reverse_iter();
-                        self.next()
-                    } else {
-                        None
-                    }
+                    None
                 }
             }
         }

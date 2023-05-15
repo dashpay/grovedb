@@ -1453,8 +1453,9 @@ impl GroveDb {
         for op in ops.into_iter() {
             match op.op {
                 Op::Insert { element } | Op::Replace { element } => {
+                    // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
-                        op.path.iterator().map(|p| p.as_slice()).collect(); // TODO: paths in batches is something to think about
+                        op.path.iterator().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(

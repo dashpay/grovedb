@@ -355,7 +355,8 @@ impl GroveDb {
                         .wrap_with_cost(OperationCost::default())
                 );
 
-                let (referenced_key, referenced_path) = reference_path.split_last().unwrap(); // TODO unwrap?
+                // TODO unwrap?
+                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
                     self.open_non_transactional_merk_at_path(referenced_path.into())

@@ -87,6 +87,12 @@ impl<'b, B> From<&'b [B]> for SubtreePath<'b, B> {
     }
 }
 
+impl<'b, B, const N: usize> From<&'b [B; N]> for SubtreePath<'b, B> {
+    fn from(value: &'b [B; N]) -> Self {
+        SubtreePathInner::Slice(value).into()
+    }
+}
+
 /// Create a link to existing [SubtreePath] that cannot outlive it, because it
 /// possibly owns some of the path segments.
 impl<'s, 'b, B> From<&'s SubtreePathBuilder<'b, B>> for SubtreePath<'s, B> {

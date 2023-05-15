@@ -49,7 +49,7 @@ impl Visualize for Element {
                 drawer = value.visualize(drawer)?;
             }
             Element::SumItem(value, _) => {
-                drawer.write(format!("sum_item: {}", value).as_bytes())?;
+                drawer.write(format!("sum_item: {value}").as_bytes())?;
             }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
@@ -139,10 +139,10 @@ impl Visualize for ReferencePathType {
 }
 
 impl GroveDb {
-    fn draw_subtree<'b, W: Write, B: AsRef<[u8]>>(
+    fn draw_subtree<W: Write, B: AsRef<[u8]>>(
         &self,
         mut drawer: Drawer<W>,
-        path: SubtreePathBuilder<'b, B>,
+        path: SubtreePathBuilder<'_, B>,
         transaction: TransactionArg,
     ) -> Result<Drawer<W>> {
         drawer.down();

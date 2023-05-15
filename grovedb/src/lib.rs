@@ -163,7 +163,7 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, &parent_key).map_err(|e| {
+                Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
                     Error::InvalidParentLayerPath(format!(
                         "could not get key {} for parent {:?} of subtree: {}",
                         hex::encode(parent_key),
@@ -214,7 +214,7 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, &parent_key).map_err(|e| {
+                Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
                     Error::InvalidParentLayerPath(format!(
                         "could not get key {} for parent {:?} of subtree: {}",
                         hex::encode(parent_key),
@@ -337,7 +337,6 @@ impl GroveDb {
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
-                 // TODO: do something about caching in general
                 .remove(&path)
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
@@ -382,7 +381,7 @@ impl GroveDb {
         let mut child_tree = cost_return_on_error_no_add!(
             &cost,
             merk_cache
-                .remove(&path) // TODO: merk_cache to use SubtreePath
+                .remove(&path)
                 .ok_or(Error::CorruptedCodeExecution(
                     "Merk Cache should always contain the last path",
                 ))
@@ -621,8 +620,8 @@ impl GroveDb {
             .iter()
             .map(|(path, (root_hash, expected, actual))| {
                 (
-                    path.to_owned()
-                        .into_iter()
+                    path.iter()
+                        .cloned()
                         .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/"),

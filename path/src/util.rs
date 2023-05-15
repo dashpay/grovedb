@@ -33,7 +33,7 @@ mod cow_like;
 #[cfg(test)]
 use std::hash::{Hash, Hasher};
 
-pub(crate) use bytes_2d::{TwoDimensionalBytes, TwoDimensionalBytesIter};
+pub(crate) use bytes_2d::{CompactBytes, TwoDimensionalBytesIter};
 pub(crate) use cow_like::CowLike;
 
 #[cfg(test)]

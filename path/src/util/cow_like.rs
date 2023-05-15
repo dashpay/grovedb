@@ -54,7 +54,7 @@ impl Deref for CowLike<'_> {
 
 impl AsRef<[u8]> for CowLike<'_> {
     fn as_ref(&self) -> &[u8] {
-        &self
+        self
     }
 }
 
@@ -64,7 +64,7 @@ impl Hash for CowLike<'_> {
     }
 }
 
-impl<'b> From<Vec<u8>> for CowLike<'static> {
+impl From<Vec<u8>> for CowLike<'static> {
     fn from(value: Vec<u8>) -> Self {
         Self::Owned(value)
     }
