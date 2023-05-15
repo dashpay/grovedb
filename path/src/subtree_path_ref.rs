@@ -52,7 +52,7 @@ pub(crate) enum SubtreePathRefInner<'b, B> {
     SubtreePath(&'b SubtreePath<'b, B>),
     /// Links to an existing subtree path with owned segments using it's
     /// iterator to support parent derivations.
-    SubtreePathIter(SubtreePathIter<'b, 'b, B>),
+    SubtreePathIter(SubtreePathIter<'b, B>),
 }
 
 impl<'bl, 'br, BL, BR> PartialEq<SubtreePathRef<'br, BR>> for SubtreePathRef<'bl, BL>
@@ -61,7 +61,7 @@ where
     BR: AsRef<[u8]>,
 {
     fn eq(&self, other: &SubtreePathRef<'br, BR>) -> bool {
-        self.reverse_iter().eq(other.reverse_iter())
+        self.clone().into_reverse_iter().eq(other.clone().into_reverse_iter())
     }
 }
 
@@ -178,11 +178,11 @@ impl<'b, B: AsRef<[u8]>> SubtreePathRef<'b, B> {
     }
 
     /// Get a reverse path segments iterator.
-    pub fn reverse_iter<'s>(&'s self) -> SubtreePathIter<'b, 's, B> {
-        match &self.0 {
+    pub fn into_reverse_iter(self) -> SubtreePathIter<'b, B> {
+        match self.0 {
             SubtreePathRefInner::Slice(slice) => SubtreePathIter::new(slice.iter()),
             SubtreePathRefInner::SubtreePath(path) => path.reverse_iter(),
-            SubtreePathRefInner::SubtreePathIter(iter) => iter.clone(),
+            SubtreePathRefInner::SubtreePathIter(iter) => iter,
         }
     }
 

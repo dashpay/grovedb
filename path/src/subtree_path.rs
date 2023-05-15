@@ -71,7 +71,7 @@ where
     BR: AsRef<[u8]>,
 {
     fn eq(&self, other: &SubtreePath<'br, BR>) -> bool {
-        self.reverse_iter().eq(other.reverse_iter())
+        self.clone().into_reverse_iter().eq(other.reverse_iter())
     }
 }
 
@@ -81,7 +81,7 @@ where
     BR: AsRef<[u8]>,
 {
     fn eq(&self, other: &SubtreePathRef<'br, BR>) -> bool {
-        self.reverse_iter().eq(other.reverse_iter())
+        self.reverse_iter().eq(other.clone().into_reverse_iter())
     }
 }
 
@@ -204,9 +204,9 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     }
 
     /// Returns an iterator for the subtree path by path segments.
-    pub fn reverse_iter<'s>(&'s self) -> SubtreePathIter<'b, 's, B> {
+    pub fn reverse_iter(&'b self) -> SubtreePathIter<'b, B> {
         match &self.relative {
-            SubtreePathRelative::Empty => self.base.reverse_iter(),
+            SubtreePathRelative::Empty => self.base.clone().into_reverse_iter(),
             SubtreePathRelative::Single(item) => {
                 SubtreePathIter::new_with_next(item.as_ref(), &self.base)
             }

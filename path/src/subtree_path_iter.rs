@@ -37,12 +37,12 @@ use crate::{subtree_path_ref::SubtreePathRef, util::TwoDimensionalBytesIter};
 /// cannot effectively iterate from the most shallow path segment to the
 /// deepest, so it have to go in reverse direction.
 #[derive(Debug)]
-pub struct SubtreePathIter<'b, 's, B> {
-    current_iter: CurrentSubtreePathIter<'b, 's, B>,
-    next_subtree_path: Option<&'s SubtreePathRef<'b, B>>,
+pub struct SubtreePathIter<'b, B> {
+    current_iter: CurrentSubtreePathIter<'b, B>,
+    next_subtree_path: Option<&'b SubtreePathRef<'b, B>>,
 }
 
-impl<'b, 's, B> Clone for SubtreePathIter<'b, 's, B> {
+impl<'b, B> Clone for SubtreePathIter<'b, B> {
     fn clone(&self) -> Self {
         SubtreePathIter {
             current_iter: self.current_iter.clone(),
@@ -51,10 +51,10 @@ impl<'b, 's, B> Clone for SubtreePathIter<'b, 's, B> {
     }
 }
 
-impl<'b, 's, B> SubtreePathIter<'b, 's, B> {
+impl<'b, B> SubtreePathIter<'b, B> {
     pub(crate) fn new<I>(iter: I) -> Self
     where
-        I: Into<CurrentSubtreePathIter<'b, 's, B>>,
+        I: Into<CurrentSubtreePathIter<'b, B>>,
     {
         SubtreePathIter {
             current_iter: iter.into(),
@@ -62,9 +62,9 @@ impl<'b, 's, B> SubtreePathIter<'b, 's, B> {
         }
     }
 
-    pub(crate) fn new_with_next<I>(iter: I, next: &'s SubtreePathRef<'b, B>) -> Self
+    pub(crate) fn new_with_next<I>(iter: I, next: &'b SubtreePathRef<'b, B>) -> Self
     where
-        I: Into<CurrentSubtreePathIter<'b, 's, B>>,
+        I: Into<CurrentSubtreePathIter<'b, B>>,
     {
         SubtreePathIter {
             current_iter: iter.into(),
@@ -82,15 +82,15 @@ impl<'b, 's, B> SubtreePathIter<'b, 's, B> {
     }
 }
 
-impl<'s, 'b: 's, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, 's, B> {
-    type Item = &'s [u8];
+impl<'b, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, B> {
+    type Item = &'b [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.current_iter {
             CurrentSubtreePathIter::Single(item) => {
                 let path_segment = *item;
                 if let Some(next_path) = self.next_subtree_path {
-                    *self = next_path.reverse_iter();
+                    *self = next_path.clone().into_reverse_iter();
                 }
                 Some(path_segment)
             }
@@ -99,7 +99,7 @@ impl<'s, 'b: 's, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, 's, B> {
                     Some(item.as_ref())
                 } else {
                     if let Some(next_path) = self.next_subtree_path {
-                        *self = next_path.reverse_iter();
+                        *self = next_path.clone().into_reverse_iter();
                         self.next()
                     } else {
                         None
@@ -111,7 +111,7 @@ impl<'s, 'b: 's, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, 's, B> {
                     Some(item)
                 } else {
                     if let Some(next_path) = self.next_subtree_path {
-                        *self = next_path.reverse_iter();
+                        *self = next_path.clone().into_reverse_iter();
                         self.next()
                     } else {
                         None
@@ -123,13 +123,13 @@ impl<'s, 'b: 's, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, 's, B> {
 }
 
 #[derive(Debug)]
-pub(crate) enum CurrentSubtreePathIter<'b, 's, B> {
-    Single(&'s [u8]),
+pub(crate) enum CurrentSubtreePathIter<'b, B> {
+    Single(&'b [u8]),
     Slice(slice::Iter<'b, B>),
-    OwnedBytes(TwoDimensionalBytesIter<'s>),
+    OwnedBytes(TwoDimensionalBytesIter<'b>),
 }
 
-impl<'b, 's, B> Clone for CurrentSubtreePathIter<'b, 's, B> {
+impl<'b, B> Clone for CurrentSubtreePathIter<'b, B> {
     fn clone(&self) -> Self {
         match self {
             CurrentSubtreePathIter::Single(x) => CurrentSubtreePathIter::Single(x),
@@ -139,20 +139,20 @@ impl<'b, 's, B> Clone for CurrentSubtreePathIter<'b, 's, B> {
     }
 }
 
-impl<'b, 's, B> From<TwoDimensionalBytesIter<'s>> for CurrentSubtreePathIter<'b, 's, B> {
-    fn from(value: TwoDimensionalBytesIter<'s>) -> Self {
+impl<'b, B> From<TwoDimensionalBytesIter<'b>> for CurrentSubtreePathIter<'b, B> {
+    fn from(value: TwoDimensionalBytesIter<'b>) -> Self {
         CurrentSubtreePathIter::<B>::OwnedBytes(value)
     }
 }
 
-impl<'b, 's, B> From<slice::Iter<'b, B>> for CurrentSubtreePathIter<'b, 's, B> {
+impl<'b, B> From<slice::Iter<'b, B>> for CurrentSubtreePathIter<'b, B> {
     fn from(value: slice::Iter<'b, B>) -> Self {
         CurrentSubtreePathIter::Slice(value)
     }
 }
 
-impl<'b, 's, B> From<&'s [u8]> for CurrentSubtreePathIter<'b, 's, B> {
-    fn from(value: &'s [u8]) -> Self {
+impl<'b, B> From<&'b [u8]> for CurrentSubtreePathIter<'b, B> {
+    fn from(value: &'b [u8]) -> Self {
         CurrentSubtreePathIter::Single(value)
     }
 }

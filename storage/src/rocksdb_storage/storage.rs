@@ -117,7 +117,7 @@ impl RocksDbStorage {
     where
         B: AsRef<[u8]>,
     {
-        let segments_iter = path.reverse_iter();
+        let segments_iter = path.into_reverse_iter();
         let mut segments_count: usize = 0;
         let mut res = Vec::new();
         let mut lengthes = Vec::new();

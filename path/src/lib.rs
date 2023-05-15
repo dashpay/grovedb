@@ -153,7 +153,7 @@ mod tests {
         ];
         let five_reference: SubtreePathRef<_> = (&five_reference_slice).into();
 
-        assert!(points_five.reverse_iter().eq(five_reference.reverse_iter()));
+        assert!(points_five.clone().into_reverse_iter().eq(five_reference.into_reverse_iter()));
 
         // And add a couple of other derivations
         let after_five_1 = points_five.derive_owned_with_child(b"four");
@@ -181,7 +181,7 @@ mod tests {
         let reference: SubtreePathRef<_> = (&reference_slice).into();
 
         assert_eq!(after_five_3.to_vec(), reference.to_vec());
-        assert!(after_five_3.reverse_iter().eq(reference.reverse_iter()));
+        assert!(after_five_3.reverse_iter().eq(reference.clone().into_reverse_iter()));
         assert_eq!(calculate_hash(&after_five_3), calculate_hash(&reference));
         assert_eq!(after_five_3, reference);
     }
