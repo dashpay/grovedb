@@ -30,7 +30,7 @@
 
 #[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use path::SubtreePathRef;
+use path::SubtreePath;
 
 #[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
@@ -45,10 +45,10 @@ impl GroveDb {
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
+        P: Into<SubtreePath<'b, B>>,
     {
         let mut cost = OperationCost::default();
-        let path: SubtreePathRef<B> = path.into();
+        let path: SubtreePath<B> = path.into();
 
         cost_return_on_error!(
             &mut cost,

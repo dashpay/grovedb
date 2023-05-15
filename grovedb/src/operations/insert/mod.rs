@@ -37,7 +37,7 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use merk::{tree::NULL_HASH, Merk, MerkOptions};
-use path::SubtreePathRef;
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
@@ -96,9 +96,9 @@ impl GroveDb {
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
+        P: Into<SubtreePath<'b, B>>,
     {
-        let subtree_path: SubtreePathRef<B> = path.into();
+        let subtree_path: SubtreePath<B> = path.into();
 
         if let Some(transaction) = transaction {
             self.insert_on_transaction(
@@ -115,7 +115,7 @@ impl GroveDb {
 
     fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -141,7 +141,7 @@ impl GroveDb {
 
     fn insert_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -173,7 +173,7 @@ impl GroveDb {
     /// we only care about root hash of merk to be inserted
     fn add_element_on_transaction<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,
@@ -439,10 +439,10 @@ impl GroveDb {
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
+        P: Into<SubtreePath<'b, B>>,
     {
         let mut cost = OperationCost::default();
-        let subtree_path: SubtreePathRef<_> = path.into();
+        let subtree_path: SubtreePath<_> = path.into();
 
         if cost_return_on_error!(
             &mut cost,
@@ -469,10 +469,10 @@ impl GroveDb {
     ) -> CostResult<(bool, Option<Element>), Error>
     where
         B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePathRef<'b, B>>,
+        P: Into<SubtreePath<'b, B>>,
     {
         let mut cost = OperationCost::default();
-        let subtree_path: SubtreePathRef<B> = path.into();
+        let subtree_path: SubtreePath<B> = path.into();
 
         let previous_element = cost_return_on_error!(
             &mut cost,

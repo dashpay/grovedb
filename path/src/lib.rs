@@ -31,13 +31,13 @@
 #![deny(missing_docs)]
 
 mod subtree_path;
+mod subtree_path_builder;
 mod subtree_path_iter;
-mod subtree_path_ref;
 mod util;
 
 pub use subtree_path::SubtreePath;
+pub use subtree_path_builder::SubtreePathBuilder;
 pub use subtree_path_iter::SubtreePathIter;
-pub use subtree_path_ref::SubtreePathRef;
 
 #[cfg(test)]
 mod tests {
@@ -53,7 +53,7 @@ mod tests {
             b"four".to_vec(),
             b"five".to_vec(),
         ];
-        let path_base_slice_vecs = SubtreePathRef::from(path_array.as_ref());
+        let path_base_slice_vecs = SubtreePath::from(path_array.as_ref());
         let path_array = [
             b"one".as_ref(),
             b"two".as_ref(),
@@ -61,7 +61,7 @@ mod tests {
             b"four".as_ref(),
             b"five".as_ref(),
         ];
-        let path_base_slice_slices = SubtreePathRef::from(path_array.as_ref());
+        let path_base_slice_slices = SubtreePath::from(path_array.as_ref());
 
         let path_array = [
             b"one".as_ref(),
@@ -71,9 +71,9 @@ mod tests {
             b"five".as_ref(),
             b"six".as_ref(),
         ];
-        let path_base_slice_too_much = SubtreePathRef::from(path_array.as_ref());
-        let path_base_unfinished = SubtreePathRef::from([b"one", b"two"].as_ref());
-        let path_empty = SubtreePath::new();
+        let path_base_slice_too_much = SubtreePath::from(path_array.as_ref());
+        let path_base_unfinished = SubtreePath::from([b"one", b"two"].as_ref());
+        let path_empty = SubtreePathBuilder::new();
 
         let path_derived_11 = path_empty.derive_owned_with_child(b"one".as_ref());
         let path_derived_12 = path_derived_11.derive_owned_with_child(b"two".as_ref());
@@ -103,20 +103,20 @@ mod tests {
 
     #[test]
     fn test_is_root() {
-        let path_empty = SubtreePath::new();
+        let path_empty = SubtreePathBuilder::new();
         assert!(path_empty.is_root());
 
         let path_derived = path_empty.derive_owned_with_child(b"two".as_ref());
         assert!(path_derived.derive_parent().unwrap().0.is_root());
 
-        let path_not_empty = SubtreePathRef::from([b"one"].as_ref());
+        let path_not_empty = SubtreePath::from([b"one"].as_ref());
         assert!(path_not_empty.derive_parent().unwrap().0.is_root());
     }
 
     #[test]
     fn test_complex_derivation() {
         // Append only operations:
-        let base = SubtreePathRef::from([b"one", b"two"].as_ref());
+        let base = SubtreePath::from([b"one", b"two"].as_ref());
         let with_child_1 = base.derive_owned_with_child(b"three".to_vec());
         let mut with_child_inplace = with_child_1.derive_owned_with_child(b"four");
         with_child_inplace.push_segment(b"five");
@@ -151,9 +151,12 @@ mod tests {
             b"four".as_ref(),
             b"five".as_ref(),
         ];
-        let five_reference: SubtreePathRef<_> = five_reference_slice.as_ref().into();
+        let five_reference: SubtreePath<_> = five_reference_slice.as_ref().into();
 
-        assert!(points_five.clone().into_reverse_iter().eq(five_reference.into_reverse_iter()));
+        assert!(points_five
+            .clone()
+            .into_reverse_iter()
+            .eq(five_reference.into_reverse_iter()));
 
         // And add a couple of other derivations
         let after_five_1 = points_five.derive_owned_with_child(b"four");
@@ -178,10 +181,12 @@ mod tests {
             b"thirteen".as_ref(),
             b"thirtyseven".as_ref(),
         ];
-        let reference: SubtreePathRef<_> = reference_slice.as_ref().into();
+        let reference: SubtreePath<_> = reference_slice.as_ref().into();
 
         assert_eq!(after_five_3.to_vec(), reference.to_vec());
-        assert!(after_five_3.reverse_iter().eq(reference.clone().into_reverse_iter()));
+        assert!(after_five_3
+            .reverse_iter()
+            .eq(reference.clone().into_reverse_iter()));
         assert_eq!(calculate_hash(&after_five_3), calculate_hash(&reference));
         assert_eq!(after_five_3, reference);
     }

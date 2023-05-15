@@ -31,7 +31,7 @@
 #[cfg(feature = "full")]
 use std::ops::{Deref, DerefMut};
 
-use path::SubtreePathRef;
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
@@ -55,7 +55,7 @@ impl TempMerk {
     pub fn new() -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let context = storage
-            .get_storage_context(SubtreePathRef::empty())
+            .get_storage_context(SubtreePath::empty())
             .unwrap();
         let merk = Merk::open_base(context, false).unwrap().unwrap();
         TempMerk { storage, merk }

@@ -30,7 +30,7 @@
 
 use std::slice;
 
-use crate::{subtree_path_ref::SubtreePathRef, util::TwoDimensionalBytesIter};
+use crate::{subtree_path::SubtreePath, util::TwoDimensionalBytesIter};
 
 /// (Reverse) iterator for a subtree path.
 /// Because of implementation details (one way link between derivations) it
@@ -39,7 +39,7 @@ use crate::{subtree_path_ref::SubtreePathRef, util::TwoDimensionalBytesIter};
 #[derive(Debug)]
 pub struct SubtreePathIter<'b, B> {
     current_iter: CurrentSubtreePathIter<'b, B>,
-    next_subtree_path: Option<&'b SubtreePathRef<'b, B>>,
+    next_subtree_path: Option<&'b SubtreePath<'b, B>>,
 }
 
 impl<'b, B> Clone for SubtreePathIter<'b, B> {
@@ -62,7 +62,7 @@ impl<'b, B> SubtreePathIter<'b, B> {
         }
     }
 
-    pub(crate) fn new_with_next<I>(iter: I, next: &'b SubtreePathRef<'b, B>) -> Self
+    pub(crate) fn new_with_next<I>(iter: I, next: &'b SubtreePath<'b, B>) -> Self
     where
         I: Into<CurrentSubtreePathIter<'b, B>>,
     {

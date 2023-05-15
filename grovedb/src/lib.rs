@@ -91,7 +91,7 @@ use merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-use path::SubtreePathRef;
+use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 // #[cfg(feature = "full")]
@@ -144,7 +144,7 @@ impl GroveDb {
     /// Opens the transactional Merk at the given path. Returns CostResult.
     fn open_transactional_merk_at_path<'db, 'b, B>(
         &'db self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         tx: &'db Transaction,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
@@ -195,7 +195,7 @@ impl GroveDb {
     /// Opens the non-transactional Merk at the given path. Returns CostResult.
     pub fn open_non_transactional_merk_at_path<'b, B>(
         &self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -280,7 +280,7 @@ impl GroveDb {
         &self,
         storage_batch: &StorageBatch,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbBatchTransactionContext>>,
-        path: &SubtreePathRef<'b, B>,
+        path: &SubtreePath<'b, B>,
         transaction: &Transaction,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -333,7 +333,7 @@ impl GroveDb {
     fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>>,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         transaction: &Transaction,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -379,7 +379,7 @@ impl GroveDb {
     fn propagate_changes_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
         mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -392,7 +392,7 @@ impl GroveDb {
                 ))
         );
 
-        let mut current_path: SubtreePathRef<B> = path.clone();
+        let mut current_path: SubtreePath<B> = path.clone();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
@@ -555,7 +555,7 @@ impl GroveDb {
     /// # use grovedb::{Element, Error, GroveDb};
     /// # use std::convert::TryFrom;
     /// # use tempfile::TempDir;
-    /// # use path::SubtreePathRef;
+    /// # use path::SubtreePath;
     /// #
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use std::option::Option::None;
@@ -564,7 +564,7 @@ impl GroveDb {
     /// let tmp_dir = TempDir::new().unwrap();
     /// let mut db = GroveDb::open(tmp_dir.path())?;
     /// db.insert(
-    ///     SubtreePathRef::empty(),
+    ///     SubtreePath::empty(),
     ///     TEST_LEAF,
     ///     Element::empty_tree(),
     ///     None,
@@ -644,10 +644,10 @@ impl GroveDb {
     /// correctly.
     pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let root_merk = self
-            .open_non_transactional_merk_at_path(SubtreePathRef::empty())
+            .open_non_transactional_merk_at_path(SubtreePath::empty())
             .unwrap()
             .expect("should exist");
-        self.verify_merk_and_submerks(root_merk, &SubtreePathRef::empty())
+        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty())
     }
 
     /// Verifies that the root hash of the given merk and all submerks match
@@ -655,7 +655,7 @@ impl GroveDb {
     fn verify_merk_and_submerks<B: AsRef<[u8]>>(
         &self,
         merk: Merk<PrefixedRocksDbStorageContext>,
-        path: &SubtreePathRef<B>,
+        path: &SubtreePath<B>,
     ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
@@ -672,7 +672,7 @@ impl GroveDb {
                     .unwrap()
                     .unwrap();
                 let new_path = path.derive_owned_with_child(key);
-                let new_path_ref = SubtreePathRef::from(&new_path);
+                let new_path_ref = SubtreePath::from(&new_path);
 
                 let inner_merk = self
                     .open_non_transactional_merk_at_path(new_path_ref.clone())

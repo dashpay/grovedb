@@ -41,7 +41,7 @@ use tempfile::TempDir;
 #[cfg(feature = "full")]
 const N_ITEMS: usize = 10_000;
 
-const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
+const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::empty();
 
 /// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree
 /// without a transaction

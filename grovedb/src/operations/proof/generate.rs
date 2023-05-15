@@ -43,7 +43,7 @@ use merk::{
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
-use path::SubtreePathRef;
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::StorageContext;
 
@@ -473,7 +473,7 @@ impl GroveDb {
     /// list
     fn generate_and_store_merk_proof<'a, 'b, S, B>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: &SubtreePath<'b, B>,
         subtree: &'a Merk<S>,
         query: &Query,
         limit_offset: LimitOffset,
@@ -601,7 +601,7 @@ impl GroveDb {
     /// referenced element
     fn post_process_proof<'b, B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePathRef<'b, B>,
+        path: &SubtreePath<'b, B>,
         proof_result: &mut ProofWithoutEncodingResult,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();

@@ -392,7 +392,7 @@ impl Child {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use path::SubtreePathRef;
+    use path::SubtreePath;
     use storage::{
         rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
         RawIterator, Storage,
@@ -414,7 +414,7 @@ mod tests {
 
         let storage = TempStorage::default();
         let ctx = storage
-            .get_storage_context(SubtreePathRef::empty())
+            .get_storage_context(SubtreePath::empty())
             .unwrap();
         let merk = Merk::open_base(ctx, false).unwrap().unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());

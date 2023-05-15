@@ -32,7 +32,7 @@ use std::io::{Result, Write};
 
 use bincode::Options;
 use merk::{Merk, VisualizeableMerk};
-use path::SubtreePath;
+use path::SubtreePathBuilder;
 use storage::StorageContext;
 use visualize::{visualize_stdout, Drawer, Visualize};
 
@@ -142,7 +142,7 @@ impl GroveDb {
     fn draw_subtree<'b, W: Write, B: AsRef<[u8]>>(
         &self,
         mut drawer: Drawer<W>,
-        path: SubtreePath<'b, B>,
+        path: SubtreePathBuilder<'b, B>,
         transaction: TransactionArg,
     ) -> Result<Drawer<W>> {
         drawer.down();
@@ -187,7 +187,7 @@ impl GroveDb {
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        drawer = self.draw_subtree(drawer, SubtreePath::new(), transaction)?;
+        drawer = self.draw_subtree(drawer, SubtreePathBuilder::new(), transaction)?;
 
         drawer.up();
         Ok(drawer)

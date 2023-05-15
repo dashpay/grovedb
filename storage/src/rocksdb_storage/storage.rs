@@ -38,7 +38,7 @@ use costs::{
 use error::Error;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
-use path::SubtreePathRef;
+use path::SubtreePath;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction,
@@ -113,7 +113,7 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<B>(path: SubtreePathRef<B>) -> (Vec<u8>, usize)
+    fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
     where
         B: AsRef<[u8]>,
     {
@@ -139,7 +139,7 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<B>(path: SubtreePathRef<B>) -> CostContext<Vec<u8>>
+    pub fn build_prefix<B>(path: SubtreePath<B>) -> CostContext<Vec<u8>>
     where
         B: AsRef<[u8]>,
     {
@@ -436,7 +436,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_storage_context<'b, B>(
         &'db self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
     ) -> CostContext<Self::StorageContext>
     where
         B: AsRef<[u8]> + 'b,
@@ -446,7 +446,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_transactional_storage_context<'b, B>(
         &'db self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
@@ -458,7 +458,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_batch_storage_context<'b, B>(
         &'db self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
@@ -470,7 +470,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn get_batch_transactional_storage_context<'b, B>(
         &'db self,
-        path: SubtreePathRef<'b, B>,
+        path: SubtreePath<'b, B>,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
