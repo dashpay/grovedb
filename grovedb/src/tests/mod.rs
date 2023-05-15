@@ -44,6 +44,7 @@ use std::{
 use ::visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
+use self::common::EMPTY_PATH;
 use super::*;
 use crate::{
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
@@ -55,8 +56,6 @@ pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
 
 const DEEP_LEAF: &[u8] = b"deep_leaf";
-
-const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
 
 /// GroveDB wrapper to keep temp directory alive
 pub struct TempGroveDb {
@@ -110,11 +109,11 @@ pub fn make_test_grovedb() -> TempGroveDb {
 }
 
 fn add_test_leaves(db: &mut GroveDb) {
-    db.insert(&EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful root tree leaf insert");
     db.insert(
-        &EMPTY_PATH,
+        EMPTY_PATH,
         ANOTHER_TEST_LEAF,
         Element::empty_tree(),
         None,
@@ -164,7 +163,7 @@ pub fn make_deep_tree() -> TempGroveDb {
 
     // add an extra root leaf
     temp_db
-        .insert(&EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None)
+        .insert(EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful root tree leaf insert");
 
@@ -466,7 +465,7 @@ fn test_element_with_flags() {
     let db = make_test_grovedb();
 
     db.insert(
-        [TEST_LEAF].as_ref(),
+        [TEST_LEAF.as_ref()].as_ref(),
         b"key1",
         Element::empty_tree(),
         None,
@@ -657,7 +656,7 @@ fn test_changes_propagated() {
     .expect("successful subtree 1 insert");
 
     let _merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref())
+        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
         .unwrap()
         .unwrap();
 
@@ -1020,10 +1019,10 @@ fn test_tree_structure_is_persistent() {
 #[test]
 fn test_root_tree_leaves_are_noted() {
     let db = make_test_grovedb();
-    db.check_subtree_exists_path_not_found([TEST_LEAF].as_ref(), None)
+    db.check_subtree_exists_path_not_found([TEST_LEAF].as_ref().into(), None)
         .unwrap()
         .expect("should exist");
-    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF].as_ref(), None)
+    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF].as_ref().into(), None)
         .unwrap()
         .expect("should exist");
 }
@@ -1993,7 +1992,7 @@ fn test_checkpoint() {
     let db = make_test_grovedb();
     let element1 = Element::new_item(b"ayy".to_vec());
 
-    db.insert(&EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
         .unwrap()
         .expect("cannot insert a subtree 1 into GroveDB");
     db.insert(
@@ -2290,7 +2289,7 @@ fn test_subtree_pairs_iterator() {
     let storage_context = db
         .grove_db
         .db
-        .get_storage_context([TEST_LEAF, b"subtree1"].as_ref())
+        .get_storage_context([TEST_LEAF, b"subtree1"].as_ref().into())
         .unwrap();
     let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
     assert_eq!(
@@ -2370,7 +2369,7 @@ fn test_find_subtrees() {
 #[test]
 fn test_root_subtree_has_root_key() {
     let db = make_test_grovedb();
-    let storage = db.db.get_storage_context(&EMPTY_PATH).unwrap();
+    let storage = db.db.get_storage_context(EMPTY_PATH).unwrap();
     let root_merk = Merk::open_base(storage, false)
         .unwrap()
         .expect("expected to get root merk");
@@ -2392,7 +2391,7 @@ fn test_get_subtree() {
         assert!(subtree.is_err());
 
         // Doesn't return an error for subtree that exists but empty
-        let subtree = db.get(&EMPTY_PATH, TEST_LEAF, None).unwrap();
+        let subtree = db.get(EMPTY_PATH, TEST_LEAF, None).unwrap();
         assert!(subtree.is_ok());
     }
 
@@ -2408,7 +2407,7 @@ fn test_get_subtree() {
     .expect("successful subtree 1 insert");
 
     let key1_tree = db
-        .get(&EMPTY_PATH, TEST_LEAF, None)
+        .get(EMPTY_PATH, TEST_LEAF, None)
         .unwrap()
         .expect("expected to get a root tree");
 
@@ -2461,7 +2460,7 @@ fn test_get_subtree() {
         let subtree_storage = db
             .grove_db
             .db
-            .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref())
+            .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into())
             .unwrap();
         let subtree =
             Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
@@ -2498,7 +2497,7 @@ fn test_get_subtree() {
         .grove_db
         .db
         .get_transactional_storage_context(
-            [TEST_LEAF, b"key1", b"innertree"].as_ref(),
+            [TEST_LEAF, b"key1", b"innertree"].as_ref().into(),
             &transaction,
         )
         .unwrap();
@@ -2512,7 +2511,7 @@ fn test_get_subtree() {
     let subtree_storage = db
         .grove_db
         .db
-        .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref())
+        .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into())
         .unwrap();
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
         .unwrap()
@@ -2790,7 +2789,7 @@ fn test_root_hash() {
 #[test]
 fn test_get_non_existing_root_leaf() {
     let db = make_test_grovedb();
-    assert!(matches!(db.get(&EMPTY_PATH, b"ayy", None).unwrap(), Err(_)));
+    assert!(matches!(db.get(EMPTY_PATH, b"ayy", None).unwrap(), Err(_)));
 }
 
 #[test]
@@ -2817,25 +2816,25 @@ fn test_check_subtree_exists_function() {
 
     // Empty tree path means root always exist
     assert!(db
-        .check_subtree_exists_invalid_path(&EMPTY_PATH.into(), None)
+        .check_subtree_exists_invalid_path(EMPTY_PATH.into(), None)
         .unwrap()
         .is_ok());
 
     // TEST_LEAF should be a tree
     assert!(db
-        .check_subtree_exists_invalid_path(&[TEST_LEAF].as_ref().into(), None)
+        .check_subtree_exists_invalid_path([TEST_LEAF].as_ref().into(), None)
         .unwrap()
         .is_ok());
 
     // TEST_LEAF.key_subtree should be a tree
     assert!(db
-        .check_subtree_exists_invalid_path(&[TEST_LEAF, b"key_subtree"].as_ref().into(), None)
+        .check_subtree_exists_invalid_path([TEST_LEAF, b"key_subtree"].as_ref().into(), None)
         .unwrap()
         .is_ok());
 
     // TEST_LEAF.key_scalar should NOT be a tree
     assert!(matches!(
-        db.check_subtree_exists_invalid_path(&[TEST_LEAF, b"key_scalar"].as_ref().into(), None)
+        db.check_subtree_exists_invalid_path([TEST_LEAF, b"key_scalar"].as_ref().into(), None)
             .unwrap(),
         Err(Error::InvalidPath(_))
     ));
@@ -2864,13 +2863,13 @@ fn test_tree_value_exists_method_no_tx() {
         .unwrap());
 
     // Test keys for a root tree
-    db.insert(&EMPTY_PATH, b"leaf", Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, None)
         .unwrap()
         .expect("cannot insert item");
 
-    assert!(db.has_raw(&EMPTY_PATH, b"leaf", None).unwrap().unwrap());
-    assert!(db.has_raw(&EMPTY_PATH, TEST_LEAF, None).unwrap().unwrap());
-    assert!(!db.has_raw(&EMPTY_PATH, b"badleaf", None).unwrap().unwrap());
+    assert!(db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
+    assert!(db.has_raw(EMPTY_PATH, TEST_LEAF, None).unwrap().unwrap());
+    assert!(!db.has_raw(EMPTY_PATH, b"badleaf", None).unwrap().unwrap());
 }
 
 #[test]
@@ -2900,11 +2899,8 @@ fn test_tree_value_exists_method_tx() {
     db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, Some(&tx))
         .unwrap()
         .expect("cannot insert item");
-    assert!(db
-        .has_raw(&EMPTY_PATH, b"leaf", Some(&tx))
-        .unwrap()
-        .unwrap());
-    assert!(!db.has_raw(&EMPTY_PATH, b"leaf", None).unwrap().unwrap());
+    assert!(db.has_raw(EMPTY_PATH, b"leaf", Some(&tx)).unwrap().unwrap());
+    assert!(!db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
 
     db.commit_transaction(tx)
         .unwrap()
@@ -2913,5 +2909,5 @@ fn test_tree_value_exists_method_tx() {
         .has_raw([TEST_LEAF].as_ref(), b"key", None)
         .unwrap()
         .unwrap());
-    assert!(db.has_raw(&EMPTY_PATH, b"leaf", None).unwrap().unwrap());
+    assert!(db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
 }

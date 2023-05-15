@@ -894,7 +894,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref())
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -992,7 +992,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref())
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
             .unwrap()
             .expect("cannot open Merk");
 

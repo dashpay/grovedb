@@ -119,20 +119,11 @@ impl Hash for SubtreePathRelative<'_> {
     }
 }
 
-// /// Creates a [SubtreePath] from a [SubtreePath] reference. This way
-// // functions could be generic over different ways of representing subtree
-// // path.
-// impl<'b, 'a: 'b, B: AsRef<[u8]>> From<&'a SubtreePath<'b, B>> for
-// SubtreePath<'b, B> {     fn from(value: &'a SubtreePath<'b, B>) -> Self {
-//         value.derive_editable()
-//     }
-// }
-
 impl SubtreePath<'static, [u8; 0]> {
     /// Creates empty subtree path
     pub fn new() -> Self {
         SubtreePath {
-            base: (&[]).into(),
+            base: [].as_ref().into(),
             relative: SubtreePathRelative::Empty,
         }
     }
@@ -152,11 +143,6 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
             },
         }
     }
-
-    // /// Immutable branch from a subtree path with no added information.
-    // pub fn derive(&'b self) -> SubtreePathRef<'b, B> {
-    //     SubtreePathRefInner::SubtreePath(&self).into()
-    // }
 
     /// Get a derived path for a parent and a chopped segment. Returned
     /// [SubtreePathRef] will be linked to this [SubtreePath] because it might

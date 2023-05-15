@@ -151,7 +151,7 @@ mod tests {
             b"four".as_ref(),
             b"five".as_ref(),
         ];
-        let five_reference: SubtreePathRef<_> = (&five_reference_slice).into();
+        let five_reference: SubtreePathRef<_> = five_reference_slice.as_ref().into();
 
         assert!(points_five.clone().into_reverse_iter().eq(five_reference.into_reverse_iter()));
 
@@ -178,7 +178,7 @@ mod tests {
             b"thirteen".as_ref(),
             b"thirtyseven".as_ref(),
         ];
-        let reference: SubtreePathRef<_> = (&reference_slice).into();
+        let reference: SubtreePathRef<_> = reference_slice.as_ref().into();
 
         assert_eq!(after_five_3.to_vec(), reference.to_vec());
         assert!(after_five_3.reverse_iter().eq(reference.clone().into_reverse_iter()));

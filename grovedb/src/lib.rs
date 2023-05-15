@@ -555,7 +555,7 @@ impl GroveDb {
     /// # use grovedb::{Element, Error, GroveDb};
     /// # use std::convert::TryFrom;
     /// # use tempfile::TempDir;
-    /// # use path::SubtreePath;
+    /// # use path::SubtreePathRef;
     /// #
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use std::option::Option::None;
@@ -564,7 +564,7 @@ impl GroveDb {
     /// let tmp_dir = TempDir::new().unwrap();
     /// let mut db = GroveDb::open(tmp_dir.path())?;
     /// db.insert(
-    ///     SubtreePath::new(),
+    ///     SubtreePathRef::empty(),
     ///     TEST_LEAF,
     ///     Element::empty_tree(),
     ///     None,

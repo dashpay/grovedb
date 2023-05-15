@@ -694,7 +694,7 @@ mod tests {
         query.insert_all();
 
         let merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"].as_ref())
+            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"].as_ref().into())
             .unwrap()
             .unwrap();
         let expected_root_hash = merk.root_hash().unwrap();
@@ -774,7 +774,7 @@ mod tests {
         let path = vec![TEST_LEAF, b"innertree"];
 
         let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice())
+            .open_non_transactional_merk_at_path(path.as_slice().into())
             .unwrap()
             .unwrap();
         let inner_tree_root_hash = merk.root_hash().unwrap();
@@ -794,7 +794,7 @@ mod tests {
         // insert all under innertree4
         let path = vec![TEST_LEAF, b"innertree4"];
         let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice())
+            .open_non_transactional_merk_at_path(path.as_slice().into())
             .unwrap()
             .unwrap();
         let inner_tree_4_root_hash = merk.root_hash().unwrap();
@@ -814,7 +814,7 @@ mod tests {
         // insert all for deeper_1
         let path: Vec<&[u8]> = vec![b"deep_leaf", b"deep_node_1", b"deeper_1"];
         let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice())
+            .open_non_transactional_merk_at_path(path.as_slice().into())
             .unwrap()
             .unwrap();
         let deeper_1_root_hash = merk.root_hash().unwrap();

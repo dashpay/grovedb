@@ -458,7 +458,11 @@ impl GroveDb {
                 // todo: verify why we need to open the same? merk again
                 let storage = self
                     .db
-                    .get_batch_transactional_storage_context(path.clone(), &storage_batch, transaction)
+                    .get_batch_transactional_storage_context(
+                        path.clone(),
+                        &storage_batch,
+                        transaction,
+                    )
                     .unwrap_add_cost(&mut cost);
 
                 let mut merk_to_delete_tree_from = cost_return_on_error!(

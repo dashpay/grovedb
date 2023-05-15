@@ -1950,11 +1950,7 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(
-                            &continue_storage_batch,
-                            path.into(),
-                            new_merk,
-                        )
+                        self.open_batch_merk_at_path(&continue_storage_batch, path.into(), new_merk)
                     }
                 )
             );

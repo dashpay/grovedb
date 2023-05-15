@@ -463,17 +463,14 @@ mod test {
         estimated_costs::average_case_costs::add_average_case_get_merk_node,
         test_utils::make_batch_seq, Merk,
     };
-    use path::SubtreePath;
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
 
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
-        tests::TEST_LEAF,
+        tests::{common::EMPTY_PATH, TEST_LEAF},
         Element, GroveDb,
     };
-
-    const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
 
     #[test]
     fn test_get_merk_node_average_case() {

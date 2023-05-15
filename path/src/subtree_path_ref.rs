@@ -71,17 +71,8 @@ impl<'b, B> From<SubtreePathRefInner<'b, B>> for SubtreePathRef<'b, B> {
     }
 }
 
-// Following [From] implementations allow to use many types in places where
-// a subtree path is expected:
-
 impl<'b, B> From<&'b [B]> for SubtreePathRef<'b, B> {
     fn from(value: &'b [B]) -> Self {
-        SubtreePathRefInner::Slice(value).into()
-    }
-}
-
-impl<'b, B, const N: usize> From<&'b [B; N]> for SubtreePathRef<'b, B> {
-    fn from(value: &'b [B; N]) -> Self {
         SubtreePathRefInner::Slice(value).into()
     }
 }

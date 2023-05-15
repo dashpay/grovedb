@@ -382,7 +382,7 @@ mod tests {
 
         let non_batch_cost = db
             .delete_with_sectional_storage_function(
-                &EMPTY_PATH,
+                EMPTY_PATH,
                 b"key1",
                 None,
                 Some(&tx),

@@ -28,7 +28,7 @@
 
 //! Common tests
 
-use path::SubtreePath;
+use path::SubtreePathRef;
 
 use crate::{operations::proof::util::ProvedPathKeyValues, Element, Error};
 
@@ -62,4 +62,4 @@ pub fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &ProvedPathKeyVa
     }
 }
 
-pub(crate) const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::new();
+pub(crate) const EMPTY_PATH: SubtreePathRef<'static, [u8; 0]> = SubtreePathRef::empty();

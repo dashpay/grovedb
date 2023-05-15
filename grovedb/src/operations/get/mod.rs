@@ -128,24 +128,19 @@ impl GroveDb {
             if let Some((key, path_slice)) = current_path.split_last() {
                 current_element = cost_return_on_error!(
                     &mut cost,
-                    self.get_raw_caching_optional(
-                        path_slice.into(),
-                        key,
-                        allow_cache,
-                        transaction
-                    )
-                    .map_err(|e| match e {
-                        Error::PathParentLayerNotFound(p) => {
-                            Error::CorruptedReferencePathParentLayerNotFound(p)
-                        }
-                        Error::PathKeyNotFound(p) => {
-                            Error::CorruptedReferencePathKeyNotFound(p)
-                        }
-                        Error::PathNotFound(p) => {
-                            Error::CorruptedReferencePathNotFound(p)
-                        }
-                        _ => e,
-                    })
+                    self.get_raw_caching_optional(path_slice.into(), key, allow_cache, transaction)
+                        .map_err(|e| match e {
+                            Error::PathParentLayerNotFound(p) => {
+                                Error::CorruptedReferencePathParentLayerNotFound(p)
+                            }
+                            Error::PathKeyNotFound(p) => {
+                                Error::CorruptedReferencePathKeyNotFound(p)
+                            }
+                            Error::PathNotFound(p) => {
+                                Error::CorruptedReferencePathNotFound(p)
+                            }
+                            _ => e,
+                        })
                 )
             } else {
                 return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
