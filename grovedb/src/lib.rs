@@ -49,9 +49,8 @@ mod query;
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
-// #[cfg(feature = "full")]
-// mod replication; TODO: decided that current implementation is too ineffective
-// to use it
+#[cfg(feature = "full")]
+mod replication;
 #[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
@@ -94,9 +93,8 @@ use merk::{
 use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-// #[cfg(feature = "full")]
-// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer,
-// SubtreeChunkProducer};
+#[cfg(feature = "full")]
+pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 #[cfg(feature = "full")]
 pub use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]

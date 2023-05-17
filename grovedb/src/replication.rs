@@ -52,13 +52,13 @@ impl GroveDb {
 }
 
 /// Subtree chunks producer.
-pub struct SubtreeChunkProducer<'db,> {
+pub struct SubtreeChunkProducer<'db> {
     grove_db: &'db GroveDb,
     cache: Option<SubtreeChunkProducerCache<'db>>,
 }
 
 struct SubtreeChunkProducerCache<'db> {
-    current_merk_path: SubtreePath<'static, [u8; 0]>,
+    current_merk_path: Vec<Vec<u8>>,
     current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
     // This needed to be an `Option` because it requires a reference on Merk but it's within the
     // same struct and during struct init a referenced Merk would be moved inside a struct,
@@ -83,16 +83,18 @@ impl<'db> SubtreeChunkProducer<'db> {
     }
 
     /// Get chunk
-    pub fn get_chunk<B: AsRef<[u8]>>(
-        &mut self,
-        path: &SubtreePath<B>,
-        index: usize,
-    ) -> Result<Vec<Op>, Error> {
+    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
+    {
+        let path_iter = path.into_iter();
+
         if let Some(SubtreeChunkProducerCache {
             current_merk_path, ..
         }) = &self.cache
         {
-            if !current_merk_path == path {
+            if !itertools::equal(current_merk_path, path_iter.clone()) {
                 self.cache = None;
             }
         }
@@ -100,7 +102,9 @@ impl<'db> SubtreeChunkProducer<'db> {
         if self.cache.is_none() {
             let current_merk = self
                 .grove_db
-                .open_non_transactional_merk_at_path(path_iter.clone())
+                .open_non_transactional_merk_at_path(
+                    path_iter.clone().collect::<Vec<_>>().as_slice().into(),
+                )
                 .unwrap()?;
 
             if current_merk.root_key().is_none() {
@@ -164,9 +168,15 @@ impl<'db> Restorer<'db> {
     ) -> Result<Self, RestorerError> {
         Ok(Restorer {
             current_merk_restorer: Some(MerkRestorer::new(
-                Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap(), false)
-                    .unwrap()
-                    .map_err(|e| RestorerError(e.to_string()))?,
+                Merk::open_base(
+                    grove_db
+                        .db
+                        .get_storage_context(SubtreePath::empty())
+                        .unwrap(),
+                    false,
+                )
+                .unwrap()
+                .map_err(|e| RestorerError(e.to_string()))?,
                 None,
                 root_hash,
             )),
@@ -250,7 +260,7 @@ impl<'db> Restorer<'db> {
                 // Process next subtree.
                 let merk: Merk<PrefixedRocksDbStorageContext> = self
                     .grove_db
-                    .open_non_transactional_merk_at_path(next_path.iter().map(|a| a.as_ref()))
+                    .open_non_transactional_merk_at_path(next_path.as_slice().into())
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?;
                 self.current_merk_restorer = Some(MerkRestorer::new(
@@ -301,75 +311,89 @@ impl<'db> SiblingsChunkProducer<'db> {
 
     /// Get a collection of chunks possibly from different Merks with the first
     /// one as requested.
-    pub fn get_chunk<B: AsRef<[u8]>>(
-        &mut self,
-        path: &SubtreePath<B>,
-        index: usize,
-    ) -> Result<Vec<GroveChunk>, Error> {
+    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<GroveChunk>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,
+    {
+        let path_iter = path.into_iter();
         let mut result = Vec::new();
         let mut ops_count = 0;
 
-        if let Some((parent_path, key)) = path.derive_parent() {
-            // Get siblings on the right to send chunks of multiple Merks if it meets the
-            // limit.
-            let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
-
-            let parent_ctx = self
-                .chunk_producer
-                .grove_db
-                .db
-                .get_storage_context(&parent_path)
-                .unwrap();
-            let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
-
-            siblings_iter.fast_forward(key)?;
-
-            while let Some(element) = siblings_iter.next_element().unwrap()? {
-                if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
-                    siblings_keys.push_back(key);
-                }
-            }
-
-            let mut current_index = index;
-            // Process each subtree
-            while let Some(subtree_key) = siblings_keys.pop_front() {
-                let subtree_path = parent_path.derive_child_owned(subtree_key);
-
-                self.process_subtree_chunks(
-                    &mut result,
-                    &mut ops_count,
-                    subtree_path,
-                    current_index,
-                )?;
-                // Going to a next sibling, should start from 0.
-
-                if ops_count >= OPS_PER_CHUNK {
-                    break;
-                }
-                current_index = 0;
-            }
-
-            Ok(result)
-        } else {
+        if path_iter.len() == 0 {
             // We're at the root of GroveDb, no siblings here.
             self.process_subtree_chunks(&mut result, &mut ops_count, empty(), index)?;
             return Ok(result);
+        };
+
+        // Get siblings on the right to send chunks of multiple Merks if it meets the
+        // limit.
+
+        let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
+
+        let mut parent_path = path_iter;
+        let requested_key = parent_path.next_back();
+
+        let parent_ctx = self
+            .chunk_producer
+            .grove_db
+            .db
+            .get_storage_context(parent_path.clone().collect::<Vec<_>>().as_slice().into())
+            .unwrap();
+        let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
+
+        if let Some(key) = requested_key {
+            siblings_iter.fast_forward(key)?;
         }
+
+        while let Some(element) = siblings_iter.next_element().unwrap()? {
+            if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
+                siblings_keys.push_back(key);
+            }
+        }
+
+        let mut current_index = index;
+        // Process each subtree
+        while let Some(subtree_key) = siblings_keys.pop_front() {
+            #[allow(clippy::map_identity)]
+            let subtree_path = parent_path
+                .clone()
+                .map(|x| x)
+                .chain(once(subtree_key.as_slice()));
+
+            self.process_subtree_chunks(&mut result, &mut ops_count, subtree_path, current_index)?;
+            // Going to a next sibling, should start from 0.
+
+            if ops_count >= OPS_PER_CHUNK {
+                break;
+            }
+            current_index = 0;
+        }
+
+        Ok(result)
     }
 
     /// Process one subtree's chunks
-    fn process_subtree_chunks<B: AsRef<[u8]>>(
+    fn process_subtree_chunks<'p, P>(
         &mut self,
         result: &mut Vec<GroveChunk>,
         ops_count: &mut usize,
-        subtree_path: &SubtreePath<B>,
+        subtree_path: P,
         from_index: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
+    {
+        let path_iter = subtree_path.into_iter();
+
         let mut current_index = from_index;
         let mut subtree_chunks = Vec::new();
 
         loop {
-            let ops = self.chunk_producer.get_chunk(subtree_path, current_index)?;
+            let ops = self
+                .chunk_producer
+                .get_chunk(path_iter.clone(), current_index)?;
 
             *ops_count += ops.len();
             subtree_chunks.push((current_index, ops));
@@ -428,7 +452,7 @@ mod test {
     use crate::{
         batch::GroveDbOp,
         reference_path::ReferencePathType,
-        tests::{make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        tests::{common::EMPTY_PATH, make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
     };
 
     fn replicate(original_db: &GroveDb) -> TempDir {
@@ -523,14 +547,8 @@ mod test {
         for full_path in to_compare {
             let (key, path) = full_path.split_last().unwrap();
             assert_eq!(
-                original_db
-                    .get(path.iter().map(|x| x.as_ref()), key.as_ref(), None)
-                    .unwrap()
-                    .unwrap(),
-                replica
-                    .get(path.iter().map(|x| x.as_ref()), key.as_ref(), None)
-                    .unwrap()
-                    .unwrap()
+                original_db.get(path, key.as_ref(), None).unwrap().unwrap(),
+                replica.get(path, key.as_ref(), None).unwrap().unwrap()
             );
         }
     }
@@ -564,7 +582,7 @@ mod test {
     fn replicate_provide_wrong_tree() {
         let db = make_test_grovedb();
         db.insert(
-            [TEST_LEAF],
+            &[TEST_LEAF],
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -573,7 +591,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [ANOTHER_TEST_LEAF],
+            &[ANOTHER_TEST_LEAF],
             b"key1",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -611,7 +629,7 @@ mod test {
     fn replicate_nested_grovedb() {
         let db = make_test_grovedb();
         db.insert(
-            [TEST_LEAF],
+            &[TEST_LEAF],
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -620,7 +638,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [TEST_LEAF],
+            &[TEST_LEAF],
             b"key2",
             Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
             None,
@@ -629,7 +647,7 @@ mod test {
         .unwrap()
         .expect("should insert reference");
         db.insert(
-            [ANOTHER_TEST_LEAF],
+            &[ANOTHER_TEST_LEAF],
             b"key2",
             Element::empty_tree(),
             None,
@@ -638,7 +656,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [ANOTHER_TEST_LEAF, b"key2"],
+            &[ANOTHER_TEST_LEAF, b"key2"],
             b"key3",
             Element::empty_tree(),
             None,
@@ -647,7 +665,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [ANOTHER_TEST_LEAF, b"key2", b"key3"],
+            &[ANOTHER_TEST_LEAF, b"key2", b"key3"],
             b"key4",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -672,7 +690,7 @@ mod test {
     fn replicate_nested_grovedb_with_sum_trees() {
         let db = make_test_grovedb();
         db.insert(
-            [TEST_LEAF],
+            &[TEST_LEAF],
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -681,7 +699,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [TEST_LEAF],
+            &[TEST_LEAF],
             b"key2",
             Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
             None,
@@ -690,7 +708,7 @@ mod test {
         .unwrap()
         .expect("should insert reference");
         db.insert(
-            [ANOTHER_TEST_LEAF],
+            &[ANOTHER_TEST_LEAF],
             b"key2",
             Element::empty_sum_tree(),
             None,
@@ -699,7 +717,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [ANOTHER_TEST_LEAF, b"key2"],
+            &[ANOTHER_TEST_LEAF, b"key2"],
             b"sumitem",
             Element::new_sum_item(15),
             None,
@@ -708,7 +726,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [ANOTHER_TEST_LEAF, b"key2"],
+            &[ANOTHER_TEST_LEAF, b"key2"],
             b"key3",
             Element::empty_tree(),
             None,
@@ -717,7 +735,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [ANOTHER_TEST_LEAF, b"key2", b"key3"],
+            &[ANOTHER_TEST_LEAF, b"key2", b"key3"],
             b"key4",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -743,11 +761,11 @@ mod test {
     #[test]
     fn replicate_grovedb_with_sum_tree() {
         let db = make_test_grovedb();
-        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+        db.insert(&[TEST_LEAF], b"key1", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert an element");
         db.insert(
-            [TEST_LEAF, b"key1"],
+            &[TEST_LEAF, b"key1"],
             b"key2",
             Element::new_item(vec![4]),
             None,
@@ -756,7 +774,7 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
         db.insert(
-            [TEST_LEAF, b"key1"],
+            &[TEST_LEAF, b"key1"],
             b"key3",
             Element::new_item(vec![10]),
             None,
@@ -791,7 +809,7 @@ mod test {
         for _ in 0..SUBTREES_FOR_EACH {
             let mut bytes = [0; 8];
             rng.fill_bytes(&mut bytes);
-            db.insert([], &bytes, Element::empty_tree(), None, None)
+            db.insert(EMPTY_PATH, &bytes, Element::empty_tree(), None, None)
                 .unwrap()
                 .unwrap();
             subtrees.push_front(vec![bytes]);
@@ -847,7 +865,7 @@ mod test {
         // Create a simple GroveDb first
         let db = make_test_grovedb();
         db.insert(
-            [TEST_LEAF],
+            &[TEST_LEAF],
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -856,7 +874,7 @@ mod test {
         .unwrap()
         .unwrap();
         db.insert(
-            [ANOTHER_TEST_LEAF],
+            &[ANOTHER_TEST_LEAF],
             b"key2",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -871,11 +889,11 @@ mod test {
         db.create_checkpoint(&checkpoint_dir).unwrap();
 
         // Alter the db to make difference between current state and checkpoint
-        db.delete([TEST_LEAF], b"key1", None, None)
+        db.delete(&[TEST_LEAF], b"key1", None, None)
             .unwrap()
             .unwrap();
         db.insert(
-            [TEST_LEAF],
+            &[TEST_LEAF],
             b"key3",
             Element::new_item(b"ayyd".to_vec()),
             None,
@@ -884,7 +902,7 @@ mod test {
         .unwrap()
         .unwrap();
         db.insert(
-            [ANOTHER_TEST_LEAF],
+            &[ANOTHER_TEST_LEAF],
             b"key2",
             Element::new_item(b"ayyc".to_vec()),
             None,
@@ -898,10 +916,12 @@ mod test {
         // Ensure checkpoint differs from current state
         assert_ne!(
             checkpoint_db
-                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
                 .unwrap()
                 .unwrap(),
-            db.get([ANOTHER_TEST_LEAF], b"key2", None).unwrap().unwrap(),
+            db.get(&[ANOTHER_TEST_LEAF], b"key2", None)
+                .unwrap()
+                .unwrap(),
         );
 
         // Build a replica from checkpoint
@@ -915,23 +935,26 @@ mod test {
 
         assert_eq!(
             checkpoint_db
-                .get([TEST_LEAF], b"key1", None)
-                .unwrap()
-                .unwrap(),
-            replica_db.get([TEST_LEAF], b"key1", None).unwrap().unwrap(),
-        );
-        assert_eq!(
-            checkpoint_db
-                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .get(&[TEST_LEAF], b"key1", None)
                 .unwrap()
                 .unwrap(),
             replica_db
-                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .get(&[TEST_LEAF], b"key1", None)
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(
+            checkpoint_db
+                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
+                .unwrap()
+                .unwrap(),
+            replica_db
+                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
                 .unwrap()
                 .unwrap(),
         );
         assert!(matches!(
-            replica_db.get([TEST_LEAF], b"key3", None).unwrap(),
+            replica_db.get(&[TEST_LEAF], b"key3", None).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
 
@@ -942,7 +965,7 @@ mod test {
 
         assert_eq!(
             replica_db
-                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
                 .unwrap()
                 .unwrap(),
             Element::new_item(b"ayyb".to_vec())
