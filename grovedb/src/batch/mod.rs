@@ -1535,10 +1535,10 @@ impl GroveDb {
 
     /// Opens transactional merk at path with given storage batch context.
     /// Returns CostResult.
-    pub fn open_batch_transactional_merk_at_path<'db, 'b, B: AsRef<[u8]>>(
+    pub fn open_batch_transactional_merk_at_path<'db, B: AsRef<[u8]>>(
         &'db self,
         storage_batch: &'db StorageBatch,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         tx: &'db Transaction,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error> {
@@ -1594,10 +1594,10 @@ impl GroveDb {
     }
 
     /// Opens merk at path with given storage batch context. Returns CostResult.
-    pub fn open_batch_merk_at_path<'a, 'b, B: AsRef<[u8]>>(
+    pub fn open_batch_merk_at_path<'a, B: AsRef<[u8]>>(
         &'a self,
         storage_batch: &'a StorageBatch,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
         let mut local_cost = OperationCost::default();

@@ -619,7 +619,6 @@ impl GroveDb {
             .map(|(path, (root_hash, expected, actual))| {
                 (
                     path.iter()
-                        .cloned()
                         .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/"),

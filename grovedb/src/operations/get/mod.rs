@@ -81,9 +81,9 @@ impl GroveDb {
 
     /// Get an element from the backing store
     /// Merk Caching can be set
-    pub fn get_caching_optional<'b, B: AsRef<[u8]>>(
+    pub fn get_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
@@ -108,9 +108,9 @@ impl GroveDb {
     }
 
     /// Follow reference
-    pub fn follow_reference<'b, B: AsRef<[u8]>>(
+    pub fn follow_reference<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
@@ -163,9 +163,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw<'b, B: AsRef<[u8]>>(
+    pub fn get_raw<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
@@ -173,9 +173,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_caching_optional<'b, B: AsRef<[u8]>>(
+    pub fn get_raw_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
@@ -188,9 +188,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_optional<'b, B: AsRef<[u8]>>(
+    pub fn get_raw_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         transaction: TransactionArg,
     ) -> CostResult<Option<Element>, Error> {
@@ -198,9 +198,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub fn get_raw_optional_caching_optional<'b, B: AsRef<[u8]>>(
+    pub fn get_raw_optional_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
         transaction: TransactionArg,
@@ -218,9 +218,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_on_transaction_caching_optional<'b, B: AsRef<[u8]>>(
+    pub(crate) fn get_raw_on_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,
@@ -242,9 +242,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_optional_on_transaction_caching_optional<'b, B: AsRef<[u8]>>(
+    pub(crate) fn get_raw_optional_on_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
         transaction: &Transaction,
@@ -275,9 +275,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_without_transaction_caching_optional<'b, B: AsRef<[u8]>>(
+    pub(crate) fn get_raw_without_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
     ) -> CostResult<Element, Error> {
@@ -298,9 +298,9 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(crate) fn get_raw_optional_without_transaction_caching_optional<'b, B: AsRef<[u8]>>(
+    pub(crate) fn get_raw_optional_without_transaction_caching_optional<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
     ) -> CostResult<Option<Element>, Error> {
@@ -347,9 +347,9 @@ impl GroveDb {
         })
     }
 
-    fn check_subtree_exists<'b, B: AsRef<[u8]>>(
+    fn check_subtree_exists<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         transaction: TransactionArg,
         error_fn: impl FnOnce() -> Error,
     ) -> CostResult<(), Error> {
@@ -403,9 +403,9 @@ impl GroveDb {
     }
 
     /// Check subtree exists with invalid path error
-    pub fn check_subtree_exists_invalid_path<'b, B: AsRef<[u8]>>(
+    pub fn check_subtree_exists_invalid_path<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         self.check_subtree_exists(path, transaction, || {

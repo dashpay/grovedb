@@ -170,9 +170,9 @@ impl GroveDb {
     /// first make sure other merk exist
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
-    fn add_element_on_transaction<'db, 'b, B: AsRef<[u8]>>(
+    fn add_element_on_transaction<'db, B: AsRef<[u8]>>(
         &'db self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         element: Element,
         options: InsertOptions,

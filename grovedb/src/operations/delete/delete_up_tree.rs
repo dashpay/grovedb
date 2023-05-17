@@ -112,9 +112,9 @@ impl GroveDb {
 
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
-    pub fn delete_up_tree_while_empty_with_sectional_storage<'b, B: AsRef<[u8]>>(
+    pub fn delete_up_tree_while_empty_with_sectional_storage<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
@@ -147,8 +147,7 @@ impl GroveDb {
             if let Some(stop_path_height) = options.stop_path_height {
                 maybe_ops.ok_or_else(|| {
                     Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(
-                        "stop path height {} is too much",
-                        stop_path_height,
+                        "stop path height {stop_path_height} is too much",
                     ))
                 })
             } else {
@@ -169,9 +168,9 @@ impl GroveDb {
     }
 
     /// Returns a vector of GroveDb ops
-    pub fn delete_operations_for_delete_up_tree_while_empty<'b, B: AsRef<[u8]>>(
+    pub fn delete_operations_for_delete_up_tree_while_empty<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
@@ -236,7 +235,7 @@ impl GroveDb {
                     &mut cost,
                     self.add_delete_operations_for_delete_up_tree_while_empty(
                         parent_path,
-                        &parent_key,
+                        parent_key,
                         &new_options,
                         None, // todo: maybe we can know this?
                         current_batch_operations,

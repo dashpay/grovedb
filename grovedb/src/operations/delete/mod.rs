@@ -136,9 +136,9 @@ impl GroveDb {
     }
 
     /// Delete element with sectional storage function
-    pub fn delete_with_sectional_storage_function<'b, B: AsRef<[u8]>>(
+    pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         options: Option<DeleteOptions>,
         transaction: TransactionArg,
@@ -203,9 +203,9 @@ impl GroveDb {
     }
 
     /// Delete if an empty tree with section storage function
-    pub fn delete_if_empty_tree_with_sectional_storage_function<'b, B: AsRef<[u8]>>(
+    pub fn delete_if_empty_tree_with_sectional_storage_function<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         transaction: TransactionArg,
         split_removal_bytes_function: &mut impl FnMut(
@@ -248,9 +248,9 @@ impl GroveDb {
     }
 
     /// Delete operation for delete internal
-    pub fn delete_operation_for_delete_internal<'b, B: AsRef<[u8]>>(
+    pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
@@ -290,15 +290,6 @@ impl GroveDb {
             if is_subtree {
                 let subtree_merk_path = path.derive_owned_with_child(key);
                 let subtree_merk_path_vec = subtree_merk_path.to_vec();
-                // let subtree_merk_path_vec = subtree_merk_path
-                //     .clone()
-                //     .map(|x| x.to_vec())
-                //     .collect::<Vec<Vec<u8>>>();
-                // // TODO: may be a bug
-                // let _subtrees_paths = cost_return_on_error!(
-                //     &mut cost,
-                //     self.find_subtrees(&subtree_merk_path, transaction)
-                // );
                 let batch_deleted_keys = current_batch_operations
                     .iter()
                     .filter_map(|op| match op.op {
@@ -362,9 +353,9 @@ impl GroveDb {
         }
     }
 
-    fn delete_internal<'b, B: AsRef<[u8]>>(
+    fn delete_internal<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         transaction: TransactionArg,
@@ -384,9 +375,9 @@ impl GroveDb {
         }
     }
 
-    fn delete_internal_on_transaction<'b, B: AsRef<[u8]>>(
+    fn delete_internal_on_transaction<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         transaction: &Transaction,
@@ -449,8 +440,7 @@ impl GroveDb {
                         &mut cost,
                         storage.clear().map_err(|e| {
                             Error::CorruptedData(format!(
-                                "unable to cleanup tree from storage: {}",
-                                e
+                                "unable to cleanup tree from storage: {e}",
                             ))
                         })
                     );
@@ -489,7 +479,7 @@ impl GroveDb {
                     )
                 );
                 let mut merk_cache: HashMap<
-                    SubtreePath<'b, B>,
+                    SubtreePath<B>,
                     Merk<PrefixedRocksDbBatchTransactionContext>,
                 > = HashMap::default();
                 merk_cache.insert(path.clone(), merk_to_delete_tree_from);
@@ -523,7 +513,7 @@ impl GroveDb {
                     )
                 );
                 let mut merk_cache: HashMap<
-                    SubtreePath<'b, B>,
+                    SubtreePath<B>,
                     Merk<PrefixedRocksDbTransactionContext>,
                 > = HashMap::default();
                 merk_cache.insert(path.clone(), subtree_to_delete_from);
@@ -544,10 +534,8 @@ impl GroveDb {
                     sectioned_removal,
                 )
             );
-            let mut merk_cache: HashMap<
-                SubtreePath<'b, B>,
-                Merk<PrefixedRocksDbTransactionContext>,
-            > = HashMap::default();
+            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
+                HashMap::default();
             merk_cache.insert(path.clone(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,
@@ -558,9 +546,9 @@ impl GroveDb {
         Ok(true).wrap_with_cost(cost)
     }
 
-    fn delete_internal_without_transaction<'b, B: AsRef<[u8]>>(
+    fn delete_internal_without_transaction<B: AsRef<[u8]>>(
         &self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         sectioned_removal: &mut impl FnMut(
@@ -576,7 +564,7 @@ impl GroveDb {
 
         let element =
             cost_return_on_error!(&mut cost, self.get_raw(path.clone(), key.as_ref(), None));
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>> =
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
         let mut subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
             &mut cost,
@@ -620,8 +608,7 @@ impl GroveDb {
                             &mut cost,
                             inner_subtree_to_delete_from.clear().map_err(|e| {
                                 Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage: {}",
-                                    e
+                                    "unable to cleanup tree from storage: {e}",
                                 ))
                             })
                         );
@@ -665,9 +652,9 @@ impl GroveDb {
     /// Finds keys which are trees for a given subtree recursively.
     /// One element means a key of a `merk`, n > 1 elements mean relative path
     /// for a deeply nested subtree.
-    pub(crate) fn find_subtrees<'b, B: AsRef<[u8]>>(
+    pub(crate) fn find_subtrees<B: AsRef<[u8]>>(
         &self,
-        path: &SubtreePath<'b, B>,
+        path: &SubtreePath<B>,
         transaction: TransactionArg,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
         let mut cost = OperationCost::default();
