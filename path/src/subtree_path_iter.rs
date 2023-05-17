@@ -30,7 +30,7 @@
 
 use std::slice;
 
-use crate::{subtree_path::SubtreePath, util::TwoDimensionalBytesIter};
+use crate::{subtree_path::SubtreePath, util::CompactBytesIter};
 
 /// (Reverse) iterator for a subtree path.
 /// Because of implementation details (one way link between derivations) it
@@ -118,11 +118,19 @@ impl<'b, B: AsRef<[u8]>> Iterator for SubtreePathIter<'b, B> {
     }
 }
 
+/// An iterator variant depending on how the current subtree path's derivation
+/// point looks like.
 #[derive(Debug)]
 pub(crate) enum CurrentSubtreePathIter<'b, B> {
+    /// Current derivation point is a [SubtreePathBuilder] with one child
+    /// segment
     Single(&'b [u8]),
+    /// Current (and last) part of the subtree path is a base slice of data,
+    /// will just reuse slice's iterator there
     Slice(slice::Iter<'b, B>),
-    OwnedBytes(TwoDimensionalBytesIter<'b>),
+    /// Current derivation point is a [SubtreePathBuilder] with multiple path
+    /// segments, will reuse it's own iterator type to keep track
+    OwnedBytes(CompactBytesIter<'b>),
 }
 
 impl<'b, B> Clone for CurrentSubtreePathIter<'b, B> {
@@ -135,8 +143,8 @@ impl<'b, B> Clone for CurrentSubtreePathIter<'b, B> {
     }
 }
 
-impl<'b, B> From<TwoDimensionalBytesIter<'b>> for CurrentSubtreePathIter<'b, B> {
-    fn from(value: TwoDimensionalBytesIter<'b>) -> Self {
+impl<'b, B> From<CompactBytesIter<'b>> for CurrentSubtreePathIter<'b, B> {
+    fn from(value: CompactBytesIter<'b>) -> Self {
         CurrentSubtreePathIter::<B>::OwnedBytes(value)
     }
 }

@@ -35,6 +35,27 @@ for iterating over paths, regardless of the complexity of path derivations. It w
 paths created from slices, `SubtreePathBuilder` with fully owned data, or a complex mix of derived
 paths.
 
+### Derivation and inplace update methods
+#### Parent Path Derivation
+`SubtreePath` and `SubtreePathBuilder` both provide methods to derive a parent path. These methods
+return:
+- a new `SubtreePath` instance representing the parent path that refers to existing data,
+- a path segment that was the last before derivation.
+
+#### Child Path Derivation
+`SubtreePath` and `SubtreePathBuilder` provide methods to derive a path given a child segment. These
+methods return a new `SubtreePathBuilder` instance representing the child path. Child segment could
+be moved in to builder and this won't affect it's lifetime (will be the lifetime of the most
+"recent" builder in the derivation chain or initially provided data), or if bytes slice is used as
+path segment a less lifetime will be chosen.
+
+#### Inplace update
+`SubtreePathBuilder` provides a `push_segment` method to add a custom path segment to the existing
+path. The same effect could be achieved with subsequent calls to child derivation method, but each
+segment would act as a node of singly linked list; using `push_segment` packs owned data in one
+place and could be useful when a sequence of path segments is known and about to become a part of
+subtree path.
+
 ## Consequences
 By implementing these changes, we've enhanced the ergonomics of GroveDB internals with a potential
 for future optimizations and GroveDB decoupling. The overall change provides a robust and intuitive
@@ -42,5 +63,3 @@ foundation for path management in GroveDB.
 
 ## Schema
 ![schema](path-schema.png)
-
-

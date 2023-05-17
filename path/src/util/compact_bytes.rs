@@ -53,8 +53,8 @@ impl CompactBytes {
         self.n_segments += 1;
     }
 
-    pub fn reverse_iter(&self) -> TwoDimensionalBytesIter {
-        TwoDimensionalBytesIter {
+    pub fn reverse_iter(&self) -> CompactBytesIter {
+        CompactBytesIter {
             bytes: self,
             offset_back: self.data.len(),
             n_segments_left: self.n_segments,
@@ -68,13 +68,13 @@ impl CompactBytes {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TwoDimensionalBytesIter<'a> {
+pub(crate) struct CompactBytesIter<'a> {
     bytes: &'a CompactBytes,
     offset_back: usize,
     n_segments_left: usize,
 }
 
-impl<'a> Iterator for TwoDimensionalBytesIter<'a> {
+impl<'a> Iterator for CompactBytesIter<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -111,7 +111,7 @@ impl<'a> Iterator for TwoDimensionalBytesIter<'a> {
     }
 }
 
-impl ExactSizeIterator for TwoDimensionalBytesIter<'_> {}
+impl ExactSizeIterator for CompactBytesIter<'_> {}
 
 #[cfg(test)]
 mod tests {

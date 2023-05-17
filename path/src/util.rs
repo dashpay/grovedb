@@ -27,13 +27,13 @@
 // DEALINGS IN THE SOFTWARE.
 
 //! Utilities module for path library.
-mod bytes_2d;
+mod compact_bytes;
 mod cow_like;
 
 #[cfg(test)]
 use std::hash::{Hash, Hasher};
 
-pub(crate) use bytes_2d::{CompactBytes, TwoDimensionalBytesIter};
+pub(crate) use compact_bytes::{CompactBytes, CompactBytesIter};
 pub(crate) use cow_like::CowLike;
 
 #[cfg(test)]

@@ -28,11 +28,11 @@
 
 //! Difinitions of type representing a path to a subtree made of borrowed data.
 //!
-//! Opposed to [SubtreePath] which is some kind of a builder, [SubtreePathRef]
-//! is a way to refer to path data which makes it a great candidate to use as
-//! a function argument where a subtree path is expected, combined with it's
-//! various `From` implementations it can cover slices, owned subtree paths and
-//! other path references.
+//! Opposed to [SubtreePathBuilder] which is some kind of a builder,
+//! [SubtreePath] is a way to refer to path data which makes it a great
+//! candidate to use as a function argument where a subtree path is expected,
+//! combined with it's various `From` implementations it can cover slices, owned
+//! subtree paths and other path references if use as generic [Into].
 
 use std::hash::{Hash, Hasher};
 
@@ -58,6 +58,11 @@ pub(crate) enum SubtreePathInner<'b, B> {
     SubtreePath(&'b SubtreePathBuilder<'b, B>),
     /// Links to an existing subtree path with owned segments using it's
     /// iterator to support parent derivations.
+    /// This may sound tricky, but `SubtreePathIter` fits there nicely because
+    /// like the other variants of [SubtreePathInner] it points to some segments
+    /// data, but because of parent derivations on packed path segments we need
+    /// to keep track where are we, that's exactly what iterator does + holds a
+    /// link to the next part of our subtree path chain.
     SubtreePathIter(SubtreePathIter<'b, B>),
 }
 
@@ -120,7 +125,7 @@ impl<'b, B: AsRef<[u8]>> Hash for SubtreePath<'b, B> {
 }
 
 /// For the same reason as for `Hash` implementation, derived impl requires
-/// generics to carry /// trait bounds that actually don't needed.
+/// generics to carry trait bounds that actually don't needed.
 impl<B> Clone for SubtreePath<'_, B> {
     fn clone(&self) -> Self {
         match &self.ref_variant {

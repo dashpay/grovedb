@@ -45,6 +45,35 @@ mod tests {
     use crate::util::calculate_hash;
 
     #[test]
+    fn test_root_and_roots_child_derivation_slice() {
+        // Go two levels down just to complicate our test a bit:
+        let path_array = [b"one", b"two"];
+        let path = SubtreePath::from(path_array.as_ref());
+
+        let (root, child) = path.derive_parent().unwrap().0.derive_parent().unwrap();
+
+        assert_eq!(child, b"one");
+        assert_eq!(root.to_vec(), Vec::<&[u8]>::new());
+
+        assert_eq!(root.derive_parent(), None);
+    }
+
+    #[test]
+    fn test_root_and_roots_child_derivation_builder() {
+        let mut builder = SubtreePathBuilder::new();
+        builder.push_segment(b"one");
+        builder.push_segment(b"two");
+        let path: SubtreePath<[u8; 0]> = (&builder).into();
+
+        let (root, child) = path.derive_parent().unwrap().0.derive_parent().unwrap();
+
+        assert_eq!(child, b"one");
+        assert_eq!(root.to_vec(), Vec::<&[u8]>::new());
+
+        assert_eq!(root.derive_parent(), None);
+    }
+
+    #[test]
     fn test_hashes_are_equal() {
         let path_array = [
             b"one".to_vec(),
