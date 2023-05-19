@@ -117,14 +117,14 @@ impl RocksDbStorage {
     where
         B: AsRef<[u8]>,
     {
-        let segments_iter = path.into_reverse_iter();
+        let segments_iter = path.to_vec().into_iter(); // testin this
         let mut segments_count: usize = 0;
         let mut res = Vec::new();
         let mut lengthes = Vec::new();
 
         for s in segments_iter {
             segments_count += 1;
-            res.extend_from_slice(s);
+            res.extend_from_slice(&s);
             lengthes.push(s.len() as u8); // if the key len is under 255 bytes
         }
 
