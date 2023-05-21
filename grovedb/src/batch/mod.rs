@@ -107,8 +107,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
-pub type TrustRefreshReference = bool;
-
 /// Operations
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -155,12 +153,12 @@ pub enum Op {
     /// If TrustRefreshReference is true, then we do not query the element on
     /// disk before write If it is false, the provided information is only
     /// used for average case and worse case costs
-    RefreshReference(
-        ReferencePathType,
-        MaxReferenceHop,
-        Option<ElementFlags>,
-        TrustRefreshReference,
-    ),
+    RefreshReference {
+        reference_path_type: ReferencePathType,
+        max_reference_hop: MaxReferenceHop,
+        flags: Option<ElementFlags>,
+        trust_refresh_reference: bool,
+    },
     /// Delete
     Delete,
     /// Delete tree
@@ -394,7 +392,7 @@ impl fmt::Debug for GroveDbOp {
                 Element::SumTree(..) => "Patch Sum Tree",
                 Element::SumItem(..) => "Patch Sum Item",
             },
-            Op::RefreshReference(..) => "Refresh Reference",
+            Op::RefreshReference { .. } => "Refresh Reference",
             Op::Delete => "Delete",
             Op::DeleteTree => "Delete Tree",
             Op::DeleteSumTree => "Delete Sum Tree",
@@ -480,6 +478,28 @@ impl GroveDbOp {
             op: Op::Patch {
                 element,
                 change_in_bytes,
+            },
+        }
+    }
+
+    /// A refresh reference op using a known owned path and known key
+    pub fn refresh_reference_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        reference_path_type: ReferencePathType,
+        max_reference_hop: MaxReferenceHop,
+        flags: Option<ElementFlags>,
+        trust_refresh_reference: bool,
+    ) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                flags,
+                trust_refresh_reference,
             },
         }
     }
@@ -898,10 +918,14 @@ where
                         }
                     }
                 }
-                Op::RefreshReference(reference_type_path, _, _, trust_reference_node) => {
+                Op::RefreshReference {
+                    reference_path_type,
+                    trust_refresh_reference,
+                    ..
+                } => {
                     // We are pointing towards a reference that will be refreshed
-                    let reference_info = if *trust_reference_node {
-                        Some(reference_type_path)
+                    let reference_info = if *trust_refresh_reference {
+                        Some(reference_path_type)
                     } else {
                         None
                     };
@@ -1094,17 +1118,17 @@ where
                         }
                     }
                 }
-                Op::RefreshReference(
-                    reference_type_path,
+                Op::RefreshReference {
+                    reference_path_type,
                     max_reference_hop,
                     flags,
                     trust_refresh_reference,
-                ) => {
+                } => {
                     // We have a refresh reference Op, this means we need to get the actual
                     // reference element on disk first
 
                     let element = if trust_refresh_reference {
-                        Element::Reference(reference_type_path, max_reference_hop, flags)
+                        Element::Reference(reference_path_type, max_reference_hop, flags)
                     } else {
                         let value = cost_return_on_error!(
                             &mut cost,
@@ -1492,7 +1516,7 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
-                                                Op::RefreshReference(..) => {
+                                                Op::RefreshReference { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "insertion of element under a refreshed \
                                                          reference",

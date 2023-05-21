@@ -156,7 +156,7 @@ where
                     }
                     Ok(())
                 }
-                Op::RefreshReference(..) | Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
+                Op::RefreshReference { .. } | Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                     Ok(())
                 }
                 Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {

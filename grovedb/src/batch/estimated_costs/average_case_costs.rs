@@ -100,18 +100,21 @@ impl Op {
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
-            Op::RefreshReference(reference_path_type, max_reference_hop, flags, ..) => {
-                GroveDb::average_case_merk_replace_element(
-                    key,
-                    &Element::Reference(
-                        reference_path_type.clone(),
-                        *max_reference_hop,
-                        flags.clone(),
-                    ),
-                    in_tree_using_sums,
-                    propagate_if_input(),
-                )
-            }
+            Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                flags,
+                ..
+            } => GroveDb::average_case_merk_replace_element(
+                key,
+                &Element::Reference(
+                    reference_path_type.clone(),
+                    *max_reference_hop,
+                    flags.clone(),
+                ),
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
             Op::Replace { element } => GroveDb::average_case_merk_replace_element(
                 key,
                 element,
