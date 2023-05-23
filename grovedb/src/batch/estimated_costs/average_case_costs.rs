@@ -57,6 +57,7 @@ use crate::{
     },
     Error, GroveDb,
 };
+use crate::{reference_path::ReferencePathType, Element};
 
 #[cfg(feature = "full")]
 impl Op {
@@ -96,6 +97,21 @@ impl Op {
             Op::Insert { element } => GroveDb::average_case_merk_insert_element(
                 key,
                 element,
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
+            Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                flags,
+                ..
+            } => GroveDb::average_case_merk_replace_element(
+                key,
+                &Element::Reference(
+                    reference_path_type.clone(),
+                    *max_reference_hop,
+                    flags.clone(),
+                ),
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
