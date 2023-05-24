@@ -215,7 +215,12 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
             SubtreePathInner::Slice(slice) => slice.iter().map(|x| x.as_ref().to_vec()).collect(),
             SubtreePathInner::SubtreePath(path) => path.to_vec(),
             SubtreePathInner::SubtreePathIter(iter) => {
-                iter.clone().map(|x| x.as_ref().to_vec()).collect()
+                let mut path = iter
+                    .clone()
+                    .map(|x| x.as_ref().to_vec())
+                    .collect::<Vec<Vec<u8>>>();
+                path.reverse();
+                path
             }
         }
     }
