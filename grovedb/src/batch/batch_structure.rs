@@ -156,7 +156,9 @@ where
                     }
                     Ok(())
                 }
-                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => Ok(()),
+                Op::RefreshReference { .. } | Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
+                    Ok(())
+                }
                 Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {
                     Err(Error::InvalidBatchOperation(
                         "replace and insert tree hash are internal operations only",

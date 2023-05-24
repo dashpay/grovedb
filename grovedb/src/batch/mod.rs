@@ -81,6 +81,7 @@ use merk::{
         value_hash, NULL_HASH,
     },
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
 pub use options::BatchApplyOptions;
 use path::SubtreePath;
@@ -95,9 +96,11 @@ use crate::{
     batch::{
         batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
     },
-    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    element::{MaxReferenceHop, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     operations::get::MAX_REFERENCE_HOPS,
-    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    reference_path::{
+        path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
+    },
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
@@ -140,6 +143,18 @@ pub enum Op {
         flags: Option<ElementFlags>,
         /// Sum
         sum: Option<i64>,
+    },
+    /// Refresh the reference with information provided
+    /// Providing this information is necessary to be able to calculate
+    /// average case and worst case costs
+    /// If TrustRefreshReference is true, then we do not query the element on
+    /// disk before write If it is false, the provided information is only
+    /// used for average case and worse case costs
+    RefreshReference {
+        reference_path_type: ReferencePathType,
+        max_reference_hop: MaxReferenceHop,
+        flags: Option<ElementFlags>,
+        trust_refresh_reference: bool,
     },
     /// Delete
     Delete,
@@ -374,6 +389,7 @@ impl fmt::Debug for GroveDbOp {
                 Element::SumTree(..) => "Patch Sum Tree",
                 Element::SumItem(..) => "Patch Sum Item",
             },
+            Op::RefreshReference { .. } => "Refresh Reference",
             Op::Delete => "Delete",
             Op::DeleteTree => "Delete Tree",
             Op::DeleteSumTree => "Delete Sum Tree",
@@ -459,6 +475,28 @@ impl GroveDbOp {
             op: Op::Patch {
                 element,
                 change_in_bytes,
+            },
+        }
+    }
+
+    /// A refresh reference op using a known owned path and known key
+    pub fn refresh_reference_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        reference_path_type: ReferencePathType,
+        max_reference_hop: MaxReferenceHop,
+        flags: Option<ElementFlags>,
+        trust_refresh_reference: bool,
+    ) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                flags,
+                trust_refresh_reference,
             },
         }
     }
@@ -662,6 +700,162 @@ where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
+    /// Processes a reference, determining whether it can be retrieved from a
+    /// batch operation.
+    ///
+    /// This function performs the processing for a reference when it does not
+    /// change in the same batch. It distinguishes between two cases:
+    ///
+    /// 1. When the hop count is exactly 1, it tries to directly extract the
+    /// value hash from the reference element.
+    ///
+    /// 2. When the hop count is greater than 1, it retrieves the referenced
+    /// element and then determines the next step based on the type of the
+    /// element.
+    ///
+    /// # Arguments
+    ///
+    /// * `qualified_path`: The path to the referenced element. It should be
+    ///   already checked to be a valid path.
+    /// * `recursions_allowed`: The maximum allowed hop count to reach the
+    ///   target element.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(CryptoHash)`: Returns the crypto hash of the referenced element
+    ///   wrapped in the
+    /// associated cost, if successful.
+    ///
+    /// * `Err(Error)`: Returns an error if there is an issue with the
+    ///   operation, such as
+    /// missing reference, corrupted data, or invalid batch operation.
+    ///
+    /// # Errors
+    ///
+    /// This function will return `Err(Error)` if there are any issues
+    /// encountered while processing the reference. Possible errors include:
+    ///
+    /// * `Error::MissingReference`: If a direct or indirect reference to the
+    ///   target element is missing in the batch.
+    /// * `Error::CorruptedData`: If there is an issue while retrieving or
+    ///   deserializing the referenced element.
+    /// * `Error::InvalidBatchOperation`: If the referenced element points to a
+    ///   tree being updated.
+    fn process_reference<'a>(
+        &'a mut self,
+        qualified_path: &[Vec<u8>],
+        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, Op>,
+        recursions_allowed: u8,
+        intermediate_reference_info: Option<&'a ReferencePathType>,
+    ) -> CostResult<CryptoHash, Error> {
+        let mut cost = OperationCost::default();
+        let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
+        let reference_merk_wrapped = self
+            .merks
+            .remove(reference_path)
+            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .unwrap_or_else(|| (self.get_merk_fn)(reference_path, false));
+        let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
+
+        // Here the element being referenced doesn't change in the same batch
+        // and the max hop count is 1, meaning it should point directly to the base
+        // element at this point we can extract the value hash from the
+        // reference element directly
+        if recursions_allowed == 1 {
+            let referenced_element_value_hash_opt = cost_return_on_error!(
+                &mut cost,
+                merk.get_value_hash(key.as_ref(), true)
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+
+            let referenced_element_value_hash = cost_return_on_error!(
+                &mut cost,
+                referenced_element_value_hash_opt
+                    .ok_or({
+                        let reference_string = reference_path
+                            .iter()
+                            .map(hex::encode)
+                            .collect::<Vec<String>>()
+                            .join("/");
+                        Error::MissingReference(format!(
+                            "direct reference to path:`{}` key:`{}` in batch is missing",
+                            reference_string,
+                            hex::encode(key)
+                        ))
+                    })
+                    .wrap_with_cost(OperationCost::default())
+            );
+
+            Ok(referenced_element_value_hash).wrap_with_cost(cost)
+        } else if let Some(referenced_path) = intermediate_reference_info {
+            let path = cost_return_on_error_no_add!(
+                &cost,
+                path_from_reference_qualified_path_type(referenced_path.clone(), qualified_path)
+            );
+            self.follow_reference_get_value_hash(
+                path.as_slice(),
+                ops_by_qualified_paths,
+                recursions_allowed - 1,
+            )
+        } else {
+            // Here the element being referenced doesn't change in the same batch
+            // but the hop count is greater than 1, we can't just take the value hash from
+            // the referenced element as an element further down in the chain might still
+            // change in the batch.
+            let referenced_element = cost_return_on_error!(
+                &mut cost,
+                merk.get(key.as_ref(), true)
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+
+            let referenced_element = cost_return_on_error_no_add!(
+                &cost,
+                referenced_element.ok_or({
+                    let reference_string = reference_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<String>>()
+                        .join("/");
+                    Error::MissingReference(format!(
+                        "reference to path:`{}` key:`{}` in batch is missing",
+                        reference_string,
+                        hex::encode(key)
+                    ))
+                })
+            );
+
+            let element = cost_return_on_error_no_add!(
+                &cost,
+                Element::deserialize(referenced_element.as_slice()).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize element"))
+                })
+            );
+
+            match element {
+                Element::Item(..) | Element::SumItem(..) => {
+                    let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
+                    let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                    Ok(val_hash).wrap_with_cost(cost)
+                }
+                Element::Reference(path, ..) => {
+                    let path = cost_return_on_error_no_add!(
+                        &cost,
+                        path_from_reference_qualified_path_type(path, qualified_path)
+                    );
+                    self.follow_reference_get_value_hash(
+                        path.as_slice(),
+                        ops_by_qualified_paths,
+                        recursions_allowed - 1,
+                    )
+                }
+                Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidBatchOperation(
+                    "references can not point to trees being updated",
+                ))
+                .wrap_with_cost(cost),
+            }
+        }
+    }
+
     /// A reference assumes the value hash of the base item it points to.
     /// In a reference chain base_item -> ref_1 -> ref_2 e.t.c.
     /// all references in that chain (ref_1, ref_2) assume the value hash of the
@@ -721,6 +915,24 @@ where
                         }
                     }
                 }
+                Op::RefreshReference {
+                    reference_path_type,
+                    trust_refresh_reference,
+                    ..
+                } => {
+                    // We are pointing towards a reference that will be refreshed
+                    let reference_info = if *trust_refresh_reference {
+                        Some(reference_path_type)
+                    } else {
+                        None
+                    };
+                    self.process_reference(
+                        qualified_path,
+                        ops_by_qualified_paths,
+                        recursions_allowed,
+                        reference_info,
+                    )
+                }
                 Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                     Err(Error::InvalidBatchOperation(
                         "references can not point to something currently being deleted",
@@ -729,101 +941,12 @@ where
                 }
             }
         } else {
-            let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
-            let reference_merk_wrapped = self
-                .merks
-                .remove(reference_path)
-                .map(|x| Ok(x).wrap_with_cost(Default::default()))
-                .unwrap_or_else(|| (self.get_merk_fn)(reference_path, false));
-            let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
-
-            // Here the element being referenced doesn't change in the same batch
-            // and the max hop count is 1, meaning it should point directly to the base
-            // element at this point we can extract the value hash from the
-            // reference element directly
-            if recursions_allowed == 1 {
-                let referenced_element_value_hash_opt = cost_return_on_error!(
-                    &mut cost,
-                    merk.get_value_hash(key.as_ref(), true)
-                        .map_err(|e| Error::CorruptedData(e.to_string()))
-                );
-
-                let referenced_element_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_element_value_hash_opt
-                        .ok_or({
-                            let reference_string = reference_path
-                                .iter()
-                                .map(hex::encode)
-                                .collect::<Vec<String>>()
-                                .join("/");
-                            Error::MissingReference(format!(
-                                "direct reference to path:`{}` key:`{}` in batch is missing",
-                                reference_string,
-                                hex::encode(key)
-                            ))
-                        })
-                        .wrap_with_cost(OperationCost::default())
-                );
-
-                Ok(referenced_element_value_hash).wrap_with_cost(cost)
-            } else {
-                // Here the element being referenced doesn't change in the same batch
-                // but the hop count is greater than 1, we can't just take the value hash from
-                // the referenced element as an element further down in the chain might still
-                // change in the batch.
-                let referenced_element = cost_return_on_error!(
-                    &mut cost,
-                    merk.get(key.as_ref(), true)
-                        .map_err(|e| Error::CorruptedData(e.to_string()))
-                );
-
-                let referenced_element = cost_return_on_error_no_add!(
-                    &cost,
-                    referenced_element.ok_or({
-                        let reference_string = reference_path
-                            .iter()
-                            .map(hex::encode)
-                            .collect::<Vec<String>>()
-                            .join("/");
-                        Error::MissingReference(format!(
-                            "reference to path:`{}` key:`{}` in batch is missing",
-                            reference_string,
-                            hex::encode(key)
-                        ))
-                    })
-                );
-
-                let element = cost_return_on_error_no_add!(
-                    &cost,
-                    Element::deserialize(referenced_element.as_slice()).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to deserialize element"))
-                    })
-                );
-
-                match element {
-                    Element::Item(..) | Element::SumItem(..) => {
-                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
-                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
-                        Ok(val_hash).wrap_with_cost(cost)
-                    }
-                    Element::Reference(path, ..) => {
-                        let path = cost_return_on_error_no_add!(
-                            &cost,
-                            path_from_reference_qualified_path_type(path, qualified_path)
-                        );
-                        self.follow_reference_get_value_hash(
-                            path.as_slice(),
-                            ops_by_qualified_paths,
-                            recursions_allowed - 1,
-                        )
-                    }
-                    Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost),
-                }
-            }
+            self.process_reference(
+                qualified_path,
+                ops_by_qualified_paths,
+                recursions_allowed,
+                None,
+            )
         }
     }
 }
@@ -990,6 +1113,84 @@ where
                             }
                         }
                     }
+                }
+                Op::RefreshReference {
+                    reference_path_type,
+                    max_reference_hop,
+                    flags,
+                    trust_refresh_reference,
+                } => {
+                    // We have a refresh reference Op, this means we need to get the actual
+                    // reference element on disk first
+
+                    let element = if trust_refresh_reference {
+                        Element::Reference(reference_path_type, max_reference_hop, flags)
+                    } else {
+                        let value = cost_return_on_error!(
+                            &mut cost,
+                            merk.get(key_info.as_slice(), true)
+                                .map(|result_value| result_value
+                                    .map_err(Error::MerkError)
+                                    .and_then(|maybe_value| maybe_value.ok_or(
+                                        Error::InvalidInput(
+                                            "trying to refresh a non existing reference",
+                                        )
+                                    )))
+                        );
+                        cost_return_on_error_no_add!(
+                            &cost,
+                            Element::deserialize(value.as_slice()).map_err(|_| {
+                                Error::CorruptedData(String::from("unable to deserialize element"))
+                            })
+                        )
+                    };
+
+                    let Element::Reference(path_reference, max_reference_hop, _) = &element else {
+                        return Err(Error::InvalidInput(
+                            "trying to refresh a an element that is not a reference",
+                        )).wrap_with_cost(cost)
+                    };
+
+                    let merk_feature_type = if is_sum_tree {
+                        SummedMerk(0)
+                    } else {
+                        BasicMerk
+                    };
+
+                    let path_reference = cost_return_on_error!(
+                        &mut cost,
+                        path_from_reference_path_type(
+                            path_reference.clone(),
+                            path,
+                            Some(key_info.as_slice())
+                        )
+                        .wrap_with_cost(OperationCost::default())
+                    );
+                    if path_reference.is_empty() {
+                        return Err(Error::CorruptedReferencePathNotFound(
+                            "attempting to refresh an empty reference".to_string(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+
+                    let referenced_element_value_hash = cost_return_on_error!(
+                        &mut cost,
+                        self.follow_reference_get_value_hash(
+                            path_reference.as_slice(),
+                            ops_by_qualified_paths,
+                            max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
+                        )
+                    );
+
+                    cost_return_on_error!(
+                        &mut cost,
+                        element.insert_reference_into_batch_operations(
+                            key_info.get_key_clone(),
+                            referenced_element_value_hash,
+                            &mut batch_operations,
+                            merk_feature_type
+                        )
+                    );
                 }
                 Op::Delete => {
                     cost_return_on_error!(
@@ -1309,6 +1510,13 @@ impl GroveDb {
                                                         ))
                                                         .wrap_with_cost(cost);
                                                     }
+                                                }
+                                                Op::RefreshReference { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "insertion of element under a refreshed \
+                                                         reference",
+                                                    ))
+                                                    .wrap_with_cost(cost);
                                                 }
                                                 Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                                                     if calculated_root_key.is_some() {

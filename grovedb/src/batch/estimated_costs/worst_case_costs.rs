@@ -48,6 +48,7 @@ use merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 
+use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
@@ -91,6 +92,21 @@ impl Op {
             Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
                 key,
                 element,
+                is_in_parent_sum_tree,
+                propagate_if_input(),
+            ),
+            Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                flags,
+                ..
+            } => GroveDb::worst_case_merk_replace_element(
+                key,
+                &Element::Reference(
+                    reference_path_type.clone(),
+                    *max_reference_hop,
+                    flags.clone(),
+                ),
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
