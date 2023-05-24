@@ -225,3 +225,33 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_vec() {
+        let base: SubtreePath<_> = (&[b"one" as &[u8], b"two", b"three"]).into();
+        let mut builder = base.derive_owned_with_child(b"four");
+        builder.push_segment(b"five");
+        builder.push_segment(b"six");
+        builder.push_segment(b"seven");
+        builder.push_segment(b"eight");
+        let parent = builder.derive_parent().unwrap().0;
+
+        let as_vec = parent.to_vec();
+        assert_eq!(
+            as_vec,
+            vec![
+                b"one".to_vec(),
+                b"two".to_vec(),
+                b"three".to_vec(),
+                b"four".to_vec(),
+                b"five".to_vec(),
+                b"six".to_vec(),
+                b"seven".to_vec(),
+            ],
+        );
+    }
+}
