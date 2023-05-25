@@ -9,3 +9,9 @@ default-run = "tutorials"
 [dependencies]
 grovedb = { git = "https://github.com/dashpay/grovedb.git" }
 rand = "0.8.5"
+
+[workspace]
+
+exclude = [
+    "tutorials",
+]
