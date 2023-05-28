@@ -3,7 +3,7 @@ use grovedb::GroveDb;
 
 fn main() {
     // Specify a path and open GroveDB at the path as db
-    let path = String::from("../storage");
+    let path = String::from("../tutorial-storage");
     let db = GroveDb::open(path).unwrap();
 
     // Define key-values for insertion

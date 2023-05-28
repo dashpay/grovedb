@@ -16,7 +16,7 @@ const INSERT_OPTIONS: Option<InsertOptions> = Some(InsertOptions {
 
 fn main() {
     // Specify the path where the GroveDB instance exists.
-    let path = String::from("../storage");
+    let path = String::from("../tutorial-storage");
 
     // Open GroveDB at the path.
     let db = GroveDb::open(path).unwrap();
