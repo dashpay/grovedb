@@ -116,7 +116,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     None
                 }
-            },
+            }
             None => {
                 cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 None
@@ -218,7 +218,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     None
                 }
-            },
+            }
             None => {
                 cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 None
