@@ -105,10 +105,11 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         let value = self.raw_iterator.key().and_then(|k| {
             // Even if we truncate prefix, loaded cost should be maximum for the whole
             // function
-            cost.storage_loaded_bytes += k.len() as u32;
             if k.starts_with(&self.prefix) {
+                cost.storage_loaded_bytes += k.len() as u32;
                 Some(k.split_at(self.prefix.len()).1)
             } else {
+                cost.storage_loaded_bytes += 256 + 32;
                 None
             }
         });
@@ -122,8 +123,13 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         self.raw_iterator
             .key()
             .map(|k| {
-                cost.storage_loaded_bytes += k.len() as u32;
-                k.starts_with(&self.prefix)
+                if k.starts_with(&self.prefix) {
+                    cost.storage_loaded_bytes += k.len() as u32;
+                    true
+                } else {
+                    cost.storage_loaded_bytes += 256 + 32;
+                    false
+                }
             })
             .unwrap_or(false)
             .wrap_with_cost(cost)
@@ -192,10 +198,11 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         let value = self.raw_iterator.key().and_then(|k| {
             // Even if we truncate prefix, loaded cost should be maximum for the whole
             // function
-            cost.storage_loaded_bytes += k.len() as u32;
             if k.starts_with(&self.prefix) {
+                cost.storage_loaded_bytes += k.len() as u32;
                 Some(k.split_at(self.prefix.len()).1)
             } else {
+                cost.storage_loaded_bytes += 256 + 32;
                 None
             }
         });
@@ -209,8 +216,13 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         self.raw_iterator
             .key()
             .map(|k| {
-                cost.storage_loaded_bytes += k.len() as u32;
-                k.starts_with(&self.prefix)
+                if k.starts_with(&self.prefix) {
+                    cost.storage_loaded_bytes += k.len() as u32;
+                    true
+                } else {
+                    cost.storage_loaded_bytes += 256 + 32;
+                    false
+                }
             })
             .unwrap_or(false)
             .wrap_with_cost(cost)
