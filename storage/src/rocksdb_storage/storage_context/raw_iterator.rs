@@ -37,6 +37,9 @@ use crate::{
     RawIterator,
 };
 
+/// 256 bytes for the key and 32 bytes for the prefix
+const MAX_PREFIXED_KEY_LENGTH: u32 = 256 + 32;
+
 /// Raw iterator over prefixed storage_cost.
 pub struct PrefixedRocksDbRawIterator<I> {
     pub(super) prefix: Vec<u8>,
@@ -102,17 +105,23 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn key(&self) -> CostContext<Option<&[u8]>> {
         let mut cost = OperationCost::default();
 
-        let value = self.raw_iterator.key().and_then(|k| {
-            // Even if we truncate prefix, loaded cost should be maximum for the whole
-            // function
-            if k.starts_with(&self.prefix) {
-                cost.storage_loaded_bytes += k.len() as u32;
-                Some(k.split_at(self.prefix.len()).1)
-            } else {
-                cost.storage_loaded_bytes += 256 + 32;
+        let value = match self.raw_iterator.key() {
+            Some(k) => {
+                // Even if we truncate prefix, loaded cost should be maximum for the whole
+                // function
+                if k.starts_with(&self.prefix) {
+                    cost.storage_loaded_bytes += k.len() as u32;
+                    Some(k.split_at(self.prefix.len()).1)
+                } else {
+                    cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
+                    None
+                }
+            },
+            None => {
+                cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 None
             }
-        });
+        };
 
         value.wrap_with_cost(cost)
     }
@@ -127,11 +136,14 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += k.len() as u32;
                     true
                 } else {
-                    cost.storage_loaded_bytes += 256 + 32;
+                    cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     false
                 }
             })
-            .unwrap_or(false)
+            .unwrap_or_else(|| {
+                cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
+                false
+            })
             .wrap_with_cost(cost)
     }
 }
@@ -195,17 +207,23 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn key(&self) -> CostContext<Option<&[u8]>> {
         let mut cost = OperationCost::default();
 
-        let value = self.raw_iterator.key().and_then(|k| {
-            // Even if we truncate prefix, loaded cost should be maximum for the whole
-            // function
-            if k.starts_with(&self.prefix) {
-                cost.storage_loaded_bytes += k.len() as u32;
-                Some(k.split_at(self.prefix.len()).1)
-            } else {
-                cost.storage_loaded_bytes += 256 + 32;
+        let value = match self.raw_iterator.key() {
+            Some(k) => {
+                // Even if we truncate prefix, loaded cost should be maximum for the whole
+                // function
+                if k.starts_with(&self.prefix) {
+                    cost.storage_loaded_bytes += k.len() as u32;
+                    Some(k.split_at(self.prefix.len()).1)
+                } else {
+                    cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
+                    None
+                }
+            },
+            None => {
+                cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 None
             }
-        });
+        };
 
         value.wrap_with_cost(cost)
     }
@@ -220,11 +238,14 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += k.len() as u32;
                     true
                 } else {
-                    cost.storage_loaded_bytes += 256 + 32;
+                    cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     false
                 }
             })
-            .unwrap_or(false)
+            .unwrap_or_else(|| {
+                cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
+                false
+            })
             .wrap_with_cost(cost)
     }
 }
