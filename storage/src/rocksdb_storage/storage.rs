@@ -533,6 +533,10 @@ fn cf_meta(storage: &Db) -> &ColumnFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
+        RawIterator, Storage, StorageContext,
+    };
 
     #[test]
     fn test_build_prefix() {
@@ -546,5 +550,83 @@ mod tests {
             RocksDbStorage::build_prefix(path_a),
             RocksDbStorage::build_prefix(path_a),
         );
+    }
+
+    #[test]
+    fn rocksdb_layout_not_affect_iteration_costs() {
+        // The test checks that key lengthes of seemingly unrelated subtrees
+        // won't affect iteration costs. To achieve this we'll have two subtrees
+        // and see that nothing nasty will happen if key lengths of the next subtree
+        // change.
+        let storage = TempStorage::new();
+
+        let path_a = [b"ayya" as &[u8]];
+        let path_b = [b"ayyb" as &[u8]];
+        let prefix_a = RocksDbStorage::build_prefix(path_a).unwrap();
+        let prefix_b = RocksDbStorage::build_prefix(path_b).unwrap();
+
+        let context_a = storage.get_storage_context(path_a).unwrap();
+        let context_b = storage.get_storage_context(path_b).unwrap();
+
+        // Here by "left" I mean a subtree that goes first in RocksDB.
+        let (left, right) = if prefix_a < prefix_b {
+            (&context_a, &context_b)
+        } else {
+            (&context_b, &context_a)
+        };
+
+        left.put(b"a", b"a", None, None).unwrap().unwrap();
+        left.put(b"b", b"b", None, None).unwrap().unwrap();
+        left.put(b"c", b"c", None, None).unwrap().unwrap();
+
+        right.put(b"a", b"a", None, None).unwrap().unwrap();
+        right.put(b"b", b"b", None, None).unwrap().unwrap();
+        right.put(b"c", b"c", None, None).unwrap().unwrap();
+
+        // Iterate over left subtree while right subtree contains 1 byte keys:
+        let mut iteration_cost_before = OperationCost::default();
+        let mut iter = left.raw_iter();
+        iter.seek_to_first().unwrap();
+        // Collect sum of `valid` and `key` to check both ways to mess things up
+        while iter.valid().unwrap_add_cost(&mut iteration_cost_before)
+            && iter
+                .key()
+                .unwrap_add_cost(&mut iteration_cost_before)
+                .is_some()
+        {
+            iter.next().unwrap_add_cost(&mut iteration_cost_before);
+        }
+
+        // Update right subtree to have keys of different size
+        right.delete(b"a", None).unwrap().unwrap();
+        right.delete(b"b", None).unwrap().unwrap();
+        right.delete(b"c", None).unwrap().unwrap();
+        right
+            .put(b"aaaaaaaaaaaa", b"a", None, None)
+            .unwrap()
+            .unwrap();
+        right
+            .put(b"bbbbbbbbbbbb", b"b", None, None)
+            .unwrap()
+            .unwrap();
+        right
+            .put(b"cccccccccccc", b"c", None, None)
+            .unwrap()
+            .unwrap();
+
+        // Iterate over left subtree once again
+        let mut iteration_cost_after = OperationCost::default();
+        let mut iter = left.raw_iter();
+        iter.seek_to_first().unwrap();
+        while iter.valid().unwrap_add_cost(&mut iteration_cost_after)
+            && iter
+                .key()
+                .unwrap_add_cost(&mut iteration_cost_after)
+                .is_some()
+        {
+            iter.next().unwrap_add_cost(&mut iteration_cost_after);
+        }
+
+        assert_eq!(iteration_cost_before, iteration_cost_after);
     }
 }
