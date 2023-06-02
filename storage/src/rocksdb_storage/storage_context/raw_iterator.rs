@@ -113,11 +113,21 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += k.len() as u32;
                     Some(k.split_at(self.prefix.len()).1)
                 } else {
+                    // we can think of the underlying storage layer as stacked blocks
+                    // and a block is a collection of key value pairs with the
+                    // same prefix.
+                    // if we are at the last key in a block and we try to
+                    // check for the next key, we should not add the next block's first key
+                    // len() as that will make cost depend on the ordering of blocks.
+                    // instead we should add a fixed sized cost for such boundary checks
                     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     None
                 }
             }
             None => {
+                // if we are at the last key in the last block we should also add
+                // a fixed sized cost rather than nothing, as a change in block ordering
+                // could move the last block to some other position.
                 cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 None
             }
@@ -136,11 +146,21 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += k.len() as u32;
                     true
                 } else {
+                    // we can think of the underlying storage layer as stacked blocks
+                    // and a block is a collection of key value pairs with the
+                    // same prefix.
+                    // if we are at the last key in a block and we try to
+                    // check for the next key, we should not add the next block's first key
+                    // len() as that will make cost depend on the ordering of blocks.
+                    // instead we should add a fixed sized cost for such boundary checks
                     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     false
                 }
             })
             .unwrap_or_else(|| {
+                // if we are at the last key in the last block we should also add
+                // a fixed sized cost rather than nothing, as a change in block ordering
+                // could move the last block to some other position.
                 cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 false
             })
@@ -215,11 +235,21 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += k.len() as u32;
                     Some(k.split_at(self.prefix.len()).1)
                 } else {
+                    // we can think of the underlying storage layer as stacked blocks
+                    // and a block is a collection of key value pairs with the
+                    // same prefix.
+                    // if we are at the last key in a block and we try to
+                    // check for the next key, we should not add the next block's first key
+                    // len() as that will make cost depend on the ordering of blocks.
+                    // instead we should add a fixed sized cost for such boundary checks
                     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     None
                 }
             }
             None => {
+                // if we are at the last key in the last block we should also add
+                // a fixed sized cost rather than nothing, as a change in block ordering
+                // could move the last block to some other position.
                 cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 None
             }
@@ -238,11 +268,21 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                     cost.storage_loaded_bytes += k.len() as u32;
                     true
                 } else {
+                    // we can think of the underlying storage layer as stacked blocks
+                    // and a block is a collection of key value pairs with the
+                    // same prefix.
+                    // if we are at the last key in a block and we try to
+                    // check for the next key, we should not add the next block's first key
+                    // len() as that will make cost depend on the ordering of blocks.
+                    // instead we should add a fixed sized cost for such boundary checks
                     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                     false
                 }
             })
             .unwrap_or_else(|| {
+                // if we are at the last key in the last block we should also add
+                // a fixed sized cost rather than nothing, as a change in block ordering
+                // could move the last block to some other position.
                 cost.storage_loaded_bytes += MAX_PREFIXED_KEY_LENGTH;
                 false
             })
