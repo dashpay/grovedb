@@ -336,10 +336,10 @@ impl Element {
                 );
 
                 if let Some(limit) = limit {
-                    *limit -= sub_elements.len() as u16;
+                    *limit = limit.saturating_sub(sub_elements.len() as u16);
                 }
                 if let Some(offset) = offset {
-                    *offset -= skipped;
+                    *offset = offset.saturating_sub(skipped);
                 }
                 results.append(&mut sub_elements.elements);
             } else if let Some(subquery_path) = subquery_path {
