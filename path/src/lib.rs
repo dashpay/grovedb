@@ -187,7 +187,7 @@ mod tests {
         );
 
         // Now go to ancestors (note that intermediate derivations are dropped and
-        // is still compiles, as [SubtreePathRef]s are intended for):
+        // is still compiles, as [SubtreePath]s are intended for):
         let points_five = with_child_inplace
             .derive_parent()
             .unwrap()
