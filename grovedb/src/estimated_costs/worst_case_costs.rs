@@ -405,7 +405,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod test {
-    use std::{iter::empty, option::Option::None};
+    use std::option::Option::None;
 
     use costs::OperationCost;
     use merk::{
@@ -417,7 +417,7 @@ mod test {
 
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
-        tests::TEST_LEAF,
+        tests::{common::EMPTY_PATH, TEST_LEAF},
         Element, GroveDb,
     };
 
@@ -427,7 +427,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
+        let mut merk = Merk::open_base(storage.get_storage_context(EMPTY_PATH).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
@@ -439,7 +439,7 @@ mod test {
         drop(merk);
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
+        let merk = Merk::open_base(storage.get_storage_context(EMPTY_PATH).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
@@ -465,7 +465,7 @@ mod test {
         let db = GroveDb::open(tmp_dir.path()).unwrap();
 
         // insert empty tree to start
-        db.insert([], TEST_LEAF, Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -473,13 +473,13 @@ mod test {
         // after tree rotation, 2 will be at the top hence would have both left and
         // right links this will serve as our worst case candidate.
         let elem = Element::new_item(b"value".to_vec());
-        db.insert([TEST_LEAF], &[1], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[1], elem.clone(), None, None)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF], &[2], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[2], elem.clone(), None, None)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF], &[3], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[3], elem.clone(), None, None)
             .unwrap()
             .expect("expected insert");
 
@@ -494,7 +494,7 @@ mod test {
             false,
         );
 
-        let actual_cost = db.has_raw([TEST_LEAF], &[2], None);
+        let actual_cost = db.has_raw([TEST_LEAF].as_ref(), &[2], None);
 
         assert_eq!(worst_case_has_raw_cost, actual_cost.cost);
     }

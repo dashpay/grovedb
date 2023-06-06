@@ -206,8 +206,7 @@ where
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use std::iter::empty;
-
+    use path::SubtreePath;
     use storage::{rocksdb_storage::RocksDbStorage, Storage};
     use tempfile::TempDir;
 
@@ -268,9 +267,12 @@ mod tests {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
 
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-                .unwrap()
-                .unwrap();
+            let mut merk = Merk::open_base(
+                storage.get_storage_context(SubtreePath::empty()).unwrap(),
+                false,
+            )
+            .unwrap()
+            .unwrap();
             let batch = make_batch_seq(1..10);
             merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
 
@@ -283,9 +285,12 @@ mod tests {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
-            .unwrap()
-            .unwrap();
+        let merk = Merk::open_base(
+            storage.get_storage_context(SubtreePath::empty()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
         let reopen_chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
 
         for (original, checkpoint) in original_chunks.zip(reopen_chunks) {

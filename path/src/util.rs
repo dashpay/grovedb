@@ -1,6 +1,6 @@
 // MIT LICENSE
 //
-// Copyright (c) 2021 Dash Core Group
+// Copyright (c) 2023 Dash Core Group
 //
 // Permission is hereby granted, free of charge, to any
 // person obtaining a copy of this software and associated
@@ -26,36 +26,21 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Check if empty tree operations
+//! Utilities module for path library.
+mod compact_bytes;
+mod cow_like;
 
-#[cfg(feature = "full")]
-use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use path::SubtreePath;
+#[cfg(test)]
+use std::hash::{Hash, Hasher};
 
-#[cfg(feature = "full")]
-use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
+pub(crate) use compact_bytes::{CompactBytes, CompactBytesIter};
+pub(crate) use cow_like::CowLike;
 
-#[cfg(feature = "full")]
-impl GroveDb {
-    /// Check if it's an empty tree
-    pub fn is_empty_tree<'b, B, P>(
-        &self,
-        path: P,
-        transaction: TransactionArg,
-    ) -> CostResult<bool, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
+#[cfg(test)]
+pub(crate) fn calculate_hash<T: Hash>(t: &T) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
 
-        cost_return_on_error!(
-            &mut cost,
-            self.check_subtree_exists_path_not_found(path.clone(), transaction)
-        );
-        merk_optional_tx!(&mut cost, self.db, path, transaction, subtree, {
-            Ok(subtree.is_empty_tree().unwrap_add_cost(&mut cost)).wrap_with_cost(cost)
-        })
-    }
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
 }

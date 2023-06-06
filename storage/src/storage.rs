@@ -35,10 +35,10 @@ use std::{
 };
 
 use costs::{
-    cost_return_on_error_no_add, storage_cost::key_value_cost::KeyValueStorageCost,
-    ChildrenSizesWithIsSumTree, CostContext, CostResult, OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
+    CostResult, OperationCost,
 };
-use rocksdb::WriteBatchWithTransaction;
+use path::SubtreePath;
 use visualize::visualize_to_vec;
 
 use crate::{worst_case_costs::WorstKeyLength, Error};
@@ -82,37 +82,40 @@ pub trait Storage<'db> {
     fn flush(&self) -> Result<(), Error>;
 
     /// Make storage_cost context for a subtree with path
-    fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
+    fn get_storage_context<'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+    ) -> CostContext<Self::StorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>;
+        B: AsRef<[u8]> + 'b;
 
     /// Make storage_cost context for a subtree on transactional data
-    fn get_transactional_storage_context<'p, P>(
+    fn get_transactional_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: SubtreePath<'b, B>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::TransactionalStorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>;
+        B: AsRef<[u8]> + 'b;
 
     /// Make batch storage_cost context for a subtree with path
-    fn get_batch_storage_context<'p, P>(
+    fn get_batch_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: SubtreePath<'b, B>,
         batch: &'db StorageBatch,
     ) -> CostContext<Self::BatchStorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>;
+        B: AsRef<[u8]> + 'b;
 
     /// Make batch storage_cost context for a subtree on transactional data
-    fn get_batch_transactional_storage_context<'p, P>(
+    fn get_batch_transactional_storage_context<'b, B>(
         &'db self,
-        path: P,
+        path: SubtreePath<'b, B>,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
-        P: IntoIterator<Item = &'p [u8]>;
+        B: AsRef<[u8]> + 'b;
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
@@ -121,10 +124,7 @@ pub trait Storage<'db> {
     fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost;
 }
 
-use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 pub use costs::ChildrenSizes;
-
-use crate::Error::RocksDBError;
 
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as

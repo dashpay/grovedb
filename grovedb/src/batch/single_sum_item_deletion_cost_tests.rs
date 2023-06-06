@@ -31,21 +31,25 @@
 #[cfg(feature = "full")]
 mod tests {
 
-    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
+    use crate::{
+        batch::GroveDbOp,
+        tests::{common::EMPTY_PATH, make_empty_grovedb},
+        Element,
+    };
 
     #[test]
     fn test_batch_one_deletion_sum_tree_costs_match_non_batch_on_transaction() {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_sum_tree(), None, None)
+            .insert(EMPTY_PATH, b"key1", Element::empty_sum_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -71,7 +75,7 @@ mod tests {
         let db = make_empty_grovedb();
 
         db.insert(
-            [],
+            EMPTY_PATH,
             b"sum_tree".as_slice(),
             Element::empty_sum_tree(),
             None,
@@ -82,7 +86,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                [b"sum_tree".as_slice()],
+                [b"sum_tree".as_slice()].as_ref(),
                 b"key1",
                 Element::new_sum_item(15),
                 None,
@@ -94,7 +98,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete([b"sum_tree".as_slice()], b"key1", None, Some(&tx))
+            .delete([b"sum_tree".as_slice()].as_ref(), b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -124,7 +128,7 @@ mod tests {
 
         let insertion_cost = db
             .insert(
-                vec![],
+                EMPTY_PATH,
                 b"key1",
                 Element::empty_sum_tree_with_flags(Some(b"dog".to_vec())),
                 None,
@@ -136,7 +140,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 

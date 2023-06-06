@@ -89,17 +89,16 @@ impl fmt::Debug for ReferencePathType {
 #[cfg(feature = "full")]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
-pub fn path_from_reference_qualified_path_type(
+pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
     reference_path_type: ReferencePathType,
-    current_qualified_path: &[Vec<u8>],
+    current_qualified_path: &[B],
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
         None => Err(Error::CorruptedPath(
             "qualified path should always have an element",
         )),
         Some((key, path)) => {
-            let path_iter = path.iter().map(|k| k.as_slice());
-            path_from_reference_path_type(reference_path_type, path_iter, Some(key.as_slice()))
+            path_from_reference_path_type(reference_path_type, path, Some(key.as_ref()))
         }
     }
 }
@@ -107,22 +106,18 @@ pub fn path_from_reference_qualified_path_type(
 #[cfg(feature = "full")]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
-pub fn path_from_reference_path_type<'p, P>(
+pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     reference_path_type: ReferencePathType,
-    current_path: P,
-    current_key: Option<&'p [u8]>,
-) -> Result<Vec<Vec<u8>>, Error>
-where
-    P: IntoIterator<Item = &'p [u8]>,
-    <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-{
+    current_path: &[B],
+    current_key: Option<&[u8]>,
+) -> Result<Vec<Vec<u8>>, Error> {
     match reference_path_type {
         // No computation required, we already know the absolute path
         ReferencePathType::AbsolutePathReference(path) => Ok(path),
 
         // Take the first n elements from current path, append new path to subpath
         ReferencePathType::UpstreamRootHeightReference(no_of_elements_to_keep, mut path) => {
-            let current_path_iter = current_path.into_iter();
+            let current_path_iter = current_path.iter();
             if usize::from(no_of_elements_to_keep) > current_path_iter.len() {
                 return Err(Error::InvalidInput(
                     "reference stored path cannot satisfy reference constraints",
@@ -130,7 +125,7 @@ where
             }
             let mut subpath_as_vec = current_path_iter
                 .take(no_of_elements_to_keep as usize)
-                .map(|x| x.to_vec())
+                .map(|x| x.as_ref().to_vec())
                 .collect::<Vec<_>>();
             subpath_as_vec.append(&mut path);
             Ok(subpath_as_vec)
@@ -141,7 +136,7 @@ where
             no_of_elements_to_discard_from_end,
             mut path,
         ) => {
-            let current_path_iter = current_path.into_iter();
+            let current_path_iter = current_path.iter();
             let current_path_len = current_path_iter.len();
             if usize::from(no_of_elements_to_discard_from_end) > current_path_len {
                 return Err(Error::InvalidInput(
@@ -151,7 +146,7 @@ where
 
             let mut subpath_as_vec = current_path_iter
                 .take(current_path_len - no_of_elements_to_discard_from_end as usize)
-                .map(|x| x.to_vec())
+                .map(|x| x.as_ref().to_vec())
                 .collect::<Vec<_>>();
             subpath_as_vec.append(&mut path);
             Ok(subpath_as_vec)
@@ -160,8 +155,8 @@ where
         // Pop child, swap parent, reattach child
         ReferencePathType::CousinReference(cousin_key) => {
             let mut current_path_as_vec = current_path
-                .into_iter()
-                .map(|p| p.to_vec())
+                .iter()
+                .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             if current_path_as_vec.is_empty() {
                 return Err(Error::InvalidInput(
@@ -182,8 +177,8 @@ where
         // Pop child, swap parent, reattach child
         ReferencePathType::RemovedCousinReference(mut cousin_path) => {
             let mut current_path_as_vec = current_path
-                .into_iter()
-                .map(|p| p.to_vec())
+                .iter()
+                .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             if current_path_as_vec.is_empty() {
                 return Err(Error::InvalidInput(
@@ -204,8 +199,8 @@ where
         // Pop child, attach new child
         ReferencePathType::SiblingReference(sibling_key) => {
             let mut current_path_as_vec = current_path
-                .into_iter()
-                .map(|p| p.to_vec())
+                .iter()
+                .map(|p| p.as_ref().to_vec())
                 .collect::<Vec<Vec<u8>>>();
             current_path_as_vec.push(sibling_key);
             Ok(current_path_as_vec)
@@ -264,7 +259,7 @@ mod tests {
         // selects the first 2 elements from the stored path and appends the new path.
         let ref1 =
             ReferencePathType::UpstreamRootHeightReference(2, vec![b"c".to_vec(), b"d".to_vec()]);
-        let final_path = path_from_reference_path_type(ref1, stored_path, None).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
@@ -279,7 +274,7 @@ mod tests {
             1,
             vec![b"c".to_vec(), b"d".to_vec()],
         );
-        let final_path = path_from_reference_path_type(ref1, stored_path, None).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
@@ -291,7 +286,7 @@ mod tests {
         let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::CousinReference(b"c".to_vec());
-        let final_path = path_from_reference_path_type(ref1, stored_path, None);
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None);
         assert!(final_path.is_err());
     }
 
@@ -301,7 +296,7 @@ mod tests {
         let key = b"m".as_ref();
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::CousinReference(b"c".to_vec());
-        let final_path = path_from_reference_path_type(ref1, stored_path, Some(key)).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, Some(key)).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"c".to_vec(), b"m".to_vec()]
@@ -313,7 +308,7 @@ mod tests {
         let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::RemovedCousinReference(vec![b"c".to_vec(), b"d".to_vec()]);
-        let final_path = path_from_reference_path_type(ref1, stored_path, None);
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None);
         assert!(final_path.is_err());
     }
 
@@ -323,7 +318,7 @@ mod tests {
         let key = b"m".as_ref();
         // Replaces the immediate parent (in this case b) with the given key (c)
         let ref1 = ReferencePathType::RemovedCousinReference(vec![b"c".to_vec(), b"d".to_vec()]);
-        let final_path = path_from_reference_path_type(ref1, stored_path, Some(key)).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, Some(key)).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"c".to_vec(), b"d".to_vec(), b"m".to_vec()]
@@ -335,7 +330,7 @@ mod tests {
         let stored_path = vec![b"a".as_ref(), b"b".as_ref()];
         let key = b"m".as_ref();
         let ref1 = ReferencePathType::SiblingReference(b"c".to_vec());
-        let final_path = path_from_reference_path_type(ref1, stored_path, Some(key)).unwrap();
+        let final_path = path_from_reference_path_type(ref1, &stored_path, Some(key)).unwrap();
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
@@ -347,7 +342,7 @@ mod tests {
         let db = make_deep_tree();
 
         db.insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"ref1",
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
@@ -361,7 +356,7 @@ mod tests {
         .expect("should insert successfully");
 
         db.insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"ref2",
             Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
                 1,
@@ -374,7 +369,7 @@ mod tests {
         .expect("should insert successfully");
 
         db.insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"ref3",
             Element::new_reference(ReferencePathType::UpstreamFromElementHeightReference(
                 1,

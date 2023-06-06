@@ -43,8 +43,9 @@ use merk::{
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
+use path::SubtreePath;
 #[cfg(feature = "full")]
-use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
+use storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
@@ -110,7 +111,7 @@ impl GroveDb {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
         let subtree_exists = self
-            .check_subtree_exists_path_not_found(path_slices.clone(), None)
+            .check_subtree_exists_path_not_found(path_slices.as_slice().into(), None)
             .unwrap_add_cost(&mut cost);
 
         // if the subtree at the given path doesn't exists, prove that this path
@@ -179,7 +180,10 @@ impl GroveDb {
 
         let mut to_add_to_result_set: u16 = 0;
 
-        let subtree = cost_return_on_error!(&mut cost, self.open_subtree(path.iter().copied()));
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_non_transactional_merk_at_path(path.as_slice().into())
+        );
         if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
             cost_return_on_error_no_add!(
                 &cost,
@@ -194,7 +198,7 @@ impl GroveDb {
                 cost_return_on_error!(
                     &mut cost,
                     self.generate_and_store_merk_proof(
-                        path.iter().copied(),
+                        &path.as_slice().into(),
                         &subtree,
                         &query.query.query,
                         (*current_limit, *current_offset),
@@ -239,7 +243,7 @@ impl GroveDb {
                         cost_return_on_error!(
                             &mut cost,
                             self.generate_and_store_merk_proof(
-                                path.iter().copied(),
+                                &path.as_slice().into(),
                                 &subtree,
                                 &query.query.query,
                                 (None, None),
@@ -261,7 +265,9 @@ impl GroveDb {
                             for subkey in subquery_path.iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
-                                    self.open_subtree(new_path.iter().copied())
+                                    self.open_non_transactional_merk_at_path(
+                                        new_path.as_slice().into()
+                                    )
                                 );
 
                                 let mut key_as_query = Query::new();
@@ -270,7 +276,7 @@ impl GroveDb {
                                 cost_return_on_error!(
                                     &mut cost,
                                     self.generate_and_store_merk_proof(
-                                        new_path.iter().copied(),
+                                        &new_path.as_slice().into(),
                                         &inner_subtree,
                                         &key_as_query,
                                         (None, None),
@@ -284,7 +290,10 @@ impl GroveDb {
                                 new_path.push(subkey);
 
                                 if self
-                                    .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                    .check_subtree_exists_path_not_found(
+                                        new_path.as_slice().into(),
+                                        None,
+                                    )
                                     .unwrap_add_cost(&mut cost)
                                     .is_err()
                                 {
@@ -309,7 +318,9 @@ impl GroveDb {
                         for subkey in subquery_path.iter() {
                             let inner_subtree = cost_return_on_error!(
                                 &mut cost,
-                                self.open_subtree(new_path.iter().copied())
+                                self.open_non_transactional_merk_at_path(
+                                    new_path.as_slice().into()
+                                )
                             );
 
                             let mut key_as_query = Query::new();
@@ -318,7 +329,7 @@ impl GroveDb {
                             cost_return_on_error!(
                                 &mut cost,
                                 self.generate_and_store_merk_proof(
-                                    new_path.iter().copied(),
+                                    &new_path.as_slice().into(),
                                     &inner_subtree,
                                     &key_as_query,
                                     (None, None),
@@ -334,7 +345,10 @@ impl GroveDb {
                             // check if the new path points to a valid subtree
                             // if it does not, we should stop proof generation on this path
                             if self
-                                .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                .check_subtree_exists_path_not_found(
+                                    new_path.as_slice().into(),
+                                    None,
+                                )
                                 .unwrap_add_cost(&mut cost)
                                 .is_err()
                             {
@@ -360,7 +374,7 @@ impl GroveDb {
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
-                        .check_subtree_exists_path_not_found(new_path.clone(), None)
+                        .check_subtree_exists_path_not_found(new_path.as_slice().into(), None)
                         .unwrap_add_cost(&mut cost)
                         .is_err()
                     {
@@ -396,7 +410,7 @@ impl GroveDb {
             let limit_offset = cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
-                    path.iter().copied(),
+                    &path.as_slice().into(),
                     &subtree,
                     &query.query.query,
                     (*current_limit, *current_offset),
@@ -430,15 +444,17 @@ impl GroveDb {
         // generate proof to show that the path leads up to the root
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            let subtree =
-                cost_return_on_error!(&mut cost, self.open_subtree(path_slice.iter().copied()));
+            let subtree = cost_return_on_error!(
+                &mut cost,
+                self.open_non_transactional_merk_at_path(path_slice.into())
+            );
             let mut query = Query::new();
             query.insert_key(key.to_vec());
 
             cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
-                    path_slice.iter().copied(),
+                    &path_slice.into(),
                     &subtree,
                     &query,
                     (None, None),
@@ -455,9 +471,9 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_and_store_merk_proof<'a, 'p, S: 'a, P>(
+    fn generate_and_store_merk_proof<'a, S, B>(
         &self,
-        path: P,
+        path: &SubtreePath<B>,
         subtree: &'a Merk<S>,
         query: &Query,
         limit_offset: LimitOffset,
@@ -467,9 +483,8 @@ impl GroveDb {
         key: &[u8],
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
     where
-        S: StorageContext<'a>,
-        P: IntoIterator<Item = &'p [u8]> + Iterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        S: StorageContext<'a> + 'a,
+        B: AsRef<[u8]>,
     {
         if proof_token_type != ProofTokenType::Merk && proof_token_type != ProofTokenType::SizedMerk
         {
@@ -538,7 +553,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_first();
         while let Some((key, path_slice)) = split_path {
             let subtree = self
-                .open_subtree(current_path.iter().copied())
+                .open_non_transactional_merk_at_path(current_path.as_slice().into())
                 .unwrap_add_cost(&mut cost);
 
             if subtree.is_err() {
@@ -557,7 +572,7 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
-                    current_path.iter().copied(),
+                    &current_path.as_slice().into(),
                     &subtree.expect("confirmed not error above"),
                     &next_key_query,
                     (None, None),
@@ -584,18 +599,12 @@ impl GroveDb {
     /// Converts Items to Node::KV from Node::KVValueHash
     /// Converts References to Node::KVRefValueHash and sets the value to the
     /// referenced element
-    fn post_process_proof<'p, P>(
+    fn post_process_proof<B: AsRef<[u8]>>(
         &self,
-        path: P,
+        path: &SubtreePath<B>,
         proof_result: &mut ProofWithoutEncodingResult,
-    ) -> CostResult<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-
-        let path_iter = path.into_iter().collect::<Vec<_>>();
 
         for op in proof_result.proof.iter_mut() {
             match op {
@@ -604,12 +613,11 @@ impl GroveDb {
                         let elem = Element::deserialize(value);
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
-                                let current_path = path_iter.clone();
                                 let absolute_path = cost_return_on_error!(
                                     &mut cost,
                                     path_from_reference_path_type(
                                         reference_path,
-                                        current_path,
+                                        &path.to_vec(),
                                         Some(key.as_slice())
                                     )
                                     .wrap_with_cost(OperationCost::default())
@@ -617,7 +625,11 @@ impl GroveDb {
 
                                 let referenced_elem = cost_return_on_error!(
                                     &mut cost,
-                                    self.follow_reference(absolute_path, true, None)
+                                    self.follow_reference(
+                                        absolute_path.as_slice().into(),
+                                        true,
+                                        None
+                                    )
                                 );
 
                                 let serialized_referenced_elem = referenced_elem.serialize();
@@ -647,15 +659,6 @@ impl GroveDb {
         }
         Ok(()).wrap_with_cost(cost)
     }
-
-    /// Opens merk at a given path without transaction
-    fn open_subtree<'p, P>(&self, path: P) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
-        self.open_non_transactional_merk_at_path(path)
-    }
 }
 
 #[cfg(test)]
@@ -664,7 +667,7 @@ mod tests {
 
     use crate::{
         operations::proof::util::{ProofReader, ProofTokenType},
-        tests::{make_deep_tree, TEST_LEAF},
+        tests::{common::EMPTY_PATH, make_deep_tree, TEST_LEAF},
         GroveDb,
     };
 
@@ -691,14 +694,14 @@ mod tests {
         query.insert_all();
 
         let merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"])
+            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"].as_ref().into())
             .unwrap()
             .unwrap();
         let expected_root_hash = merk.root_hash().unwrap();
 
         let mut proof = vec![];
         db.generate_and_store_merk_proof(
-            path.iter().copied(),
+            &path.as_slice().into(),
             &merk,
             &query,
             (None, None),
@@ -724,20 +727,22 @@ mod tests {
         assert_eq!(result_set.result_set.len(), 3);
 
         // what is the key is empty??
-        let merk = db.open_non_transactional_merk_at_path([]).unwrap().unwrap();
+        let merk = db
+            .open_non_transactional_merk_at_path(EMPTY_PATH)
+            .unwrap()
+            .unwrap();
         let expected_root_hash = merk.root_hash().unwrap();
 
-        let path = vec![];
         let mut proof = vec![];
         db.generate_and_store_merk_proof(
-            path.iter().copied(),
+            &EMPTY_PATH,
             &merk,
             &query,
             (None, None),
             ProofTokenType::Merk,
             &mut proof,
             true,
-            path.iter().last().unwrap_or(&(&[][..])),
+            &[],
         )
         .unwrap()
         .unwrap();
@@ -769,12 +774,12 @@ mod tests {
         let path = vec![TEST_LEAF, b"innertree"];
 
         let merk = db
-            .open_non_transactional_merk_at_path(path.iter().copied())
+            .open_non_transactional_merk_at_path(path.as_slice().into())
             .unwrap()
             .unwrap();
         let inner_tree_root_hash = merk.root_hash().unwrap();
         db.generate_and_store_merk_proof(
-            path.iter().copied(),
+            &path.as_slice().into(),
             &merk,
             &query,
             (None, None),
@@ -789,12 +794,12 @@ mod tests {
         // insert all under innertree4
         let path = vec![TEST_LEAF, b"innertree4"];
         let merk = db
-            .open_non_transactional_merk_at_path(path.iter().copied())
+            .open_non_transactional_merk_at_path(path.as_slice().into())
             .unwrap()
             .unwrap();
         let inner_tree_4_root_hash = merk.root_hash().unwrap();
         db.generate_and_store_merk_proof(
-            path.iter().copied(),
+            &path.as_slice().into(),
             &merk,
             &query,
             (None, None),
@@ -809,12 +814,12 @@ mod tests {
         // insert all for deeper_1
         let path: Vec<&[u8]> = vec![b"deep_leaf", b"deep_node_1", b"deeper_1"];
         let merk = db
-            .open_non_transactional_merk_at_path(path.iter().copied())
+            .open_non_transactional_merk_at_path(path.as_slice().into())
             .unwrap()
             .unwrap();
         let deeper_1_root_hash = merk.root_hash().unwrap();
         db.generate_and_store_merk_proof(
-            path.iter().copied(),
+            &path.as_slice().into(),
             &merk,
             &query,
             (None, None),

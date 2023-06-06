@@ -115,7 +115,7 @@ where
         ops: Vec<GroveDbOp>,
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
-        mut merk_tree_cache: C,
+        merk_tree_cache: C,
     ) -> CostResult<BatchStructure<C, F, SR>, Error> {
         Self::continue_from_ops(
             None,

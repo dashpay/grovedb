@@ -76,7 +76,6 @@ use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
-    proofs::query::Map,
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, NULL_HASH,
@@ -85,11 +84,9 @@ use merk::{
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 pub use options::BatchApplyOptions;
+use path::SubtreePath;
 use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
-        WriteBatchWithTransaction,
-    },
+    rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{Drawer, Visualize};
@@ -1028,12 +1025,11 @@ where
                                     .get_feature_type(is_sum_tree)
                                     .wrap_with_cost(OperationCost::default())
                             );
-                            let path_iter = path.iter().map(|x| x.as_slice());
                             let path_reference = cost_return_on_error!(
                                 &mut cost,
                                 path_from_reference_path_type(
                                     path_reference.clone(),
-                                    path_iter,
+                                    path,
                                     Some(key_info.as_slice())
                                 )
                                 .wrap_with_cost(OperationCost::default())
@@ -1161,12 +1157,11 @@ where
                         BasicMerk
                     };
 
-                    let path_iter = path.iter().map(|x| x.as_slice());
                     let path_reference = cost_return_on_error!(
                         &mut cost,
                         path_from_reference_path_type(
                             path_reference.clone(),
-                            path_iter,
+                            path,
                             Some(key_info.as_slice())
                         )
                         .wrap_with_cost(OperationCost::default())
@@ -1666,12 +1661,13 @@ impl GroveDb {
         for op in ops.into_iter() {
             match op.op {
                 Op::Insert { element } | Op::Replace { element } => {
+                    // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(
-                            path_slices,
+                            path_slices.as_slice(),
                             op.key.as_slice(),
                             element.to_owned(),
                             options.clone().map(|o| o.as_insert_options()),
@@ -1685,7 +1681,7 @@ impl GroveDb {
                     cost_return_on_error!(
                         &mut cost,
                         self.delete(
-                            path_slices,
+                            path_slices.as_slice(),
                             op.key.as_slice(),
                             options.clone().map(|o| o.as_delete_options()),
                             transaction
@@ -1747,98 +1743,88 @@ impl GroveDb {
 
     /// Opens transactional merk at path with given storage batch context.
     /// Returns CostResult.
-    pub fn open_batch_transactional_merk_at_path<'db, 'p, P>(
+    pub fn open_batch_transactional_merk_at_path<'db, B: AsRef<[u8]>>(
         &'db self,
         storage_batch: &'db StorageBatch,
-        path: P,
+        path: SubtreePath<B>,
         tx: &'db Transaction,
         new_merk: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
-    {
-        let mut path_iter = path.into_iter();
+    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error> {
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_transactional_storage_context(path_iter.clone(), storage_batch, tx)
+            .get_batch_transactional_storage_context(path.clone(), storage_batch, tx)
             .unwrap_add_cost(&mut cost);
 
-        match path_iter.next_back() {
-            Some(key) => {
-                if new_merk {
-                    // TODO: can this be a sum tree
-                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk, false)).wrap_with_cost(cost)
-                } else {
-                    let parent_storage = self
-                        .db
-                        .get_transactional_storage_context(path_iter.clone(), tx)
-                        .unwrap_add_cost(&mut cost);
-                    let element = cost_return_on_error!(
-                        &mut cost,
-                        Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                            Error::InvalidPath(format!(
-                                "could not get key for parent of subtree for batch at path {}",
-                                path_iter.map(hex::encode).join("/")
-                            ))
-                        })
-                    );
-                    let is_sum_tree = element.is_sum_tree();
-                    if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                        Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                            .map_err(|_| {
-                                Error::CorruptedData(
-                                    "cannot open a subtree with given root key".to_owned(),
-                                )
-                            })
-                            .add_cost(cost)
-                    } else {
-                        Err(Error::CorruptedPath(
-                            "cannot open a subtree as parent exists but is not a tree",
+        if let Some((parent_path, parent_key)) = path.derive_parent() {
+            if new_merk {
+                // TODO: can this be a sum tree
+                Ok(Merk::open_empty(storage, MerkType::LayeredMerk, false)).wrap_with_cost(cost)
+            } else {
+                let parent_storage = self
+                    .db
+                    .get_transactional_storage_context(parent_path.clone(), tx)
+                    .unwrap_add_cost(&mut cost);
+                let element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get_from_storage(&parent_storage, parent_key).map_err(|_| {
+                        Error::InvalidPath(format!(
+                            "could not get key for parent of subtree for batch at path {}",
+                            parent_path.to_vec().into_iter().map(hex::encode).join("/")
                         ))
-                        .wrap_with_cost(OperationCost::default())
-                    }
-                }
-            }
-            None => {
-                if new_merk {
-                    Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
-                } else {
-                    Merk::open_base(storage, false)
+                    })
+                );
+                let is_sum_tree = element.is_sum_tree();
+                if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
                         .map_err(|_| {
-                            Error::CorruptedData("cannot open a the root subtree".to_owned())
+                            Error::CorruptedData(
+                                "cannot open a subtree with given root key".to_owned(),
+                            )
                         })
                         .add_cost(cost)
+                } else {
+                    Err(Error::CorruptedPath(
+                        "cannot open a subtree as parent exists but is not a tree",
+                    ))
+                    .wrap_with_cost(OperationCost::default())
                 }
+            }
+        } else {
+            if new_merk {
+                Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
+            } else {
+                Merk::open_base(storage, false)
+                    .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+                    .add_cost(cost)
             }
         }
     }
 
     /// Opens merk at path with given storage batch context. Returns CostResult.
-    pub fn open_batch_merk_at_path<'a>(
+    pub fn open_batch_merk_at_path<'a, B: AsRef<[u8]>>(
         &'a self,
         storage_batch: &'a StorageBatch,
-        path: &[Vec<u8>],
+        path: SubtreePath<B>,
         new_merk: bool,
     ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_storage_context(path.iter().map(|x| x.as_slice()), storage_batch)
+            .get_batch_storage_context(path.clone(), storage_batch)
             .unwrap_add_cost(&mut local_cost);
 
         if new_merk {
-            let merk_type = if path.is_empty() {
+            let merk_type = if path.is_root() {
                 MerkType::BaseMerk
             } else {
                 MerkType::LayeredMerk
             };
             Ok(Merk::open_empty(storage, merk_type, false)).wrap_with_cost(local_cost)
-        } else if let Some((last, base_path)) = path.split_last() {
+        } else if let Some((base_path, last)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(base_path.iter().map(|x| x.as_slice()))
+                .get_storage_context(base_path)
                 .unwrap_add_cost(&mut local_cost);
             let element = cost_return_on_error!(
                 &mut local_cost,
@@ -1933,7 +1919,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
-                            path.iter().map(|x| x.as_slice()),
+                            path.into(),
                             tx,
                             new_merk,
                         )
@@ -1957,7 +1943,7 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&storage_batch, path, new_merk)
+                        self.open_batch_merk_at_path(&storage_batch, path.into(), new_merk)
                     }
                 )
             );
@@ -2053,7 +2039,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
-                            path.iter().map(|x| x.as_slice()),
+                            path.into(),
                             tx,
                             new_merk,
                         )
@@ -2071,7 +2057,7 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
-            let mut total_current_costs = cost.clone().add(pending_costs.clone());
+            let total_current_costs = cost.clone().add(pending_costs.clone());
 
             // todo: estimate root costs
 
@@ -2099,7 +2085,7 @@ impl GroveDb {
                     |path, new_merk| {
                         self.open_batch_transactional_merk_at_path(
                             &continue_storage_batch,
-                            path.iter().map(|x| x.as_slice()),
+                            path.into(),
                             tx,
                             new_merk,
                         )
@@ -2133,7 +2119,7 @@ impl GroveDb {
                     &mut update_element_flags_function,
                     &mut split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&storage_batch, path, new_merk)
+                        self.open_batch_merk_at_path(&storage_batch, path.into(), new_merk)
                     }
                 )
             );
@@ -2149,7 +2135,7 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
-            let mut total_current_costs = cost.clone().add(pending_costs.clone());
+            let total_current_costs = cost.clone().add(pending_costs.clone());
 
             // at this point we need to send the pending costs back
             // we will get GroveDB a new set of GroveDBOps
@@ -2173,7 +2159,7 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        self.open_batch_merk_at_path(&continue_storage_batch, path, new_merk)
+                        self.open_batch_merk_at_path(&continue_storage_batch, path.into(), new_merk)
                     }
                 )
             );
@@ -2275,7 +2261,9 @@ mod tests {
     use super::*;
     use crate::{
         reference_path::ReferencePathType,
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        tests::{
+            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+        },
         PathQuery,
     };
 
@@ -2317,27 +2305,27 @@ mod tests {
             .expect("cannot apply batch");
 
         // visualize_stderr(&db);
-        db.get([], b"key1", None)
+        db.get(EMPTY_PATH, b"key1", None)
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref()], b"key2", None)
+        db.get([b"key1".as_ref()].as_ref(), b"key2", None)
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2"], b"key3", None)
+        db.get([b"key1".as_ref(), b"key2"].as_ref(), b"key3", None)
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+        db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None)
             .unwrap()
             .expect("cannot get element");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+            db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None)
                 .unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"], b"key2", None)
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
                 .unwrap()
                 .expect("cannot get element"),
             element2
@@ -2429,7 +2417,7 @@ mod tests {
         let db = make_test_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"keyb", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"keyb", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -2466,37 +2454,45 @@ mod tests {
         db.apply_batch(ops, None, Some(&tx))
             .unwrap()
             .expect("cannot apply batch");
-        db.get([], b"keyb", None)
+        db.get(EMPTY_PATH, b"keyb", None)
             .unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"keyb", Some(&tx))
+        db.get(EMPTY_PATH, b"keyb", Some(&tx))
             .unwrap()
             .expect("we should get an element");
 
-        db.get([], b"key1", None)
+        db.get(EMPTY_PATH, b"key1", None)
             .unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"key1", Some(&tx))
+        db.get(EMPTY_PATH, b"key1", Some(&tx))
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref()], b"key2", Some(&tx))
+        db.get([b"key1".as_ref()].as_ref(), b"key2", Some(&tx))
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx))
+        db.get([b"key1".as_ref(), b"key2"].as_ref(), b"key3", Some(&tx))
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
-            .unwrap()
-            .expect("cannot get element");
+        db.get(
+            [b"key1".as_ref(), b"key2", b"key3"].as_ref(),
+            b"key4",
+            Some(&tx),
+        )
+        .unwrap()
+        .expect("cannot get element");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
-                .unwrap()
-                .expect("cannot get element"),
+            db.get(
+                [b"key1".as_ref(), b"key2", b"key3"].as_ref(),
+                b"key4",
+                Some(&tx)
+            )
+            .unwrap()
+            .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx))
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", Some(&tx))
                 .unwrap()
                 .expect("cannot get element"),
             element2
@@ -2956,7 +2952,10 @@ mod tests {
             ),
         ];
         assert!(db.apply_batch(ops, None, None).unwrap().is_err());
-        assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
+        assert!(db
+            .get([b"key1".as_ref()].as_ref(), b"key2", None)
+            .unwrap()
+            .is_err());
     }
 
     #[test]
@@ -2987,9 +2986,12 @@ mod tests {
             ),
         ];
         assert!(db.apply_batch(ops, None, None).unwrap().is_err());
-        assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
         assert!(db
-            .get([TEST_LEAF, b"key1"], b"key2", None)
+            .get([b"key1".as_ref()].as_ref(), b"key2", None)
+            .unwrap()
+            .is_err());
+        assert!(db
+            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
             .unwrap()
             .is_err(),);
     }
@@ -2999,11 +3001,11 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([], b"key1", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert a subtree");
         db.insert(
-            [b"key1".as_ref()],
+            [b"key1".as_ref()].as_ref(),
             b"key2",
             Element::empty_tree(),
             None,
@@ -3054,7 +3056,7 @@ mod tests {
         db.apply_batch(ops, None, None)
             .unwrap()
             .expect_err("insertion of element under a deleted tree should not be allowed");
-        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+        db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None)
             .unwrap()
             .expect_err("nothing should have been inserted");
     }
@@ -3064,12 +3066,24 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([TEST_LEAF], b"invalid", element.clone(), None, None)
-            .unwrap()
-            .expect("cannot insert value");
-        db.insert([TEST_LEAF], b"valid", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("cannot insert value");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"invalid",
+            element.clone(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert value");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"valid",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert value");
 
         // Insertion into scalar is invalid
         let ops = vec![GroveDbOp::insert_op(
@@ -3089,7 +3103,7 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
         assert_eq!(
-            db.get([TEST_LEAF, b"valid"], b"key1", None)
+            db.get([TEST_LEAF, b"valid"].as_ref(), b"key1", None)
                 .unwrap()
                 .expect("cannot get element"),
             element
@@ -3102,7 +3116,7 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"key_subtree",
             Element::empty_tree(),
             None,
@@ -3110,9 +3124,15 @@ mod tests {
         )
         .unwrap()
         .expect("cannot insert a subtree");
-        db.insert([TEST_LEAF, b"key_subtree"], b"key2", element, None, None)
-            .unwrap()
-            .expect("cannot insert an item");
+        db.insert(
+            [TEST_LEAF, b"key_subtree"].as_ref(),
+            b"key2",
+            element,
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an item");
 
         // TEST_LEAF can not be overwritten
         let ops = vec![
@@ -3218,12 +3238,24 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("cannot insert a subtree");
-        db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None, None)
-            .unwrap()
-            .expect("cannot insert an item");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert a subtree");
+        db.insert(
+            [TEST_LEAF, b"key1"].as_ref(),
+            b"key2",
+            element.clone(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an item");
         let ops = vec![GroveDbOp::insert_op(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
@@ -3231,7 +3263,7 @@ mod tests {
         )];
 
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"], b"key2", None)
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
                 .unwrap()
                 .expect("cannot get item"),
             element
@@ -3240,7 +3272,7 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
         assert!(db
-            .get([TEST_LEAF, b"key1"], b"key2", None)
+            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
             .unwrap()
             .is_err());
     }
@@ -3248,14 +3280,14 @@ mod tests {
     #[test]
     fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
         let db = make_test_grovedb();
-        db.insert([], b"key1", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert root leaf");
-        db.insert([], b"key2", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"key2", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert root leaf");
         db.insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"key1",
             Element::empty_tree(),
             None,
@@ -3291,16 +3323,19 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
 
-        assert!(db.get([ANOTHER_TEST_LEAF], b"key1", None).unwrap().is_err());
+        assert!(db
+            .get([ANOTHER_TEST_LEAF].as_ref(), b"key1", None)
+            .unwrap()
+            .is_err());
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+            db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None)
                 .unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF], b"key", None)
+            db.get([TEST_LEAF].as_ref(), b"key", None)
                 .unwrap()
                 .expect("cannot get element"),
             element2
@@ -3311,11 +3346,11 @@ mod tests {
         );
 
         // verify root leaves
-        assert!(db.get([], TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get([], ANOTHER_TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get([], b"key1", None).unwrap().is_ok());
-        assert!(db.get([], b"key2", None).unwrap().is_ok());
-        assert!(db.get([], b"key3", None).unwrap().is_err());
+        assert!(db.get(EMPTY_PATH, TEST_LEAF, None).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, ANOTHER_TEST_LEAF, None).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, b"key1", None).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, b"key2", None).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, b"key3", None).unwrap().is_err());
     }
 
     #[test]
@@ -3331,15 +3366,9 @@ mod tests {
         ];
         let mut acc_path: Vec<Vec<u8>> = vec![];
         for p in full_path.into_iter() {
-            db.insert(
-                acc_path.iter().map(|x| x.as_slice()),
-                &p,
-                Element::empty_tree(),
-                None,
-                None,
-            )
-            .unwrap()
-            .expect("expected to insert");
+            db.insert(acc_path.as_slice(), &p, Element::empty_tree(), None, None)
+                .unwrap()
+                .expect("expected to insert");
             acc_path.push(p);
         }
 
@@ -3365,15 +3394,9 @@ mod tests {
         let full_path = vec![b"leaf1".to_vec(), b"sub1".to_vec()];
         let mut acc_path: Vec<Vec<u8>> = vec![];
         for p in full_path.into_iter() {
-            db.insert(
-                acc_path.iter().map(|x| x.as_slice()),
-                &p,
-                Element::empty_tree(),
-                None,
-                None,
-            )
-            .unwrap()
-            .expect("expected to insert");
+            db.insert(acc_path.as_slice(), &p, Element::empty_tree(), None, None)
+                .unwrap()
+                .expect("expected to insert");
             acc_path.push(p);
         }
 
@@ -3428,7 +3451,12 @@ mod tests {
             ),
         ];
         assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Ok(_)));
-        assert_eq!(db.get([TEST_LEAF], b"key1", None).unwrap().unwrap(), elem);
+        assert_eq!(
+            db.get([TEST_LEAF].as_ref(), b"key1", None)
+                .unwrap()
+                .unwrap(),
+            elem
+        );
 
         // should successfully prove reference as the value hash is valid
         let mut reference_key_query = Query::new();

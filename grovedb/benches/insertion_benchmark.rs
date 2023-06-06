@@ -32,6 +32,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(feature = "full")]
 use grovedb::{Element, GroveDb};
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use rand::Rng;
 #[cfg(feature = "full")]
@@ -40,6 +41,8 @@ use tempfile::TempDir;
 #[cfg(feature = "full")]
 const N_ITEMS: usize = 10_000;
 
+const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::empty();
+
 /// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree
 /// without a transaction
 #[cfg(feature = "full")]
@@ -47,7 +50,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
-    db.insert([], test_leaf, Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, test_leaf, Element::empty_tree(), None, None)
         .unwrap()
         .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
@@ -55,9 +58,15 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     c.bench_function("scalars insertion without transaction", |b| {
         b.iter(|| {
             for k in keys.clone() {
-                db.insert([test_leaf], &k, Element::new_item(k.to_vec()), None, None)
-                    .unwrap()
-                    .unwrap();
+                db.insert(
+                    [test_leaf].as_ref(),
+                    &k,
+                    Element::new_item(k.to_vec()),
+                    None,
+                    None,
+                )
+                .unwrap()
+                .unwrap();
             }
         })
     });
@@ -70,7 +79,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
-    db.insert([], test_leaf, Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, test_leaf, Element::empty_tree(), None, None)
         .unwrap()
         .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
@@ -80,7 +89,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
             let tx = db.start_transaction();
             for k in keys.clone() {
                 db.insert(
-                    [test_leaf],
+                    [test_leaf].as_ref(),
                     &k,
                     Element::new_item(k.to_vec()),
                     None,
@@ -104,7 +113,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     c.bench_function("root leaves insertion without transaction", |b| {
         b.iter(|| {
             for k in keys.clone() {
-                db.insert([], &k, Element::empty_tree(), None, None)
+                db.insert(EMPTY_PATH, &k, Element::empty_tree(), None, None)
                     .unwrap()
                     .unwrap();
             }
@@ -123,7 +132,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
         b.iter(|| {
             let tx = db.start_transaction();
             for k in keys.clone() {
-                db.insert([], &k, Element::empty_tree(), None, Some(&tx))
+                db.insert(EMPTY_PATH, &k, Element::empty_tree(), None, Some(&tx))
                     .unwrap()
                     .unwrap();
             }
@@ -141,7 +150,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
     let mut nested_subtrees: Vec<[u8; 32]> = Vec::new();
     for s in std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10) {
         db.insert(
-            nested_subtrees.iter().map(|x| x.as_slice()),
+            nested_subtrees.as_slice(),
             &s,
             Element::empty_tree(),
             None,
@@ -158,7 +167,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
         b.iter(|| {
             for k in keys.clone() {
                 db.insert(
-                    nested_subtrees.iter().map(|x| x.as_slice()),
+                    nested_subtrees.as_slice(),
                     &k,
                     Element::new_item(k.to_vec()),
                     None,
@@ -180,7 +189,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let mut nested_subtrees: Vec<[u8; 32]> = Vec::new();
     for s in std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10) {
         db.insert(
-            nested_subtrees.iter().map(|x| x.as_slice()),
+            nested_subtrees.as_slice(),
             &s,
             Element::empty_tree(),
             None,
@@ -198,7 +207,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
             let tx = db.start_transaction();
             for k in keys.clone() {
                 db.insert(
-                    nested_subtrees.iter().map(|x| x.as_slice()),
+                    nested_subtrees.as_slice(),
                     &k,
                     Element::new_item(k.to_vec()),
                     None,

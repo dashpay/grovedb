@@ -40,20 +40,26 @@ use crate::{
         common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb,
         ANOTHER_TEST_LEAF, TEST_LEAF,
     },
-    Element, Error, GroveDb, PathQuery, SizedQuery,
+    Element, GroveDb, PathQuery, SizedQuery,
 };
 
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert([TEST_LEAF], &i_vec, Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            &i_vec,
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
         // Insert element 0
         // Insert some elements into subtree
         db.insert(
-            [TEST_LEAF, i_vec.as_slice()],
+            [TEST_LEAF, i_vec.as_slice()].as_ref(),
             b"\0",
             Element::empty_tree(),
             None,
@@ -66,7 +72,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
             let mut j_vec = i_vec.clone();
             j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
             db.insert(
-                [TEST_LEAF, i_vec.as_slice(), b"\0"],
+                [TEST_LEAF, i_vec.as_slice(), b"\0"].as_ref(),
                 &j_vec.clone(),
                 Element::new_item(j_vec),
                 None,
@@ -82,13 +88,19 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 0u32..10 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert([TEST_LEAF], &i_vec, Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            &i_vec,
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
         // Insert element 0
         // Insert some elements into subtree
         db.insert(
-            [TEST_LEAF, i_vec.as_slice()],
+            [TEST_LEAF, i_vec.as_slice()].as_ref(),
             b"a",
             Element::empty_tree(),
             None,
@@ -100,7 +112,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
         for j in 25u32..50 {
             let j_vec = (j as u32).to_be_bytes().to_vec();
             db.insert(
-                [TEST_LEAF, i_vec.as_slice(), b"a"],
+                [TEST_LEAF, i_vec.as_slice(), b"a"].as_ref(),
                 &j_vec,
                 Element::empty_tree(),
                 None,
@@ -112,7 +124,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
             // Insert element 0
             // Insert some elements into subtree
             db.insert(
-                [TEST_LEAF, i_vec.as_slice(), b"a", j_vec.as_slice()],
+                [TEST_LEAF, i_vec.as_slice(), b"a", j_vec.as_slice()].as_ref(),
                 b"\0",
                 Element::empty_tree(),
                 None,
@@ -124,7 +136,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
             for k in 100u32..110 {
                 let k_vec = (k as u32).to_be_bytes().to_vec();
                 db.insert(
-                    [TEST_LEAF, i_vec.as_slice(), b"a", &j_vec, b"\0"],
+                    [TEST_LEAF, i_vec.as_slice(), b"a", &j_vec, b"\0"].as_ref(),
                     &k_vec.clone(),
                     Element::new_item(k_vec),
                     None,
@@ -139,24 +151,42 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
 
 fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
     // This subtree will be holding values
-    db.insert([TEST_LEAF], b"\0", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"\0",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
 
     // This subtree will be holding references
-    db.insert([TEST_LEAF], b"1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert([TEST_LEAF, b"1"], &i_vec, Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert");
+        db.insert(
+            [TEST_LEAF, b"1"].as_ref(),
+            &i_vec,
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
         // Insert element 0
         // Insert some elements into subtree
         db.insert(
-            [TEST_LEAF, b"1", i_vec.as_slice()],
+            [TEST_LEAF, b"1", i_vec.as_slice()].as_ref(),
             b"\0",
             Element::empty_tree(),
             None,
@@ -172,7 +202,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
 
             // We should insert every item to the tree holding items
             db.insert(
-                [TEST_LEAF, b"\0"],
+                [TEST_LEAF, b"\0"].as_ref(),
                 &random_key,
                 Element::new_item(j_vec.clone()),
                 None,
@@ -182,7 +212,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
             .expect("successful value insert");
 
             db.insert(
-                [TEST_LEAF, b"1", i_vec.clone().as_slice(), b"\0"],
+                [TEST_LEAF, b"1", i_vec.clone().as_slice(), b"\0"].as_ref(),
                 &random_key,
                 Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                     TEST_LEAF.to_vec(),
@@ -202,12 +232,18 @@ fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert([TEST_LEAF], &i_vec, Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            &i_vec,
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
 
         db.insert(
-            [TEST_LEAF, &i_vec.clone()],
+            [TEST_LEAF, &i_vec.clone()].as_ref(),
             b"\0",
             Element::new_item(i_vec),
             None,
@@ -220,24 +256,42 @@ fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
 
 fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
     // This subtree will be holding values
-    db.insert([TEST_LEAF], b"\0", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"\0",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
 
     // This subtree will be holding references
-    db.insert([TEST_LEAF], b"1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
 
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert([TEST_LEAF, b"1"], &i_vec, Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree insert");
+        db.insert(
+            [TEST_LEAF, b"1"].as_ref(),
+            &i_vec,
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
 
         // We should insert every item to the tree holding items
         db.insert(
-            [TEST_LEAF, b"\0"],
+            [TEST_LEAF, b"\0"].as_ref(),
             &i_vec,
             Element::new_item(i_vec.clone()),
             None,
@@ -248,7 +302,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
 
         // We should insert a reference to the item
         db.insert(
-            [TEST_LEAF, b"1", i_vec.clone().as_slice()],
+            [TEST_LEAF, b"1", i_vec.clone().as_slice()].as_ref(),
             b"\0",
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
@@ -265,17 +319,23 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
 
 fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut TempGroveDb) {
     populate_tree_for_unique_range_subquery(db);
-    db.insert([TEST_LEAF], &[], Element::empty_tree(), None, None)
+    db.insert([TEST_LEAF].as_ref(), &[], Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful subtree insert");
-    db.insert([TEST_LEAF, &[]], b"\0", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, &[]].as_ref(),
+        b"\0",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
     // Insert a couple of subtrees first
     for i in 100u32..200 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
         db.insert(
-            [TEST_LEAF, &[], b"\0"],
+            [TEST_LEAF, &[], b"\0"].as_ref(),
             &i_vec,
             Element::new_item(i_vec.clone()),
             None,
@@ -1474,17 +1534,35 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
 #[test]
 fn test_mixed_level_proofs() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-    db.insert([TEST_LEAF], b"key2", Element::new_item(vec![1]), None, None)
-        .unwrap()
-        .expect("successful item insert");
-    db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key2",
+        Element::new_item(vec![1]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key3",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
         b"key4",
         Element::new_reference(ReferencePathType::SiblingReference(b"key2".to_vec())),
         None,
@@ -1494,7 +1572,7 @@ fn test_mixed_level_proofs() {
     .expect("successful subtree insert");
 
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"k1",
         Element::new_item(vec![2]),
         None,
@@ -1503,7 +1581,7 @@ fn test_mixed_level_proofs() {
     .unwrap()
     .expect("successful item insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"k2",
         Element::new_item(vec![3]),
         None,
@@ -1512,7 +1590,7 @@ fn test_mixed_level_proofs() {
     .unwrap()
     .expect("successful item insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"k3",
         Element::new_item(vec![4]),
         None,
@@ -1632,18 +1710,36 @@ fn test_mixed_level_proofs() {
 #[test]
 fn test_mixed_level_proofs_with_tree() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-    db.insert([TEST_LEAF], b"key2", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-    db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key2",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key3",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
 
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"k1",
         Element::new_item(vec![2]),
         None,
@@ -1652,7 +1748,7 @@ fn test_mixed_level_proofs_with_tree() {
     .unwrap()
     .expect("successful item insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"k2",
         Element::new_item(vec![3]),
         None,
@@ -1661,7 +1757,7 @@ fn test_mixed_level_proofs_with_tree() {
     .unwrap()
     .expect("successful item insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"k3",
         Element::new_item(vec![4]),
         None,
@@ -1670,7 +1766,7 @@ fn test_mixed_level_proofs_with_tree() {
     .unwrap()
     .expect("successful item insert");
     db.insert(
-        [TEST_LEAF, b"key2"],
+        [TEST_LEAF, b"key2"].as_ref(),
         b"k1",
         Element::new_item(vec![5]),
         None,
@@ -1734,21 +1830,45 @@ fn test_mixed_level_proofs_with_tree() {
 #[test]
 fn test_mixed_level_proofs_with_subquery_paths() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"a", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-    db.insert([TEST_LEAF], b"b", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-    db.insert([TEST_LEAF], b"c", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-
-    db.insert([TEST_LEAF, b"a"], b"d", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF, b"a"],
+        [TEST_LEAF].as_ref(),
+        b"a",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"b",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"c",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"a"].as_ref(),
+        b"d",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"a"].as_ref(),
         b"e",
         Element::new_item(vec![2]),
         None,
@@ -1757,7 +1877,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     .unwrap()
     .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF, b"a"],
+        [TEST_LEAF, b"a"].as_ref(),
         b"f",
         Element::new_item(vec![3]),
         None,
@@ -1767,7 +1887,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     .expect("successful subtree insert");
 
     db.insert(
-        [TEST_LEAF, b"a", b"d"],
+        [TEST_LEAF, b"a", b"d"].as_ref(),
         b"d",
         Element::new_item(vec![6]),
         None,
@@ -1777,7 +1897,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     .expect("successful subtree insert");
 
     db.insert(
-        [TEST_LEAF, b"b"],
+        [TEST_LEAF, b"b"].as_ref(),
         b"g",
         Element::new_item(vec![4]),
         None,
@@ -1785,12 +1905,18 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     )
     .unwrap()
     .expect("successful subtree insert");
-    db.insert([TEST_LEAF, b"b"], b"d", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"b"].as_ref(),
+        b"d",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
 
     db.insert(
-        [TEST_LEAF, b"b", b"d"],
+        [TEST_LEAF, b"b", b"d"].as_ref(),
         b"i",
         Element::empty_tree(),
         None,
@@ -1799,7 +1925,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     .unwrap()
     .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF, b"b", b"d"],
+        [TEST_LEAF, b"b", b"d"].as_ref(),
         b"j",
         Element::empty_tree(),
         None,
@@ -1808,7 +1934,7 @@ fn test_mixed_level_proofs_with_subquery_paths() {
     .unwrap()
     .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF, b"b", b"d"],
+        [TEST_LEAF, b"b", b"d"].as_ref(),
         b"k",
         Element::empty_tree(),
         None,
@@ -2384,7 +2510,7 @@ fn test_query_b_depends_on_query_a() {
 
     // TEST_LEAF contains the id to name mapping
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[1],
         Element::new_item(b"d".to_vec()),
         None,
@@ -2393,7 +2519,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[2],
         Element::new_item(b"b".to_vec()),
         None,
@@ -2402,7 +2528,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[3],
         Element::new_item(b"c".to_vec()),
         None,
@@ -2411,7 +2537,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &[4],
         Element::new_item(b"a".to_vec()),
         None,
@@ -2422,7 +2548,7 @@ fn test_query_b_depends_on_query_a() {
 
     // ANOTHER_TEST_LEAF contains the name to age mapping
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"a",
         Element::new_item(vec![10]),
         None,
@@ -2431,7 +2557,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"b",
         Element::new_item(vec![30]),
         None,
@@ -2440,7 +2566,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"c",
         Element::new_item(vec![12]),
         None,
@@ -2449,7 +2575,7 @@ fn test_query_b_depends_on_query_a() {
     .unwrap()
     .expect("successful root tree leaf insert");
     db.insert(
-        [ANOTHER_TEST_LEAF],
+        [ANOTHER_TEST_LEAF].as_ref(),
         b"d",
         Element::new_item(vec![46]),
         None,
@@ -2482,7 +2608,7 @@ fn test_query_b_depends_on_query_a() {
     // next query should return the age for elements above b
     let mut query = Query::new();
     query.insert_range_after(b"b".to_vec()..);
-    let mut path_query_two = PathQuery::new_unsized(vec![ANOTHER_TEST_LEAF.to_vec()], query);
+    let path_query_two = PathQuery::new_unsized(vec![ANOTHER_TEST_LEAF.to_vec()], query);
 
     // show that we get the correct output
     let proof = db.prove_query(&path_query_two).unwrap().unwrap();

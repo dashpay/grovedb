@@ -28,11 +28,10 @@
 
 //! Merk benches
 
-use std::iter::empty;
-
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk};
+use path::SubtreePath;
 use rand::prelude::*;
 use storage::{rocksdb_storage::test_utils::TempStorage, Storage};
 
@@ -556,7 +555,7 @@ pub fn restore_500_1(c: &mut Criterion) {
                 (storage, merk.chunks().unwrap().into_iter())
             },
             |data| {
-                let ctx = data.0.get_storage_context(empty()).unwrap();
+                let ctx = data.0.get_storage_context(SubtreePath::empty()).unwrap();
                 let m = Merk::open_standalone(ctx, false).unwrap().unwrap();
                 let mut restorer = Merk::restore(m, root_hash);
 

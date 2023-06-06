@@ -32,6 +32,7 @@ use std::io::{Result, Write};
 
 use bincode::Options;
 use merk::{Merk, VisualizeableMerk};
+use path::SubtreePathBuilder;
 use storage::StorageContext;
 use visualize::{visualize_stdout, Drawer, Visualize};
 
@@ -48,7 +49,7 @@ impl Visualize for Element {
                 drawer = value.visualize(drawer)?;
             }
             Element::SumItem(value, _) => {
-                drawer.write(format!("sum_item: {}", value).as_bytes())?;
+                drawer.write(format!("sum_item: {value}").as_bytes())?;
             }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
@@ -138,46 +139,42 @@ impl Visualize for ReferencePathType {
 }
 
 impl GroveDb {
-    fn draw_subtree<W: Write>(
+    fn draw_subtree<W: Write, B: AsRef<[u8]>>(
         &self,
         mut drawer: Drawer<W>,
-        path: Vec<Vec<u8>>,
+        path: SubtreePathBuilder<'_, B>,
         transaction: TransactionArg,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        storage_context_optional_tx!(
-            self.db,
-            path.iter().map(|x| x.as_slice()),
-            transaction,
-            storage,
+        storage_context_optional_tx!(self.db, (&path).into(), transaction, storage, {
+            let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
+            while let Some((key, element)) = iter
+                .next_element()
+                .unwrap()
+                .expect("cannot get next element")
             {
-                let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
-                while let Some((key, element)) = iter
-                    .next_element()
-                    .unwrap()
-                    .expect("cannot get next element")
-                {
-                    drawer.write(b"\n[key: ")?;
-                    drawer = key.visualize(drawer)?;
-                    drawer.write(b" ")?;
-                    match element {
-                        Element::Tree(..) => {
-                            drawer.write(b"Merk root is: ")?;
-                            drawer = element.visualize(drawer)?;
-                            drawer.down();
-                            let mut inner_path = path.clone();
-                            inner_path.push(key);
-                            drawer = self.draw_subtree(drawer, inner_path, transaction)?;
-                            drawer.up();
-                        }
-                        other => {
-                            drawer = other.visualize(drawer)?;
-                        }
+                drawer.write(b"\n[key: ")?;
+                drawer = key.visualize(drawer)?;
+                drawer.write(b" ")?;
+                match element {
+                    Element::Tree(..) => {
+                        drawer.write(b"Merk root is: ")?;
+                        drawer = element.visualize(drawer)?;
+                        drawer.down();
+                        drawer = self.draw_subtree(
+                            drawer,
+                            path.derive_owned_with_child(key),
+                            transaction,
+                        )?;
+                        drawer.up();
+                    }
+                    other => {
+                        drawer = other.visualize(drawer)?;
                     }
                 }
             }
-        );
+        });
 
         drawer.up();
         Ok(drawer)
@@ -190,7 +187,7 @@ impl GroveDb {
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        drawer = self.draw_subtree(drawer, vec![], transaction)?;
+        drawer = self.draw_subtree(drawer, SubtreePathBuilder::new(), transaction)?;
 
         drawer.up();
         Ok(drawer)

@@ -44,6 +44,7 @@ use std::{
 use ::visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
+use self::common::EMPTY_PATH;
 use super::*;
 use crate::{
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
@@ -108,12 +109,18 @@ pub fn make_test_grovedb() -> TempGroveDb {
 }
 
 fn add_test_leaves(db: &mut GroveDb) {
-    db.insert([], TEST_LEAF, Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful root tree leaf insert");
-    db.insert([], ANOTHER_TEST_LEAF, Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful root tree leaf 2 insert");
+    db.insert(
+        EMPTY_PATH,
+        ANOTHER_TEST_LEAF,
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful root tree leaf 2 insert");
 }
 
 pub fn make_deep_tree() -> TempGroveDb {
@@ -156,18 +163,24 @@ pub fn make_deep_tree() -> TempGroveDb {
 
     // add an extra root leaf
     temp_db
-        .insert([], DEEP_LEAF, Element::empty_tree(), None, None)
+        .insert(EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful root tree leaf insert");
 
     // Insert level 1 nodes
     temp_db
-        .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None, None)
+        .insert(
+            [TEST_LEAF].as_ref(),
+            b"innertree",
+            Element::empty_tree(),
+            None,
+            None,
+        )
         .unwrap()
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"innertree4",
             Element::empty_tree(),
             None,
@@ -177,7 +190,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"innertree2",
             Element::empty_tree(),
             None,
@@ -187,7 +200,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"innertree3",
             Element::empty_tree(),
             None,
@@ -197,7 +210,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF],
+            [DEEP_LEAF].as_ref(),
             b"deep_node_1",
             Element::empty_tree(),
             None,
@@ -207,7 +220,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF],
+            [DEEP_LEAF].as_ref(),
             b"deep_node_2",
             Element::empty_tree(),
             None,
@@ -218,7 +231,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     // Insert level 2 nodes
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key1",
             Element::new_item(b"value1".to_vec()),
             None,
@@ -228,7 +241,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key2",
             Element::new_item(b"value2".to_vec()),
             None,
@@ -238,7 +251,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -248,7 +261,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"key4",
             Element::new_item(b"value4".to_vec()),
             None,
@@ -258,7 +271,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree4"],
+            [TEST_LEAF, b"innertree4"].as_ref(),
             b"key5",
             Element::new_item(b"value5".to_vec()),
             None,
@@ -268,7 +281,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree2"],
+            [ANOTHER_TEST_LEAF, b"innertree2"].as_ref(),
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -278,7 +291,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree3"],
+            [ANOTHER_TEST_LEAF, b"innertree3"].as_ref(),
             b"key4",
             Element::new_item(b"value4".to_vec()),
             None,
@@ -288,7 +301,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1"],
+            [DEEP_LEAF, b"deep_node_1"].as_ref(),
             b"deeper_1",
             Element::empty_tree(),
             None,
@@ -298,7 +311,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1"],
+            [DEEP_LEAF, b"deep_node_1"].as_ref(),
             b"deeper_2",
             Element::empty_tree(),
             None,
@@ -308,7 +321,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2"],
+            [DEEP_LEAF, b"deep_node_2"].as_ref(),
             b"deeper_3",
             Element::empty_tree(),
             None,
@@ -318,7 +331,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2"],
+            [DEEP_LEAF, b"deep_node_2"].as_ref(),
             b"deeper_4",
             Element::empty_tree(),
             None,
@@ -329,7 +342,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     // Insert level 3 nodes
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_1"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_1"].as_ref(),
             b"key1",
             Element::new_item(b"value1".to_vec()),
             None,
@@ -339,7 +352,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_1"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_1"].as_ref(),
             b"key2",
             Element::new_item(b"value2".to_vec()),
             None,
@@ -349,7 +362,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_1"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_1"].as_ref(),
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -359,7 +372,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_2"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_2"].as_ref(),
             b"key4",
             Element::new_item(b"value4".to_vec()),
             None,
@@ -369,7 +382,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_2"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_2"].as_ref(),
             b"key5",
             Element::new_item(b"value5".to_vec()),
             None,
@@ -379,7 +392,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_1", b"deeper_2"],
+            [DEEP_LEAF, b"deep_node_1", b"deeper_2"].as_ref(),
             b"key6",
             Element::new_item(b"value6".to_vec()),
             None,
@@ -390,7 +403,7 @@ pub fn make_deep_tree() -> TempGroveDb {
 
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_3"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_3"].as_ref(),
             b"key7",
             Element::new_item(b"value7".to_vec()),
             None,
@@ -400,7 +413,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_3"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_3"].as_ref(),
             b"key8",
             Element::new_item(b"value8".to_vec()),
             None,
@@ -410,7 +423,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_3"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_3"].as_ref(),
             b"key9",
             Element::new_item(b"value9".to_vec()),
             None,
@@ -420,7 +433,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_4"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_4"].as_ref(),
             b"key10",
             Element::new_item(b"value10".to_vec()),
             None,
@@ -430,7 +443,7 @@ pub fn make_deep_tree() -> TempGroveDb {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [DEEP_LEAF, b"deep_node_2", b"deeper_4"],
+            [DEEP_LEAF, b"deep_node_2", b"deeper_4"].as_ref(),
             b"key11",
             Element::new_item(b"value11".to_vec()),
             None,
@@ -451,11 +464,17 @@ fn test_init() {
 fn test_element_with_flags() {
     let db = make_test_grovedb();
 
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("should insert subtree successfully");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF.as_ref()].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert subtree successfully");
+    db.insert(
+        [TEST_LEAF, b"key1"].as_ref(),
         b"elem1",
         Element::new_item(b"flagless".to_vec()),
         None,
@@ -464,7 +483,7 @@ fn test_element_with_flags() {
     .unwrap()
     .expect("should insert subtree successfully");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"elem2",
         Element::new_item_with_flags(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec())),
         None,
@@ -473,7 +492,7 @@ fn test_element_with_flags() {
     .unwrap()
     .expect("should insert subtree successfully");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"elem3",
         Element::new_tree_with_flags(None, Some([1].to_vec())),
         None,
@@ -482,7 +501,7 @@ fn test_element_with_flags() {
     .unwrap()
     .expect("should insert subtree successfully");
     db.insert(
-        [TEST_LEAF, b"key1", b"elem3"],
+        [TEST_LEAF, b"key1", b"elem3"].as_ref(),
         b"elem4",
         Element::new_reference_with_flags(
             ReferencePathType::AbsolutePathReference(vec![
@@ -499,19 +518,19 @@ fn test_element_with_flags() {
     .expect("should insert subtree successfully");
 
     let element_without_flag = db
-        .get([TEST_LEAF, b"key1"], b"elem1", None)
+        .get([TEST_LEAF, b"key1"].as_ref(), b"elem1", None)
         .unwrap()
         .expect("should get successfully");
     let element_with_flag = db
-        .get([TEST_LEAF, b"key1"], b"elem2", None)
+        .get([TEST_LEAF, b"key1"].as_ref(), b"elem2", None)
         .unwrap()
         .expect("should get successfully");
     let tree_element_with_flag = db
-        .get([TEST_LEAF, b"key1"], b"elem3", None)
+        .get([TEST_LEAF, b"key1"].as_ref(), b"elem3", None)
         .unwrap()
         .expect("should get successfully");
     let flagged_ref_follow = db
-        .get([TEST_LEAF, b"key1", b"elem3"], b"elem4", None)
+        .get([TEST_LEAF, b"key1", b"elem3"].as_ref(), b"elem4", None)
         .unwrap()
         .expect("should get successfully");
 
@@ -595,17 +614,23 @@ fn test_cannot_update_populated_tree_item() {
     let db = make_deep_tree();
 
     let old_element = db
-        .get([TEST_LEAF], b"innertree", None)
+        .get([TEST_LEAF].as_ref(), b"innertree", None)
         .unwrap()
         .expect("should fetch item");
 
     let new_element = Element::empty_tree();
-    db.insert([TEST_LEAF], b"innertree", new_element.clone(), None, None)
-        .unwrap()
-        .expect_err("should not override tree");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"innertree",
+        new_element.clone(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect_err("should not override tree");
 
     let current_element = db
-        .get([TEST_LEAF], b"innertree", None)
+        .get([TEST_LEAF].as_ref(), b"innertree", None)
         .unwrap()
         .expect("should fetch item");
 
@@ -620,17 +645,23 @@ fn test_changes_propagated() {
     let element = Element::new_item(b"ayy".to_vec());
 
     // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 1 insert");
 
     let _merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF])
+        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
         .unwrap()
         .unwrap();
 
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"key2",
         Element::empty_tree(),
         None,
@@ -640,7 +671,7 @@ fn test_changes_propagated() {
     .expect("successful subtree 2 insert");
 
     db.insert(
-        [TEST_LEAF, b"key1", b"key2"],
+        [TEST_LEAF, b"key1", b"key2"].as_ref(),
         b"key3",
         element.clone(),
         None,
@@ -650,7 +681,7 @@ fn test_changes_propagated() {
     .expect("successful value insert");
 
     assert_eq!(
-        db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+        db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
             .unwrap()
             .expect("successful get"),
         element
@@ -663,11 +694,17 @@ fn test_changes_propagated() {
 #[test]
 fn test_references() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"merk_1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF, b"merk_1"],
+        [TEST_LEAF].as_ref(),
+        b"merk_1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"merk_1"].as_ref(),
         b"key1",
         Element::new_item(b"value1".to_vec()),
         None,
@@ -676,7 +713,7 @@ fn test_references() {
     .unwrap()
     .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF, b"merk_1"],
+        [TEST_LEAF, b"merk_1"].as_ref(),
         b"key2",
         Element::new_item(b"value2".to_vec()),
         None,
@@ -685,14 +722,20 @@ fn test_references() {
     .unwrap()
     .expect("successful subtree insert");
 
-    db.insert([TEST_LEAF], b"merk_2", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-    // db.insert([TEST_LEAF, b"merk_2"], b"key2",
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"merk_2",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    // db.insert([TEST_LEAF, b"merk_2"].as_ref(), b"key2",
     // Element::new_item(b"value2".to_vec()), None).expect("successful subtree
     // insert");
     db.insert(
-        [TEST_LEAF, b"merk_2"],
+        [TEST_LEAF, b"merk_2"].as_ref(),
         b"key1",
         Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
@@ -705,7 +748,7 @@ fn test_references() {
     .unwrap()
     .expect("successful subtree insert");
     db.insert(
-        [TEST_LEAF, b"merk_2"],
+        [TEST_LEAF, b"merk_2"].as_ref(),
         b"key2",
         Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
@@ -717,8 +760,14 @@ fn test_references() {
     )
     .unwrap()
     .expect("successful subtree insert");
-    assert!(db.get([TEST_LEAF], b"merk_1", None).unwrap().is_ok());
-    assert!(db.get([TEST_LEAF], b"merk_2", None).unwrap().is_ok());
+    assert!(db
+        .get([TEST_LEAF].as_ref(), b"merk_1", None)
+        .unwrap()
+        .is_ok());
+    assert!(db
+        .get([TEST_LEAF].as_ref(), b"merk_2", None)
+        .unwrap()
+        .is_ok());
 }
 
 #[test]
@@ -727,16 +776,28 @@ fn test_follow_references() {
     let element = Element::new_item(b"ayy".to_vec());
 
     // Insert an item to refer to
-    db.insert([TEST_LEAF], b"key2", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 1 insert");
-    db.insert([TEST_LEAF, b"key2"], b"key3", element.clone(), None, None)
-        .unwrap()
-        .expect("successful value insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key2",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF, b"key2"].as_ref(),
+        b"key3",
+        element.clone(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful value insert");
 
     // Insert a reference
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"reference_key",
         Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
@@ -750,7 +811,7 @@ fn test_follow_references() {
     .expect("successful reference insert");
 
     assert_eq!(
-        db.get([TEST_LEAF], b"reference_key", None)
+        db.get([TEST_LEAF].as_ref(), b"reference_key", None)
             .unwrap()
             .expect("successful get"),
         element
@@ -763,7 +824,7 @@ fn test_reference_must_point_to_item() {
 
     let result = db
         .insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"reference_key_1",
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
@@ -785,7 +846,7 @@ fn test_too_many_indirections() {
     let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
 
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"key0",
         Element::new_item(b"oops".to_vec()),
         None,
@@ -796,7 +857,7 @@ fn test_too_many_indirections() {
 
     for i in 1..=(MAX_REFERENCE_HOPS) {
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             &keygen(i),
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
@@ -811,7 +872,7 @@ fn test_too_many_indirections() {
 
     // Add one more reference
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         &keygen(MAX_REFERENCE_HOPS + 1),
         Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
@@ -824,7 +885,7 @@ fn test_too_many_indirections() {
     .expect("expected insert");
 
     let result = db
-        .get([TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1), None)
+        .get([TEST_LEAF].as_ref(), &keygen(MAX_REFERENCE_HOPS + 1), None)
         .unwrap();
 
     assert!(matches!(result, Err(Error::ReferenceLimit)));
@@ -834,12 +895,18 @@ fn test_too_many_indirections() {
 fn test_reference_value_affects_state() {
     let db_one = make_test_grovedb();
     db_one
-        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None, None)
+        .insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::new_item(vec![0]),
+            None,
+            None,
+        )
         .unwrap()
         .expect("should insert item");
     db_one
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"ref",
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
@@ -853,12 +920,18 @@ fn test_reference_value_affects_state() {
 
     let db_two = make_test_grovedb();
     db_two
-        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None, None)
+        .insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::new_item(vec![0]),
+            None,
+            None,
+        )
         .unwrap()
         .expect("should insert item");
     db_two
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"ref",
             Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
                 0,
@@ -892,11 +965,17 @@ fn test_tree_structure_is_persistent() {
         add_test_leaves(&mut db);
 
         // Insert some nested subtrees
-        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("successful subtree 1 insert");
         db.insert(
-            [TEST_LEAF, b"key1"],
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 1 insert");
+        db.insert(
+            [TEST_LEAF, b"key1"].as_ref(),
             b"key2",
             Element::empty_tree(),
             None,
@@ -906,7 +985,7 @@ fn test_tree_structure_is_persistent() {
         .expect("successful subtree 2 insert");
         // Insert an element into subtree
         db.insert(
-            [TEST_LEAF, b"key1", b"key2"],
+            [TEST_LEAF, b"key1", b"key2"].as_ref(),
             b"key3",
             element.clone(),
             None,
@@ -915,7 +994,7 @@ fn test_tree_structure_is_persistent() {
         .unwrap()
         .expect("successful value insert");
         assert_eq!(
-            db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
                 .unwrap()
                 .expect("successful get 1"),
             element
@@ -925,13 +1004,13 @@ fn test_tree_structure_is_persistent() {
     // Open a persisted GroveDB
     let db = GroveDb::open(tmp_dir).unwrap();
     assert_eq!(
-        db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+        db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
             .unwrap()
             .expect("successful get 2"),
         element
     );
     assert!(db
-        .get([TEST_LEAF, b"key1", b"key2"], b"key4", None)
+        .get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key4", None)
         .unwrap()
         .is_err());
     assert_eq!(prev_root_hash, db.root_hash(None).unwrap().unwrap());
@@ -940,10 +1019,10 @@ fn test_tree_structure_is_persistent() {
 #[test]
 fn test_root_tree_leaves_are_noted() {
     let db = make_test_grovedb();
-    db.check_subtree_exists_path_not_found([TEST_LEAF], None)
+    db.check_subtree_exists_path_not_found([TEST_LEAF].as_ref().into(), None)
         .unwrap()
         .expect("should exist");
-    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF], None)
+    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF].as_ref().into(), None)
         .unwrap()
         .expect("should exist");
 }
@@ -1071,12 +1150,18 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     let temp_db = make_test_grovedb();
     // Insert level 1 nodes
     temp_db
-        .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None, None)
+        .insert(
+            [TEST_LEAF].as_ref(),
+            b"innertree",
+            Element::empty_tree(),
+            None,
+            None,
+        )
         .unwrap()
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"innertree2",
             Element::empty_tree(),
             None,
@@ -1086,7 +1171,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"innertree3",
             Element::empty_tree(),
             None,
@@ -1097,7 +1182,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     // Insert level 2 nodes
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key1",
             Element::new_item(b"value1".to_vec()),
             None,
@@ -1107,7 +1192,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key2",
             Element::new_item(b"value2".to_vec()),
             None,
@@ -1117,7 +1202,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -1127,7 +1212,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree2"],
+            [ANOTHER_TEST_LEAF, b"innertree2"].as_ref(),
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -1137,7 +1222,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree2"],
+            [ANOTHER_TEST_LEAF, b"innertree2"].as_ref(),
             b"key4",
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
@@ -1151,7 +1236,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree3"],
+            [ANOTHER_TEST_LEAF, b"innertree3"].as_ref(),
             b"key4",
             Element::new_item(b"value4".to_vec()),
             None,
@@ -1161,7 +1246,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree2"],
+            [ANOTHER_TEST_LEAF, b"innertree2"].as_ref(),
             b"key5",
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 ANOTHER_TEST_LEAF.to_vec(),
@@ -1230,12 +1315,18 @@ fn test_path_query_proofs_without_subquery() {
     let temp_db = make_test_grovedb();
     // Insert level 1 nodes
     temp_db
-        .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None, None)
+        .insert(
+            [TEST_LEAF].as_ref(),
+            b"innertree",
+            Element::empty_tree(),
+            None,
+            None,
+        )
         .unwrap()
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"innertree2",
             Element::empty_tree(),
             None,
@@ -1245,7 +1336,7 @@ fn test_path_query_proofs_without_subquery() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"innertree3",
             Element::empty_tree(),
             None,
@@ -1256,7 +1347,7 @@ fn test_path_query_proofs_without_subquery() {
     // Insert level 2 nodes
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key1",
             Element::new_item(b"value1".to_vec()),
             None,
@@ -1266,7 +1357,7 @@ fn test_path_query_proofs_without_subquery() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key2",
             Element::new_item(b"value2".to_vec()),
             None,
@@ -1276,7 +1367,7 @@ fn test_path_query_proofs_without_subquery() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [TEST_LEAF, b"innertree"],
+            [TEST_LEAF, b"innertree"].as_ref(),
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -1286,7 +1377,7 @@ fn test_path_query_proofs_without_subquery() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree2"],
+            [ANOTHER_TEST_LEAF, b"innertree2"].as_ref(),
             b"key3",
             Element::new_item(b"value3".to_vec()),
             None,
@@ -1296,7 +1387,7 @@ fn test_path_query_proofs_without_subquery() {
         .expect("successful subtree insert");
     temp_db
         .insert(
-            [ANOTHER_TEST_LEAF, b"innertree3"],
+            [ANOTHER_TEST_LEAF, b"innertree3"].as_ref(),
             b"key4",
             Element::new_item(b"value4".to_vec()),
             None,
@@ -1901,11 +1992,11 @@ fn test_checkpoint() {
     let db = make_test_grovedb();
     let element1 = Element::new_item(b"ayy".to_vec());
 
-    db.insert([], b"key1", Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
         .unwrap()
         .expect("cannot insert a subtree 1 into GroveDB");
     db.insert(
-        [b"key1".as_ref()],
+        [b"key1".as_ref()].as_ref(),
         b"key2",
         Element::empty_tree(),
         None,
@@ -1914,7 +2005,7 @@ fn test_checkpoint() {
     .unwrap()
     .expect("cannot insert a subtree 2 into GroveDB");
     db.insert(
-        [b"key1".as_ref(), b"key2".as_ref()],
+        [b"key1".as_ref(), b"key2".as_ref()].as_ref(),
         b"key3",
         element1.clone(),
         None,
@@ -1924,7 +2015,7 @@ fn test_checkpoint() {
     .expect("cannot insert an item into GroveDB");
 
     assert_eq!(
-        db.get([b"key1".as_ref(), b"key2".as_ref()], b"key3", None)
+        db.get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None)
             .unwrap()
             .expect("cannot get from grovedb"),
         element1
@@ -1939,14 +2030,14 @@ fn test_checkpoint() {
         GroveDb::open(checkpoint_tempdir).expect("cannot open grovedb from checkpoint");
 
     assert_eq!(
-        db.get([b"key1".as_ref(), b"key2".as_ref()], b"key3", None)
+        db.get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None)
             .unwrap()
             .expect("cannot get from grovedb"),
         element1
     );
     assert_eq!(
         checkpoint_db
-            .get([b"key1".as_ref(), b"key2".as_ref()], b"key3", None)
+            .get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None)
             .unwrap()
             .expect("cannot get from checkpoint"),
         element1
@@ -1956,47 +2047,65 @@ fn test_checkpoint() {
     let element3 = Element::new_item(b"ayy3".to_vec());
 
     checkpoint_db
-        .insert([b"key1".as_ref()], b"key4", element2.clone(), None, None)
+        .insert(
+            [b"key1".as_ref()].as_ref(),
+            b"key4",
+            element2.clone(),
+            None,
+            None,
+        )
         .unwrap()
         .expect("cannot insert into checkpoint");
 
-    db.insert([b"key1".as_ref()], b"key4", element3.clone(), None, None)
-        .unwrap()
-        .expect("cannot insert into GroveDB");
+    db.insert(
+        [b"key1".as_ref()].as_ref(),
+        b"key4",
+        element3.clone(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("cannot insert into GroveDB");
 
     assert_eq!(
         checkpoint_db
-            .get([b"key1".as_ref()], b"key4", None)
+            .get([b"key1".as_ref()].as_ref(), b"key4", None)
             .unwrap()
             .expect("cannot get from checkpoint"),
         element2,
     );
 
     assert_eq!(
-        db.get([b"key1".as_ref()], b"key4", None)
+        db.get([b"key1".as_ref()].as_ref(), b"key4", None)
             .unwrap()
             .expect("cannot get from GroveDB"),
         element3
     );
 
     checkpoint_db
-        .insert([b"key1".as_ref()], b"key5", element3.clone(), None, None)
+        .insert(
+            [b"key1".as_ref()].as_ref(),
+            b"key5",
+            element3.clone(),
+            None,
+            None,
+        )
         .unwrap()
         .expect("cannot insert into checkpoint");
 
-    db.insert([b"key1".as_ref()], b"key6", element3, None, None)
+    db.insert([b"key1".as_ref()].as_ref(), b"key6", element3, None, None)
         .unwrap()
         .expect("cannot insert into GroveDB");
 
     assert!(matches!(
         checkpoint_db
-            .get([b"key1".as_ref()], b"key6", None)
+            .get([b"key1".as_ref()].as_ref(), b"key6", None)
             .unwrap(),
         Err(Error::PathKeyNotFound(_))
     ));
 
     assert!(matches!(
-        db.get([b"key1".as_ref()], b"key5", None).unwrap(),
+        db.get([b"key1".as_ref()].as_ref(), b"key5", None).unwrap(),
         Err(Error::PathKeyNotFound(_))
     ));
 }
@@ -2006,18 +2115,24 @@ fn test_is_empty_tree() {
     let db = make_test_grovedb();
 
     // Create an empty tree with no elements
-    db.insert([TEST_LEAF], b"innertree", Element::empty_tree(), None, None)
-        .unwrap()
-        .unwrap();
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"innertree",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .unwrap();
 
     assert!(db
-        .is_empty_tree([TEST_LEAF, b"innertree"], None)
+        .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None)
         .unwrap()
         .expect("path is valid tree"));
 
     // add an element to the tree to make it non empty
     db.insert(
-        [TEST_LEAF, b"innertree"],
+        [TEST_LEAF, b"innertree"].as_ref(),
         b"key1",
         Element::new_item(b"hello".to_vec()),
         None,
@@ -2026,7 +2141,7 @@ fn test_is_empty_tree() {
     .unwrap()
     .unwrap();
     assert!(!db
-        .is_empty_tree([TEST_LEAF, b"innertree"], None)
+        .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None)
         .unwrap()
         .expect("path is valid tree"));
 }
@@ -2041,14 +2156,22 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
     let element1 = Element::new_item(b"ayy".to_vec());
 
     let result = db
-        .insert([TEST_LEAF], item_key, element1, None, Some(&transaction))
+        .insert(
+            [TEST_LEAF].as_ref(),
+            item_key,
+            element1,
+            None,
+            Some(&transaction),
+        )
         .unwrap();
 
     assert!(matches!(result, Ok(())));
 
     db.rollback_transaction(&transaction).unwrap();
 
-    let result = db.get([TEST_LEAF], item_key, Some(&transaction)).unwrap();
+    let result = db
+        .get([TEST_LEAF].as_ref(), item_key, Some(&transaction))
+        .unwrap();
     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 }
 
@@ -2060,14 +2183,20 @@ fn transaction_should_be_aborted() {
     let item_key = b"key3";
     let element = Element::new_item(b"ayy".to_vec());
 
-    db.insert([TEST_LEAF], item_key, element, None, Some(&transaction))
-        .unwrap()
-        .unwrap();
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        item_key,
+        element,
+        None,
+        Some(&transaction),
+    )
+    .unwrap()
+    .unwrap();
 
     drop(transaction);
 
     // Transactional data shouldn't be committed to the main database
-    let result = db.get([TEST_LEAF], item_key, None).unwrap();
+    let result = db.get([TEST_LEAF].as_ref(), item_key, None).unwrap();
     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 }
 
@@ -2078,11 +2207,17 @@ fn test_subtree_pairs_iterator() {
     let element2 = Element::new_item(b"lmao".to_vec());
 
     // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"subtree1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 1 insert");
     db.insert(
-        [TEST_LEAF, b"subtree1"],
+        [TEST_LEAF].as_ref(),
+        b"subtree1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF, b"subtree1"].as_ref(),
         b"subtree11",
         Element::empty_tree(),
         None,
@@ -2092,7 +2227,7 @@ fn test_subtree_pairs_iterator() {
     .expect("successful subtree 2 insert");
     // Insert an element into subtree
     db.insert(
-        [TEST_LEAF, b"subtree1", b"subtree11"],
+        [TEST_LEAF, b"subtree1", b"subtree11"].as_ref(),
         b"key1",
         element.clone(),
         None,
@@ -2101,13 +2236,17 @@ fn test_subtree_pairs_iterator() {
     .unwrap()
     .expect("successful value insert");
     assert_eq!(
-        db.get([TEST_LEAF, b"subtree1", b"subtree11"], b"key1", None)
-            .unwrap()
-            .expect("successful get 1"),
+        db.get(
+            [TEST_LEAF, b"subtree1", b"subtree11"].as_ref(),
+            b"key1",
+            None
+        )
+        .unwrap()
+        .expect("successful get 1"),
         element
     );
     db.insert(
-        [TEST_LEAF, b"subtree1", b"subtree11"],
+        [TEST_LEAF, b"subtree1", b"subtree11"].as_ref(),
         b"key0",
         element.clone(),
         None,
@@ -2116,7 +2255,7 @@ fn test_subtree_pairs_iterator() {
     .unwrap()
     .expect("successful value insert");
     db.insert(
-        [TEST_LEAF, b"subtree1"],
+        [TEST_LEAF, b"subtree1"].as_ref(),
         b"subtree12",
         Element::empty_tree(),
         None,
@@ -2125,7 +2264,7 @@ fn test_subtree_pairs_iterator() {
     .unwrap()
     .expect("successful subtree 3 insert");
     db.insert(
-        [TEST_LEAF, b"subtree1"],
+        [TEST_LEAF, b"subtree1"].as_ref(),
         b"key1",
         element.clone(),
         None,
@@ -2134,7 +2273,7 @@ fn test_subtree_pairs_iterator() {
     .unwrap()
     .expect("successful value insert");
     db.insert(
-        [TEST_LEAF, b"subtree1"],
+        [TEST_LEAF, b"subtree1"].as_ref(),
         b"key2",
         element2.clone(),
         None,
@@ -2145,12 +2284,12 @@ fn test_subtree_pairs_iterator() {
 
     // Iterate over subtree1 to see if keys of other subtrees messed up
     // let mut iter = db
-    //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
+    //     .elements_iterator([TEST_LEAF, b"subtree1"].as_ref(), None)
     //     .expect("cannot create iterator");
     let storage_context = db
         .grove_db
         .db
-        .get_storage_context([TEST_LEAF, b"subtree1"])
+        .get_storage_context([TEST_LEAF, b"subtree1"].as_ref().into())
         .unwrap();
     let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
     assert_eq!(
@@ -2175,11 +2314,17 @@ fn test_find_subtrees() {
     let element = Element::new_item(b"ayy".to_vec());
     let db = make_test_grovedb();
     // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 1 insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF, b"key1"].as_ref(),
         b"key2",
         Element::empty_tree(),
         None,
@@ -2188,14 +2333,26 @@ fn test_find_subtrees() {
     .unwrap()
     .expect("successful subtree 2 insert");
     // Insert an element into subtree
-    db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, None, None)
-        .unwrap()
-        .expect("successful value insert");
-    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 3 insert");
+    db.insert(
+        [TEST_LEAF, b"key1", b"key2"].as_ref(),
+        b"key3",
+        element,
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful value insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key4",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 3 insert");
     let subtrees = db
-        .find_subtrees(vec![TEST_LEAF], None)
+        .find_subtrees(&[TEST_LEAF].as_ref().into(), None)
         .unwrap()
         .expect("cannot get subtrees");
     assert_eq!(
@@ -2212,7 +2369,7 @@ fn test_find_subtrees() {
 #[test]
 fn test_root_subtree_has_root_key() {
     let db = make_test_grovedb();
-    let storage = db.db.get_storage_context([]).unwrap();
+    let storage = db.db.get_storage_context(EMPTY_PATH).unwrap();
     let root_merk = Merk::open_base(storage, false)
         .unwrap()
         .expect("expected to get root merk");
@@ -2230,21 +2387,27 @@ fn test_get_subtree() {
 
     // Returns error is subtree is not valid
     {
-        let subtree = db.get([TEST_LEAF], b"invalid_tree", None).unwrap();
+        let subtree = db.get([TEST_LEAF].as_ref(), b"invalid_tree", None).unwrap();
         assert!(subtree.is_err());
 
         // Doesn't return an error for subtree that exists but empty
-        let subtree = db.get([], TEST_LEAF, None).unwrap();
+        let subtree = db.get(EMPTY_PATH, TEST_LEAF, None).unwrap();
         assert!(subtree.is_ok());
     }
 
     // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 1 insert");
 
     let key1_tree = db
-        .get([], TEST_LEAF, None)
+        .get(EMPTY_PATH, TEST_LEAF, None)
         .unwrap()
         .expect("expected to get a root tree");
 
@@ -2262,7 +2425,7 @@ fn test_get_subtree() {
     );
 
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"key2",
         Element::empty_tree(),
         None,
@@ -2273,7 +2436,7 @@ fn test_get_subtree() {
 
     // Insert an element into subtree
     db.insert(
-        [TEST_LEAF, b"key1", b"key2"],
+        [TEST_LEAF, b"key1", b"key2"].as_ref(),
         b"key3",
         element.clone(),
         None,
@@ -2281,9 +2444,15 @@ fn test_get_subtree() {
     )
     .unwrap()
     .expect("successful value insert");
-    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 3 insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key4",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 3 insert");
 
     // Retrieve subtree instance
     // Check if it returns the same instance that was inserted
@@ -2291,7 +2460,7 @@ fn test_get_subtree() {
         let subtree_storage = db
             .grove_db
             .db
-            .get_storage_context([TEST_LEAF, b"key1", b"key2"])
+            .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into())
             .unwrap();
         let subtree =
             Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
@@ -2304,7 +2473,7 @@ fn test_get_subtree() {
     let transaction = db.start_transaction();
 
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"innertree",
         Element::empty_tree(),
         None,
@@ -2314,7 +2483,7 @@ fn test_get_subtree() {
     .expect("successful subtree insert");
 
     db.insert(
-        [TEST_LEAF, b"key1", b"innertree"],
+        [TEST_LEAF, b"key1", b"innertree"].as_ref(),
         b"key4",
         element,
         None,
@@ -2327,7 +2496,10 @@ fn test_get_subtree() {
     let subtree_storage = db
         .grove_db
         .db
-        .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction)
+        .get_transactional_storage_context(
+            [TEST_LEAF, b"key1", b"innertree"].as_ref().into(),
+            &transaction,
+        )
         .unwrap();
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key4".to_vec()), false)
         .unwrap()
@@ -2339,7 +2511,7 @@ fn test_get_subtree() {
     let subtree_storage = db
         .grove_db
         .db
-        .get_storage_context([TEST_LEAF, b"key1", b"key2"])
+        .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into())
         .unwrap();
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
         .unwrap()
@@ -2353,15 +2525,27 @@ fn test_get_full_query() {
     let db = make_test_grovedb();
 
     // Insert a couple of subtrees first
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
-    db.insert([TEST_LEAF], b"key2", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key2",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
     // Insert some elements into subtree
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"key3",
         Element::new_item(b"ayya".to_vec()),
         None,
@@ -2370,7 +2554,7 @@ fn test_get_full_query() {
     .unwrap()
     .expect("successful value insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"key4",
         Element::new_item(b"ayyb".to_vec()),
         None,
@@ -2379,7 +2563,7 @@ fn test_get_full_query() {
     .unwrap()
     .expect("successful value insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF, b"key1"].as_ref(),
         b"key5",
         Element::new_item(b"ayyc".to_vec()),
         None,
@@ -2388,7 +2572,7 @@ fn test_get_full_query() {
     .unwrap()
     .expect("successful value insert");
     db.insert(
-        [TEST_LEAF, b"key2"],
+        [TEST_LEAF, b"key2"].as_ref(),
         b"key6",
         Element::new_item(b"ayyd".to_vec()),
         None,
@@ -2443,11 +2627,17 @@ fn test_aux_uses_separate_cf() {
     let element = Element::new_item(b"ayy".to_vec());
     let db = make_test_grovedb();
     // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("successful subtree 1 insert");
     db.insert(
-        [TEST_LEAF, b"key1"],
+        [TEST_LEAF].as_ref(),
+        b"key1",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF, b"key1"].as_ref(),
         b"key2",
         Element::empty_tree(),
         None,
@@ -2457,7 +2647,7 @@ fn test_aux_uses_separate_cf() {
     .expect("successful subtree 2 insert");
     // Insert an element into subtree
     db.insert(
-        [TEST_LEAF, b"key1", b"key2"],
+        [TEST_LEAF, b"key1", b"key2"].as_ref(),
         b"key3",
         element.clone(),
         None,
@@ -2480,7 +2670,7 @@ fn test_aux_uses_separate_cf() {
         .expect("cannot delete from aux");
 
     assert_eq!(
-        db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+        db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
             .unwrap()
             .expect("cannot get element"),
         element
@@ -2520,9 +2710,15 @@ fn test_aux_with_transaction() {
     let transaction = db.start_transaction();
 
     // Insert a regular data with aux data in the same transaction
-    db.insert([TEST_LEAF], &key, element, None, Some(&transaction))
-        .unwrap()
-        .expect("unable to insert");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        &key,
+        element,
+        None,
+        Some(&transaction),
+    )
+    .unwrap()
+    .expect("unable to insert");
     db.put_aux(&key, &aux_value, None, Some(&transaction))
         .unwrap()
         .expect("unable to insert aux value");
@@ -2557,7 +2753,7 @@ fn test_root_hash() {
     // Check hashes are different if tree is edited
     let old_root_hash = db.root_hash(None).unwrap();
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"key1",
         Element::new_item(b"ayy".to_vec()),
         None,
@@ -2571,7 +2767,7 @@ fn test_root_hash() {
     let transaction = db.start_transaction();
 
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"key2",
         Element::new_item(b"ayy".to_vec()),
         None,
@@ -2593,14 +2789,14 @@ fn test_root_hash() {
 #[test]
 fn test_get_non_existing_root_leaf() {
     let db = make_test_grovedb();
-    assert!(matches!(db.get([], b"ayy", None).unwrap(), Err(_)));
+    assert!(matches!(db.get(EMPTY_PATH, b"ayy", None).unwrap(), Err(_)));
 }
 
 #[test]
 fn test_check_subtree_exists_function() {
     let db = make_test_grovedb();
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"key_scalar",
         Element::new_item(b"ayy".to_vec()),
         None,
@@ -2609,7 +2805,7 @@ fn test_check_subtree_exists_function() {
     .unwrap()
     .expect("cannot insert item");
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"key_subtree",
         Element::empty_tree(),
         None,
@@ -2620,25 +2816,25 @@ fn test_check_subtree_exists_function() {
 
     // Empty tree path means root always exist
     assert!(db
-        .check_subtree_exists_invalid_path([], None)
+        .check_subtree_exists_invalid_path(EMPTY_PATH.into(), None)
         .unwrap()
         .is_ok());
 
     // TEST_LEAF should be a tree
     assert!(db
-        .check_subtree_exists_invalid_path([TEST_LEAF], None)
+        .check_subtree_exists_invalid_path([TEST_LEAF].as_ref().into(), None)
         .unwrap()
         .is_ok());
 
     // TEST_LEAF.key_subtree should be a tree
     assert!(db
-        .check_subtree_exists_invalid_path([TEST_LEAF, b"key_subtree"], None)
+        .check_subtree_exists_invalid_path([TEST_LEAF, b"key_subtree"].as_ref().into(), None)
         .unwrap()
         .is_ok());
 
     // TEST_LEAF.key_scalar should NOT be a tree
     assert!(matches!(
-        db.check_subtree_exists_invalid_path([TEST_LEAF, b"key_scalar"], None)
+        db.check_subtree_exists_invalid_path([TEST_LEAF, b"key_scalar"].as_ref().into(), None)
             .unwrap(),
         Err(Error::InvalidPath(_))
     ));
@@ -2649,7 +2845,7 @@ fn test_tree_value_exists_method_no_tx() {
     let db = make_test_grovedb();
     // Test keys in non-root tree
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"key",
         Element::new_item(b"ayy".to_vec()),
         None,
@@ -2657,17 +2853,23 @@ fn test_tree_value_exists_method_no_tx() {
     )
     .unwrap()
     .expect("cannot insert item");
-    assert!(db.has_raw([TEST_LEAF], b"key", None).unwrap().unwrap());
-    assert!(!db.has_raw([TEST_LEAF], b"badkey", None).unwrap().unwrap());
+    assert!(db
+        .has_raw([TEST_LEAF].as_ref(), b"key", None)
+        .unwrap()
+        .unwrap());
+    assert!(!db
+        .has_raw([TEST_LEAF].as_ref(), b"badkey", None)
+        .unwrap()
+        .unwrap());
 
     // Test keys for a root tree
-    db.insert([], b"leaf", Element::empty_tree(), None, None)
+    db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, None)
         .unwrap()
         .expect("cannot insert item");
 
-    assert!(db.has_raw([], b"leaf", None).unwrap().unwrap());
-    assert!(db.has_raw([], TEST_LEAF, None).unwrap().unwrap());
-    assert!(!db.has_raw([], b"badleaf", None).unwrap().unwrap());
+    assert!(db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
+    assert!(db.has_raw(EMPTY_PATH, TEST_LEAF, None).unwrap().unwrap());
+    assert!(!db.has_raw(EMPTY_PATH, b"badleaf", None).unwrap().unwrap());
 }
 
 #[test]
@@ -2676,7 +2878,7 @@ fn test_tree_value_exists_method_tx() {
     let tx = db.start_transaction();
     // Test keys in non-root tree
     db.insert(
-        [TEST_LEAF],
+        [TEST_LEAF].as_ref(),
         b"key",
         Element::new_item(b"ayy".to_vec()),
         None,
@@ -2684,19 +2886,28 @@ fn test_tree_value_exists_method_tx() {
     )
     .unwrap()
     .expect("cannot insert item");
-    assert!(db.has_raw([TEST_LEAF], b"key", Some(&tx)).unwrap().unwrap());
-    assert!(!db.has_raw([TEST_LEAF], b"key", None).unwrap().unwrap());
+    assert!(db
+        .has_raw([TEST_LEAF].as_ref(), b"key", Some(&tx))
+        .unwrap()
+        .unwrap());
+    assert!(!db
+        .has_raw([TEST_LEAF].as_ref(), b"key", None)
+        .unwrap()
+        .unwrap());
 
     // Test keys for a root tree
-    db.insert([], b"leaf", Element::empty_tree(), None, Some(&tx))
+    db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, Some(&tx))
         .unwrap()
         .expect("cannot insert item");
-    assert!(db.has_raw([], b"leaf", Some(&tx)).unwrap().unwrap());
-    assert!(!db.has_raw([], b"leaf", None).unwrap().unwrap());
+    assert!(db.has_raw(EMPTY_PATH, b"leaf", Some(&tx)).unwrap().unwrap());
+    assert!(!db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
 
     db.commit_transaction(tx)
         .unwrap()
         .expect("cannot commit transaction");
-    assert!(db.has_raw([TEST_LEAF], b"key", None).unwrap().unwrap());
-    assert!(db.has_raw([], b"leaf", None).unwrap().unwrap());
+    assert!(db
+        .has_raw([TEST_LEAF].as_ref(), b"key", None)
+        .unwrap()
+        .unwrap());
+    assert!(db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
 }

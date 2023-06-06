@@ -29,11 +29,9 @@
 //! Temp merk test utils
 
 #[cfg(feature = "full")]
-use std::{
-    iter::empty,
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
@@ -56,7 +54,7 @@ impl TempMerk {
     /// does not exist.
     pub fn new() -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
-        let context = storage.get_storage_context(empty()).unwrap();
+        let context = storage.get_storage_context(SubtreePath::empty()).unwrap();
         let merk = Merk::open_base(context, false).unwrap().unwrap();
         TempMerk { storage, merk }
     }

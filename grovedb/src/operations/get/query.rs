@@ -75,7 +75,11 @@ impl GroveDb {
                             // external costs accumulator instead of
                             // returning costs from `map` call.
                             let maybe_item = self
-                                .follow_reference(absolute_path, allow_cache, transaction)
+                                .follow_reference(
+                                    absolute_path.as_slice().into(),
+                                    allow_cache,
+                                    transaction,
+                                )
                                 .unwrap_add_cost(&mut cost)?;
 
                             match maybe_item {
@@ -155,7 +159,11 @@ where {
                         // external costs accumulator instead of
                         // returning costs from `map` call.
                         let maybe_item = self
-                            .follow_reference(absolute_path, allow_cache, transaction)
+                            .follow_reference(
+                                absolute_path.as_slice().into(),
+                                allow_cache,
+                                transaction,
+                            )
                             .unwrap_add_cost(cost)?;
 
                         if maybe_item.is_item() {
@@ -238,7 +246,11 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(absolute_path, allow_cache, transaction)
+                                        .follow_reference(
+                                            absolute_path.as_slice().into(),
+                                            allow_cache,
+                                            transaction,
+                                        )
                                         .unwrap_add_cost(&mut cost)?;
 
                                     match maybe_item {
@@ -304,7 +316,11 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(absolute_path, allow_cache, transaction)
+                                        .follow_reference(
+                                            absolute_path.as_slice().into(),
+                                            allow_cache,
+                                            transaction,
+                                        )
                                         .unwrap_add_cost(&mut cost)?;
 
                                     if let Element::SumItem(item, _) = maybe_item {
@@ -457,7 +473,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"1",
             Element::new_item(b"hello".to_vec()),
             None,
@@ -466,7 +482,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"3",
             Element::new_item(b"hello too".to_vec()),
             None,
@@ -475,7 +491,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"5",
             Element::new_item(b"bye".to_vec()),
             None,
@@ -514,7 +530,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"1",
             Element::new_item(b"hello".to_vec()),
             None,
@@ -523,7 +539,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"3",
             Element::new_item(b"hello too".to_vec()),
             None,
@@ -532,7 +548,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"5",
             Element::new_item(b"bye".to_vec()),
             None,
@@ -571,7 +587,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"1",
             Element::new_item(b"hello".to_vec()),
             None,
@@ -580,7 +596,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"3",
             Element::new_item(b"hello too".to_vec()),
             None,
@@ -589,7 +605,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"5",
             Element::new_item(b"bye".to_vec()),
             None,
@@ -631,7 +647,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"",
             Element::new_item(b"empty".to_vec()),
             None,
@@ -640,7 +656,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"1",
             Element::new_item(b"hello".to_vec()),
             None,
@@ -649,7 +665,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"3",
             Element::new_item(b"hello too".to_vec()),
             None,
@@ -658,7 +674,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"5",
             Element::new_item(b"bye".to_vec()),
             None,
@@ -717,7 +733,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"",
             Element::new_item(b"empty".to_vec()),
             None,
@@ -726,7 +742,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"1",
             Element::new_item(b"hello".to_vec()),
             None,
@@ -735,7 +751,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"3",
             Element::new_item(b"hello too".to_vec()),
             None,
@@ -744,7 +760,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"5",
             Element::new_item(b"bye".to_vec()),
             None,
@@ -788,11 +804,11 @@ mod tests {
     fn test_query_raw_keys_options_with_subquery_path() {
         let db = make_test_grovedb();
 
-        db.insert([TEST_LEAF], b"", Element::empty_tree(), None, None)
+        db.insert([TEST_LEAF].as_ref(), b"", Element::empty_tree(), None, None)
             .unwrap()
             .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b""],
+            [TEST_LEAF, b""].as_ref(),
             b"",
             Element::new_item(b"null in null".to_vec()),
             None,
@@ -801,7 +817,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b""],
+            [TEST_LEAF, b""].as_ref(),
             b"1",
             Element::new_item(b"1 in null".to_vec()),
             None,
@@ -809,11 +825,17 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2"],
+            [TEST_LEAF].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
             b"1",
             Element::new_item(b"1 in 2".to_vec()),
             None,
@@ -822,7 +844,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2"],
+            [TEST_LEAF, b"2"].as_ref(),
             b"5",
             Element::new_item(b"5 in 2".to_vec()),
             None,
@@ -886,11 +908,11 @@ mod tests {
     fn test_query_raw_keys_options_with_subquery() {
         let db = make_test_grovedb();
 
-        db.insert([TEST_LEAF], b"", Element::empty_tree(), None, None)
+        db.insert([TEST_LEAF].as_ref(), b"", Element::empty_tree(), None, None)
             .unwrap()
             .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b""],
+            [TEST_LEAF, b""].as_ref(),
             b"",
             Element::new_item(b"null in null".to_vec()),
             None,
@@ -899,7 +921,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b""],
+            [TEST_LEAF, b""].as_ref(),
             b"1",
             Element::new_item(b"1 in null".to_vec()),
             None,
@@ -907,11 +929,17 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2"],
+            [TEST_LEAF].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
             b"1",
             Element::new_item(b"1 in 2".to_vec()),
             None,
@@ -920,7 +948,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2"],
+            [TEST_LEAF, b"2"].as_ref(),
             b"5",
             Element::new_item(b"5 in 2".to_vec()),
             None,
@@ -929,7 +957,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2"],
+            [TEST_LEAF, b"2"].as_ref(),
             b"2",
             Element::new_item(b"2 in 2".to_vec()),
             None,
@@ -1001,11 +1029,11 @@ mod tests {
     fn test_query_raw_keys_options_with_subquery_and_subquery_path() {
         let db = make_test_grovedb();
 
-        db.insert([TEST_LEAF], b"", Element::empty_tree(), None, None)
+        db.insert([TEST_LEAF].as_ref(), b"", Element::empty_tree(), None, None)
             .unwrap()
             .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b""],
+            [TEST_LEAF, b""].as_ref(),
             b"",
             Element::new_item(b"null in null".to_vec()),
             None,
@@ -1013,11 +1041,17 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b""], b"1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"", b"1"],
+            [TEST_LEAF, b""].as_ref(),
+            b"1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"", b"1"].as_ref(),
             b"2",
             Element::new_item(b"2 in null/1".to_vec()),
             None,
@@ -1025,17 +1059,35 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b"2"], b"1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b"2"], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2", b"1"],
+            [TEST_LEAF].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
+            b"1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2", b"1"].as_ref(),
             b"2",
             Element::new_item(b"2 in 2/1".to_vec()),
             None,
@@ -1044,7 +1096,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2", b"1"],
+            [TEST_LEAF, b"2", b"1"].as_ref(),
             b"5",
             Element::new_item(b"5 in 2/1".to_vec()),
             None,
@@ -1137,11 +1189,11 @@ mod tests {
     fn test_query_raw_keys_options_with_subquery_and_conditional_subquery() {
         let db = make_test_grovedb();
 
-        db.insert([TEST_LEAF], b"", Element::empty_tree(), None, None)
+        db.insert([TEST_LEAF].as_ref(), b"", Element::empty_tree(), None, None)
             .unwrap()
             .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b""],
+            [TEST_LEAF, b""].as_ref(),
             b"",
             Element::new_item(b"null in null".to_vec()),
             None,
@@ -1149,11 +1201,17 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b""], b"1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"", b"1"],
+            [TEST_LEAF, b""].as_ref(),
+            b"1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"", b"1"].as_ref(),
             b"2",
             Element::new_item(b"2 in null/1".to_vec()),
             None,
@@ -1161,17 +1219,35 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b"2"], b"1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b"2"], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2", b"1"],
+            [TEST_LEAF].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
+            b"1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2", b"1"].as_ref(),
             b"2",
             Element::new_item(b"2 in 2/1".to_vec()),
             None,
@@ -1180,7 +1256,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2", b"1"],
+            [TEST_LEAF, b"2", b"1"].as_ref(),
             b"5",
             Element::new_item(b"5 in 2/1".to_vec()),
             None,
@@ -1281,7 +1357,7 @@ mod tests {
     fn test_query_keys_options_with_subquery_and_conditional_subquery_and_reference() {
         let db = make_test_grovedb();
         db.insert(
-            [ANOTHER_TEST_LEAF],
+            [ANOTHER_TEST_LEAF].as_ref(),
             b"5",
             Element::new_item(b"ref result".to_vec()),
             None,
@@ -1290,11 +1366,11 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
 
-        db.insert([TEST_LEAF], b"", Element::empty_tree(), None, None)
+        db.insert([TEST_LEAF].as_ref(), b"", Element::empty_tree(), None, None)
             .unwrap()
             .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b""],
+            [TEST_LEAF, b""].as_ref(),
             b"",
             Element::new_item(b"null in null".to_vec()),
             None,
@@ -1302,11 +1378,17 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b""], b"1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"", b"1"],
+            [TEST_LEAF, b""].as_ref(),
+            b"1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"", b"1"].as_ref(),
             b"2",
             Element::new_item(b"2 in null/1".to_vec()),
             None,
@@ -1314,17 +1396,35 @@ mod tests {
         )
         .unwrap()
         .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b"2"], b"1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
-        db.insert([TEST_LEAF, b"2"], b"2", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2", b"1"],
+            [TEST_LEAF].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
+            b"1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"].as_ref(),
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2", b"1"].as_ref(),
             b"2",
             Element::new_item(b"2 in 2/1".to_vec()),
             None,
@@ -1333,7 +1433,7 @@ mod tests {
         .unwrap()
         .expect("should insert subtree successfully");
         db.insert(
-            [TEST_LEAF, b"2", b"1"],
+            [TEST_LEAF, b"2", b"1"].as_ref(),
             b"5",
             Element::new_reference_with_hops(
                 AbsolutePathReference(vec![ANOTHER_TEST_LEAF.to_vec(), b"5".to_vec()]),

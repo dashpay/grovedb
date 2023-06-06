@@ -38,6 +38,7 @@ use costs::{
 use merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::Query;
+use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
@@ -348,12 +349,15 @@ impl Element {
                         &subquery_path.split_last()
                     {
                         path_vec.extend(subquery_path_front_keys.iter().map(|k| k.as_slice()));
+
+                        let subtree_path: SubtreePath<_> = path_vec.as_slice().into();
+
                         match result_type {
                             QueryElementResultType => {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied().peekable(),
+                                    subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -375,7 +379,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied().peekable(),
+                                    subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -400,7 +404,7 @@ impl Element {
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
-                                    path_vec.iter().copied().peekable(),
+                                    subtree_path,
                                     transaction,
                                     subtree,
                                     {
@@ -525,7 +529,6 @@ impl Element {
 
     #[cfg(feature = "full")]
     // TODO: refactor
-    #[allow(clippy::too_many_arguments)]
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
@@ -542,17 +545,15 @@ impl Element {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
+        let subtree_path: SubtreePath<_> = path.into();
+
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res = merk_optional_tx!(
-                    &mut cost,
-                    storage,
-                    path.iter().copied().peekable(),
-                    transaction,
-                    subtree,
-                    { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }
-                );
+                let element_res =
+                    merk_optional_tx!(&mut cost, storage, subtree_path, transaction, subtree, {
+                        Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost)
+                    });
                 match element_res {
                     Ok(element) => {
                         let (subquery_path, subquery) =
@@ -585,7 +586,7 @@ impl Element {
             }
         } else {
             // this is a query on a range
-            storage_context_optional_tx!(storage, path.iter().copied(), transaction, ctx, {
+            storage_context_optional_tx!(storage, subtree_path, transaction, ctx, {
                 let ctx = ctx.unwrap_add_cost(&mut cost);
                 let mut iter = ctx.raw_iter();
 
@@ -718,7 +719,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"d",
             Element::new_item(b"ayyd".to_vec()),
             None,
@@ -727,7 +728,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"c",
             Element::new_item(b"ayyc".to_vec()),
             None,
@@ -736,7 +737,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"a",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -745,7 +746,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"b",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -821,7 +822,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"d",
             Element::new_item(b"ayyd".to_vec()),
             None,
@@ -830,7 +831,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"c",
             Element::new_item(b"ayyc".to_vec()),
             None,
@@ -839,7 +840,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"a",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -848,7 +849,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"b",
             Element::new_item(b"ayyb".to_vec()),
             None,
@@ -893,7 +894,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF])
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -991,7 +992,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_non_transactional_merk_at_path([TEST_LEAF])
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
             .unwrap()
             .expect("cannot open Merk");
 
@@ -1091,7 +1092,7 @@ mod tests {
         let db = make_test_grovedb();
 
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"d",
             Element::new_item(b"ayyd".to_vec()),
             None,
@@ -1100,7 +1101,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"c",
             Element::new_item(b"ayyc".to_vec()),
             None,
@@ -1109,7 +1110,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"a",
             Element::new_item(b"ayya".to_vec()),
             None,
@@ -1118,7 +1119,7 @@ mod tests {
         .unwrap()
         .expect("cannot insert element");
         db.insert(
-            [TEST_LEAF],
+            [TEST_LEAF].as_ref(),
             b"b",
             Element::new_item(b"ayyb".to_vec()),
             None,

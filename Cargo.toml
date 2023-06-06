@@ -6,4 +6,5 @@ members = [
     "node-grove",
     "storage",
     "visualize",
+    "path",
 ]
