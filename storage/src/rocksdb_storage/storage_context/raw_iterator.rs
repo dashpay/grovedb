@@ -33,7 +33,7 @@ use rocksdb::DBRawIteratorWithThreadMode;
 
 use super::make_prefixed_key;
 use crate::{
-    rocksdb_storage::storage::{Db, Tx},
+    rocksdb_storage::storage::{Db, SubtreePrefix, Tx},
     RawIterator,
 };
 
@@ -42,7 +42,7 @@ const MAX_PREFIXED_KEY_LENGTH: u32 = 256 + 32;
 
 /// Raw iterator over prefixed storage_cost.
 pub struct PrefixedRocksDbRawIterator<I> {
-    pub(super) prefix: Vec<u8>,
+    pub(super) prefix: SubtreePrefix,
     pub(super) raw_iterator: I,
 }
 
@@ -66,14 +66,13 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     }
 
     fn seek<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
-        self.raw_iterator
-            .seek(make_prefixed_key(self.prefix.to_vec(), key));
+        self.raw_iterator.seek(make_prefixed_key(&self.prefix, key));
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
         self.raw_iterator
-            .seek_for_prev(make_prefixed_key(self.prefix.to_vec(), key));
+            .seek_for_prev(make_prefixed_key(&self.prefix, key));
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
@@ -188,14 +187,13 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     }
 
     fn seek<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
-        self.raw_iterator
-            .seek(make_prefixed_key(self.prefix.to_vec(), key));
+        self.raw_iterator.seek(make_prefixed_key(&self.prefix, key));
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
         self.raw_iterator
-            .seek_for_prev(make_prefixed_key(self.prefix.to_vec(), key));
+            .seek_for_prev(make_prefixed_key(&self.prefix, key));
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 

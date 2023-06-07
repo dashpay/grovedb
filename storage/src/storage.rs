@@ -335,7 +335,7 @@ impl StorageBatch {
     }
 
     /// Add deferred `put` operation
-    pub fn put(
+    pub(crate) fn put(
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
@@ -354,7 +354,12 @@ impl StorageBatch {
     }
 
     /// Add deferred `put` operation for aux storage_cost
-    pub fn put_aux(&self, key: Vec<u8>, value: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
+    pub(crate) fn put_aux(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) {
         self.operations.borrow_mut().aux.insert(
             key.clone(),
             AbstractBatchOperation::PutAux {
@@ -366,7 +371,12 @@ impl StorageBatch {
     }
 
     /// Add deferred `put` operation for subtree roots storage_cost
-    pub fn put_root(&self, key: Vec<u8>, value: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
+    pub(crate) fn put_root(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) {
         self.operations.borrow_mut().roots.insert(
             key.clone(),
             AbstractBatchOperation::PutRoot {
@@ -378,7 +388,12 @@ impl StorageBatch {
     }
 
     /// Add deferred `put` operation for metadata storage_cost
-    pub fn put_meta(&self, key: Vec<u8>, value: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
+    pub(crate) fn put_meta(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) {
         self.operations.borrow_mut().meta.insert(
             key.clone(),
             AbstractBatchOperation::PutMeta {
@@ -390,7 +405,7 @@ impl StorageBatch {
     }
 
     /// Add deferred `delete` operation
-    pub fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
+    pub(crate) fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().data;
         if operations.get(&key).is_none() {
             operations.insert(
@@ -401,7 +416,7 @@ impl StorageBatch {
     }
 
     /// Add deferred `delete` operation for aux storage_cost
-    pub fn delete_aux(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
+    pub(crate) fn delete_aux(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().aux;
         if operations.get(&key).is_none() {
             operations.insert(
@@ -412,7 +427,7 @@ impl StorageBatch {
     }
 
     /// Add deferred `delete` operation for subtree roots storage_cost
-    pub fn delete_root(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
+    pub(crate) fn delete_root(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().roots;
         if operations.get(&key).is_none() {
             operations.insert(
@@ -423,7 +438,7 @@ impl StorageBatch {
     }
 
     /// Add deferred `delete` operation for metadata storage_cost
-    pub fn delete_meta(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
+    pub(crate) fn delete_meta(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().meta;
         if operations.get(&key).is_none() {
             operations.insert(
@@ -434,7 +449,7 @@ impl StorageBatch {
     }
 
     /// Merge batch into this one
-    pub fn merge(&self, other: StorageBatch) {
+    pub(crate) fn merge(&self, other: StorageBatch) {
         for op in other.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
@@ -474,7 +489,7 @@ impl StorageBatch {
 }
 
 /// Iterator over storage_cost batch operations.
-pub struct StorageBatchIter {
+pub(crate) struct StorageBatchIter {
     data: IntoValues<Vec<u8>, AbstractBatchOperation>,
     aux: IntoValues<Vec<u8>, AbstractBatchOperation>,
     meta: IntoValues<Vec<u8>, AbstractBatchOperation>,
@@ -493,11 +508,10 @@ impl Iterator for StorageBatchIter {
     }
 }
 
-impl IntoIterator for StorageBatch {
-    type IntoIter = StorageBatchIter;
-    type Item = AbstractBatchOperation;
-
-    fn into_iter(self) -> Self::IntoIter {
+// Making this a method rather than `IntoIter` implementation as we don't want
+// to leak multi context batch internals in any way
+impl StorageBatch {
+    pub(crate) fn into_iter(self) -> StorageBatchIter {
         let operations = self.operations.into_inner();
 
         StorageBatchIter {
@@ -519,7 +533,7 @@ impl Default for StorageBatch {
 /// required for multi-tree batches.
 #[allow(missing_docs)]
 #[derive(strum::AsRefStr)]
-pub enum AbstractBatchOperation {
+pub(crate) enum AbstractBatchOperation {
     /// Deferred put operation
     Put {
         key: Vec<u8>,

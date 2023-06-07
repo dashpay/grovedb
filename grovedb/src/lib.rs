@@ -96,7 +96,7 @@ pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 #[cfg(feature = "full")]
-pub use storage::rocksdb_storage::RocksDbStorage;
+use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
@@ -106,7 +106,7 @@ use storage::{
     StorageBatch,
 };
 #[cfg(feature = "full")]
-pub use storage::{Storage, StorageContext};
+use storage::{Storage, StorageContext};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;

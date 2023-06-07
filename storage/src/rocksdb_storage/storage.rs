@@ -51,11 +51,14 @@ use super::{
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
+    storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
-    AbstractBatchOperation, Storage, StorageBatch,
+    Storage, StorageBatch,
 };
 
 const BLAKE_BLOCK_LEN: usize = 64;
+
+pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 fn blake_block_count(len: usize) -> usize {
     if len == 0 {
@@ -133,27 +136,24 @@ impl RocksDbStorage {
         (res, segments_count)
     }
 
-    fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
-        path.len() + path.iter().map(|a| a.max_length() as usize).sum::<usize>()
-    }
-
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<B>(path: SubtreePath<B>) -> CostContext<Vec<u8>>
+    pub fn build_prefix<B>(path: SubtreePath<B>) -> CostContext<SubtreePrefix>
     where
         B: AsRef<[u8]>,
     {
         let (body, segments_count) = Self::build_prefix_body(path);
         if segments_count == 0 {
-            [0; 32].to_vec().wrap_with_cost(OperationCost::default())
+            SubtreePrefix::default().wrap_with_cost(OperationCost::default())
         } else {
             let blocks_count = blake_block_count(body.len());
-
-            blake3::hash(&body)
-                .as_bytes()
-                .to_vec()
+            SubtreePrefix::from(blake3::hash(&body))
                 .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u32))
         }
+    }
+
+    fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
+        path.len() + path.iter().map(|a| a.max_length() as usize).sum::<usize>()
     }
 
     /// Returns the write batch, with costs and pending costs
