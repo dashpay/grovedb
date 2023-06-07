@@ -35,13 +35,13 @@ use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
-use crate::{Batch, StorageBatch};
+use crate::{rocksdb_storage::storage::SubtreePrefix, Batch, StorageBatch};
 
 /// Wrapper to RocksDB batch.
 /// All calls go to RocksDB batch, but wrapper handles prefixes and column
 /// families. Also accumulates costs before commit.
 pub struct PrefixedRocksDbBatch<'db> {
-    pub(crate) prefix: Vec<u8>,
+    pub(crate) prefix: SubtreePrefix,
     pub(crate) batch: WriteBatchWithTransaction<true>,
     pub(crate) cf_aux: &'db ColumnFamily,
     pub(crate) cf_roots: &'db ColumnFamily,
@@ -56,7 +56,7 @@ pub struct PrefixedRocksDbBatch<'db> {
 /// way to represent a set of operations) that eventually will be merged into
 /// multi-context batch.
 pub struct PrefixedMultiContextBatchPart {
-    pub(crate) prefix: Vec<u8>,
+    pub(crate) prefix: SubtreePrefix,
     pub(crate) batch: StorageBatch,
 }
 
@@ -69,7 +69,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
-        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         // Update the key_storage_cost based on the prefixed key
         let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
@@ -99,7 +99,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
-        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         self.cost_acc.seek_count += 1;
         self.cost_acc.add_key_value_storage_costs(
@@ -119,7 +119,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
-        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         self.cost_acc.seek_count += 1;
         // put root only pays if cost info is set
@@ -137,7 +137,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
     }
 
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
-        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         self.cost_acc.seek_count += 1;
 
@@ -149,7 +149,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
     }
 
     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
-        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         self.cost_acc.seek_count += 1;
 
@@ -161,7 +161,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
     }
 
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
-        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         self.cost_acc.seek_count += 1;
 
@@ -183,7 +183,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
-        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         // Update the key_storage_cost based on the prefixed key
         let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
@@ -211,7 +211,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
         self.batch.put_aux(
-            make_prefixed_key(self.prefix.clone(), key),
+            make_prefixed_key(&self.prefix, key),
             value.to_vec(),
             cost_info,
         );
@@ -225,7 +225,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
         self.batch.put_root(
-            make_prefixed_key(self.prefix.clone(), key),
+            make_prefixed_key(&self.prefix, key),
             value.to_vec(),
             cost_info,
         );
@@ -234,16 +234,16 @@ impl Batch for PrefixedMultiContextBatchPart {
 
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info);
+            .delete(make_prefixed_key(&self.prefix, key), cost_info);
     }
 
     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info);
+            .delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
     }
 
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info);
+            .delete_root(make_prefixed_key(&self.prefix, key), cost_info);
     }
 }

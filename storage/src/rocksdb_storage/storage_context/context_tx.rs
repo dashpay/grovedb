@@ -42,7 +42,7 @@ use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator}
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
-    rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    rocksdb_storage::storage::{Db, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
 };
 
@@ -51,12 +51,12 @@ use crate::{
 pub struct PrefixedRocksDbTransactionContext<'db> {
     storage: &'db Db,
     transaction: &'db Tx<'db>,
-    prefix: Vec<u8>,
+    prefix: SubtreePrefix,
 }
 
 impl<'db> PrefixedRocksDbTransactionContext<'db> {
     /// Create a new prefixed transaction context instance
-    pub fn new(storage: &'db Db, transaction: &'db Tx<'db>, prefix: Vec<u8>) -> Self {
+    pub fn new(storage: &'db Db, transaction: &'db Tx<'db>, prefix: SubtreePrefix) -> Self {
         PrefixedRocksDbTransactionContext {
             storage,
             transaction,
@@ -114,7 +114,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .map_err(CostError)
         );
         self.transaction
-            .put(make_prefixed_key(self.prefix.clone(), &key), value)
+            .put(make_prefixed_key(&self.prefix, &key), value)
             .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
@@ -140,11 +140,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .map_err(CostError)
         );
         self.transaction
-            .put_cf(
-                self.cf_aux(),
-                make_prefixed_key(self.prefix.clone(), &key),
-                value,
-            )
+            .put_cf(self.cf_aux(), make_prefixed_key(&self.prefix, &key), value)
             .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
@@ -172,7 +168,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         self.transaction
             .put_cf(
                 self.cf_roots(),
-                make_prefixed_key(self.prefix.clone(), &key),
+                make_prefixed_key(&self.prefix, &key),
                 value,
             )
             .map_err(RocksDBError)
@@ -200,11 +196,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .map_err(CostError)
         );
         self.transaction
-            .put_cf(
-                self.cf_meta(),
-                make_prefixed_key(self.prefix.clone(), &key),
-                value,
-            )
+            .put_cf(self.cf_meta(), make_prefixed_key(&self.prefix, &key), value)
             .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
@@ -230,7 +222,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         }
 
         self.transaction
-            .delete(make_prefixed_key(self.prefix.clone(), key))
+            .delete(make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
@@ -255,7 +247,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         }
 
         self.transaction
-            .delete_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+            .delete_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
@@ -280,7 +272,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         }
 
         self.transaction
-            .delete_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+            .delete_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
@@ -305,14 +297,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         }
 
         self.transaction
-            .delete_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+            .delete_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get(make_prefixed_key(self.prefix.clone(), key))
+            .get(make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -328,7 +320,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+            .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -344,7 +336,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+            .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
@@ -360,7 +352,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+            .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
