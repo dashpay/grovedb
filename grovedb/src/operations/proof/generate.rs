@@ -44,6 +44,7 @@ use merk::{
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
 use path::SubtreePath;
+use storage::StorageBatch;
 #[cfg(feature = "full")]
 use storage::StorageContext;
 
@@ -177,12 +178,12 @@ impl GroveDb {
         is_verbose: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-
+        let batch = StorageBatch::new();
         let mut to_add_to_result_set: u16 = 0;
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.as_slice().into())
+            self.open_non_transactional_merk_at_path(path.as_slice().into(), &batch)
         );
         if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
             cost_return_on_error_no_add!(
@@ -266,7 +267,8 @@ impl GroveDb {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
                                     self.open_non_transactional_merk_at_path(
-                                        new_path.as_slice().into()
+                                        new_path.as_slice().into(),
+                                        &batch
                                     )
                                 );
 
@@ -319,7 +321,8 @@ impl GroveDb {
                             let inner_subtree = cost_return_on_error!(
                                 &mut cost,
                                 self.open_non_transactional_merk_at_path(
-                                    new_path.as_slice().into()
+                                    new_path.as_slice().into(),
+                                    &batch
                                 )
                             );
 
@@ -443,10 +446,11 @@ impl GroveDb {
 
         // generate proof to show that the path leads up to the root
         let mut split_path = path_slices.split_last();
+        let batch = StorageBatch::new();
         while let Some((key, path_slice)) = split_path {
             let subtree = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(path_slice.into())
+                self.open_non_transactional_merk_at_path(path_slice.into(), &batch)
             );
             let mut query = Query::new();
             query.insert_key(key.to_vec());
@@ -549,11 +553,12 @@ impl GroveDb {
             write_to_vec(proof_result, &[ProofTokenType::AbsentPath.into()])
         );
         let mut current_path: Vec<&[u8]> = vec![];
+        let batch = StorageBatch::new();
 
         let mut split_path = path_slices.split_first();
         while let Some((key, path_slice)) = split_path {
             let subtree = self
-                .open_non_transactional_merk_at_path(current_path.as_slice().into())
+                .open_non_transactional_merk_at_path(current_path.as_slice().into(), &batch)
                 .unwrap_add_cost(&mut cost);
 
             if subtree.is_err() {
@@ -664,6 +669,7 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use merk::{execute_proof, proofs::Query};
+    use storage::StorageBatch;
 
     use crate::{
         operations::proof::util::{ProofReader, ProofTokenType},
@@ -693,8 +699,10 @@ mod tests {
         let mut query = Query::new();
         query.insert_all();
 
+        let batch = StorageBatch::new();
+
         let merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"].as_ref().into())
+            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"].as_ref().into(), &batch)
             .unwrap()
             .unwrap();
         let expected_root_hash = merk.root_hash().unwrap();
@@ -728,7 +736,7 @@ mod tests {
 
         // what is the key is empty??
         let merk = db
-            .open_non_transactional_merk_at_path(EMPTY_PATH)
+            .open_non_transactional_merk_at_path(EMPTY_PATH, &batch)
             .unwrap()
             .unwrap();
         let expected_root_hash = merk.root_hash().unwrap();
@@ -773,8 +781,10 @@ mod tests {
         // insert all under inner tree
         let path = vec![TEST_LEAF, b"innertree"];
 
+        let batch = StorageBatch::new();
+
         let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice().into())
+            .open_non_transactional_merk_at_path(path.as_slice().into(), &batch)
             .unwrap()
             .unwrap();
         let inner_tree_root_hash = merk.root_hash().unwrap();
@@ -794,7 +804,7 @@ mod tests {
         // insert all under innertree4
         let path = vec![TEST_LEAF, b"innertree4"];
         let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice().into())
+            .open_non_transactional_merk_at_path(path.as_slice().into(), &batch)
             .unwrap()
             .unwrap();
         let inner_tree_4_root_hash = merk.root_hash().unwrap();
@@ -814,7 +824,7 @@ mod tests {
         // insert all for deeper_1
         let path: Vec<&[u8]> = vec![b"deep_leaf", b"deep_node_1", b"deeper_1"];
         let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice().into())
+            .open_non_transactional_merk_at_path(path.as_slice().into(), &batch)
             .unwrap()
             .unwrap();
         let deeper_1_root_hash = merk.root_hash().unwrap();

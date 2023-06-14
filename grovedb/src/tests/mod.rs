@@ -655,11 +655,6 @@ fn test_changes_propagated() {
     .unwrap()
     .expect("successful subtree 1 insert");
 
-    let _merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
-        .unwrap()
-        .unwrap();
-
     db.insert(
         [TEST_LEAF, b"key1"].as_ref(),
         b"key2",

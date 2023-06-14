@@ -44,10 +44,7 @@ use rocksdb::{
     Transaction, WriteBatchWithTransaction,
 };
 
-use super::{
-    PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
-    PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
-};
+use super::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext};
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
@@ -410,9 +407,7 @@ impl RocksDbStorage {
 impl<'db> Storage<'db> for RocksDbStorage {
     type BatchStorageContext = PrefixedRocksDbBatchStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbBatchTransactionContext<'db>;
-    type StorageContext = PrefixedRocksDbStorageContext<'db>;
     type Transaction = Tx<'db>;
-    type TransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
         self.db.transaction()
@@ -432,28 +427,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn flush(&self) -> Result<(), Error> {
         self.db.flush().map_err(RocksDBError)
-    }
-
-    fn get_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-    ) -> CostContext<Self::StorageContext>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
-    }
-
-    fn get_transactional_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::TransactionalStorageContext>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path)
-            .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
     }
 
     fn get_batch_storage_context<'b, B>(
@@ -569,8 +542,13 @@ mod tests {
         let prefix_a = RocksDbStorage::build_prefix(path_a.clone()).unwrap();
         let prefix_b = RocksDbStorage::build_prefix(path_b.clone()).unwrap();
 
-        let context_a = storage.get_storage_context(path_a).unwrap();
-        let context_b = storage.get_storage_context(path_b).unwrap();
+        let batch = StorageBatch::new();
+        let context_a = storage
+            .get_batch_storage_context(path_a.clone(), &batch)
+            .unwrap();
+        let context_b = storage
+            .get_batch_storage_context(path_b.clone(), &batch)
+            .unwrap();
 
         // Here by "left" I mean a subtree that goes first in RocksDB.
         let (left, right) = if prefix_a < prefix_b {
@@ -586,6 +564,21 @@ mod tests {
         right.put(b"a", b"a", None, None).unwrap().unwrap();
         right.put(b"b", b"b", None, None).unwrap().unwrap();
         right.put(b"c", b"c", None, None).unwrap().unwrap();
+
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .expect("cannot commit batch");
+
+        let batch = StorageBatch::new();
+        let context_a = storage.get_batch_storage_context(path_a, &batch).unwrap();
+        let context_b = storage.get_batch_storage_context(path_b, &batch).unwrap();
+
+        let (left, right) = if prefix_a < prefix_b {
+            (&context_a, &context_b)
+        } else {
+            (&context_b, &context_a)
+        };
 
         // Iterate over left subtree while right subtree contains 1 byte keys:
         let mut iteration_cost_before = OperationCost::default();

@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! A hierarchical "grove" of trees with proofs and secondary indexes.
+//! A hierarchical "grove" of trees with proofs.
 
 // #![deny(missing_docs)]
 
@@ -49,8 +49,8 @@ mod query;
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
-#[cfg(feature = "full")]
-mod replication;
+// #[cfg(feature = "full")]
+// mod replication;
 #[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
@@ -93,8 +93,9 @@ use merk::{
 use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-#[cfg(feature = "full")]
-pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+// #[cfg(feature = "full")]
+// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+use storage::rocksdb_storage::PrefixedRocksDbBatchStorageContext;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
@@ -144,7 +145,8 @@ impl GroveDb {
         &'db self,
         path: SubtreePath<'b, B>,
         tx: &'db Transaction,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+        batch: &'db StorageBatch,
+    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -152,12 +154,12 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_transactional_storage_context(path.clone(), tx)
+            .get_batch_transactional_storage_context(path.clone(), batch, tx)
             .unwrap_add_cost(&mut cost);
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_transactional_storage_context(parent_path.clone(), tx)
+                .get_batch_transactional_storage_context(parent_path.clone(), batch, tx)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -191,10 +193,11 @@ impl GroveDb {
     }
 
     /// Opens the non-transactional Merk at the given path. Returns CostResult.
-    pub fn open_non_transactional_merk_at_path<'b, B>(
-        &self,
+    pub fn open_non_transactional_merk_at_path<'db, 'b, B>(
+        &'db self,
         path: SubtreePath<'b, B>,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
+        batch: &'db StorageBatch,
+    ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -202,13 +205,13 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_storage_context(path.clone())
+            .get_batch_storage_context(path.clone(), batch)
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(parent_path.clone())
+                .get_batch_storage_context(parent_path.clone(), batch)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -326,9 +329,10 @@ impl GroveDb {
     /// transaction
     fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchTransactionContext>>,
         path: SubtreePath<'b, B>,
         transaction: &Transaction,
+        batch: &StorageBatch,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -344,9 +348,9 @@ impl GroveDb {
         let mut current_path = path.clone();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            let mut parent_tree: Merk<PrefixedRocksDbBatchTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(parent_path.clone(), transaction)
+                self.open_transactional_merk_at_path(parent_path.clone(), transaction, batch)
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -371,8 +375,9 @@ impl GroveDb {
     /// Method to propagate updated subtree key changes one level up
     fn propagate_changes_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchStorageContext>>,
         path: SubtreePath<'b, B>,
+        batch: &StorageBatch,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -388,9 +393,9 @@ impl GroveDb {
         let mut current_path: SubtreePath<B> = path;
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            let mut parent_tree: Merk<PrefixedRocksDbBatchStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(parent_path.clone())
+                self.open_non_transactional_merk_at_path(parent_path.clone(), batch)
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -635,19 +640,21 @@ impl GroveDb {
     /// Method to check that the value_hash of Element::Tree nodes are computed
     /// correctly.
     pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+        let batch = StorageBatch::new();
         let root_merk = self
-            .open_non_transactional_merk_at_path(SubtreePath::empty())
+            .open_non_transactional_merk_at_path(SubtreePath::empty(), &batch)
             .unwrap()
             .expect("should exist");
-        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty())
+        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), &batch)
     }
 
     /// Verifies that the root hash of the given merk and all submerks match
     /// those of the merk and submerks at the given path. Returns any issues.
     fn verify_merk_and_submerks<B: AsRef<[u8]>>(
         &self,
-        merk: Merk<PrefixedRocksDbStorageContext>,
+        merk: Merk<PrefixedRocksDbBatchStorageContext>,
         path: &SubtreePath<B>,
+        batch: &StorageBatch,
     ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
@@ -655,6 +662,7 @@ impl GroveDb {
         let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
+
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value).unwrap();
             if element.is_tree() {
@@ -667,7 +675,7 @@ impl GroveDb {
                 let new_path_ref = SubtreePath::from(&new_path);
 
                 let inner_merk = self
-                    .open_non_transactional_merk_at_path(new_path_ref.clone())
+                    .open_non_transactional_merk_at_path(new_path_ref.clone(), batch)
                     .unwrap()
                     .expect("should exist");
                 let root_hash = inner_merk.root_hash().unwrap();
@@ -681,7 +689,7 @@ impl GroveDb {
                         (root_hash, combined_value_hash, element_value_hash),
                     );
                 }
-                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref));
+                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch));
             }
         }
         issues

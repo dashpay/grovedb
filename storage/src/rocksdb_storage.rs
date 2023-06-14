@@ -37,7 +37,6 @@ pub use rocksdb::{Error, WriteBatchWithTransaction};
 pub use storage_context::{
     PrefixedRocksDbBatch, PrefixedRocksDbBatchStorageContext,
     PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbRawIterator,
-    PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
 
 pub use self::storage::RocksDbStorage;

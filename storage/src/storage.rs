@@ -50,12 +50,6 @@ pub trait Storage<'db> {
     /// Storage transaction type
     type Transaction;
 
-    /// Storage context type
-    type StorageContext: StorageContext<'db>;
-
-    /// Storage context type for transactional data
-    type TransactionalStorageContext: StorageContext<'db>;
-
     /// Storage context type for mutli-tree batch operations
     type BatchStorageContext;
 
@@ -80,23 +74,6 @@ pub trait Storage<'db> {
 
     /// Forces data to be written
     fn flush(&self) -> Result<(), Error>;
-
-    /// Make storage_cost context for a subtree with path
-    fn get_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-    ) -> CostContext<Self::StorageContext>
-    where
-        B: AsRef<[u8]> + 'b;
-
-    /// Make storage_cost context for a subtree on transactional data
-    fn get_transactional_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::TransactionalStorageContext>
-    where
-        B: AsRef<[u8]> + 'b;
 
     /// Make batch storage_cost context for a subtree with path
     fn get_batch_storage_context<'b, B>(

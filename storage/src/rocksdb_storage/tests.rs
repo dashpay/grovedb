@@ -29,929 +29,6 @@
 //! Tests
 
 use super::test_utils::TempStorage;
-use crate::Batch;
-
-mod no_transaction {
-    use super::*;
-    use crate::{Batch, RawIterator, Storage, StorageContext};
-
-    #[test]
-    fn test_aux_cf_methods() {
-        let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
-            .unwrap();
-
-        context_ayya
-            .put_aux(b"key1", b"ayyavalue1", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-        context_ayya
-            .put_aux(b"key2", b"ayyavalue2", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-        context_ayyb
-            .put_aux(b"key1", b"ayybvalue1", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-        context_ayyb
-            .put_aux(b"key2", b"ayybvalue2", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-
-        assert_eq!(
-            context_ayya
-                .get_aux(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from aux cf"),
-            b"ayyavalue1"
-        );
-
-        context_ayya
-            .delete_aux(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from aux cf");
-
-        assert!(context_ayya
-            .get_aux(b"key1")
-            .unwrap()
-            .expect("cannot get from aux cf")
-            .is_none());
-        assert_eq!(
-            context_ayya
-                .get_aux(b"key2")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from aux cf"),
-            b"ayyavalue2"
-        );
-        assert_eq!(
-            context_ayyb
-                .get_aux(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from aux cf"),
-            b"ayybvalue1"
-        );
-    }
-
-    #[test]
-    fn test_roots_cf_methods() {
-        let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
-            .unwrap();
-
-        context_ayya
-            .put_root(b"key1", b"ayyavalue1", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-        context_ayya
-            .put_root(b"key2", b"ayyavalue2", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-        context_ayyb
-            .put_root(b"key1", b"ayybvalue1", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-        context_ayyb
-            .put_root(b"key2", b"ayybvalue2", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-
-        assert_eq!(
-            context_ayya
-                .get_root(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from roots cf"),
-            b"ayyavalue1"
-        );
-
-        context_ayya
-            .delete_root(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from roots cf");
-
-        assert!(context_ayya
-            .get_root(b"key1")
-            .unwrap()
-            .expect("cannot get from roots cf")
-            .is_none());
-        assert_eq!(
-            context_ayya
-                .get_root(b"key2")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from roots cf"),
-            b"ayyavalue2"
-        );
-        assert_eq!(
-            context_ayyb
-                .get_root(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from roots cf"),
-            b"ayybvalue1"
-        );
-    }
-
-    #[test]
-    fn test_meta_cf_methods() {
-        let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
-            .unwrap();
-
-        context_ayya
-            .put_meta(b"key1", b"ayyavalue1", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-        context_ayya
-            .put_meta(b"key2", b"ayyavalue2", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-        context_ayyb
-            .put_meta(b"key1", b"ayybvalue1", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-        context_ayyb
-            .put_meta(b"key2", b"ayybvalue2", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-
-        assert_eq!(
-            context_ayya
-                .get_meta(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from meta cf"),
-            b"ayyavalue1"
-        );
-
-        context_ayya
-            .delete_meta(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from meta cf");
-
-        assert!(context_ayya
-            .get_meta(b"key1")
-            .unwrap()
-            .expect("cannot get from meta cf")
-            .is_none());
-        assert_eq!(
-            context_ayya
-                .get_meta(b"key2")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from meta cf"),
-            b"ayyavalue2"
-        );
-        assert_eq!(
-            context_ayyb
-                .get_meta(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from meta cf"),
-            b"ayybvalue1"
-        );
-    }
-
-    #[test]
-    fn test_default_cf_methods() {
-        let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
-            .unwrap();
-
-        context_ayya
-            .put(b"key1", b"ayyavalue1", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayya
-            .put(b"key2", b"ayyavalue2", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayyb
-            .put(b"key1", b"ayybvalue1", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayyb
-            .put(b"key2", b"ayybvalue2", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-
-        assert_eq!(
-            context_ayya
-                .get(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayyavalue1"
-        );
-
-        context_ayya
-            .delete(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from storage");
-
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-        assert_eq!(
-            context_ayya
-                .get(b"key2")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayyavalue2"
-        );
-        assert_eq!(
-            context_ayyb
-                .get(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayybvalue1"
-        );
-    }
-
-    #[test]
-    fn test_batch() {
-        let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-
-        context_ayya
-            .put(b"key1", b"ayyavalue1", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayya
-            .put(b"key2", b"ayyavalue2", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-
-        assert!(context_ayya
-            .get(b"key3")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-
-        let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1", None);
-        batch.put(b"key3", b"ayyavalue3", None, None).unwrap();
-
-        assert!(context_ayya
-            .get(b"key3")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-
-        context_ayya
-            .commit_batch(batch)
-            .unwrap()
-            .expect("cannot commit a batch");
-
-        assert_eq!(
-            context_ayya
-                .get(b"key3")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayyavalue3"
-        );
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-    }
-
-    #[test]
-    fn test_raw_iterator() {
-        let storage = TempStorage::new();
-        let context = storage
-            .get_storage_context([b"someprefix"].as_ref().into())
-            .unwrap();
-
-        context
-            .put(b"key1", b"value1", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context
-            .put(b"key0", b"value0", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context
-            .put(b"key3", b"value3", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context
-            .put(b"key2", b"value2", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-
-        // Other storages are required to put something into rocksdb with other prefix
-        // to see if there will be any conflicts and boundaries are met
-        let context_before = storage
-            .get_storage_context([b"anothersomeprefix"].as_ref().into())
-            .unwrap();
-        context_before
-            .put(b"key1", b"value1", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context_before
-            .put(b"key5", b"value5", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        let context_after = storage
-            .get_storage_context([b"zanothersomeprefix"].as_ref().into())
-            .unwrap();
-        context_after
-            .put(b"key1", b"value1", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context_after
-            .put(b"key5", b"value5", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-
-        let expected: [(&'static [u8], &'static [u8]); 4] = [
-            (b"key0", b"value0"),
-            (b"key1", b"value1"),
-            (b"key2", b"value2"),
-            (b"key3", b"value3"),
-        ];
-        let mut expected_iter = expected.into_iter();
-
-        // Test iterator goes forward
-
-        let mut iter = context.raw_iter();
-        iter.seek_to_first().unwrap();
-        while iter.valid().unwrap() {
-            assert_eq!(
-                (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
-                expected_iter.next().unwrap()
-            );
-            iter.next().unwrap();
-        }
-        assert!(expected_iter.next().is_none());
-
-        // Test `seek_to_last` on a storage_cost with elements
-
-        let mut iter = context.raw_iter();
-        iter.seek_to_last().unwrap();
-        assert_eq!(
-            (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
-            expected.last().unwrap().clone(),
-        );
-        iter.next().unwrap();
-        assert!(!iter.valid().unwrap());
-
-        // Test `seek_to_last` on empty storage_cost
-        let empty_storage = storage
-            .get_storage_context([b"notexist"].as_ref().into())
-            .unwrap();
-        let mut iter = empty_storage.raw_iter();
-        iter.seek_to_last().unwrap();
-        assert!(!iter.valid().unwrap());
-        iter.next().unwrap();
-        assert!(!iter.valid().unwrap());
-    }
-}
-
-mod transaction {
-    use super::*;
-    use crate::{RawIterator, Storage, StorageContext};
-
-    #[test]
-    fn test_aux_cf_methods() {
-        let storage = TempStorage::new();
-        let tx = storage.start_transaction();
-        let context_ayya = storage
-            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx)
-            .unwrap();
-        let context_ayyb = storage
-            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &tx)
-            .unwrap();
-
-        context_ayya
-            .put_aux(b"key1", b"ayyavalue1", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-        context_ayya
-            .put_aux(b"key2", b"ayyavalue2", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-        context_ayyb
-            .put_aux(b"key1", b"ayybvalue1", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-        context_ayyb
-            .put_aux(b"key2", b"ayybvalue2", None)
-            .unwrap()
-            .expect("cannot insert into aux cf");
-
-        assert_eq!(
-            context_ayya
-                .get_aux(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from aux cf"),
-            b"ayyavalue1"
-        );
-
-        storage
-            .commit_transaction(tx)
-            .unwrap()
-            .expect("cannot commit transaction");
-
-        let tx2 = storage.start_transaction();
-        let context_ayya_after_tx = storage
-            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx2)
-            .unwrap();
-        let context_ayya_after_no_tx = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-
-        context_ayya_after_tx
-            .delete_aux(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from aux cf");
-
-        // Should be deleted inside transaction:
-        assert!(context_ayya_after_tx
-            .get_aux(b"key1")
-            .unwrap()
-            .expect("cannot get from aux cf")
-            .is_none());
-
-        // But still accessible outside of it:
-        assert_eq!(
-            context_ayya_after_no_tx
-                .get_aux(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from aux cf"),
-            b"ayyavalue1"
-        );
-
-        storage
-            .commit_transaction(tx2)
-            .unwrap()
-            .expect("cannot commit transaction");
-
-        // ... and no longer accessible at all after transaciton got commited
-        assert!(context_ayya_after_no_tx
-            .get_aux(b"key1")
-            .unwrap()
-            .ok()
-            .expect("cannot get from aux cf")
-            .is_none());
-    }
-
-    #[test]
-    fn test_roots_cf_methods() {
-        let storage = TempStorage::new();
-        let tx = storage.start_transaction();
-        let context_ayya = storage
-            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx)
-            .unwrap();
-        let context_ayyb = storage
-            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &tx)
-            .unwrap();
-
-        context_ayya
-            .put_root(b"key1", b"ayyavalue1", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-        context_ayya
-            .put_root(b"key2", b"ayyavalue2", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-        context_ayyb
-            .put_root(b"key1", b"ayybvalue1", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-        context_ayyb
-            .put_root(b"key2", b"ayybvalue2", None)
-            .unwrap()
-            .expect("cannot insert into roots cf");
-
-        assert_eq!(
-            context_ayya
-                .get_root(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from roots cf"),
-            b"ayyavalue1"
-        );
-
-        storage
-            .commit_transaction(tx)
-            .unwrap()
-            .expect("cannot commit transaction");
-
-        let tx2 = storage.start_transaction();
-        let context_ayya_after_tx = storage
-            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx2)
-            .unwrap();
-        let context_ayya_after_no_tx = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-
-        context_ayya_after_tx
-            .delete_root(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from roots cf");
-
-        // Should be deleted inside transaction:
-        assert!(context_ayya_after_tx
-            .get_root(b"key1")
-            .unwrap()
-            .expect("cannot get from roots cf")
-            .is_none());
-
-        // But still accessible outside of it:
-        assert_eq!(
-            context_ayya_after_no_tx
-                .get_root(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from roots cf"),
-            b"ayyavalue1"
-        );
-
-        storage
-            .commit_transaction(tx2)
-            .unwrap()
-            .expect("cannot commit transaction");
-
-        // ... and no longer accessible at all after transaciton got commited
-        assert!(context_ayya_after_no_tx
-            .get_root(b"key1")
-            .unwrap()
-            .ok()
-            .expect("cannot get from roots cf")
-            .is_none());
-    }
-
-    #[test]
-    fn test_meta_cf_methods() {
-        let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
-            .unwrap();
-
-        context_ayya
-            .put_meta(b"key1", b"ayyavalue1", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-        context_ayya
-            .put_meta(b"key2", b"ayyavalue2", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-        context_ayyb
-            .put_meta(b"key1", b"ayybvalue1", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-        context_ayyb
-            .put_meta(b"key2", b"ayybvalue2", None)
-            .unwrap()
-            .expect("cannot insert into meta cf");
-
-        assert_eq!(
-            context_ayya
-                .get_meta(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from meta cf"),
-            b"ayyavalue1"
-        );
-
-        context_ayya
-            .delete_meta(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from meta cf");
-
-        assert!(context_ayya
-            .get_meta(b"key1")
-            .unwrap()
-            .expect("cannot get from meta cf")
-            .is_none());
-        assert_eq!(
-            context_ayya
-                .get_meta(b"key2")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from meta cf"),
-            b"ayyavalue2"
-        );
-        assert_eq!(
-            context_ayyb
-                .get_meta(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from meta cf"),
-            b"ayybvalue1"
-        );
-    }
-
-    #[test]
-    fn test_default_cf_methods() {
-        let storage = TempStorage::new();
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-        let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
-            .unwrap();
-
-        context_ayya
-            .put(b"key1", b"ayyavalue1", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayya
-            .put(b"key2", b"ayyavalue2", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayyb
-            .put(b"key1", b"ayybvalue1", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayyb
-            .put(b"key2", b"ayybvalue2", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-
-        assert_eq!(
-            context_ayya
-                .get(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayyavalue1"
-        );
-
-        context_ayya
-            .delete(b"key1", None)
-            .unwrap()
-            .expect("cannot delete from storage");
-
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-        assert_eq!(
-            context_ayya
-                .get(b"key2")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayyavalue2"
-        );
-        assert_eq!(
-            context_ayyb
-                .get(b"key1")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayybvalue1"
-        );
-    }
-
-    #[test]
-    fn test_batch() {
-        let storage = TempStorage::new();
-        let tx = storage.start_transaction();
-        let context_ayya = storage
-            .get_transactional_storage_context([b"ayya"].as_ref().into(), &tx)
-            .unwrap();
-
-        context_ayya
-            .put(b"key1", b"ayyavalue1", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-        context_ayya
-            .put(b"key2", b"ayyavalue2", None, None)
-            .unwrap()
-            .expect("cannot insert into storage");
-
-        assert!(context_ayya
-            .get(b"key3")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-
-        let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1", None);
-        batch.put(b"key3", b"ayyavalue3", None, None).unwrap();
-
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_some());
-
-        context_ayya
-            .commit_batch(batch)
-            .unwrap()
-            .expect("cannot commit a batch");
-
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-
-        storage
-            .commit_transaction(tx)
-            .unwrap()
-            .expect("cannot commit transaction");
-
-        let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
-            .unwrap();
-        assert_eq!(
-            context_ayya
-                .get(b"key3")
-                .unwrap()
-                .ok()
-                .flatten()
-                .expect("cannot get from storage"),
-            b"ayyavalue3"
-        );
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
-    }
-
-    #[test]
-    fn test_raw_iterator() {
-        let storage = TempStorage::new();
-        let context = storage
-            .get_storage_context([b"someprefix"].as_ref().into())
-            .unwrap();
-
-        context
-            .put(b"key1", b"value1", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context
-            .put(b"key0", b"value0", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context
-            .put(b"key3", b"value3", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context
-            .put(b"key2", b"value2", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-
-        // Other storages are required to put something into rocksdb with other prefix
-        // to see if there will be any conflicts and boundaries are met
-        let context_before = storage
-            .get_storage_context([b"anothersomeprefix"].as_ref().into())
-            .unwrap();
-        context_before
-            .put(b"key1", b"value1", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context_before
-            .put(b"key5", b"value5", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        let context_after = storage
-            .get_storage_context([b"zanothersomeprefix"].as_ref().into())
-            .unwrap();
-        context_after
-            .put(b"key1", b"value1", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-        context_after
-            .put(b"key5", b"value5", None, None)
-            .unwrap()
-            .expect("expected successful insertion");
-
-        // Test uncommited changes
-        {
-            let tx = storage.start_transaction();
-            let context_tx = storage
-                .get_transactional_storage_context([b"someprefix"].as_ref().into(), &tx)
-                .unwrap();
-
-            context_tx
-                .delete(b"key1", None)
-                .unwrap()
-                .expect("unable to delete an item");
-            context_tx
-                .put(b"key4", b"value4", None, None)
-                .unwrap()
-                .expect("unable to insert an item");
-
-            let expected: [(&'static [u8], &'static [u8]); 4] = [
-                (b"key0", b"value0"),
-                (b"key2", b"value2"),
-                (b"key3", b"value3"),
-                (b"key4", b"value4"),
-            ];
-            let mut expected_iter = expected.into_iter();
-
-            // Test iterator goes forward
-
-            let mut iter = context_tx.raw_iter();
-            iter.seek_to_first().unwrap();
-            while iter.valid().unwrap() {
-                assert_eq!(
-                    (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
-                    expected_iter.next().unwrap()
-                );
-                iter.next().unwrap();
-            }
-            assert!(expected_iter.next().is_none());
-
-            // Test `seek_to_last` on a storage_cost with elements
-
-            let mut iter = context_tx.raw_iter();
-            iter.seek_to_last().unwrap();
-            assert_eq!(
-                (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
-                expected.last().unwrap().clone(),
-            );
-            iter.next().unwrap();
-            assert!(!iter.valid().unwrap());
-        }
-
-        // Test commited data stay intact
-        {
-            let expected: [(&'static [u8], &'static [u8]); 4] = [
-                (b"key0", b"value0"),
-                (b"key1", b"value1"),
-                (b"key2", b"value2"),
-                (b"key3", b"value3"),
-            ];
-            let mut expected_iter = expected.into_iter();
-
-            let mut iter = context.raw_iter();
-            iter.seek_to_first().unwrap();
-            while iter.valid().unwrap() {
-                assert_eq!(
-                    (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
-                    expected_iter.next().unwrap()
-                );
-                iter.next().unwrap();
-            }
-            assert!(expected_iter.next().is_none());
-        }
-    }
-}
 
 mod batch_no_transaction {
     use super::*;
@@ -1016,11 +93,12 @@ mod batch_no_transaction {
             .unwrap()
             .expect("cannot commit batch");
 
+        let batch = StorageBatch::new();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
+            .get_batch_storage_context([b"ayya"].as_ref().into(), &batch)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
+            .get_batch_storage_context([b"ayyb"].as_ref().into(), &batch)
             .unwrap();
 
         assert_eq!(
@@ -1166,8 +244,9 @@ mod batch_no_transaction {
             .unwrap()
             .expect("cannot commit multi context batch");
 
+        let batch = StorageBatch::new();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
+            .get_batch_storage_context([b"ayya"].as_ref().into(), &batch)
             .unwrap();
         assert_eq!(
             context_ayya
@@ -1190,17 +269,27 @@ mod batch_transaction {
         let storage = TempStorage::new();
         let transaction = storage.start_transaction();
 
+        let batch = StorageBatch::new();
+        let batch_tx = StorageBatch::new();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
+            .get_batch_storage_context([b"ayya"].as_ref().into(), &batch)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
+            .get_batch_storage_context([b"ayyb"].as_ref().into(), &batch)
             .unwrap();
         let context_ayya_tx = storage
-            .get_transactional_storage_context([b"ayya"].as_ref().into(), &transaction)
+            .get_batch_transactional_storage_context(
+                [b"ayya"].as_ref().into(),
+                &batch_tx,
+                &transaction,
+            )
             .unwrap();
         let context_ayyb_tx = storage
-            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &transaction)
+            .get_batch_transactional_storage_context(
+                [b"ayyb"].as_ref().into(),
+                &batch_tx,
+                &transaction,
+            )
             .unwrap();
 
         // Data should be visible in transaction...
@@ -1212,6 +301,27 @@ mod batch_transaction {
             .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
             .expect("cannot insert data");
+
+        storage
+            .commit_multi_context_batch(batch_tx, Some(&transaction))
+            .unwrap()
+            .expect("cannot commit a non-tx multi context batch");
+
+        let another_batch_tx = StorageBatch::new();
+        let context_ayya_tx = storage
+            .get_batch_transactional_storage_context(
+                [b"ayya"].as_ref().into(),
+                &another_batch_tx,
+                &transaction,
+            )
+            .unwrap();
+        let context_ayyb_tx = storage
+            .get_batch_transactional_storage_context(
+                [b"ayyb"].as_ref().into(),
+                &another_batch_tx,
+                &transaction,
+            )
+            .unwrap();
 
         assert_eq!(
             context_ayya_tx
@@ -1391,11 +501,20 @@ mod batch_transaction {
 
         // Obtaining new contexts outside a commited batch but still within a
         // transaction
+        let another_batch = StorageBatch::new();
         let context_ayya = storage
-            .get_transactional_storage_context([b"ayya"].as_ref().into(), &transaction)
+            .get_batch_transactional_storage_context(
+                [b"ayya"].as_ref().into(),
+                &another_batch,
+                &transaction,
+            )
             .unwrap();
         let context_ayyb = storage
-            .get_transactional_storage_context([b"ayyb"].as_ref().into(), &transaction)
+            .get_batch_transactional_storage_context(
+                [b"ayyb"].as_ref().into(),
+                &another_batch,
+                &transaction,
+            )
             .unwrap();
 
         assert_eq!(
@@ -1409,10 +528,10 @@ mod batch_transaction {
 
         // And still no data in the database until transaction is commited
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
+            .get_batch_storage_context([b"ayya"].as_ref().into(), &another_batch)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
+            .get_batch_storage_context([b"ayyb"].as_ref().into(), &another_batch)
             .unwrap();
 
         let mut iter = context_ayya.raw_iter();
@@ -1428,11 +547,12 @@ mod batch_transaction {
             .unwrap()
             .expect("cannot commit transaction");
 
+        let another_batch = StorageBatch::new();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into())
+            .get_batch_storage_context([b"ayya"].as_ref().into(), &another_batch)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into())
+            .get_batch_storage_context([b"ayyb"].as_ref().into(), &another_batch)
             .unwrap();
 
         assert_eq!(

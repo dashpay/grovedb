@@ -702,7 +702,7 @@ impl Element {
 #[cfg(test)]
 mod tests {
     use merk::{proofs::Query, Merk};
-    use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
+    use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageBatch};
 
     use crate::{
         element::*,
@@ -892,9 +892,10 @@ mod tests {
     fn test_get_range_query() {
         let db = make_test_grovedb();
 
+        let batch = StorageBatch::new();
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), &batch)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -914,6 +915,11 @@ mod tests {
             .insert(&mut merk, b"b", None)
             .unwrap()
             .expect("expected successful insertion");
+
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .expect("expected successful batch commit");
 
         // Test range inclusive query
         let mut query = Query::new();
@@ -990,9 +996,11 @@ mod tests {
     fn test_get_range_inclusive_query() {
         let db = make_test_grovedb();
 
+        let batch = StorageBatch::new();
+
         let storage = &db.db;
-        let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
+        let mut merk = db
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), &batch)
             .unwrap()
             .expect("cannot open Merk");
 
@@ -1012,6 +1020,11 @@ mod tests {
             .insert(&mut merk, b"b", None)
             .unwrap()
             .expect("expected successful insertion");
+
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .expect("expected successful batch commit");
 
         // Test range inclusive query
         let mut query = Query::new_with_direction(true);

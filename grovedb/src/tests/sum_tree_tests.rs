@@ -32,6 +32,7 @@ use merk::{
     proofs::Query,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
+use storage::StorageBatch;
 
 use crate::{
     batch::GroveDbOp,
@@ -257,9 +258,11 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     .unwrap()
     .expect("should insert item");
 
+    let batch = StorageBatch::new();
+
     // Open merk and check all elements in it
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -319,7 +322,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     .expect("should insert item");
 
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -350,10 +353,12 @@ fn test_sum_tree_feature() {
     .unwrap()
     .expect("should insert tree");
 
+    let batch = StorageBatch::new();
+
     // Sum should be non for non sum tree
     // TODO: change interface to retrieve element directly
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), None);
@@ -386,7 +391,7 @@ fn test_sum_tree_feature() {
     .expect("should insert item");
     // TODO: change interface to retrieve element directly
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(30));
@@ -411,7 +416,7 @@ fn test_sum_tree_feature() {
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(70)); // 30 - 10 + 50 = 70
@@ -427,7 +432,7 @@ fn test_sum_tree_feature() {
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(70));
@@ -452,7 +457,7 @@ fn test_sum_tree_feature() {
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(-60)); // 30 + 10 - 100 = -60
@@ -472,7 +477,7 @@ fn test_sum_tree_feature() {
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(9999940)); // 30 +
@@ -568,9 +573,11 @@ fn test_sum_tree_propagation() {
         .expect("should fetch tree");
     assert_eq!(sum_tree.sum_value_or_default(), 35);
 
+    let batch = StorageBatch::new();
+
     // Assert node feature types
     let test_leaf_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -582,7 +589,7 @@ fn test_sum_tree_propagation() {
     ));
 
     let parent_sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -596,7 +603,7 @@ fn test_sum_tree_propagation() {
     ));
 
     let child_sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key", b"tree2"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key", b"tree2"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -655,8 +662,9 @@ fn test_sum_tree_with_batches() {
         .unwrap()
         .expect("should apply batch");
 
+    let batch = StorageBatch::new();
     let sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
 
@@ -684,8 +692,10 @@ fn test_sum_tree_with_batches() {
     db.apply_batch(ops, None, None)
         .unwrap()
         .expect("should apply batch");
+
+    let batch = StorageBatch::new();
     let sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -760,8 +770,10 @@ fn test_sum_tree_with_batches() {
     db.apply_batch(ops, None, None)
         .unwrap()
         .expect("should apply batch");
+
+    let batch = StorageBatch::new();
     let sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into())
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), &batch)
         .unwrap()
         .expect("should open tree");
     assert_eq!(sum_tree.sum().expect("expected to get sum"), Some(41));

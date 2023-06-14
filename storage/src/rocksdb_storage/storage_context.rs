@@ -31,15 +31,11 @@
 mod batch;
 mod context_batch_no_tx;
 mod context_batch_tx;
-mod context_no_tx;
-mod context_tx;
 mod raw_iterator;
 
 pub use batch::PrefixedRocksDbBatch;
 pub use context_batch_no_tx::PrefixedRocksDbBatchStorageContext;
 pub use context_batch_tx::PrefixedRocksDbBatchTransactionContext;
-pub use context_no_tx::PrefixedRocksDbStorageContext;
-pub use context_tx::PrefixedRocksDbTransactionContext;
 pub use raw_iterator::PrefixedRocksDbRawIterator;
 
 use super::storage::SubtreePrefix;
