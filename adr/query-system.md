@@ -2,11 +2,10 @@
 
 This document provides an overview of the data retrieval methods for Merk and GroveDB
 
-Pre-requisite
+### Prerequisite Reading
+[GroveDB Structure](grovedb-structure.md)
 
-- <link to grovedb structure>
-
-**************************************Retrieving Merk Data**************************************
+### Retrieving Merk Data
 
 To retrieve information from a merk tree, we make use of one or more query items. Let’s introduce the query items within the context of an example to enhance clarity.
 
@@ -21,7 +20,7 @@ graph TD;
 4-->5["key: 5, value: e"];
 ```
 
-**********************Query Items**********************
+### Query Items
 
 A query item is employed to define the set of contiguous keys for which you wish to obtain the corresponding values. In total, there are 10 types of query items available.
 
@@ -80,13 +79,13 @@ This is equivalent to QueryItem::RangeInclusive(2..=5), hence the query becomes
 
 query = [QueryItem::RangeInclusive(2..=5)]
 
-**********************************Limit**********************************
+### Limit
 
 The limit parameter is used to set the maximum number of nodes returned as the result of a query. 
 
 For example, let's consider a query using the RangeFull(..) query item on a collection [1, 2, 3, 4, 5]. Without applying a limit, the query would return all the elements [1, 2, 3, 4, 5]. However, if we apply a limit of 2, only the first two elements [1, 2] would be returned as the result.
 
-**Offset**
+### Offset
 
 In addition to the "Limit" parameter, the query system also supports the "Offset" parameter, which is used to skip a certain number of nodes before starting to return the result.
 
@@ -96,11 +95,11 @@ For example, let's consider a query using the RangeFull(..) query item on a coll
 
 Combining the "Limit" and "Offset" parameters enables even greater flexibility in constructing queries.
 
-**********************************Retrieving GroveDB data**********************************
+### Retrieving GroveDB data
 
 When retrieving data from GroveDB, which is a tree of Merks, it is necessary to specify the path to a specific Merk along with the associated query items.
 
-**************Example**************
+### Example
 
 ```mermaid
 graph TD
@@ -125,7 +124,7 @@ Get the second element in Merk E
     - Set the Offset parameter to 1, indicating that you want to skip the first element.
     - Set the Limit parameter to 1, specifying that you only want to retrieve one element.
 
-********************Subquery********************
+### Subquery
 
 A subquery enables you to perform additional queries on the result of a preceding query. It allows for nested querying within GroveDB, providing a way to refine and narrow down data retrieval.
 
@@ -186,7 +185,7 @@ Solution with subqueries:
 
 A subquery can have it’s own subquery and that can have it’s own all the way down 🤯
 
-**************************Subquery Path**************************
+### Subquery Path
 
 A subquery path is a sequence of single key subqueries that are applied successively. It can be seen as a way to perform repeated subqueries on individual keys
 
@@ -224,7 +223,7 @@ Breakdown:
 7. The subquery RangeFull(..) is applied to both Student Merks, resulting in the retrieval of all students from both Merks.
 8. The final result set is the collection of all students from the Student Merks.
 
-********************Path Query********************
+### Path Query
 
 The path query is a structured representation that combines the various components required for data retrieval in GroveDB. It provides a clear and concise way to specify the path to a specific Merk, along with the associated query items and subqueries.
 
@@ -242,11 +241,11 @@ PathQuery
                 conditional_subquery_branches: Map<QueryItem, SubqueryBranch>
 ```
 
-******************************Subquery Branch******************************
+### Subquery Branch
 
 A subquery branch is a component of a path query that holds information about a subquery. It consists of two optional elements: the subquery path and the subquery value.
 
-**********************************************Default Subquery Branch**********************************************
+### Default Subquery Branch
 
 The default subquery branch is a subquery branch that is applied to all elements in the result set of a path query, if it is set.
 
@@ -254,7 +253,7 @@ When the default subquery branch is specified, it is applied to each element in 
 
 By using the default subquery branch, you can apply a consistent set of subquery operations to every element in the result set
 
-******************************************************Conditional Subquery Branch******************************************************
+### Conditional Subquery Branch
 
 The conditional subquery branch is used when you want to selectively apply a subquery branch to specific nodes in the result set of a path query. It allows you to define different subquery operations for different conditions.
 
@@ -266,7 +265,7 @@ For each node in the result set, the conditional subquery branch checks if there
 
 It is important to note that once a conditional subquery has been applied to a node, the default subquery branch is not executed on that node. This allows for fine-grained control over the application of subqueries to different nodes in the result set.
 
-************************Simplified Query Algorithm************************
+### Simplified Query Algorithm
 
 1. Given a path query, find the merk specified by the given path.
     - If the specified merk is not found, return a "not found" error.
@@ -278,6 +277,6 @@ It is important to note that once a conditional subquery has been applied to a n
         - If there is an associated subquery branch (either conditional or default), recursively perform step 2 using the subquery branch as the new top-level query.
 4. Return the final result set obtained from the path query execution.
 
-****Symbolic Intuition****
+### Symbolic Intuition
 
 The tools provided by the path query allow us to have fine-grained control over highlighting a specific subset of the entire GroveDB structure. By utilizing the path, query items, subquery branches, and other parameters, we can precisely define the criteria for selecting and retrieving data from GroveDB. This level of control enables us to focus on specific branches, nodes, or elements within the GroveDB tree and exclude others that are not of interest.
