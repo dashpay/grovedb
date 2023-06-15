@@ -45,22 +45,22 @@ use crate::{
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
-pub struct PrefixedRocksDbBatchTransactionContext<'db> {
+pub struct PrefixedRocksDbTransactionContext<'db> {
     storage: &'db Db,
     transaction: &'db Tx<'db>,
     prefix: SubtreePrefix,
-    batch: &'db StorageBatch,
+    batch: Option<&'db StorageBatch>,
 }
 
-impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
+impl<'db> PrefixedRocksDbTransactionContext<'db> {
     /// Create a new prefixed transaction context instance
     pub fn new(
         storage: &'db Db,
         transaction: &'db Tx<'db>,
         prefix: SubtreePrefix,
-        batch: &'db StorageBatch,
+        batch: Option<&'db StorageBatch>,
     ) -> Self {
-        PrefixedRocksDbBatchTransactionContext {
+        PrefixedRocksDbTransactionContext {
             storage,
             transaction,
             prefix,
@@ -89,7 +89,7 @@ impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
     }
 }
 
-impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
+impl<'db> PrefixedRocksDbTransactionContext<'db> {
     /// Get auxiliary data column family
     fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
@@ -112,7 +112,7 @@ impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
     }
 }
 
-impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
+impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     type Batch = PrefixedMultiContextBatchPart;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 
@@ -123,12 +123,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch.put(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            children_sizes,
-            cost_info,
-        );
+        if let Some(existing_batch) = self.batch {
+            existing_batch.put(
+                make_prefixed_key(&self.prefix, key),
+                value.to_vec(),
+                children_sizes,
+                cost_info,
+            );
+        }
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -138,11 +140,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch.put_aux(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            cost_info,
-        );
+        if let Some(existing_batch) = self.batch {
+            existing_batch.put_aux(
+                make_prefixed_key(&self.prefix, key),
+                value.to_vec(),
+                cost_info,
+            );
+        }
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -152,11 +156,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch.put_root(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            cost_info,
-        );
+        if let Some(existing_batch) = self.batch {
+            existing_batch.put_root(
+                make_prefixed_key(&self.prefix, key),
+                value.to_vec(),
+                cost_info,
+            );
+        }
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -166,11 +172,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch.put_meta(
-            make_prefixed_key(&self.prefix, key),
-            value.to_vec(),
-            cost_info,
-        );
+        if let Some(existing_batch) = self.batch {
+            existing_batch.put_meta(
+                make_prefixed_key(&self.prefix, key),
+                value.to_vec(),
+                cost_info,
+            );
+        }
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -179,8 +187,9 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch
-            .delete(make_prefixed_key(&self.prefix, key), cost_info);
+        if let Some(existing_batch) = self.batch {
+            existing_batch.delete(make_prefixed_key(&self.prefix, key), cost_info);
+        }
 
         Ok(()).wrap_with_cost(OperationCost::default())
     }
@@ -190,8 +199,10 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch
-            .delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
+        if let Some(existing_batch) = self.batch {
+            existing_batch.delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
+        }
+
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -200,8 +211,10 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch
-            .delete_root(make_prefixed_key(&self.prefix, key), cost_info);
+        if let Some(existing_batch) = self.batch {
+            existing_batch.delete_root(make_prefixed_key(&self.prefix, key), cost_info);
+        }
+
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -210,8 +223,10 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.batch
-            .delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
+        if let Some(existing_batch) = self.batch {
+            existing_batch.delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
+        }
+
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -287,7 +302,10 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
-        self.batch.merge(batch.batch);
+        if let Some(existing_batch) = self.batch {
+            existing_batch.merge(batch.batch);
+        }
+
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 

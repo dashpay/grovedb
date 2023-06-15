@@ -86,7 +86,7 @@ use merk::{
 pub use options::BatchApplyOptions;
 use path::SubtreePath;
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{Drawer, Visualize};
@@ -1749,11 +1749,11 @@ impl GroveDb {
         path: SubtreePath<B>,
         tx: &'db Transaction,
         new_merk: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_transactional_storage_context(path.clone(), storage_batch, tx)
+            .get_transactional_storage_context(path.clone(), storage_batch, tx)
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
@@ -1807,11 +1807,11 @@ impl GroveDb {
         storage_batch: &'a StorageBatch,
         path: SubtreePath<B>,
         new_merk: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_storage_context(path.clone(), storage_batch)
+            .get_storage_context(path.clone(), storage_batch)
             .unwrap_add_cost(&mut local_cost);
 
         if new_merk {

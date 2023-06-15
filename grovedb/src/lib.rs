@@ -94,14 +94,15 @@ use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 // #[cfg(feature = "full")]
-// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
-use storage::rocksdb_storage::PrefixedRocksDbBatchStorageContext;
+// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer,
+// SubtreeChunkProducer};
+use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
-        PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
+        PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
         PrefixedRocksDbTransactionContext,
     },
     StorageBatch,
@@ -146,7 +147,7 @@ impl GroveDb {
         path: SubtreePath<'b, B>,
         tx: &'db Transaction,
         batch: &'db StorageBatch,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error>
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -154,12 +155,12 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_batch_transactional_storage_context(path.clone(), batch, tx)
+            .get_transactional_storage_context(path.clone(), batch, tx)
             .unwrap_add_cost(&mut cost);
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_batch_transactional_storage_context(parent_path.clone(), batch, tx)
+                .get_transactional_storage_context(parent_path.clone(), batch, tx)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -197,7 +198,7 @@ impl GroveDb {
         &'db self,
         path: SubtreePath<'b, B>,
         batch: &'db StorageBatch,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error>
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -205,13 +206,13 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_batch_storage_context(path.clone(), batch)
+            .get_storage_context(path.clone(), batch)
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_batch_storage_context(parent_path.clone(), batch)
+                .get_storage_context(parent_path.clone(), batch)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -280,7 +281,7 @@ impl GroveDb {
     fn propagate_changes_with_batch_transaction<'b, B: AsRef<[u8]>>(
         &self,
         storage_batch: &StorageBatch,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchTransactionContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: &SubtreePath<'b, B>,
         transaction: &Transaction,
     ) -> CostResult<(), Error> {
@@ -329,7 +330,7 @@ impl GroveDb {
     /// transaction
     fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchTransactionContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: SubtreePath<'b, B>,
         transaction: &Transaction,
         batch: &StorageBatch,
@@ -348,7 +349,7 @@ impl GroveDb {
         let mut current_path = path.clone();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree: Merk<PrefixedRocksDbBatchTransactionContext> = cost_return_on_error!(
+            let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(parent_path.clone(), transaction, batch)
             );
@@ -375,7 +376,7 @@ impl GroveDb {
     /// Method to propagate updated subtree key changes one level up
     fn propagate_changes_without_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchStorageContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>>,
         path: SubtreePath<'b, B>,
         batch: &StorageBatch,
     ) -> CostResult<(), Error> {
@@ -393,7 +394,7 @@ impl GroveDb {
         let mut current_path: SubtreePath<B> = path;
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree: Merk<PrefixedRocksDbBatchStorageContext> = cost_return_on_error!(
+            let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(parent_path.clone(), batch)
             );
@@ -652,7 +653,7 @@ impl GroveDb {
     /// those of the merk and submerks at the given path. Returns any issues.
     fn verify_merk_and_submerks<B: AsRef<[u8]>>(
         &self,
-        merk: Merk<PrefixedRocksDbBatchStorageContext>,
+        merk: Merk<PrefixedRocksDbStorageContext>,
         path: &SubtreePath<B>,
         batch: &StorageBatch,
     ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {

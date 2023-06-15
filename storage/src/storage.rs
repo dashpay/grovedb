@@ -75,20 +75,22 @@ pub trait Storage<'db> {
     /// Forces data to be written
     fn flush(&self) -> Result<(), Error>;
 
-    /// Make batch storage_cost context for a subtree with path
-    fn get_batch_storage_context<'b, B>(
+    /// Make storage context for a subtree with path, keeping all write
+    /// operations inside a `batch` if provided.
+    fn get_storage_context<'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: &'db StorageBatch,
+        batch: Option<&'db StorageBatch>,
     ) -> CostContext<Self::BatchStorageContext>
     where
         B: AsRef<[u8]> + 'b;
 
-    /// Make batch storage_cost context for a subtree on transactional data
-    fn get_batch_transactional_storage_context<'b, B>(
+    /// Make context for a subtree on transactional data, keeping all write
+    /// operations inside a `batch` if provided.
+    fn get_transactional_storage_context<'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: &'db StorageBatch,
+        batch: Option<&'db StorageBatch>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where

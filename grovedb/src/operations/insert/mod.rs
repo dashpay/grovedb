@@ -41,7 +41,7 @@ use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch,
 };
 
@@ -142,10 +142,8 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut merk_cache: HashMap<
-            SubtreePath<'b, B>,
-            Merk<PrefixedRocksDbBatchTransactionContext>,
-        > = HashMap::default();
+        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
+            HashMap::default();
 
         let merk = cost_return_on_error!(
             &mut cost,
@@ -177,7 +175,7 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchStorageContext>> =
+        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
 
         let merk = cost_return_on_error!(
@@ -207,7 +205,7 @@ impl GroveDb {
         options: InsertOptions,
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
         let mut cost = OperationCost::default();
 
         let mut subtree_to_insert_into = cost_return_on_error!(
@@ -344,7 +342,7 @@ impl GroveDb {
         element: Element,
         options: InsertOptions,
         batch: &'db StorageBatch,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
         let mut cost = OperationCost::default();
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
