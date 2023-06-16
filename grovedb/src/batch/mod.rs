@@ -1753,7 +1753,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_transactional_storage_context(path.clone(), storage_batch, tx)
+            .get_transactional_storage_context(path.clone(), Some(storage_batch), tx)
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
@@ -1763,7 +1763,7 @@ impl GroveDb {
             } else {
                 let parent_storage = self
                     .db
-                    .get_transactional_storage_context(parent_path.clone(), tx)
+                    .get_transactional_storage_context(parent_path.clone(), Some(storage_batch), tx)
                     .unwrap_add_cost(&mut cost);
                 let element = cost_return_on_error!(
                     &mut cost,
@@ -1811,7 +1811,7 @@ impl GroveDb {
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
-            .get_storage_context(path.clone(), storage_batch)
+            .get_storage_context(path.clone(), Some(storage_batch))
             .unwrap_add_cost(&mut local_cost);
 
         if new_merk {
@@ -1824,7 +1824,7 @@ impl GroveDb {
         } else if let Some((base_path, last)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(base_path)
+                .get_storage_context(base_path, Some(storage_batch))
                 .unwrap_add_cost(&mut local_cost);
             let element = cost_return_on_error!(
                 &mut local_cost,

@@ -41,15 +41,9 @@ use std::collections::HashSet;
 use costs::cost_return_on_error_no_add;
 #[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-#[cfg(feature = "full")]
-use merk::Merk;
 use path::SubtreePath;
-use storage::StorageBatch;
 #[cfg(feature = "full")]
-use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
-    StorageContext,
-};
+use storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::{
@@ -226,12 +220,11 @@ impl GroveDb {
         allow_cache: bool,
         transaction: &Transaction,
     ) -> CostResult<Element, Error> {
-        let batch = StorageBatch::new();
         let mut cost = OperationCost::default();
 
         let merk_to_get_from = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path, transaction, &batch)
+            self.open_transactional_merk_at_path(path, transaction, None)
                 .map_err(|e| match e {
                     Error::InvalidParentLayerPath(s) => {
                         Error::PathParentLayerNotFound(s)
@@ -252,9 +245,8 @@ impl GroveDb {
         transaction: &Transaction,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
         let merk_result = self
-            .open_transactional_merk_at_path(path, transaction, &batch)
+            .open_transactional_merk_at_path(path, transaction, None)
             .map_err(|e| match e {
                 Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
                 _ => e,
@@ -285,11 +277,10 @@ impl GroveDb {
         allow_cache: bool,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
 
         let merk_to_get_from = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path, &batch)
+            self.open_non_transactional_merk_at_path(path, None)
                 .map_err(|e| match e {
                     Error::InvalidParentLayerPath(s) => {
                         Error::PathParentLayerNotFound(s)
@@ -309,10 +300,9 @@ impl GroveDb {
         allow_cache: bool,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
 
         let merk_result = self
-            .open_non_transactional_merk_at_path(path, &batch)
+            .open_non_transactional_merk_at_path(path, None)
             .map_err(|e| match e {
                 Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
                 _ => e,
@@ -348,7 +338,7 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         // Merk's items should be written into data storage and checked accordingly
-        storage_context_optional_tx!(self.db, path.into(), transaction, storage, {
+        storage_context_optional_tx!(self.db, path.into(), None, transaction, storage, {
             storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
         })
     }
@@ -360,20 +350,19 @@ impl GroveDb {
         error_fn: impl FnOnce() -> Error,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let element = if let Some(transaction) = transaction {
                 let merk_to_get_from = cost_return_on_error!(
                     &mut cost,
-                    self.open_transactional_merk_at_path(parent_path, transaction, &batch)
+                    self.open_transactional_merk_at_path(parent_path, transaction, None)
                 );
 
                 Element::get(&merk_to_get_from, parent_key, true)
             } else {
                 let merk_to_get_from = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(parent_path, &batch)
+                    self.open_non_transactional_merk_at_path(parent_path, None)
                 );
 
                 Element::get(&merk_to_get_from, parent_key, true)

@@ -358,6 +358,7 @@ impl Element {
                                     &mut cost,
                                     storage,
                                     subtree_path,
+                                    None,
                                     transaction,
                                     subtree,
                                     {
@@ -380,6 +381,7 @@ impl Element {
                                     &mut cost,
                                     storage,
                                     subtree_path,
+                                    None,
                                     transaction,
                                     subtree,
                                     {
@@ -405,6 +407,7 @@ impl Element {
                                     &mut cost,
                                     storage,
                                     subtree_path,
+                                    None,
                                     transaction,
                                     subtree,
                                     {
@@ -550,10 +553,15 @@ impl Element {
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res =
-                    merk_optional_tx!(&mut cost, storage, subtree_path, transaction, subtree, {
-                        Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost)
-                    });
+                let element_res = merk_optional_tx!(
+                    &mut cost,
+                    storage,
+                    subtree_path,
+                    None,
+                    transaction,
+                    subtree,
+                    { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }
+                );
                 match element_res {
                     Ok(element) => {
                         let (subquery_path, subquery) =
@@ -586,7 +594,7 @@ impl Element {
             }
         } else {
             // this is a query on a range
-            storage_context_optional_tx!(storage, subtree_path, transaction, ctx, {
+            storage_context_optional_tx!(storage, subtree_path, None, transaction, ctx, {
                 let ctx = ctx.unwrap_add_cost(&mut cost);
                 let mut iter = ctx.raw_iter();
 
@@ -701,8 +709,8 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::{proofs::Query, Merk};
-    use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageBatch};
+    use merk::proofs::Query;
+    use storage::{Storage, StorageBatch};
 
     use crate::{
         element::*,
@@ -895,7 +903,7 @@ mod tests {
         let batch = StorageBatch::new();
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), &batch)
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1000,7 +1008,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), &batch)
+            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
             .unwrap()
             .expect("cannot open Merk");
 

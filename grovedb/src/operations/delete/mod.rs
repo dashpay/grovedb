@@ -40,7 +40,7 @@ use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "full")]
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
@@ -49,13 +49,9 @@ pub use delete_up_tree::DeleteUpTreeOptions;
 #[cfg(feature = "full")]
 use merk::{Error as MerkError, Merk, MerkOptions};
 use path::SubtreePath;
-use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 #[cfg(feature = "full")]
 use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
-        PrefixedRocksDbTransactionContext,
-    },
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
 
@@ -343,6 +339,7 @@ impl GroveDb {
                     &mut cost,
                     self.db,
                     SubtreePath::from(&subtree_merk_path),
+                    None,
                     transaction,
                     subtree,
                     {
@@ -441,7 +438,7 @@ impl GroveDb {
         );
         let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.clone(), transaction, batch)
+            self.open_transactional_merk_at_path(path.clone(), transaction, Some(batch))
         );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
@@ -453,7 +450,7 @@ impl GroveDb {
                 self.open_transactional_merk_at_path(
                     subtree_merk_path_ref.clone(),
                     transaction,
-                    batch
+                    Some(batch)
                 )
             );
             let is_empty = subtree_of_tree_we_are_deleting
@@ -471,7 +468,6 @@ impl GroveDb {
                     Ok(false).wrap_with_cost(cost)
                 };
             } else if !is_empty {
-                let storage_batch = StorageBatch::new();
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(&subtree_merk_path_ref, Some(transaction))
@@ -480,7 +476,7 @@ impl GroveDb {
                     let p: SubtreePath<_> = subtree_path.as_slice().into();
                     let mut storage = self
                         .db
-                        .get_transactional_storage_context(p, &storage_batch, transaction)
+                        .get_transactional_storage_context(p, Some(batch), transaction)
                         .unwrap_add_cost(&mut cost);
 
                     cost_return_on_error!(
@@ -495,7 +491,7 @@ impl GroveDb {
                 // todo: verify why we need to open the same? merk again
                 let storage = self
                     .db
-                    .get_transactional_storage_context(path.clone(), &storage_batch, transaction)
+                    .get_transactional_storage_context(path.clone(), Some(batch), transaction)
                     .unwrap_add_cost(&mut cost);
 
                 let mut merk_to_delete_tree_from = cost_return_on_error!(
@@ -529,19 +525,19 @@ impl GroveDb {
                 cost_return_on_error!(
                     &mut cost,
                     self.propagate_changes_with_batch_transaction(
-                        &storage_batch,
+                        &batch,
                         merk_cache,
                         &path,
                         transaction
                     )
                 );
-                cost_return_on_error_no_add!(
-                    &cost,
-                    self.db
-                        .commit_multi_context_batch(storage_batch, Some(transaction))
-                        .unwrap_add_cost(&mut cost)
-                        .map_err(|e| e.into())
-                );
+                // cost_return_on_error_no_add!(
+                //     &cost,
+                //     self.db
+                //         .commit_multi_context_batch(storage_batch, Some(transaction))
+                //         .unwrap_add_cost(&mut cost)
+                //         .map_err(|e| e.into())
+                // );
             } else {
                 // We are deleting a tree, a tree uses 3 bytes
                 cost_return_on_error!(
@@ -612,7 +608,7 @@ impl GroveDb {
             HashMap::default();
         let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.clone(), batch)
+            self.open_non_transactional_merk_at_path(path.clone(), Some(batch))
         );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
@@ -621,7 +617,7 @@ impl GroveDb {
                 &mut cost,
                 self.open_non_transactional_merk_at_path(
                     SubtreePath::from(&subtree_merk_path),
-                    batch
+                    Some(batch)
                 )
             );
             let is_empty = subtree_of_tree_we_are_deleting
@@ -649,7 +645,7 @@ impl GroveDb {
                         let p: SubtreePath<_> = subtree_path.as_slice().into();
                         let mut inner_subtree_to_delete_from = cost_return_on_error!(
                             &mut cost,
-                            self.open_non_transactional_merk_at_path(p, batch)
+                            self.open_non_transactional_merk_at_path(p, Some(batch))
                         );
                         cost_return_on_error!(
                             &mut cost,
@@ -723,7 +719,7 @@ impl GroveDb {
         while let Some(q) = queue.pop() {
             let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
             // Get the correct subtree with q_ref as path
-            storage_context_optional_tx!(self.db, subtree_path, transaction, storage, {
+            storage_context_optional_tx!(self.db, subtree_path, None, transaction, storage, {
                 let storage = storage.unwrap_add_cost(&mut cost);
                 let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
                 while let Some((key, value)) =

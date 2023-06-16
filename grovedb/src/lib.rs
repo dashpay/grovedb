@@ -96,15 +96,11 @@ pub use query::{PathQuery, SizedQuery};
 // #[cfg(feature = "full")]
 // pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer,
 // SubtreeChunkProducer};
-use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
-        PrefixedRocksDbTransactionContext,
-    },
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     StorageBatch,
 };
 #[cfg(feature = "full")]
@@ -146,7 +142,7 @@ impl GroveDb {
         &'db self,
         path: SubtreePath<'b, B>,
         tx: &'db Transaction,
-        batch: &'db StorageBatch,
+        batch: Option<&'db StorageBatch>,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -197,7 +193,7 @@ impl GroveDb {
     pub fn open_non_transactional_merk_at_path<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: &'db StorageBatch,
+        batch: Option<&'db StorageBatch>,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -257,7 +253,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, {
             let root_key = subtree.root_key().unwrap();
             Ok(root_key).wrap_with_cost(cost)
         })
@@ -270,7 +266,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, {
             let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
             Ok(root_hash).wrap_with_cost(cost)
         })
@@ -351,7 +347,7 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(parent_path.clone(), transaction, batch)
+                self.open_transactional_merk_at_path(parent_path.clone(), transaction, Some(batch))
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -396,7 +392,7 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(parent_path.clone(), batch)
+                self.open_non_transactional_merk_at_path(parent_path.clone(), Some(batch))
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -641,21 +637,20 @@ impl GroveDb {
     /// Method to check that the value_hash of Element::Tree nodes are computed
     /// correctly.
     pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
-        let batch = StorageBatch::new();
         let root_merk = self
-            .open_non_transactional_merk_at_path(SubtreePath::empty(), &batch)
+            .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
             .unwrap()
             .expect("should exist");
-        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), &batch)
+        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), None)
     }
 
     /// Verifies that the root hash of the given merk and all submerks match
     /// those of the merk and submerks at the given path. Returns any issues.
-    fn verify_merk_and_submerks<B: AsRef<[u8]>>(
-        &self,
+    fn verify_merk_and_submerks<'db, B: AsRef<[u8]>>(
+        &'db self,
         merk: Merk<PrefixedRocksDbStorageContext>,
         path: &SubtreePath<B>,
-        batch: &StorageBatch,
+        batch: Option<&'db StorageBatch>,
     ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();

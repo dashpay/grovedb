@@ -41,7 +41,6 @@ use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch,
 };
 
@@ -210,7 +209,7 @@ impl GroveDb {
 
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.clone(), transaction, batch)
+            self.open_transactional_merk_at_path(path.clone(), transaction, Some(batch))
         );
         // if we don't allow a tree override then we should check
 
@@ -260,7 +259,7 @@ impl GroveDb {
                     self.open_transactional_merk_at_path(
                         referenced_path.into(),
                         transaction,
-                        batch
+                        Some(batch)
                     )
                 );
 
@@ -346,7 +345,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.into(), batch)
+            self.open_non_transactional_merk_at_path(path.into(), Some(batch))
         );
 
         if options.checks_for_override() {
@@ -392,7 +391,7 @@ impl GroveDb {
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(referenced_path.into(), batch)
+                    self.open_non_transactional_merk_at_path(referenced_path.into(), Some(batch))
                 );
 
                 // when there is no transaction, we don't want to use caching

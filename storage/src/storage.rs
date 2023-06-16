@@ -51,10 +51,10 @@ pub trait Storage<'db> {
     type Transaction;
 
     /// Storage context type for mutli-tree batch operations
-    type BatchStorageContext;
+    type BatchStorageContext: StorageContext<'db>;
 
     /// Storage context type for multi-tree batch operations inside transaction
-    type BatchTransactionalStorageContext;
+    type BatchTransactionalStorageContext: StorageContext<'db>;
 
     /// Starts a new transaction
     fn start_transaction(&'db self) -> Self::Transaction;

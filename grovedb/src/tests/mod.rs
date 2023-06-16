@@ -2284,7 +2284,7 @@ fn test_subtree_pairs_iterator() {
     let storage_context = db
         .grove_db
         .db
-        .get_storage_context([TEST_LEAF, b"subtree1"].as_ref().into())
+        .get_storage_context([TEST_LEAF, b"subtree1"].as_ref().into(), None)
         .unwrap();
     let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
     assert_eq!(
@@ -2364,7 +2364,7 @@ fn test_find_subtrees() {
 #[test]
 fn test_root_subtree_has_root_key() {
     let db = make_test_grovedb();
-    let storage = db.db.get_storage_context(EMPTY_PATH).unwrap();
+    let storage = db.db.get_storage_context(EMPTY_PATH, None).unwrap();
     let root_merk = Merk::open_base(storage, false)
         .unwrap()
         .expect("expected to get root merk");
@@ -2455,7 +2455,7 @@ fn test_get_subtree() {
         let subtree_storage = db
             .grove_db
             .db
-            .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into())
+            .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into(), None)
             .unwrap();
         let subtree =
             Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
@@ -2493,6 +2493,7 @@ fn test_get_subtree() {
         .db
         .get_transactional_storage_context(
             [TEST_LEAF, b"key1", b"innertree"].as_ref().into(),
+            None,
             &transaction,
         )
         .unwrap();
@@ -2506,7 +2507,7 @@ fn test_get_subtree() {
     let subtree_storage = db
         .grove_db
         .db
-        .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into())
+        .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into(), None)
         .unwrap();
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
         .unwrap()

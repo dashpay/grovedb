@@ -50,7 +50,7 @@ features = ["small_rng"]
 optional = true
 
 [dependencies.jemallocator]
-version = "0.3.2"
+version = "0.5.0"
 features = ["disable_initial_exec_tls"]
 optional = true
 

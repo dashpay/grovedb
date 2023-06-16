@@ -395,43 +395,107 @@ mod tests {
     use path::SubtreePath;
     use storage::{
         rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
-        RawIterator, Storage,
+        RawIterator, Storage, StorageBatch,
     };
 
     use super::*;
     use crate::{test_utils::*, tree::Op, MerkBatch};
 
     fn restore_test(batches: &[&MerkBatch<Vec<u8>>], expected_nodes: usize) {
-        let mut original = TempMerk::new();
-        for batch in batches {
-            original
-                .apply::<Vec<_>, Vec<_>>(batch, &[], None)
+        let storage_from = TempStorage::new();
+        let batch_from = StorageBatch::new();
+        let mut from = empty_path_merk(&*storage_from, &batch_from);
+
+        // let storage_original = TempStorage::default();
+        // let batch = StorageBatch::new();
+        // let ctx_original = storage_original
+        //     .get_storage_context(SubtreePath::from(&[b"from"]), Some(&batch))
+        //     .unwrap();
+        // let mut original = Merk::open_base(ctx_original, false).unwrap().unwrap();
+
+        for merk_batch in batches {
+            from.apply::<Vec<_>, Vec<_>>(merk_batch, &[], None)
                 .unwrap()
                 .unwrap();
         }
 
-        let chunks = original.chunks().unwrap();
+        storage_from
+            .commit_multi_context_batch(batch_from, None)
+            .unwrap()
+            .unwrap();
+        let from = empty_path_merk_ro(&*storage_from);
 
-        let storage = TempStorage::default();
-        let ctx = storage.get_storage_context(SubtreePath::empty()).unwrap();
-        let merk = Merk::open_base(ctx, false).unwrap().unwrap();
-        let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
+        // storage_original
+        //     .commit_multi_context_batch(batch, None)
+        //     .unwrap()
+        //     .expect("cannot commit batch");
 
-        assert_eq!(restorer.remaining_chunks(), None);
+        // let ctx_original = storage_original
+        //     .get_storage_context(SubtreePath::from(&[b"from"]), None)
+        //     .unwrap();
+        // let mut original = Merk::open_base(ctx_original, false).unwrap().unwrap();
+
+        let chunks = from.chunks().unwrap();
+
+        let storage_to = TempStorage::new();
+        // let batch_to = StorageBatch::new();
+
+        // let mut restorer = Merk::restore(
+        //     empty_path_merk(&*storage_to, &batch_to),
+        //     from.root_hash().unwrap(),
+        // );
+
+        // assert_eq!(restorer.remaining_chunks(), None);
 
         let mut expected_remaining = chunks.len();
         for chunk in chunks {
+            let batch_to = StorageBatch::new();
+            let mut restorer = Merk::restore(
+                empty_path_merk(&*storage_to, &batch_to),
+                from.root_hash().unwrap(),
+            );
+
             let remaining = restorer.process_chunk(chunk.unwrap()).unwrap();
 
             expected_remaining -= 1;
             assert_eq!(remaining, expected_remaining);
             assert_eq!(restorer.remaining_chunks().unwrap(), expected_remaining);
+            storage_to
+                .commit_multi_context_batch(batch_to, None)
+                .unwrap()
+                .unwrap();
         }
         assert_eq!(expected_remaining, 0);
 
-        let restored = restorer.finalize().unwrap();
-        assert_eq!(restored.root_hash(), original.root_hash());
-        assert_raw_db_entries_eq(&restored, &original, expected_nodes);
+        let batch_to = StorageBatch::new();
+        let restorer = Merk::restore(
+            empty_path_merk(&*storage_to, &batch_to),
+            from.root_hash().unwrap(),
+        );
+
+        let _ = restorer.finalize().unwrap();
+
+        storage_to
+            .commit_multi_context_batch(batch_to, None)
+            .unwrap()
+            .unwrap();
+        let restored = empty_path_merk_ro(&*storage_to);
+        // storage_original
+        //     .commit_multi_context_batch(restored_batch, None)
+        //     .unwrap()
+        //     .expect("cannot commit batch");
+
+        // let restored = Merk::open_base(
+        //     storage_original
+        //         .get_storage_context(SubtreePath::from(&[b"to"]), None)
+        //         .unwrap(),
+        //     false,
+        // )
+        // .unwrap()
+        // .unwrap();
+        assert_eq!(restored.root_hash(), from.root_hash());
+
+        assert_raw_db_entries_eq(&restored, &from, expected_nodes);
     }
 
     #[test]

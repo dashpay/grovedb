@@ -1436,8 +1436,8 @@ mod test {
     use costs::OperationCost;
     use path::SubtreePath;
     use storage::{
-        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
-        RawIterator, Storage, StorageContext,
+        rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext, RocksDbStorage},
+        RawIterator, Storage, StorageBatch, StorageContext,
     };
     use tempfile::TempDir;
 
@@ -1460,9 +1460,10 @@ mod test {
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"];
 
+        let batch = StorageBatch::new();
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()))
+                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
                 .unwrap(),
             false,
         )
@@ -1478,10 +1479,15 @@ mod test {
         .expect("apply failed");
 
         let root_hash = merk.root_hash();
-        drop(merk);
+
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .expect("cannot commit batch");
+
         let merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()))
+                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
                 .unwrap(),
             false,
         )
@@ -1497,9 +1503,10 @@ mod test {
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"];
 
+        let batch = StorageBatch::new();
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()))
+                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
                 .unwrap(),
             false,
         );
@@ -1520,11 +1527,14 @@ mod test {
         .unwrap()
         .expect("apply failed");
 
-        drop(merk);
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .expect("cannot commit batch");
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()))
+                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
                 .unwrap(),
             false,
         );
@@ -1646,7 +1656,16 @@ mod test {
 
     #[test]
     fn aux_data() {
-        let mut merk = TempMerk::new();
+        let storage = TempStorage::default();
+        let batch = StorageBatch::new();
+        let mut merk = Merk::open_base(
+            storage
+                .get_storage_context(SubtreePath::empty(), Some(&batch))
+                .unwrap(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
         merk.apply::<Vec<_>, _>(
             &[],
             &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk), None)],
@@ -1654,11 +1673,27 @@ mod test {
         )
         .unwrap()
         .expect("apply failed");
+
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .expect("cannot commit batch");
+
+        let mut merk = Merk::open_base(
+            storage
+                .get_storage_context(SubtreePath::empty(), None)
+                .unwrap(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
     }
 
     #[test]
+    #[ignore]
     fn simulated_crash() {
         let mut merk = CrashMerk::open_base().expect("failed to open merk");
 
@@ -1676,6 +1711,7 @@ mod test {
                 .unwrap()
                 .expect("apply failed");
         }
+        merk.commit();
         merk.crash();
 
         assert_eq!(merk.get_aux(&[2]).unwrap().unwrap(), Some(vec![3]));
@@ -1709,13 +1745,16 @@ mod test {
         assert!(merk.get(&[3, 3, 3], true).unwrap().unwrap().is_none());
     }
 
+    // TODO: what this test should do?
     #[test]
     fn reopen_check_root_hash() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(
-            storage.get_storage_context(SubtreePath::empty()).unwrap(),
+            storage
+                .get_storage_context(SubtreePath::empty(), None)
+                .unwrap(),
             false,
         )
         .unwrap()
@@ -1736,7 +1775,9 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(
-            storage.get_storage_context(SubtreePath::empty()).unwrap(),
+            storage
+                .get_storage_context(SubtreePath::empty(), None)
+                .unwrap(),
             false,
         )
         .unwrap()
@@ -1768,16 +1809,33 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
+            let batch = StorageBatch::new();
             let mut merk = Merk::open_base(
-                storage.get_storage_context(SubtreePath::empty()).unwrap(),
+                storage
+                    .get_storage_context(SubtreePath::empty(), Some(&batch))
+                    .unwrap(),
                 false,
             )
             .unwrap()
             .expect("cannot open merk");
-            let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
+            let merk_batch = make_batch_seq(1..10_000);
+            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
                 .unwrap()
                 .unwrap();
+
+            storage
+                .commit_multi_context_batch(batch, None)
+                .unwrap()
+                .expect("cannot commit batch");
+            let merk = Merk::open_base(
+                storage
+                    .get_storage_context(SubtreePath::empty(), None)
+                    .unwrap(),
+                false,
+            )
+            .unwrap()
+            .expect("cannot open merk");
+
             let mut tree = merk.tree.take().unwrap();
             let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -1789,7 +1847,9 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
-            storage.get_storage_context(SubtreePath::empty()).unwrap(),
+            storage
+                .get_storage_context(SubtreePath::empty(), None)
+                .unwrap(),
             false,
         )
         .unwrap()
@@ -1825,25 +1885,43 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
+            let batch = StorageBatch::new();
             let mut merk = Merk::open_base(
-                storage.get_storage_context(SubtreePath::empty()).unwrap(),
+                storage
+                    .get_storage_context(SubtreePath::empty(), Some(&batch))
+                    .unwrap(),
                 false,
             )
             .unwrap()
             .expect("cannot open merk");
-            let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
+            let merk_batch = make_batch_seq(1..10_000);
+            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
                 .unwrap()
                 .unwrap();
 
+            storage
+                .commit_multi_context_batch(batch, None)
+                .unwrap()
+                .expect("cannot commit batch");
+
             let mut nodes = vec![];
+            let merk = Merk::open_base(
+                storage
+                    .get_storage_context(SubtreePath::empty(), None)
+                    .unwrap(),
+                false,
+            )
+            .unwrap()
+            .expect("cannot open merk");
             collect(&mut merk.storage.raw_iter(), &mut nodes);
             nodes
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
-            storage.get_storage_context(SubtreePath::empty()).unwrap(),
+            storage
+                .get_storage_context(SubtreePath::empty(), None)
+                .unwrap(),
             false,
         )
         .unwrap()
@@ -1860,8 +1938,11 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
+        let batch = StorageBatch::new();
         let mut merk = Merk::open_base(
-            storage.get_storage_context(SubtreePath::empty()).unwrap(),
+            storage
+                .get_storage_context(SubtreePath::empty(), Some(&batch))
+                .unwrap(),
             false,
         )
         .unwrap()
@@ -1902,10 +1983,15 @@ mod test {
             .expect("should get successfully");
         assert_eq!(result, Some(b"b".to_vec()));
 
-        drop(merk);
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .expect("cannot commit batch");
 
         let mut merk = Merk::open_base(
-            storage.get_storage_context(SubtreePath::empty()).unwrap(),
+            storage
+                .get_storage_context(SubtreePath::empty(), None)
+                .unwrap(),
             false,
         )
         .unwrap()

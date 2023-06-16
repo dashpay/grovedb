@@ -32,6 +32,7 @@
 use std::ops::{Deref, DerefMut};
 
 use path::SubtreePath;
+use storage::StorageBatch;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
@@ -46,7 +47,8 @@ use crate::{error::Error, Merk};
 /// scope.
 pub struct CrashMerk {
     storage: &'static TempStorage,
-    merk: Merk<PrefixedRocksDbStorageContext<'static>>,
+    batch: &'static StorageBatch,
+    merk: Option<Merk<PrefixedRocksDbStorageContext<'static>>>,
 }
 
 #[cfg(feature = "full")]
@@ -55,14 +57,38 @@ impl CrashMerk {
     /// does not exist.
     pub fn open_base() -> Result<CrashMerk, Error> {
         let storage = Box::leak(Box::new(TempStorage::new()));
-        let context = storage.get_storage_context(SubtreePath::empty()).unwrap();
+        let batch = Box::leak(Box::new(StorageBatch::new()));
+        let context = storage
+            .get_storage_context(SubtreePath::empty(), Some(batch))
+            .unwrap();
+
         let merk = Merk::open_base(context, false).unwrap().unwrap();
-        Ok(CrashMerk { merk, storage })
+        Ok(CrashMerk {
+            merk: Some(merk),
+            storage,
+            batch,
+        })
     }
 
     /// Crash
     pub fn crash(&self) {
         self.storage.crash()
+    }
+
+    /// Commits pending batch operations.
+    pub fn commit(&mut self) {
+        self.merk = None;
+        let batch = unsafe { Box::from_raw(self.batch as *const _ as *mut StorageBatch) };
+        self.storage
+            .commit_multi_context_batch(*batch, None)
+            .unwrap()
+            .expect("unable to commit batch");
+        let batch = Box::leak(Box::new(StorageBatch::new()));
+        let context = self.storage
+            .get_storage_context(SubtreePath::empty(), Some(batch))
+            .unwrap();
+        self.merk = Some(Merk::open_base(context, false).unwrap().unwrap());
+        self.batch = batch;
     }
 }
 
@@ -70,6 +96,8 @@ impl CrashMerk {
 impl Drop for CrashMerk {
     fn drop(&mut self) {
         unsafe {
+            self.merk = None;
+            drop(Box::from_raw(self.batch as *const _ as *mut StorageBatch));
             drop(Box::from_raw(self.storage as *const _ as *mut TempStorage));
         }
     }
@@ -80,14 +108,14 @@ impl Deref for CrashMerk {
     type Target = Merk<PrefixedRocksDbStorageContext<'static>>;
 
     fn deref(&self) -> &Merk<PrefixedRocksDbStorageContext<'static>> {
-        &self.merk
+        self.merk.as_ref().unwrap()
     }
 }
 
 #[cfg(feature = "full")]
 impl DerefMut for CrashMerk {
     fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbStorageContext<'static>> {
-        &mut self.merk
+        self.merk.as_mut().unwrap()
     }
 }
 
