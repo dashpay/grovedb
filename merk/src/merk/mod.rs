@@ -34,7 +34,7 @@ pub(crate) mod defaults;
 
 pub mod options;
 
-pub mod restore;
+// pub mod restore;
 
 use std::{
     cell::Cell,
