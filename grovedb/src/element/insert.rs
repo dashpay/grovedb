@@ -430,9 +430,7 @@ mod tests {
 
     #[test]
     fn test_insert_if_changed_value_does_not_insert_when_value_does_not_change() {
-        let storage = TempStorage::new();
-        let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch);
+        let mut merk = TempMerk::new();
 
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None)
@@ -443,23 +441,14 @@ mod tests {
             .unwrap()
             .expect("expected successful insertion 2");
 
-        storage
-            .commit_multi_context_batch(batch, None)
-            .unwrap()
-            .unwrap();
-        let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch);
+        merk.commit();
 
         let (inserted, previous) = Element::new_item(b"value".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        storage
-            .commit_multi_context_batch(batch, None)
-            .unwrap()
-            .unwrap();
-        let merk = empty_path_merk_ro(&*storage);
+        merk.commit();
 
         assert!(!inserted);
         assert_eq!(previous, None);

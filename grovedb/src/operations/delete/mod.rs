@@ -531,13 +531,6 @@ impl GroveDb {
                         transaction
                     )
                 );
-                // cost_return_on_error_no_add!(
-                //     &cost,
-                //     self.db
-                //         .commit_multi_context_batch(storage_batch, Some(transaction))
-                //         .unwrap_add_cost(&mut cost)
-                //         .map_err(|e| e.into())
-                // );
             } else {
                 // We are deleting a tree, a tree uses 3 bytes
                 cost_return_on_error!(

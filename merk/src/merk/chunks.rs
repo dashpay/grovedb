@@ -221,6 +221,7 @@ mod tests {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..256);
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
+        merk.commit();
 
         let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 1);
@@ -232,6 +233,7 @@ mod tests {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..10_000);
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
+        merk.commit();
 
         let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 129);
@@ -243,6 +245,7 @@ mod tests {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..10_000);
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
+        merk.commit();
 
         let mut chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
 
@@ -285,7 +288,7 @@ mod tests {
                 .unwrap()
                 .expect("cannot commit batch");
 
-            let mut merk = Merk::open_base(
+            let merk = Merk::open_base(
                 storage
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),

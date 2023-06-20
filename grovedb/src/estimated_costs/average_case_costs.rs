@@ -463,7 +463,9 @@ mod test {
         estimated_costs::average_case_costs::add_average_case_get_merk_node,
         test_utils::make_batch_seq, Merk,
     };
-    use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch};
+    use storage::{
+        rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
+    };
     use tempfile::TempDir;
 
     use crate::{
@@ -481,7 +483,9 @@ mod test {
         let batch = StorageBatch::new();
 
         let mut merk = Merk::open_base(
-            storage.get_storage_context(EMPTY_PATH, Some(&batch)).unwrap(),
+            storage
+                .get_storage_context(EMPTY_PATH, Some(&batch))
+                .unwrap(),
             false,
         )
         .unwrap()
@@ -492,7 +496,10 @@ mod test {
             .unwrap();
 
         // this consumes the batch so storage contexts and merks will be dropped
-        storage.commit_multi_context_batch(batch, None).unwrap().unwrap();
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
         let merk = Merk::open_base(

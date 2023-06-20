@@ -40,9 +40,7 @@ use merk::{tree::NULL_HASH, Merk, MerkOptions};
 use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
-use storage::{
-    Storage, StorageBatch,
-};
+use storage::{Storage, StorageBatch};
 
 #[cfg(feature = "full")]
 use crate::{

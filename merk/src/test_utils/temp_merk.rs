@@ -78,7 +78,8 @@ impl TempMerk {
             .unwrap()
             .expect("unable to commit batch");
         self.batch = Box::leak(Box::new(StorageBatch::new()));
-        let context = self.storage
+        let context = self
+            .storage
             .get_storage_context(SubtreePath::empty(), Some(self.batch))
             .unwrap();
         self.merk = Merk::open_base(context, false).unwrap().unwrap();

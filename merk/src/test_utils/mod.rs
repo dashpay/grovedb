@@ -28,14 +28,11 @@
 
 //! Test utils
 
-mod crash_merk;
-
 mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-pub use crash_merk::CrashMerk;
 use path::SubtreePath;
 use rand::prelude::*;
 use storage::{Storage, StorageBatch};

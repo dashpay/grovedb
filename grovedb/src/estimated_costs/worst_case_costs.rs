@@ -410,9 +410,14 @@ mod test {
     use costs::OperationCost;
     use merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
-        test_utils::make_batch_seq, Merk,
+        test_utils::{empty_path_merk, empty_path_merk_ro, make_batch_seq},
+        Merk,
     };
-    use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch};
+    use storage::{
+        rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
+        worst_case_costs::WorstKeyLength,
+        Storage, StorageBatch,
+    };
     use tempfile::TempDir;
 
     use crate::{
@@ -424,26 +429,23 @@ mod test {
     #[test]
     fn test_get_merk_node_worst_case() {
         // Open a merk and insert 10 elements.
-        let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+        let storage = TempStorage::new();
         let batch = StorageBatch::new();
-        
-        let mut merk = Merk::open_base(storage.get_storage_context(EMPTY_PATH, Some(&batch)).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let mut merk = empty_path_merk(&*storage, &batch);
+
         let merk_batch = make_batch_seq(1..10);
         merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
 
         // this consumes the batch so storage contexts and merks will be dropped
-        storage.commit_multi_context_batch(batch, None).unwrap().unwrap();
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = Merk::open_base(storage.get_storage_context(EMPTY_PATH, None).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let merk = empty_path_merk_ro(&*storage);
 
         // To simulate worst case, we need to pick a node that:
         // 1. Is not in memory

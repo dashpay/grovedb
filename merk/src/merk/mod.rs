@@ -1498,15 +1498,12 @@ mod test {
 
     #[test]
     fn test_open_fee() {
-        let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
-        let test_prefix = [b"ayy"];
-
+        let storage = TempStorage::new();
         let batch = StorageBatch::new();
+
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
+                .get_storage_context(SubtreePath::empty(), Some(&batch))
                 .unwrap(),
             false,
         );
@@ -1534,7 +1531,7 @@ mod test {
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
+                .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
         );
@@ -1656,16 +1653,7 @@ mod test {
 
     #[test]
     fn aux_data() {
-        let storage = TempStorage::default();
-        let batch = StorageBatch::new();
-        let mut merk = Merk::open_base(
-            storage
-                .get_storage_context(SubtreePath::empty(), Some(&batch))
-                .unwrap(),
-            false,
-        )
-        .unwrap()
-        .unwrap();
+        let mut merk = TempMerk::new();
         merk.apply::<Vec<_>, _>(
             &[],
             &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk), None)],
@@ -1673,48 +1661,10 @@ mod test {
         )
         .unwrap()
         .expect("apply failed");
-
-        storage
-            .commit_multi_context_batch(batch, None)
-            .unwrap()
-            .expect("cannot commit batch");
-
-        let mut merk = Merk::open_base(
-            storage
-                .get_storage_context(SubtreePath::empty(), None)
-                .unwrap(),
-            false,
-        )
-        .unwrap()
-        .unwrap();
+        merk.commit();
 
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
-    }
-
-    #[test]
-    #[ignore]
-    fn simulated_crash() {
-        let mut merk = CrashMerk::open_base().expect("failed to open merk");
-
-        merk.apply::<_, Vec<_>>(
-            &[(vec![0], Op::Put(vec![1], BasicMerk))],
-            &[(vec![2], Op::Put(vec![3], BasicMerk), None)],
-            None,
-        )
-        .unwrap()
-        .expect("apply failed");
-
-        // make enough changes so that main column family gets auto-flushed
-        for i in 0..250 {
-            merk.apply::<_, Vec<_>>(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[], None)
-                .unwrap()
-                .expect("apply failed");
-        }
-        merk.commit();
-        merk.crash();
-
-        assert_eq!(merk.get_aux(&[2]).unwrap().unwrap(), Some(vec![3]));
     }
 
     #[test]

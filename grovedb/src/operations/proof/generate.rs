@@ -698,7 +698,10 @@ mod tests {
         let batch = StorageBatch::new();
 
         let merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF, b"innertree"].as_ref().into(), Some(&batch))
+            .open_non_transactional_merk_at_path(
+                [TEST_LEAF, b"innertree"].as_ref().into(),
+                Some(&batch),
+            )
             .unwrap()
             .unwrap();
         let expected_root_hash = merk.root_hash().unwrap();
