@@ -56,6 +56,10 @@ pub trait Storage<'db> {
     /// Storage context type for multi-tree batch operations inside transaction
     type BatchTransactionalStorageContext: StorageContext<'db>;
 
+    /// Storage context type for direct writes to the storage. The only use case
+    /// is replication process.
+    type ImmediateStorageContext: StorageContext<'db>;
+
     /// Starts a new transaction
     fn start_transaction(&'db self) -> Self::Transaction;
 
@@ -93,6 +97,16 @@ pub trait Storage<'db> {
         batch: Option<&'db StorageBatch>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
+    where
+        B: AsRef<[u8]> + 'b;
+
+    /// Make context for a subtree on transactional data that will apply all operations
+    /// straight to the storage.
+    fn get_immediate_storage_context<'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>
     where
         B: AsRef<[u8]> + 'b;
 

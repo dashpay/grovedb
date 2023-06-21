@@ -44,7 +44,10 @@ use rocksdb::{
     Transaction, WriteBatchWithTransaction,
 };
 
-use super::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
+use super::{
+    PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext,
+    PrefixedRocksDbTransactionContext,
+};
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
@@ -407,6 +410,7 @@ impl RocksDbStorage {
 impl<'db> Storage<'db> for RocksDbStorage {
     type BatchStorageContext = PrefixedRocksDbStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
+    type ImmediateStorageContext = PrefixedRocksDbImmediateStorageContext<'db>;
     type Transaction = Tx<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
@@ -452,6 +456,19 @@ impl<'db> Storage<'db> for RocksDbStorage {
     {
         Self::build_prefix(path).map(|prefix| {
             PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
+        })
+    }
+
+    fn get_immediate_storage_context<'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        Self::build_prefix(path).map(|prefix| {
+            PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
         })
     }
 

@@ -36,7 +36,7 @@ mod tests;
 pub use rocksdb::{Error, WriteBatchWithTransaction};
 pub use storage_context::{
     PrefixedRocksDbBatch, PrefixedRocksDbRawIterator, PrefixedRocksDbStorageContext,
-    PrefixedRocksDbTransactionContext,
+    PrefixedRocksDbTransactionContext, PrefixedRocksDbImmediateStorageContext,
 };
 
 pub use self::storage::RocksDbStorage;
