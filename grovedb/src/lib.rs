@@ -49,8 +49,8 @@ mod query;
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
-// #[cfg(feature = "full")]
-// mod replication;
+#[cfg(feature = "full")]
+mod replication;
 #[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
@@ -93,9 +93,10 @@ use merk::{
 use path::SubtreePath;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-// #[cfg(feature = "full")]
-// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer,
-// SubtreeChunkProducer};
+#[cfg(feature = "full")]
+pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+#[cfg(feature = "full")]
+use storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
@@ -189,8 +190,58 @@ impl GroveDb {
         }
     }
 
+    /// Opens a Merk at given path for with direct write access. Intended for
+    /// replication purposes.
+    fn open_merk_for_replication<'db, 'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        tx: &'db Transaction,
+    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'db>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+
+        let storage = self
+            .db
+            .get_immediate_storage_context(path.clone(), tx)
+            .unwrap_add_cost(&mut cost);
+        if let Some((parent_path, parent_key)) = path.derive_parent() {
+            let parent_storage = self
+                .db
+                .get_immediate_storage_context(parent_path.clone(), tx)
+                .unwrap_add_cost(&mut cost);
+            let element = Element::get_from_storage(&parent_storage, parent_key)
+                .map_err(|e| {
+                    Error::InvalidParentLayerPath(format!(
+                        "could not get key {} for parent {:?} of subtree: {}",
+                        hex::encode(parent_key),
+                        DebugByteVectors(parent_path.to_vec()),
+                        e
+                    ))
+                })
+                .unwrap()?;
+            let is_sum_tree = element.is_sum_tree();
+            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                    .unwrap()
+            } else {
+                Err(Error::CorruptedPath(
+                    "cannot open a subtree as parent exists but is not a tree",
+                ))
+            }
+        } else {
+            Merk::open_base(storage, false)
+                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+                .unwrap()
+        }
+    }
+
     /// Opens the non-transactional Merk at the given path. Returns CostResult.
-    pub fn open_non_transactional_merk_at_path<'db, 'b, B>(
+    fn open_non_transactional_merk_at_path<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
         batch: Option<&'db StorageBatch>,

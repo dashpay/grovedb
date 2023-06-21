@@ -29,15 +29,15 @@
 //! Implementation of prefixed storage context.
 
 mod batch;
+mod context_immediate;
 mod context_no_tx;
 mod context_tx;
-mod context_immediate;
 mod raw_iterator;
 
 pub use batch::PrefixedRocksDbBatch;
+pub use context_immediate::PrefixedRocksDbImmediateStorageContext;
 pub use context_no_tx::PrefixedRocksDbStorageContext;
 pub use context_tx::PrefixedRocksDbTransactionContext;
-pub use context_immediate::PrefixedRocksDbImmediateStorageContext;
 pub use raw_iterator::PrefixedRocksDbRawIterator;
 
 use super::storage::SubtreePrefix;

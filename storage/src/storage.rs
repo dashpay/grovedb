@@ -100,8 +100,8 @@ pub trait Storage<'db> {
     where
         B: AsRef<[u8]> + 'b;
 
-    /// Make context for a subtree on transactional data that will apply all operations
-    /// straight to the storage.
+    /// Make context for a subtree on transactional data that will apply all
+    /// operations straight to the storage.
     fn get_immediate_storage_context<'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,

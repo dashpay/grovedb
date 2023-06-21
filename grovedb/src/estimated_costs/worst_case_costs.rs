@@ -411,7 +411,6 @@ mod test {
     use merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
         test_utils::{empty_path_merk, empty_path_merk_ro, make_batch_seq},
-        Merk,
     };
     use storage::{
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},

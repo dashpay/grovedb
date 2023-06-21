@@ -38,9 +38,12 @@ use merk::{
     Merk, TreeFeatureType,
 };
 use path::SubtreePath;
-use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
+use storage::{
+    rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext},
+    Storage, StorageContext,
+};
 
-use crate::{Element, Error, GroveDb, Hash};
+use crate::{Element, Error, GroveDb, Hash, Transaction};
 
 const OPS_PER_CHUNK: usize = 128;
 
@@ -104,6 +107,7 @@ impl<'db> SubtreeChunkProducer<'db> {
                 .grove_db
                 .open_non_transactional_merk_at_path(
                     path_iter.clone().collect::<Vec<_>>().as_slice().into(),
+                    None,
                 )
                 .unwrap()?;
 
@@ -135,7 +139,7 @@ impl<'db> SubtreeChunkProducer<'db> {
 }
 
 // TODO: make generic over storage_cost context
-type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbStorageContext<'db>>;
+type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbImmediateStorageContext<'db>>;
 
 type Path = Vec<Vec<u8>>;
 
@@ -146,6 +150,7 @@ pub struct Restorer<'db> {
     current_merk_path: Path,
     queue: VecDeque<(Path, Vec<u8>, Hash, TreeFeatureType)>,
     grove_db: &'db GroveDb,
+    tx: &'db Transaction<'db>,
 }
 
 /// Indicates what next piece of information `Restorer` expects or wraps a
@@ -163,15 +168,16 @@ impl<'db> Restorer<'db> {
     /// Create a GroveDb restorer using a backing storage_cost and root hash.
     pub fn new(
         grove_db: &'db GroveDb,
-        _root_key: Vec<u8>,
         root_hash: Hash,
+        tx: &'db Transaction<'db>,
     ) -> Result<Self, RestorerError> {
         Ok(Restorer {
+            tx,
             current_merk_restorer: Some(MerkRestorer::new(
                 Merk::open_base(
                     grove_db
                         .db
-                        .get_storage_context(SubtreePath::empty())
+                        .get_immediate_storage_context(SubtreePath::empty(), &tx)
                         .unwrap(),
                     false,
                 )
@@ -258,10 +264,9 @@ impl<'db> Restorer<'db> {
                 .map_err(|e| RestorerError(e.to_string()))?;
             if let Some((next_path, combining_value, expected_hash, _)) = self.queue.pop_front() {
                 // Process next subtree.
-                let merk: Merk<PrefixedRocksDbStorageContext> = self
+                let merk = self
                     .grove_db
-                    .open_non_transactional_merk_at_path(next_path.as_slice().into())
-                    .unwrap()
+                    .open_merk_for_replication(next_path.as_slice().into(), &self.tx)
                     .map_err(|e| RestorerError(e.to_string()))?;
                 self.current_merk_restorer = Some(MerkRestorer::new(
                     merk,
@@ -338,7 +343,10 @@ impl<'db> SiblingsChunkProducer<'db> {
             .chunk_producer
             .grove_db
             .db
-            .get_storage_context(parent_path.clone().collect::<Vec<_>>().as_slice().into())
+            .get_storage_context(
+                parent_path.clone().collect::<Vec<_>>().as_slice().into(),
+                None,
+            )
             .unwrap();
         let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
 
@@ -461,11 +469,12 @@ mod test {
         {
             let replica_db = GroveDb::open(replica_tempdir.path()).unwrap();
             let mut chunk_producer = original_db.chunks();
+            let tx = replica_db.start_transaction();
 
             let mut restorer = Restorer::new(
                 &replica_db,
-                original_db.root_key(None).unwrap().unwrap(),
                 original_db.root_hash(None).unwrap().unwrap(),
+                &tx,
             )
             .expect("cannot create restorer");
 
@@ -483,6 +492,8 @@ mod test {
                     }
                 }
             }
+
+            replica_db.commit_transaction(tx).unwrap().unwrap();
         }
         replica_tempdir
     }
@@ -493,12 +504,13 @@ mod test {
         {
             let replica_grove_db = GroveDb::open(replica_tempdir.path()).unwrap();
             let mut chunk_producer = SiblingsChunkProducer::new(original_db.chunks());
+            let tx = replica_grove_db.start_transaction();
 
             let mut restorer = BufferedRestorer::new(
                 Restorer::new(
                     &replica_grove_db,
-                    original_db.root_key(None).unwrap().unwrap(),
                     original_db.root_hash(None).unwrap().unwrap(),
+                    &tx,
                 )
                 .expect("cannot create restorer"),
             );
@@ -520,6 +532,8 @@ mod test {
                     }
                 }
             }
+
+            replica_grove_db.commit_transaction(tx).unwrap().unwrap();
         }
 
         replica_tempdir
@@ -565,13 +579,13 @@ mod test {
     #[test]
     fn replicate_wrong_root_hash() {
         let db = make_test_grovedb();
-        let good_key = db.root_key(None).unwrap().unwrap();
         let mut bad_hash = db.root_hash(None).unwrap().unwrap();
         bad_hash[0] = bad_hash[0].wrapping_add(1);
 
         let tmp_dir = TempDir::new().unwrap();
         let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
-        let mut restorer = Restorer::new(&restored_db, good_key, bad_hash).unwrap();
+        let tx = restored_db.start_transaction();
+        let mut restorer = Restorer::new(&restored_db, bad_hash, &tx).unwrap();
         let mut chunks = db.chunks();
         assert!(restorer
             .process_chunk(chunks.get_chunk([], 0).unwrap())
@@ -600,12 +614,12 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
 
-        let expected_key = db.root_key(None).unwrap().unwrap();
         let expected_hash = db.root_hash(None).unwrap().unwrap();
 
         let tmp_dir = TempDir::new().unwrap();
         let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
-        let mut restorer = Restorer::new(&restored_db, expected_key, expected_hash).unwrap();
+        let tx = restored_db.start_transaction();
+        let mut restorer = Restorer::new(&restored_db, expected_hash, &tx).unwrap();
         let mut chunks = db.chunks();
 
         let next_op = restorer
