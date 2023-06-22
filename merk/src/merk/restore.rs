@@ -394,7 +394,7 @@ impl Child {
 mod tests {
     use path::SubtreePath;
     use storage::{
-        rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
+        rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext},
         RawIterator, Storage,
     };
 
@@ -402,7 +402,16 @@ mod tests {
     use crate::{test_utils::*, tree::Op, MerkBatch};
 
     fn restore_test(batches: &[&MerkBatch<Vec<u8>>], expected_nodes: usize) {
-        let mut original = TempMerk::new();
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut original = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
         for batch in batches {
             original
                 .apply::<Vec<_>, Vec<_>>(batch, &[], None)
@@ -413,7 +422,10 @@ mod tests {
         let chunks = original.chunks().unwrap();
 
         let storage = TempStorage::default();
-        let ctx = storage.get_storage_context(SubtreePath::empty()).unwrap();
+        let _tx2 = storage.start_transaction();
+        let ctx = storage
+            .get_immediate_storage_context(SubtreePath::empty(), &tx)
+            .unwrap();
         let merk = Merk::open_base(ctx, false).unwrap().unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
@@ -472,8 +484,8 @@ mod tests {
     }
 
     fn assert_raw_db_entries_eq(
-        restored: &Merk<PrefixedRocksDbStorageContext>,
-        original: &Merk<PrefixedRocksDbStorageContext>,
+        restored: &Merk<PrefixedRocksDbImmediateStorageContext>,
+        original: &Merk<PrefixedRocksDbImmediateStorageContext>,
         length: usize,
     ) {
         assert_eq!(restored.root_hash().unwrap(), original.root_hash().unwrap());

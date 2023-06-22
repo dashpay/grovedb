@@ -40,7 +40,7 @@ use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "full")]
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
@@ -51,10 +51,7 @@ use merk::{Error as MerkError, Merk, MerkOptions};
 use path::SubtreePath;
 #[cfg(feature = "full")]
 use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
-        PrefixedRocksDbTransactionContext,
-    },
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
 
@@ -120,19 +117,29 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         let options = options.unwrap_or_default();
-        self.delete_internal(
-            path.into(),
-            key,
-            &options,
-            transaction,
-            &mut |_, removed_key_bytes, removed_value_bytes| {
-                Ok((
-                    BasicStorageRemoval(removed_key_bytes),
-                    BasicStorageRemoval(removed_value_bytes),
-                ))
-            },
-        )
-        .map_ok(|_| ())
+        let batch = StorageBatch::new();
+
+        let collect_costs = self
+            .delete_internal(
+                path.into(),
+                key,
+                &options,
+                transaction,
+                &mut |_, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                &batch,
+            )
+            .map_ok(|_| ());
+
+        collect_costs.flat_map_ok(|_| {
+            self.db
+                .commit_multi_context_batch(batch, transaction)
+                .map_err(Into::into)
+        })
     }
 
     /// Delete element with sectional storage function
@@ -152,30 +159,40 @@ impl GroveDb {
         >,
     ) -> CostResult<(), Error> {
         let options = options.unwrap_or_default();
-        self.delete_internal(
-            path,
-            key,
-            &options,
-            transaction,
-            &mut |value, removed_key_bytes, removed_value_bytes| {
-                let mut element = Element::deserialize(value.as_slice())
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                let maybe_flags = element.get_flags_mut();
-                match maybe_flags {
-                    None => Ok((
-                        BasicStorageRemoval(removed_key_bytes),
-                        BasicStorageRemoval(removed_value_bytes),
-                    )),
-                    Some(flags) => (split_removal_bytes_function)(
-                        flags,
-                        removed_key_bytes,
-                        removed_value_bytes,
-                    )
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
-                }
-            },
-        )
-        .map_ok(|_| ())
+        let batch = StorageBatch::new();
+
+        let collect_costs = self
+            .delete_internal(
+                path,
+                key,
+                &options,
+                transaction,
+                &mut |value, removed_key_bytes, removed_value_bytes| {
+                    let mut element = Element::deserialize(value.as_slice())
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                    let maybe_flags = element.get_flags_mut();
+                    match maybe_flags {
+                        None => Ok((
+                            BasicStorageRemoval(removed_key_bytes),
+                            BasicStorageRemoval(removed_value_bytes),
+                        )),
+                        Some(flags) => (split_removal_bytes_function)(
+                            flags,
+                            removed_key_bytes,
+                            removed_value_bytes,
+                        )
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
+                    }
+                },
+                &batch,
+            )
+            .map_ok(|_| ());
+
+        collect_costs.flat_map_ok(|_| {
+            self.db
+                .commit_multi_context_batch(batch, transaction)
+                .map_err(Into::into)
+        })
     }
 
     /// Delete if an empty tree
@@ -189,7 +206,9 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        self.delete_if_empty_tree_with_sectional_storage_function(
+        let batch = StorageBatch::new();
+
+        let collect_costs = self.delete_if_empty_tree_with_sectional_storage_function(
             path.into(),
             key,
             transaction,
@@ -199,11 +218,19 @@ impl GroveDb {
                     (BasicStorageRemoval(removed_value_bytes)),
                 ))
             },
-        )
+            &batch,
+        );
+
+        collect_costs.flat_map_ok(|r| {
+            self.db
+                .commit_multi_context_batch(batch, transaction)
+                .map_err(Into::into)
+                .map_ok(|_| r)
+        })
     }
 
     /// Delete if an empty tree with section storage function
-    pub fn delete_if_empty_tree_with_sectional_storage_function<B: AsRef<[u8]>>(
+    fn delete_if_empty_tree_with_sectional_storage_function<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
@@ -216,12 +243,14 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        batch: &StorageBatch,
     ) -> CostResult<bool, Error> {
         let options = DeleteOptions {
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
         };
+
         self.delete_internal(
             path,
             key,
@@ -244,6 +273,7 @@ impl GroveDb {
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
                 }
             },
+            &batch,
         )
     }
 
@@ -309,6 +339,7 @@ impl GroveDb {
                     &mut cost,
                     self.db,
                     SubtreePath::from(&subtree_merk_path),
+                    None,
                     transaction,
                     subtree,
                     {
@@ -367,11 +398,19 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
+        batch: &StorageBatch,
     ) -> CostResult<bool, Error> {
         if let Some(transaction) = transaction {
-            self.delete_internal_on_transaction(path, key, options, transaction, sectioned_removal)
+            self.delete_internal_on_transaction(
+                path,
+                key,
+                options,
+                transaction,
+                sectioned_removal,
+                batch,
+            )
         } else {
-            self.delete_internal_without_transaction(path, key, options, sectioned_removal)
+            self.delete_internal_without_transaction(path, key, options, sectioned_removal, batch)
         }
     }
 
@@ -389,6 +428,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
+        batch: &StorageBatch,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
 
@@ -398,7 +438,7 @@ impl GroveDb {
         );
         let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.clone(), transaction)
+            self.open_transactional_merk_at_path(path.clone(), transaction, Some(batch))
         );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
@@ -407,7 +447,11 @@ impl GroveDb {
 
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(subtree_merk_path_ref.clone(), transaction)
+                self.open_transactional_merk_at_path(
+                    subtree_merk_path_ref.clone(),
+                    transaction,
+                    Some(batch)
+                )
             );
             let is_empty = subtree_of_tree_we_are_deleting
                 .is_empty_tree()
@@ -424,7 +468,6 @@ impl GroveDb {
                     Ok(false).wrap_with_cost(cost)
                 };
             } else if !is_empty {
-                let storage_batch = StorageBatch::new();
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(&subtree_merk_path_ref, Some(transaction))
@@ -433,7 +476,7 @@ impl GroveDb {
                     let p: SubtreePath<_> = subtree_path.as_slice().into();
                     let mut storage = self
                         .db
-                        .get_batch_transactional_storage_context(p, &storage_batch, transaction)
+                        .get_transactional_storage_context(p, Some(batch), transaction)
                         .unwrap_add_cost(&mut cost);
 
                     cost_return_on_error!(
@@ -448,11 +491,7 @@ impl GroveDb {
                 // todo: verify why we need to open the same? merk again
                 let storage = self
                     .db
-                    .get_batch_transactional_storage_context(
-                        path.clone(),
-                        &storage_batch,
-                        transaction,
-                    )
+                    .get_transactional_storage_context(path.clone(), Some(batch), transaction)
                     .unwrap_add_cost(&mut cost);
 
                 let mut merk_to_delete_tree_from = cost_return_on_error!(
@@ -480,24 +519,17 @@ impl GroveDb {
                 );
                 let mut merk_cache: HashMap<
                     SubtreePath<B>,
-                    Merk<PrefixedRocksDbBatchTransactionContext>,
+                    Merk<PrefixedRocksDbTransactionContext>,
                 > = HashMap::default();
                 merk_cache.insert(path.clone(), merk_to_delete_tree_from);
                 cost_return_on_error!(
                     &mut cost,
                     self.propagate_changes_with_batch_transaction(
-                        &storage_batch,
+                        &batch,
                         merk_cache,
                         &path,
                         transaction
                     )
-                );
-                cost_return_on_error_no_add!(
-                    &cost,
-                    self.db
-                        .commit_multi_context_batch(storage_batch, Some(transaction))
-                        .unwrap_add_cost(&mut cost)
-                        .map_err(|e| e.into())
                 );
             } else {
                 // We are deleting a tree, a tree uses 3 bytes
@@ -519,7 +551,7 @@ impl GroveDb {
                 merk_cache.insert(path.clone(), subtree_to_delete_from);
                 cost_return_on_error!(
                     &mut cost,
-                    self.propagate_changes_with_transaction(merk_cache, path, transaction)
+                    self.propagate_changes_with_transaction(merk_cache, path, transaction, batch)
                 );
             }
         } else {
@@ -539,7 +571,7 @@ impl GroveDb {
             merk_cache.insert(path.clone(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,
-                self.propagate_changes_with_transaction(merk_cache, path, transaction)
+                self.propagate_changes_with_transaction(merk_cache, path, transaction, batch)
             );
         }
 
@@ -559,6 +591,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
+        batch: &StorageBatch,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
 
@@ -566,16 +599,19 @@ impl GroveDb {
             cost_return_on_error!(&mut cost, self.get_raw(path.clone(), key.as_ref(), None));
         let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
-        let mut subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+        let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.clone())
+            self.open_non_transactional_merk_at_path(path.clone(), Some(batch))
         );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_tree() {
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(SubtreePath::from(&subtree_merk_path))
+                self.open_non_transactional_merk_at_path(
+                    SubtreePath::from(&subtree_merk_path),
+                    Some(batch)
+                )
             );
             let is_empty = subtree_of_tree_we_are_deleting
                 .is_empty_tree()
@@ -602,7 +638,7 @@ impl GroveDb {
                         let p: SubtreePath<_> = subtree_path.as_slice().into();
                         let mut inner_subtree_to_delete_from = cost_return_on_error!(
                             &mut cost,
-                            self.open_non_transactional_merk_at_path(p)
+                            self.open_non_transactional_merk_at_path(p, Some(batch))
                         );
                         cost_return_on_error!(
                             &mut cost,
@@ -642,7 +678,7 @@ impl GroveDb {
         merk_cache.insert(path.clone(), subtree_to_delete_from);
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_without_transaction(merk_cache, path)
+            self.propagate_changes_without_transaction(merk_cache, path, batch)
         );
 
         Ok(true).wrap_with_cost(cost)
@@ -676,7 +712,7 @@ impl GroveDb {
         while let Some(q) = queue.pop() {
             let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
             // Get the correct subtree with q_ref as path
-            storage_context_optional_tx!(self.db, subtree_path, transaction, storage, {
+            storage_context_optional_tx!(self.db, subtree_path, None, transaction, storage, {
                 let storage = storage.unwrap_add_cost(&mut cost);
                 let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
                 while let Some((key, value)) =

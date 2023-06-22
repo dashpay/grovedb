@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! A hierarchical "grove" of trees with proofs and secondary indexes.
+//! A hierarchical "grove" of trees with proofs.
 
 // #![deny(missing_docs)]
 
@@ -96,13 +96,12 @@ pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 #[cfg(feature = "full")]
+use storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
-        PrefixedRocksDbTransactionContext,
-    },
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     StorageBatch,
 };
 #[cfg(feature = "full")]
@@ -144,6 +143,7 @@ impl GroveDb {
         &'db self,
         path: SubtreePath<'b, B>,
         tx: &'db Transaction,
+        batch: Option<&'db StorageBatch>,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -152,12 +152,12 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_transactional_storage_context(path.clone(), tx)
+            .get_transactional_storage_context(path.clone(), batch, tx)
             .unwrap_add_cost(&mut cost);
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_transactional_storage_context(parent_path.clone(), tx)
+                .get_transactional_storage_context(parent_path.clone(), batch, tx)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -190,10 +190,61 @@ impl GroveDb {
         }
     }
 
-    /// Opens the non-transactional Merk at the given path. Returns CostResult.
-    pub fn open_non_transactional_merk_at_path<'b, B>(
-        &self,
+    /// Opens a Merk at given path for with direct write access. Intended for
+    /// replication purposes.
+    fn open_merk_for_replication<'db, 'b, B>(
+        &'db self,
         path: SubtreePath<'b, B>,
+        tx: &'db Transaction,
+    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'db>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+
+        let storage = self
+            .db
+            .get_immediate_storage_context(path.clone(), tx)
+            .unwrap_add_cost(&mut cost);
+        if let Some((parent_path, parent_key)) = path.derive_parent() {
+            let parent_storage = self
+                .db
+                .get_immediate_storage_context(parent_path.clone(), tx)
+                .unwrap_add_cost(&mut cost);
+            let element = Element::get_from_storage(&parent_storage, parent_key)
+                .map_err(|e| {
+                    Error::InvalidParentLayerPath(format!(
+                        "could not get key {} for parent {:?} of subtree: {}",
+                        hex::encode(parent_key),
+                        DebugByteVectors(parent_path.to_vec()),
+                        e
+                    ))
+                })
+                .unwrap()?;
+            let is_sum_tree = element.is_sum_tree();
+            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                    .unwrap()
+            } else {
+                Err(Error::CorruptedPath(
+                    "cannot open a subtree as parent exists but is not a tree",
+                ))
+            }
+        } else {
+            Merk::open_base(storage, false)
+                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+                .unwrap()
+        }
+    }
+
+    /// Opens the non-transactional Merk at the given path. Returns CostResult.
+    fn open_non_transactional_merk_at_path<'db, 'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        batch: Option<&'db StorageBatch>,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -202,13 +253,13 @@ impl GroveDb {
 
         let storage = self
             .db
-            .get_storage_context(path.clone())
+            .get_storage_context(path.clone(), batch)
             .unwrap_add_cost(&mut cost);
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let parent_storage = self
                 .db
-                .get_storage_context(parent_path.clone())
+                .get_storage_context(parent_path.clone(), batch)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
@@ -253,7 +304,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, {
             let root_key = subtree.root_key().unwrap();
             Ok(root_key).wrap_with_cost(cost)
         })
@@ -266,7 +317,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, {
             let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
             Ok(root_hash).wrap_with_cost(cost)
         })
@@ -277,7 +328,7 @@ impl GroveDb {
     fn propagate_changes_with_batch_transaction<'b, B: AsRef<[u8]>>(
         &self,
         storage_batch: &StorageBatch,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbBatchTransactionContext>>,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: &SubtreePath<'b, B>,
         transaction: &Transaction,
     ) -> CostResult<(), Error> {
@@ -329,6 +380,7 @@ impl GroveDb {
         mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: SubtreePath<'b, B>,
         transaction: &Transaction,
+        batch: &StorageBatch,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -346,7 +398,7 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(parent_path.clone(), transaction)
+                self.open_transactional_merk_at_path(parent_path.clone(), transaction, Some(batch))
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -373,6 +425,7 @@ impl GroveDb {
         &self,
         mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>>,
         path: SubtreePath<'b, B>,
+        batch: &StorageBatch,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -390,7 +443,7 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(parent_path.clone())
+                self.open_non_transactional_merk_at_path(parent_path.clone(), Some(batch))
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -636,18 +689,19 @@ impl GroveDb {
     /// correctly.
     pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let root_merk = self
-            .open_non_transactional_merk_at_path(SubtreePath::empty())
+            .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
             .unwrap()
             .expect("should exist");
-        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty())
+        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), None)
     }
 
     /// Verifies that the root hash of the given merk and all submerks match
     /// those of the merk and submerks at the given path. Returns any issues.
-    fn verify_merk_and_submerks<B: AsRef<[u8]>>(
-        &self,
+    fn verify_merk_and_submerks<'db, B: AsRef<[u8]>>(
+        &'db self,
         merk: Merk<PrefixedRocksDbStorageContext>,
         path: &SubtreePath<B>,
+        batch: Option<&'db StorageBatch>,
     ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
@@ -655,6 +709,7 @@ impl GroveDb {
         let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
+
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value).unwrap();
             if element.is_tree() {
@@ -667,7 +722,7 @@ impl GroveDb {
                 let new_path_ref = SubtreePath::from(&new_path);
 
                 let inner_merk = self
-                    .open_non_transactional_merk_at_path(new_path_ref.clone())
+                    .open_non_transactional_merk_at_path(new_path_ref.clone(), batch)
                     .unwrap()
                     .expect("should exist");
                 let root_hash = inner_merk.root_hash().unwrap();
@@ -681,7 +736,7 @@ impl GroveDb {
                         (root_hash, combined_value_hash, element_value_hash),
                     );
                 }
-                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref));
+                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch));
             }
         }
         issues

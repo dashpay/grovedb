@@ -50,17 +50,15 @@ pub trait Storage<'db> {
     /// Storage transaction type
     type Transaction;
 
-    /// Storage context type
-    type StorageContext: StorageContext<'db>;
-
-    /// Storage context type for transactional data
-    type TransactionalStorageContext: StorageContext<'db>;
-
     /// Storage context type for mutli-tree batch operations
-    type BatchStorageContext;
+    type BatchStorageContext: StorageContext<'db>;
 
     /// Storage context type for multi-tree batch operations inside transaction
-    type BatchTransactionalStorageContext;
+    type BatchTransactionalStorageContext: StorageContext<'db>;
+
+    /// Storage context type for direct writes to the storage. The only use case
+    /// is replication process.
+    type ImmediateStorageContext: StorageContext<'db>;
 
     /// Starts a new transaction
     fn start_transaction(&'db self) -> Self::Transaction;
@@ -81,39 +79,34 @@ pub trait Storage<'db> {
     /// Forces data to be written
     fn flush(&self) -> Result<(), Error>;
 
-    /// Make storage_cost context for a subtree with path
+    /// Make storage context for a subtree with path, keeping all write
+    /// operations inside a `batch` if provided.
     fn get_storage_context<'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-    ) -> CostContext<Self::StorageContext>
-    where
-        B: AsRef<[u8]> + 'b;
-
-    /// Make storage_cost context for a subtree on transactional data
-    fn get_transactional_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::TransactionalStorageContext>
-    where
-        B: AsRef<[u8]> + 'b;
-
-    /// Make batch storage_cost context for a subtree with path
-    fn get_batch_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        batch: &'db StorageBatch,
+        batch: Option<&'db StorageBatch>,
     ) -> CostContext<Self::BatchStorageContext>
     where
         B: AsRef<[u8]> + 'b;
 
-    /// Make batch storage_cost context for a subtree on transactional data
-    fn get_batch_transactional_storage_context<'b, B>(
+    /// Make context for a subtree on transactional data, keeping all write
+    /// operations inside a `batch` if provided.
+    fn get_transactional_storage_context<'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: &'db StorageBatch,
+        batch: Option<&'db StorageBatch>,
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext>
+    where
+        B: AsRef<[u8]> + 'b;
+
+    /// Make context for a subtree on transactional data that will apply all
+    /// operations straight to the storage.
+    fn get_immediate_storage_context<'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>
     where
         B: AsRef<[u8]> + 'b;
 

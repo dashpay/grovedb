@@ -29,16 +29,16 @@
 /// Macro to execute same piece of code on different storage contexts
 /// (transactional or not) using path argument.
 macro_rules! storage_context_optional_tx {
-    ($db:expr, $path:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
+    ($db:expr, $path:expr, $batch:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
         {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context($path, tx);
+                    .get_transactional_storage_context($path, $batch, tx);
                 $($body)*
             } else {
                 let $storage = $db
-                    .get_storage_context($path);
+                    .get_storage_context($path, $batch);
                 $($body)*
             }
         }
@@ -52,6 +52,7 @@ macro_rules! storage_context_with_parent_optional_tx {
 	&mut $cost:ident,
 	$db:expr,
 	$path:expr,
+        $batch:expr,
 	$transaction:ident,
 	$storage:ident,
 	$root_key:ident,
@@ -62,10 +63,10 @@ macro_rules! storage_context_with_parent_optional_tx {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context($path.clone(), tx)
+                    .get_transactional_storage_context($path.clone(), $batch, tx)
 		    .unwrap_add_cost(&mut $cost);
                 if let Some((parent_path, parent_key)) = $path.derive_parent() {
-                    let parent_storage = $db.get_transactional_storage_context(parent_path, tx)
+                    let parent_storage = $db.get_transactional_storage_context(parent_path, $batch, tx)
 			.unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
                         &mut $cost,
@@ -103,10 +104,10 @@ macro_rules! storage_context_with_parent_optional_tx {
                 }
             } else {
                 let $storage = $db
-                    .get_storage_context($path.clone()).unwrap_add_cost(&mut $cost);
+                    .get_storage_context($path.clone(), $batch).unwrap_add_cost(&mut $cost);
                 if let Some((parent_path, parent_key)) = $path.derive_parent() {
                     let parent_storage = $db.get_storage_context(
-			parent_path
+			parent_path, $batch
 		    ).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
                         &mut $cost,
@@ -150,16 +151,16 @@ macro_rules! storage_context_with_parent_optional_tx {
 /// Macro to execute same piece of code on different storage contexts with
 /// empty prefix.
 macro_rules! meta_storage_context_optional_tx {
-    ($db:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
+    ($db:expr, $batch:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
         {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context(::path::SubtreePath::empty(), tx);
+                    .get_transactional_storage_context(::path::SubtreePath::empty(), $batch, tx);
                 $($body)*
             } else {
                 let $storage = $db
-                    .get_storage_context(::path::SubtreePath::empty());
+                    .get_storage_context(::path::SubtreePath::empty(), $batch);
                 $($body)*
             }
         }
@@ -173,13 +174,14 @@ macro_rules! merk_optional_tx {
         &mut $cost:ident,
         $db:expr,
         $path:expr,
+        $batch:expr,
         $transaction:ident,
         $subtree:ident,
         { $($body:tt)* }
     ) => {
             if $path.is_root() {
 use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, ::path::SubtreePath::empty(), $transaction, storage, {
+            storage_context_optional_tx!($db, ::path::SubtreePath::empty(), $batch, $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
@@ -198,6 +200,7 @@ use crate::util::storage_context_optional_tx;
                 &mut $cost,
                 $db,
                 $path,
+                $batch,
                 $transaction,
                 storage,
                 root_key,
@@ -228,6 +231,7 @@ macro_rules! merk_optional_tx_path_not_empty {
         &mut $cost:ident,
         $db:expr,
         $path:expr,
+        $batch:expr,
         $transaction:ident,
         $subtree:ident,
         { $($body:tt)* }
@@ -238,6 +242,7 @@ macro_rules! merk_optional_tx_path_not_empty {
                 &mut $cost,
                 $db,
                 $path,
+                $batch,
                 $transaction,
                 storage,
                 root_key,
@@ -267,13 +272,14 @@ macro_rules! root_merk_optional_tx {
     (
         &mut $cost:ident,
         $db:expr,
+        $batch:expr,
         $transaction:ident,
         $subtree:ident,
         { $($body:tt)* }
     ) => {
         {
             use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, ::path::SubtreePath::empty(), $transaction, storage, {
+            storage_context_optional_tx!($db, ::path::SubtreePath::empty(), $batch, $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)

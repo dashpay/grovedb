@@ -54,7 +54,7 @@ impl GroveDb {
             &mut cost,
             self.check_subtree_exists_path_not_found(path.clone(), transaction)
         );
-        merk_optional_tx!(&mut cost, self.db, path, transaction, subtree, {
+        merk_optional_tx!(&mut cost, self.db, path, None, transaction, subtree, {
             Ok(subtree.is_empty_tree().unwrap_add_cost(&mut cost)).wrap_with_cost(cost)
         })
     }

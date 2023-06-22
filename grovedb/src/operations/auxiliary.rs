@@ -35,6 +35,7 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use storage::StorageContext;
+use storage::{Storage, StorageBatch};
 
 #[cfg(feature = "full")]
 use crate::{util::meta_storage_context_optional_tx, Error, GroveDb, TransactionArg};
@@ -50,8 +51,9 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+        let batch = StorageBatch::new();
 
-        meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
+        meta_storage_context_optional_tx!(self.db, Some(&batch), transaction, aux_storage, {
             cost_return_on_error_no_add!(
                 &cost,
                 aux_storage
@@ -62,7 +64,10 @@ impl GroveDb {
             );
         });
 
-        Ok(()).wrap_with_cost(cost)
+        self.db
+            .commit_multi_context_batch(batch, transaction)
+            .add_cost(cost)
+            .map_err(Into::into)
     }
 
     /// Delete op for aux storage
@@ -73,8 +78,9 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+        let batch = StorageBatch::new();
 
-        meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
+        meta_storage_context_optional_tx!(self.db, Some(&batch), transaction, aux_storage, {
             cost_return_on_error_no_add!(
                 &cost,
                 aux_storage
@@ -85,7 +91,10 @@ impl GroveDb {
             );
         });
 
-        Ok(()).wrap_with_cost(cost)
+        self.db
+            .commit_multi_context_batch(batch, transaction)
+            .add_cost(cost)
+            .map_err(Into::into)
     }
 
     /// Get op for aux storage
@@ -96,7 +105,7 @@ impl GroveDb {
     ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
 
-        meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
+        meta_storage_context_optional_tx!(self.db, None, transaction, aux_storage, {
             let value = cost_return_on_error_no_add!(
                 &cost,
                 aux_storage

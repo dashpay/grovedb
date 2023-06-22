@@ -463,7 +463,9 @@ mod test {
         estimated_costs::average_case_costs::add_average_case_get_merk_node,
         test_utils::make_batch_seq, Merk,
     };
-    use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
+    use storage::{
+        rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
+    };
     use tempfile::TempDir;
 
     use crate::{
@@ -478,21 +480,34 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(EMPTY_PATH).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
-        let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
+        let batch = StorageBatch::new();
+
+        let mut merk = Merk::open_base(
+            storage
+                .get_storage_context(EMPTY_PATH, Some(&batch))
+                .unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
+        let merk_batch = make_batch_seq(1..10);
+        merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
 
-        // drop merk, so nothing is stored in memory
-        drop(merk);
+        // this consumes the batch so storage contexts and merks will be dropped
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = Merk::open_base(storage.get_storage_context(EMPTY_PATH).unwrap(), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let merk = Merk::open_base(
+            storage.get_storage_context(EMPTY_PATH, None).unwrap(),
+            false,
+        )
+        .unwrap()
+        .expect("cannot open merk");
 
         // To simulate average case, we need to pick a node that:
         // 1. Is not in memory

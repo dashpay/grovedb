@@ -241,13 +241,19 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::test_utils::TempMerk;
+    use path::SubtreePath;
+    use storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
 
     #[test]
     fn test_cache_changes_cost() {
-        let mut merk = TempMerk::new();
+        let storage = TempStorage::new();
+        let batch = StorageBatch::new();
+        let ctx = storage
+            .get_storage_context(SubtreePath::empty(), Some(&batch))
+            .unwrap();
+        let mut merk = Merk::open_base(ctx, false).unwrap().unwrap();
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None)
             .unwrap()
@@ -257,12 +263,28 @@ mod tests {
             .unwrap()
             .expect("expected successful insertion 2");
 
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .unwrap();
+
+        let ctx = storage
+            .get_storage_context(SubtreePath::empty(), None)
+            .unwrap();
+        let mut merk = Merk::open_base(ctx, false).unwrap().unwrap();
+
         assert_eq!(
             Element::get(&merk, b"another-key", true)
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
         );
+
+        // Warm up cache because the Merk was reopened.
+        Element::new_item(b"value".to_vec())
+            .insert(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
 
         let cost_with_cache = Element::get(&merk, b"another-key", true)
             .cost_as_result()

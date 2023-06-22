@@ -403,7 +403,8 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::test_utils::TempMerk;
+    use merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};
+    use storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
 
@@ -430,6 +431,7 @@ mod tests {
     #[test]
     fn test_insert_if_changed_value_does_not_insert_when_value_does_not_change() {
         let mut merk = TempMerk::new();
+
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None)
             .unwrap()
@@ -438,10 +440,15 @@ mod tests {
             .insert(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
+
+        merk.commit();
+
         let (inserted, previous) = Element::new_item(b"value".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
+
+        merk.commit();
 
         assert!(!inserted);
         assert_eq!(previous, None);
@@ -455,7 +462,10 @@ mod tests {
 
     #[test]
     fn test_insert_if_changed_value_inserts_when_value_changed() {
-        let mut merk = TempMerk::new();
+        let storage = TempStorage::new();
+        let batch = StorageBatch::new();
+        let mut merk = empty_path_merk(&*storage, &batch);
+
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None)
             .unwrap()
@@ -464,6 +474,14 @@ mod tests {
             .insert(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
+
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .unwrap();
+
+        let batch = StorageBatch::new();
+        let mut merk = empty_path_merk(&*storage, &batch);
         let (inserted, previous) = Element::new_item(b"value2".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None)
             .unwrap()
@@ -471,6 +489,12 @@ mod tests {
 
         assert!(inserted);
         assert_eq!(previous, Some(Element::new_item(b"value".to_vec())),);
+
+        storage
+            .commit_multi_context_batch(batch, None)
+            .unwrap()
+            .unwrap();
+        let merk = empty_path_merk_read_only(&*storage);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true)

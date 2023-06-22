@@ -41,14 +41,9 @@ use std::collections::HashSet;
 use costs::cost_return_on_error_no_add;
 #[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-#[cfg(feature = "full")]
-use merk::Merk;
 use path::SubtreePath;
 #[cfg(feature = "full")]
-use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
-    StorageContext,
-};
+use storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::{
@@ -227,9 +222,9 @@ impl GroveDb {
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+        let merk_to_get_from = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path, transaction)
+            self.open_transactional_merk_at_path(path, transaction, None)
                 .map_err(|e| match e {
                     Error::InvalidParentLayerPath(s) => {
                         Error::PathParentLayerNotFound(s)
@@ -251,13 +246,13 @@ impl GroveDb {
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let merk_result = self
-            .open_transactional_merk_at_path(path, transaction)
+            .open_transactional_merk_at_path(path, transaction, None)
             .map_err(|e| match e {
                 Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
                 _ => e,
             })
             .unwrap_add_cost(&mut cost);
-        let merk: Option<Merk<PrefixedRocksDbTransactionContext>> = cost_return_on_error_no_add!(
+        let merk = cost_return_on_error_no_add!(
             &cost,
             match merk_result {
                 Ok(result) => Ok(Some(result)),
@@ -283,9 +278,9 @@ impl GroveDb {
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+        let merk_to_get_from = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path)
+            self.open_non_transactional_merk_at_path(path, None)
                 .map_err(|e| match e {
                     Error::InvalidParentLayerPath(s) => {
                         Error::PathParentLayerNotFound(s)
@@ -305,14 +300,15 @@ impl GroveDb {
         allow_cache: bool,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
+
         let merk_result = self
-            .open_non_transactional_merk_at_path(path)
+            .open_non_transactional_merk_at_path(path, None)
             .map_err(|e| match e {
                 Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
                 _ => e,
             })
             .unwrap_add_cost(&mut cost);
-        let merk: Option<Merk<PrefixedRocksDbStorageContext>> = cost_return_on_error_no_add!(
+        let merk = cost_return_on_error_no_add!(
             &cost,
             match merk_result {
                 Ok(result) => Ok(Some(result)),
@@ -342,7 +338,7 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         // Merk's items should be written into data storage and checked accordingly
-        storage_context_optional_tx!(self.db, path.into(), transaction, storage, {
+        storage_context_optional_tx!(self.db, path.into(), None, transaction, storage, {
             storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
         })
     }
@@ -357,21 +353,21 @@ impl GroveDb {
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             let element = if let Some(transaction) = transaction {
-            let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(parent_path, transaction)
-            );
+                let merk_to_get_from = cost_return_on_error!(
+                    &mut cost,
+                    self.open_transactional_merk_at_path(parent_path, transaction, None)
+                );
 
-            Element::get(&merk_to_get_from, parent_key, true)
-        } else {
-            let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
-                &mut cost,
-                self.open_non_transactional_merk_at_path(parent_path)
-            );
+                Element::get(&merk_to_get_from, parent_key, true)
+            } else {
+                let merk_to_get_from = cost_return_on_error!(
+                    &mut cost,
+                    self.open_non_transactional_merk_at_path(parent_path, None)
+                );
 
-            Element::get(&merk_to_get_from, parent_key, true)
-        }
-        .unwrap_add_cost(&mut cost);
+                Element::get(&merk_to_get_from, parent_key, true)
+            }
+            .unwrap_add_cost(&mut cost);
             match element {
                 Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),

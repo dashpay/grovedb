@@ -147,7 +147,7 @@ impl GroveDb {
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        storage_context_optional_tx!(self.db, (&path).into(), transaction, storage, {
+        storage_context_optional_tx!(self.db, (&path).into(), None, transaction, storage, {
             let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
             while let Some((key, element)) = iter
                 .next_element()

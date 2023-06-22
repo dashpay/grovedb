@@ -32,6 +32,7 @@
 use std::ops::{Deref, DerefMut};
 
 use path::SubtreePath;
+use storage::StorageBatch;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
@@ -45,6 +46,7 @@ use crate::Merk;
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.
 pub struct TempMerk {
     storage: &'static TempStorage,
+    batch: &'static StorageBatch,
     merk: Merk<PrefixedRocksDbStorageContext<'static>>,
 }
 
@@ -54,9 +56,33 @@ impl TempMerk {
     /// does not exist.
     pub fn new() -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
-        let context = storage.get_storage_context(SubtreePath::empty()).unwrap();
+        let batch = Box::leak(Box::new(StorageBatch::new()));
+
+        let context = storage
+            .get_storage_context(SubtreePath::empty(), Some(batch))
+            .unwrap();
+
         let merk = Merk::open_base(context, false).unwrap().unwrap();
-        TempMerk { storage, merk }
+        TempMerk {
+            storage,
+            merk,
+            batch,
+        }
+    }
+
+    /// Commits pending batch operations.
+    pub fn commit(&mut self) {
+        let batch = unsafe { Box::from_raw(self.batch as *const _ as *mut StorageBatch) };
+        self.storage
+            .commit_multi_context_batch(*batch, None)
+            .unwrap()
+            .expect("unable to commit batch");
+        self.batch = Box::leak(Box::new(StorageBatch::new()));
+        let context = self
+            .storage
+            .get_storage_context(SubtreePath::empty(), Some(self.batch))
+            .unwrap();
+        self.merk = Merk::open_base(context, false).unwrap().unwrap();
     }
 }
 
@@ -64,6 +90,8 @@ impl TempMerk {
 impl Drop for TempMerk {
     fn drop(&mut self) {
         unsafe {
+            let batch = Box::from_raw(self.batch as *const _ as *mut StorageBatch);
+            let _ = self.storage.commit_multi_context_batch(*batch, None);
             drop(Box::from_raw(self.storage as *const _ as *mut TempStorage));
         }
     }
