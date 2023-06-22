@@ -216,7 +216,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
 
     fn new_batch(&self) -> Self::Batch {
         PrefixedRocksDbBatch {
-            prefix: self.prefix.clone(),
+            prefix: self.prefix,
             batch: WriteBatchWithTransaction::<true>::default(),
             cf_aux: self.cf_aux(),
             cf_roots: self.cf_roots(),
@@ -233,7 +233,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
 
     fn raw_iter(&self) -> Self::RawIterator {
         PrefixedRocksDbRawIterator {
-            prefix: self.prefix.clone(),
+            prefix: self.prefix,
             raw_iterator: self.transaction.raw_iterator(),
         }
     }

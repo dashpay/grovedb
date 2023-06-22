@@ -150,13 +150,13 @@ impl GroveDb {
                 element,
                 options,
                 transaction,
-                &batch
+                batch
             )
         );
         merk_cache.insert(path.clone(), merk);
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(merk_cache, path, transaction, &batch)
+            self.propagate_changes_with_transaction(merk_cache, path, transaction, batch)
         );
 
         Ok(()).wrap_with_cost(cost)

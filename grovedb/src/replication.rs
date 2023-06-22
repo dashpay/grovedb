@@ -177,7 +177,7 @@ impl<'db> Restorer<'db> {
                 Merk::open_base(
                     grove_db
                         .db
-                        .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                        .get_immediate_storage_context(SubtreePath::empty(), tx)
                         .unwrap(),
                     false,
                 )
@@ -266,7 +266,7 @@ impl<'db> Restorer<'db> {
                 // Process next subtree.
                 let merk = self
                     .grove_db
-                    .open_merk_for_replication(next_path.as_slice().into(), &self.tx)
+                    .open_merk_for_replication(next_path.as_slice().into(), self.tx)
                     .map_err(|e| RestorerError(e.to_string()))?;
                 self.current_merk_restorer = Some(MerkRestorer::new(
                     merk,
