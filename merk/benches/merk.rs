@@ -555,13 +555,18 @@ pub fn restore_500_1(c: &mut Criterion) {
                 (storage, merk.chunks().unwrap().into_iter())
             },
             |data| {
-                let ctx = data.0.get_storage_context(SubtreePath::empty()).unwrap();
+                let tx = data.0.start_transaction();
+                let ctx = data
+                    .0
+                    .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                    .unwrap();
                 let m = Merk::open_standalone(ctx, false).unwrap().unwrap();
                 let mut restorer = Merk::restore(m, root_hash);
 
                 for chunk in data.1 {
                     restorer.process_chunk(chunk.unwrap()).unwrap();
                 }
+                data.0.commit_transaction(tx).unwrap().unwrap();
             },
             BatchSize::SmallInput,
         );

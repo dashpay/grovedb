@@ -313,7 +313,9 @@ where
 }
 
 /// Shortcut to open a Merk for read only
-pub fn empty_path_merk_ro<'db, S>(storage: &'db S) -> Merk<<S as Storage<'db>>::BatchStorageContext>
+pub fn empty_path_merk_read_only<'db, S>(
+    storage: &'db S,
+) -> Merk<<S as Storage<'db>>::BatchStorageContext>
 where
     S: Storage<'db>,
 {

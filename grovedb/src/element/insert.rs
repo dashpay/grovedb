@@ -403,7 +403,7 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::test_utils::{empty_path_merk, empty_path_merk_ro, TempMerk};
+    use merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};
     use storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
@@ -494,7 +494,7 @@ mod tests {
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .unwrap();
-        let merk = empty_path_merk_ro(&*storage);
+        let merk = empty_path_merk_read_only(&*storage);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true)

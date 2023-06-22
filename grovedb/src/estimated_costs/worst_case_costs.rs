@@ -410,7 +410,7 @@ mod test {
     use costs::OperationCost;
     use merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
-        test_utils::{empty_path_merk, empty_path_merk_ro, make_batch_seq},
+        test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
     };
     use storage::{
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
@@ -444,7 +444,7 @@ mod test {
             .unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = empty_path_merk_ro(&*storage);
+        let merk = empty_path_merk_read_only(&*storage);
 
         // To simulate worst case, we need to pick a node that:
         // 1. Is not in memory
