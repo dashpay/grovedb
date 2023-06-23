@@ -28,11 +28,11 @@
 
 //! Get operations and costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 mod average_case;
 #[cfg(feature = "full")]
 mod query;
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 mod worst_case;
 
 #[cfg(feature = "full")]

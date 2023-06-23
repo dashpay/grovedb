@@ -43,11 +43,12 @@ use storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath},
-    operations::delete::EstimatedKeyAndElementSize,
     Error, GroveDb,
 };
 
-#[cfg(feature = "full")]
+/// 0 represents key size, 1 represents element size
+type EstimatedKeyAndElementSize = (u32, u32);
+
 impl GroveDb {
     /// Average case delete operations for delete up tree while empty
     // todo finish this
