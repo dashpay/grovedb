@@ -49,7 +49,6 @@ use storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
-use crate::operations::proof::util::{write_slice_of_slice_to_slice, write_slice_to_vec};
 #[cfg(feature = "full")]
 use crate::{
     operations::proof::util::{
@@ -57,6 +56,10 @@ use crate::{
     },
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Query,
+};
+use crate::{
+    operations::proof::util::{write_slice_of_slice_to_slice, write_slice_to_vec},
+    versioning::{prepend_version_to_bytes, PROOF_VERSION},
 };
 
 #[cfg(feature = "full")]
@@ -104,7 +107,9 @@ impl GroveDb {
     fn prove_internal(&self, query: &PathQuery, is_verbose: bool) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
 
-        let mut proof_result: Vec<u8> = vec![];
+        let mut proof_result =
+            cost_return_on_error_default!(prepend_version_to_bytes(vec![], PROOF_VERSION));
+
         let mut limit: Option<u16> = query.query.limit;
         let mut offset: Option<u16> = query.query.offset;
 
