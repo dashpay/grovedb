@@ -1,10 +1,14 @@
 [package]
 name = "grovedb-merk"
 description = "Merkle key/value store adapted for GroveDB"
-version = "0.12.2"
+version = "1.0.0-rc.1"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>", "Matt Bell <mappum@gmail.com>"]
 edition = "2021"
 license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+readme = "README.md"
+documentation = "docs.rs/grovedb-merk/1.0.0-rc.1"
 
 [dependencies]
 thiserror = "1.0.37"
