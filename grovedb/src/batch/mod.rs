@@ -87,11 +87,11 @@ use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
+use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 pub use options::BatchApplyOptions;
-use visualize::{Drawer, Visualize};
 
 pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 #[cfg(feature = "estimated_costs")]

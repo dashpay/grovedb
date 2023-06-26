@@ -34,7 +34,7 @@ use bincode::Options;
 use grovedb_merk::{Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
 use grovedb_storage::StorageContext;
-use visualize::{visualize_stdout, Drawer, Visualize};
+use grovedb_visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
     element::Element, reference_path::ReferencePathType, util::storage_context_optional_tx,
@@ -224,7 +224,7 @@ pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
 
 #[cfg(test)]
 mod tests {
-    use visualize::to_hex;
+    use grovedb_visualize::to_hex;
 
     use super::*;
     use crate::reference_path::ReferencePathType;

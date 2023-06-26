@@ -136,7 +136,9 @@
 //! );
 //! ```
 //!
-//! For more documentation see our [Architectural Decision Records](https://github.com/dashpay/grovedb/tree/master/adr) or [Tutorial](https://www.grovedb.org/tutorials.html)
+//! For more documentation see our
+//! [Architectural Decision Records](https://github.com/dashpay/grovedb/tree/master/adr) or
+//! [Tutorial](https://www.grovedb.org/tutorials.html)
 
 #[cfg(feature = "full")]
 extern crate core;
@@ -170,8 +172,6 @@ mod visualize;
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-#[cfg(feature = "full")]
-use ::visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -211,6 +211,8 @@ use grovedb_storage::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::{Storage, StorageContext};
+#[cfg(feature = "full")]
+use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]

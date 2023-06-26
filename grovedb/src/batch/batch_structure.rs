@@ -38,9 +38,9 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use nohash_hasher::IntMap;
+use grovedb_visualize::{DebugByteVectors, DebugBytes};
 #[cfg(feature = "full")]
-use visualize::{DebugByteVectors, DebugBytes};
+use nohash_hasher::IntMap;
 
 #[cfg(feature = "full")]
 use crate::{

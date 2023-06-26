@@ -39,7 +39,7 @@ use grovedb_costs::{
     CostResult, OperationCost,
 };
 use grovedb_path::SubtreePath;
-use visualize::visualize_to_vec;
+use grovedb_visualize::visualize_to_vec;
 
 use crate::{worst_case_costs::WorstKeyLength, Error};
 

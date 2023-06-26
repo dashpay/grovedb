@@ -53,10 +53,10 @@ use core::fmt;
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
 use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
+#[cfg(feature = "full")]
+use grovedb_visualize::visualize_to_vec;
 #[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "full")]
-use visualize::visualize_to_vec;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::reference_path::ReferencePathType;

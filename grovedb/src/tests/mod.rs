@@ -41,7 +41,7 @@ use std::{
     option::Option::None,
 };
 
-use ::visualize::{Drawer, Visualize};
+use grovedb_visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
 use self::common::EMPTY_PATH;

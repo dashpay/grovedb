@@ -31,7 +31,7 @@
 use std::io::{Result, Write};
 
 use grovedb_storage::StorageContext;
-use visualize::{Drawer, Visualize};
+use grovedb_visualize::{Drawer, Visualize};
 
 use crate::{tree::Tree, Merk};
 

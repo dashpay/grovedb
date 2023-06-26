@@ -37,7 +37,7 @@ use std::{
 #[cfg(feature = "full")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 #[cfg(feature = "full")]
-use visualize::{Drawer, Visualize};
+use grovedb_visualize::{Drawer, Visualize};
 
 #[cfg(feature = "full")]
 use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};

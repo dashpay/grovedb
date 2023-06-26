@@ -17,7 +17,7 @@ failure = "0.1.8"
 integer-encoding = "3.0.4"
 indexmap = "1.9.2"
 grovedb-costs = { version = "1.0.0-rc.1", path = "../costs" }
-visualize = { path = "../visualize" }
+grovedb-visualize = { version = "1.0.0-rc.1", path = "../visualize" }
 grovedb-path = { version = "1.0.0-rc.1", path = "../path" }
 
 [dependencies.time]

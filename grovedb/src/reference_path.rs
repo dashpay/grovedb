@@ -32,11 +32,11 @@
 use std::fmt;
 
 #[cfg(feature = "full")]
+use grovedb_visualize::visualize_to_vec;
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
 #[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "full")]
-use visualize::visualize_to_vec;
 
 #[cfg(feature = "full")]
 use crate::Error;
