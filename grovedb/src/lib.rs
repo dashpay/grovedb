@@ -60,15 +60,9 @@
 //! let root_path: &[&[u8]] = &[];
 //!
 //! // Insert new tree to root
-//! db.insert(
-//!     root_path,
-//!     b"tree1",
-//!     Element::empty_tree(),
-//!     None,
-//!     None,
-//! )
-//! .unwrap()
-//! .expect("successful tree insert");
+//! db.insert(root_path, b"tree1", Element::empty_tree(), None, None)
+//!     .unwrap()
+//!     .expect("successful tree insert");
 //!
 //! // Insert key-value 1 into tree1
 //! // key - hello, value - world
