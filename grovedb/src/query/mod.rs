@@ -44,6 +44,9 @@ use crate::Error;
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
 /// Path query
+///
+/// Represents a path to a specific GroveDB tree and a corresponding query to
+/// apply to the given tree.
 pub struct PathQuery {
     /// Path
     // TODO: Make generic over path type
@@ -54,7 +57,8 @@ pub struct PathQuery {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
-/// Sized query
+/// Holds a query to apply to a tree and an optional limit/offset value.
+/// Limit and offset values affect the size of the result set.
 pub struct SizedQuery {
     /// Query
     pub query: Query,
@@ -134,14 +138,6 @@ impl PathQuery {
     }
 
     /// Combines multiple path queries into one equivalent path query
-    /// Restriction: all path must be unique and non subset path
-    /// [a] + [a, b] (invalid [a, b] is an extension of [a])
-    /// [a, b] + [a, b]
-    ///     valid if they both point queries of the same depth
-    ///     invalid if they point to queries of different depth
-    /// TODO: Currently not allowing unlimited depth queries when paths are
-    /// equal     this is possible, should handle later.
-    /// [a] + [b] (valid, unique and non subset)
     pub fn merge(mut path_queries: Vec<&PathQuery>) -> Result<Self, Error> {
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(

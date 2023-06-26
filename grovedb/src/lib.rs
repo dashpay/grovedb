@@ -26,9 +26,117 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! A hierarchical "grove" of trees with proofs.
-
-// #![deny(missing_docs)]
+//! GroveDB is a database that enables cryptographic proofs for complex queries.
+//!
+//! # Examples
+//!
+//! ## Open
+//! Open an existing instance of GroveDB or create a new one at a given path.
+//! ```
+//! use grovedb::GroveDb;
+//! use tempfile::TempDir;
+//!
+//! // Specify the path where you want to set up the GroveDB instance
+//! let tmp_dir = TempDir::new().unwrap();
+//! let path = tmp_dir.path();
+//!
+//! // Open a new GroveDB at the path
+//! let db = GroveDb::open(&path).unwrap();
+//! ```
+//!
+//! ## Basic Operations
+//! Insert, Update, Delete and Prove elements.
+//! ```
+//! use grovedb::{Element, GroveDb};
+//! use tempfile::TempDir;
+//!
+//! // Specify the path where you want to set up the GroveDB instance
+//! let tmp_dir = TempDir::new().unwrap();
+//! let path = tmp_dir.path();
+//!
+//! // Open a new GroveDB at the path
+//! let db = GroveDb::open(&path).unwrap();
+//!
+//! let root_path: &[&[u8]] = &[];
+//!
+//! // Insert new tree to root
+//! db.insert(root_path, b"tree1", Element::empty_tree(), None, None)
+//!     .unwrap()
+//!     .expect("successful tree insert");
+//!
+//! // Insert key-value 1 into tree1
+//! // key - hello, value - world
+//! db.insert(
+//!     &[b"tree1"],
+//!     b"hello",
+//!     Element::new_item(b"world".to_vec()),
+//!     None,
+//!     None,
+//! )
+//! .unwrap()
+//! .expect("successful key1 insert");
+//!
+//! // Insert key-value 2 into tree1
+//! // key - grovedb, value = rocks
+//! db.insert(
+//!     &[b"tree1"],
+//!     b"grovedb",
+//!     Element::new_item(b"rocks".to_vec()),
+//!     None,
+//!     None,
+//! )
+//! .unwrap()
+//! .expect("successful key2 insert");
+//!
+//! // Retrieve inserted elements
+//! let elem = db
+//!     .get(&[b"tree1"], b"hello", None)
+//!     .unwrap()
+//!     .expect("successful get");
+//! assert_eq!(elem, Element::new_item(b"world".to_vec()));
+//!
+//! let elem = db
+//!     .get(&[b"tree1"], b"grovedb", None)
+//!     .unwrap()
+//!     .expect("successful get");
+//! assert_eq!(elem, Element::new_item(b"rocks".to_vec()));
+//!
+//! // Update inserted element
+//! // for non-tree elements, insertion to an already existing key updates it
+//! db.insert(
+//!     &[b"tree1"],
+//!     b"hello",
+//!     Element::new_item(b"WORLD".to_vec()),
+//!     None,
+//!     None,
+//! )
+//! .unwrap()
+//! .expect("successful update");
+//!
+//! // Retrieve updated element
+//! let elem = db
+//!     .get(&[b"tree1"], b"hello", None)
+//!     .unwrap()
+//!     .expect("successful get");
+//! assert_eq!(elem, Element::new_item(b"WORLD".to_vec()));
+//!
+//! // Deletion
+//! db.delete(&[b"tree1"], b"hello", None, None)
+//!     .unwrap()
+//!     .expect("successful delete");
+//! let elem_result = db.get(&[b"tree1"], b"hello", None).unwrap();
+//! assert_eq!(elem_result.is_err(), true);
+//!
+//! // State Root
+//! // Get the GroveDB root hash
+//! let root_hash = db.root_hash(None).unwrap().unwrap();
+//! assert_eq!(
+//!     hex::encode(root_hash),
+//!     "3884be3d197ac49981e54b21ea423351fc4ccdb770aaf7cf40f5e65dc3e2e1aa"
+//! );
+//! ```
+//!
+//! For more documentation see our [Architectural Decision Records](https://github.com/dashpay/grovedb/tree/master/adr) or [Tutorial](https://www.grovedb.org/tutorials.html)
 
 #[cfg(feature = "full")]
 extern crate core;

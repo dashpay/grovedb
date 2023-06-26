@@ -75,6 +75,7 @@ pub type MaxReferenceHop = Option<u8>;
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
 #[cfg(any(feature = "full", feature = "verify"))]
 /// The cost of a sum item
+///
 /// It is 11 because we have 9 bytes for the sum value
 /// 1 byte for the item type
 /// 1 byte for the flags option
@@ -89,6 +90,7 @@ pub type SumValue = i64;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Variants of GroveDB stored entities
+///
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]

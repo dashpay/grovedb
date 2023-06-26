@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Query result type
+//! Determines the query result form
 
 use std::{
     collections::{BTreeMap, HashMap},

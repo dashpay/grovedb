@@ -104,7 +104,7 @@ type EstimatedKeyAndElementSize = (u32, u32);
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    /// Delete element in GroveDb
+    /// Delete an element at a specified subtree path and key.
     pub fn delete<'b, B, P>(
         &self,
         path: P,

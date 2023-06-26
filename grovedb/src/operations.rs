@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Operations
+//! Operations for the manipulation of GroveDB state
 
 #[cfg(feature = "full")]
 pub(crate) mod auxiliary;

@@ -46,7 +46,7 @@ use crate::{
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    /// Multiple path queries
+    /// Encoded query for multiple path queries
     pub fn query_encoded_many(
         &self,
         path_queries: &[&PathQuery],
@@ -123,7 +123,7 @@ where {
         Ok(result).wrap_with_cost(cost)
     }
 
-    /// Get proved path query
+    /// Prove a path query as either verbose or non verbose
     pub fn get_proved_path_query(
         &self,
         path_query: &PathQuery,
@@ -184,7 +184,7 @@ where {
         }
     }
 
-    /// Returns given path query results
+    /// Returns the result set after applying a path query
     pub fn query(
         &self,
         path_query: &PathQuery,
@@ -283,7 +283,7 @@ where {
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
-    /// Query sum items given path query
+    /// Retrieves only SumItem elements that match a path query
     pub fn query_sums(
         &self,
         path_query: &PathQuery,
