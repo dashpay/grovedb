@@ -32,7 +32,7 @@
 use std::fmt::Debug;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };

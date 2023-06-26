@@ -28,7 +28,7 @@
 
 //! Common tests
 
-use path::SubtreePath;
+use grovedb_path::SubtreePath;
 
 use crate::{operations::proof::util::ProvedPathKeyValues, Element, Error};
 

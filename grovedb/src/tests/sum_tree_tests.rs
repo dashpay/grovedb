@@ -28,11 +28,11 @@
 
 //! Sum tree tests
 
-use merk::{
+use grovedb_merk::{
     proofs::Query,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
-use storage::StorageBatch;
+use grovedb_storage::StorageBatch;
 
 use crate::{
     batch::GroveDbOp,

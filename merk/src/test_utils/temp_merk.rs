@@ -31,10 +31,10 @@
 #[cfg(feature = "full")]
 use std::ops::{Deref, DerefMut};
 
-use path::SubtreePath;
-use storage::StorageBatch;
+use grovedb_path::SubtreePath;
+use grovedb_storage::StorageBatch;
 #[cfg(feature = "full")]
-use storage::{
+use grovedb_storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
     Storage,
 };

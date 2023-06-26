@@ -35,19 +35,19 @@ use std::{
 };
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
 use itertools::Itertools;
-use merk::RootHashKeyAndSum;
+use grovedb_merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
-use merk::{
+use grovedb_merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
     IsSumTree,
 };
 #[cfg(feature = "full")]
-use storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 use crate::Element;
 #[cfg(feature = "full")]
@@ -296,11 +296,11 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
 mod tests {
     use std::collections::HashMap;
 
-    use costs::{
+    use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
-    use merk::estimated_costs::average_case_costs::{
+    use grovedb_merk::estimated_costs::average_case_costs::{
         EstimatedLayerCount::{ApproximateElements, EstimatedLevel, PotentiallyAtMaxElements},
         EstimatedLayerInformation,
         EstimatedLayerSizes::{AllItems, AllSubtrees},

@@ -32,7 +32,7 @@
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 #[cfg(feature = "full")]
-use merk::{
+use grovedb_merk::{
     tree::{kv::KV, Tree},
     TreeFeatureType,
     TreeFeatureType::{BasicMerk, SummedMerk},

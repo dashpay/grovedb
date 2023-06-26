@@ -28,7 +28,7 @@
 
 //! Prefixed storage_cost raw iterator implementation for RocksDB backend.
 
-use costs::{CostContext, CostsExt, OperationCost};
+use grovedb_costs::{CostContext, CostsExt, OperationCost};
 use rocksdb::DBRawIteratorWithThreadMode;
 
 use super::make_prefixed_key;

@@ -57,7 +57,7 @@ use std::cmp::{max, Ordering};
 #[cfg(feature = "full")]
 pub use commit::{Commit, NoopCommit};
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
@@ -886,7 +886,7 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
-    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
     use crate::tree::{tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::BasicMerk};

@@ -30,17 +30,17 @@
 //! Implements functions in Element for getting
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
-use merk::tree::kv::KV;
+use grovedb_merk::tree::kv::KV;
 #[cfg(feature = "full")]
-use merk::Merk;
+use grovedb_merk::Merk;
 #[cfg(feature = "full")]
-use merk::{ed::Decode, tree::TreeInner};
+use grovedb_merk::{ed::Decode, tree::TreeInner};
 #[cfg(feature = "full")]
-use storage::StorageContext;
+use grovedb_storage::StorageContext;
 
 use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "full")]
@@ -241,8 +241,8 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use path::SubtreePath;
-    use storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
+    use grovedb_path::SubtreePath;
+    use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
 

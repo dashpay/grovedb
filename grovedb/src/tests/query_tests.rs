@@ -28,7 +28,7 @@
 
 //! Query tests
 
-use merk::proofs::{query::QueryItem, Query};
+use grovedb_merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
 use tempfile::TempDir;
 

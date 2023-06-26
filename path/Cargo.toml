@@ -1,5 +1,5 @@
 [package]
-name = "path"
+name = "grovedb-path"
 version = "0.1.0"
 edition = "2021"
 

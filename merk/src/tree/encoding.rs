@@ -29,13 +29,13 @@
 //! Merk tree encoding
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
 use ed::{Decode, Encode};
 #[cfg(feature = "full")]
-use storage::StorageContext;
+use grovedb_storage::StorageContext;
 
 #[cfg(feature = "full")]
 use super::Tree;

@@ -50,9 +50,9 @@ mod serialize;
 use core::fmt;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use merk::estimated_costs::SUM_VALUE_EXTRA_COST;
+use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
-use merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
+use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
 #[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "full")]

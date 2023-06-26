@@ -29,11 +29,11 @@
 //! Chunk proofs
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use storage::RawIterator;
+use grovedb_storage::RawIterator;
 #[cfg(feature = "full")]
 use {
     super::tree::{execute, Tree as ProofTree},
@@ -380,8 +380,8 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
 mod tests {
     use std::usize;
 
-    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
-    use storage::StorageContext;
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    use grovedb_storage::StorageContext;
 
     use super::{super::tree::Tree, *};
     use crate::{

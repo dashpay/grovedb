@@ -33,12 +33,12 @@ use std::{
     iter::{empty, once},
 };
 
-use merk::{
+use grovedb_merk::{
     proofs::{Node, Op},
     Merk, TreeFeatureType,
 };
-use path::SubtreePath;
-use storage::{
+use grovedb_path::SubtreePath;
+use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext},
     Storage, StorageContext,
 };
@@ -66,7 +66,7 @@ struct SubtreeChunkProducerCache<'db> {
     // This needed to be an `Option` because it requires a reference on Merk but it's within the
     // same struct and during struct init a referenced Merk would be moved inside a struct,
     // using `Option` this init happens in two steps.
-    current_chunk_producer: Option<merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
+    current_chunk_producer: Option<grovedb_merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
 }
 
 impl<'db> SubtreeChunkProducer<'db> {
@@ -122,7 +122,7 @@ impl<'db> SubtreeChunkProducer<'db> {
             });
             let cache = self.cache.as_mut().expect("exists at this point");
             cache.current_chunk_producer = Some(
-                merk::ChunkProducer::new(&cache.current_merk)
+                grovedb_merk::ChunkProducer::new(&cache.current_merk)
                     .map_err(|e| Error::CorruptedData(e.to_string()))?,
             );
         }
@@ -139,7 +139,7 @@ impl<'db> SubtreeChunkProducer<'db> {
 }
 
 // TODO: make generic over storage_cost context
-type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbImmediateStorageContext<'db>>;
+type MerkRestorer<'db> = grovedb_merk::Restorer<PrefixedRocksDbImmediateStorageContext<'db>>;
 
 type Path = Vec<Vec<u8>>;
 

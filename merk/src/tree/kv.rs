@@ -32,7 +32,7 @@
 use std::io::{Read, Write};
 
 #[cfg(feature = "full")]
-use costs::{CostContext, CostsExt, OperationCost};
+use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use ed::{Decode, Encode, Result, Terminated};
 #[cfg(feature = "full")]

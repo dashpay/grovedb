@@ -29,7 +29,7 @@
 //! Merk reference walker
 
 #[cfg(feature = "full")]
-use costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "full")]
 use super::{

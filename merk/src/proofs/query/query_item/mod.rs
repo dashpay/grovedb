@@ -10,9 +10,9 @@ use std::{
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use costs::{CostContext, CostsExt, OperationCost};
+use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "full")]
-use storage::RawIterator;
+use grovedb_storage::RawIterator;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::error::Error;

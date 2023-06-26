@@ -33,7 +33,7 @@ use std::{
     vec::IntoIter,
 };
 
-pub use merk::proofs::query::{Key, Path, PathKey};
+pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
 
 use crate::{operations::proof::util::ProvedPathKeyValue, Element, Error};
 

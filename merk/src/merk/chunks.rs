@@ -30,9 +30,9 @@
 //! a Merk.
 
 #[cfg(feature = "full")]
-use costs::CostsExt;
+use grovedb_costs::CostsExt;
 #[cfg(feature = "full")]
-use storage::{RawIterator, StorageContext};
+use grovedb_storage::{RawIterator, StorageContext};
 
 #[cfg(feature = "full")]
 use super::Merk;
@@ -206,8 +206,8 @@ where
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use path::SubtreePath;
-    use storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
+    use grovedb_path::SubtreePath;
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
     use tempfile::TempDir;
 
     use super::*;

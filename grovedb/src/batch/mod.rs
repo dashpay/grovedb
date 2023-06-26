@@ -61,7 +61,7 @@ use std::{
     vec::IntoIter,
 };
 
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
@@ -77,7 +77,7 @@ use estimated_costs::{
 use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::{
+use grovedb_merk::{
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, NULL_HASH,
@@ -86,8 +86,8 @@ use merk::{
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 pub use options::BatchApplyOptions;
-use path::SubtreePath;
-use storage::{
+use grovedb_path::SubtreePath;
+use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
@@ -2258,8 +2258,8 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
-    use merk::proofs::Query;
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    use grovedb_merk::proofs::Query;
 
     use super::*;
     use crate::{

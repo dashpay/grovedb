@@ -30,7 +30,7 @@
 
 use std::path::Path;
 
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval, CostContext, CostResult,
     CostsExt, OperationCost,
@@ -38,7 +38,7 @@ use costs::{
 use error::Error;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
-use path::SubtreePath;
+use grovedb_path::SubtreePath;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction,

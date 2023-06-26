@@ -29,8 +29,8 @@
 //! Check if empty tree operations
 
 #[cfg(feature = "full")]
-use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use path::SubtreePath;
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_path::SubtreePath;
 
 #[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};

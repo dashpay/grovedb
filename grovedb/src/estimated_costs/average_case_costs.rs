@@ -29,9 +29,9 @@
 //! Average case costs
 //! Implements average case cost functions in GroveDb
 
-use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use integer_encoding::VarInt;
-use merk::{
+use grovedb_merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
         add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
@@ -44,7 +44,7 @@ use merk::{
     tree::Tree,
     HASH_LENGTH,
 };
-use storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
@@ -458,12 +458,12 @@ impl GroveDb {
 mod test {
     use std::option::Option::None;
 
-    use costs::OperationCost;
-    use merk::{
+    use grovedb_costs::OperationCost;
+    use grovedb_merk::{
         estimated_costs::average_case_costs::add_average_case_get_merk_node,
         test_utils::make_batch_seq, Merk,
     };
-    use storage::{
+    use grovedb_storage::{
         rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
     };
     use tempfile::TempDir;

@@ -29,17 +29,17 @@
 //! Insert
 //! Implements functions in Element for inserting into Merk
 
-use costs::cost_return_on_error_default;
+use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 #[cfg(feature = "full")]
-use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
+use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
 #[cfg(feature = "full")]
-use storage::StorageContext;
+use grovedb_storage::StorageContext;
 
 use crate::Element::SumItem;
 #[cfg(feature = "full")]
@@ -403,8 +403,8 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};
-    use storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
+    use grovedb_merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};
+    use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
 

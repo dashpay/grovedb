@@ -31,7 +31,7 @@
 #[cfg(feature = "full")]
 mod tests {
 
-    use costs::storage_cost::removal::{
+    use grovedb_costs::storage_cost::removal::{
         Identifier, StorageRemovalPerEpochByIdentifier,
         StorageRemovedBytes::SectionedStorageRemoval,
     };

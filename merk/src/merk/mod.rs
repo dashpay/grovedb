@@ -43,7 +43,7 @@ use std::{
     fmt,
 };
 
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
@@ -52,7 +52,7 @@ use costs::{
     },
     ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
-use storage::{self, Batch, RawIterator, StorageContext};
+use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
     error::Error,
@@ -634,12 +634,12 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = merk::test_utils::TempMerk::new();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
     /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerk))], &[], None)
     ///         .unwrap().expect("");
     ///
-    /// use merk::Op;
-    /// use merk::TreeFeatureType::BasicMerk;
+    /// use grovedb_merk::Op;
+    /// use grovedb_merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
@@ -690,12 +690,12 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = merk::test_utils::TempMerk::new();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
     /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerk))], &[], None)
     ///         .unwrap().expect("");
     ///
-    /// use merk::Op;
-    /// use merk::TreeFeatureType::BasicMerk;
+    /// use grovedb_merk::Op;
+    /// use grovedb_merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
@@ -741,7 +741,7 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = merk::test_utils::TempMerk::new();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
     ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerk))],
     ///     &[],
@@ -751,9 +751,9 @@ where
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     ///
-    /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
-    /// use merk::Op;
-    /// use merk::TreeFeatureType::BasicMerk;
+    /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    /// use grovedb_merk::Op;
+    /// use grovedb_merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
@@ -837,7 +837,7 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = merk::test_utils::TempMerk::new();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
     ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerk))],
     ///     &[],
@@ -847,9 +847,9 @@ where
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     ///
-    /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
-    /// use merk::Op;
-    /// use merk::TreeFeatureType::BasicMerk;
+    /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    /// use grovedb_merk::Op;
+    /// use grovedb_merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key [1,2,3]
@@ -1433,9 +1433,9 @@ impl Commit for MerkCommitter {
 
 #[cfg(test)]
 mod test {
-    use costs::OperationCost;
-    use path::SubtreePath;
-    use storage::{
+    use grovedb_costs::OperationCost;
+    use grovedb_path::SubtreePath;
+    use grovedb_storage::{
         rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext, RocksDbStorage},
         RawIterator, Storage, StorageBatch, StorageContext,
     };

@@ -35,7 +35,7 @@ use std::{
 };
 
 #[cfg(feature = "full")]
-use storage::worst_case_costs::WorstKeyLength;
+use grovedb_storage::worst_case_costs::WorstKeyLength;
 #[cfg(feature = "full")]
 use visualize::{Drawer, Visualize};
 

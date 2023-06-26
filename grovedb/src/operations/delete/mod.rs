@@ -39,7 +39,7 @@ mod worst_case;
 use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
@@ -47,10 +47,10 @@ use costs::{
 #[cfg(feature = "full")]
 pub use delete_up_tree::DeleteUpTreeOptions;
 #[cfg(feature = "full")]
-use merk::{Error as MerkError, Merk, MerkOptions};
-use path::SubtreePath;
+use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
+use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-use storage::{
+use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
@@ -730,7 +730,7 @@ impl GroveDb {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use costs::{
+    use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
     };

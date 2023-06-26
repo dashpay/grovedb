@@ -245,7 +245,7 @@ impl ReferencePathType {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::proofs::Query;
+    use grovedb_merk::proofs::Query;
 
     use crate::{
         reference_path::{path_from_reference_path_type, ReferencePathType},

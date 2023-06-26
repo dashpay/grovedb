@@ -32,7 +32,7 @@
 use std::{collections::BTreeMap, fmt};
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
     CostResult, CostsExt, OperationCost,
