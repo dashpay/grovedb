@@ -64,7 +64,8 @@ type EncounteredAbsence = bool;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl GroveDb {
-    /// Verify proof return deserialized elements
+    /// Verify proof given a path query
+    /// Returns the root hash + deserialized elements
     pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
@@ -77,7 +78,7 @@ impl GroveDb {
         Ok((root_hash, path_key_optional_elements))
     }
 
-    /// Verify proof for query returns serialized elements
+    /// Verify proof for a given path query returns serialized elements
     pub fn verify_query_raw(
         proof: &[u8],
         query: &PathQuery,
@@ -88,7 +89,8 @@ impl GroveDb {
         Ok((hash, verifier.result_set))
     }
 
-    /// Verify proof for query many
+    /// Verify proof given multiple path queries.
+    /// If we have more than one path query we merge before performing verification.
     pub fn verify_query_many(
         proof: &[u8],
         query: Vec<&PathQuery>,
@@ -101,7 +103,8 @@ impl GroveDb {
         }
     }
 
-    /// Verify verbose proof with a subset query return deserialized elements
+    /// Given a verbose proof, we can verify it with a subset path query.
+    /// Returning the root hash and the deserialized result set.
     pub fn verify_subset_query(
         proof: &[u8],
         query: &PathQuery,
@@ -114,8 +117,8 @@ impl GroveDb {
         Ok((root_hash, path_key_optional_elements))
     }
 
-    /// Verify verbose proof with a subquery path query return serialized
-    /// elements
+    /// Given a verbose proof, we can verify it with a subset path query.
+    /// Returning the root hash and the serialized result set.
     pub fn verify_subset_query_raw(
         proof: &[u8],
         query: &PathQuery,
@@ -126,6 +129,8 @@ impl GroveDb {
     }
 
     /// Verify non subset query return the absence proof
+    /// Returns all possible keys within the Path Query with an optional Element Value
+    /// Element is set to None if absent
     pub fn verify_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
@@ -134,6 +139,8 @@ impl GroveDb {
     }
 
     /// Verify subset query return the absence proof
+    /// Returns all possible keys within the Path Query with an optional Element Value
+    /// Element is set to None if absent
     pub fn verify_subset_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
@@ -189,7 +196,11 @@ impl GroveDb {
         Ok((root_hash, result_set_with_absence))
     }
 
-    /// Verify proof with chained path query
+    /// Verify subset proof with a chain of path query functions.
+    /// After subset verification with the first path query, the result if passed to
+    /// the next path query generation function which generates a new path query
+    /// Apply the new path query, and pass the result to the next ...
+    /// This is useful for verifying proofs with multiple path queries that depend on one another.
     pub fn verify_query_with_chained_path_queries<C>(
         proof: &[u8],
         first_query: &PathQuery,

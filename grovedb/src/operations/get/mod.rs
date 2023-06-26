@@ -102,7 +102,9 @@ impl GroveDb {
         }
     }
 
-    /// Follow reference
+    /// Return the Element that a reference points to.
+    /// If the reference points to another reference, keep following until
+    /// base element is reached.
     pub fn follow_reference<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
@@ -157,7 +159,8 @@ impl GroveDb {
         Err(Error::ReferenceLimit).wrap_with_cost(cost)
     }
 
-    /// Get tree item without following references
+    /// Get Element at specified path and key
+    /// If element is a reference return as is, don't follow
     pub fn get_raw<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
@@ -182,7 +185,9 @@ impl GroveDb {
         }
     }
 
-    /// Get tree item without following references
+    /// Get Element at specified path and key
+    /// If element is a reference return as is, don't follow
+    /// Return None if element is not found
     pub fn get_raw_optional<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,

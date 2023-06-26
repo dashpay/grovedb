@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Difinitions of type representing a path to a subtree made of borrowed data.
+//! Definitions of type representing a path to a subtree made of borrowed data.
 //!
 //! Opposed to [SubtreePathBuilder] which is some kind of a builder,
 //! [SubtreePath] is a way to refer to path data which makes it a great
