@@ -1,7 +1,11 @@
 [package]
 name = "visualize"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 edition = "2021"
+description = "Visualizer extension crate for GroveDB"
+homepage = "https://www.grovedb.org/"
+documentation = "docs.rs/grovedb-visualize"
+repository = "https://github.com/dashpay/grovedb"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

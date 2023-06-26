@@ -7,8 +7,8 @@ edition = "2021"
 license = "MIT"
 homepage = "https://www.grovedb.org"
 repository = "https://github.com/dashpay/grovedb"
-readme = "README.md"
-documentation = "docs.rs/grovedb/1.0.0-rc.1"
+readme = "../README.md"
+documentation = "docs.rs/grovedb"
 
 
 [dependencies]
@@ -18,7 +18,7 @@ tempfile = { version = "3.3.0", optional = true }
 bincode = { version = "1.3.3", optional = true }
 serde = { version = "1.0.149", optional = true }
 grovedb-storage = { version = "1.0.0-rc.1", path = "../storage", optional = true }
-visualize = { path = "../visualize", optional = true }
+visualize = { version = "1.0.0-rc.1", path = "../visualize", optional = true }
 hex = { version = "0.4.3", optional = true }
 itertools = { version = "0.10.5", optional = true }
 integer-encoding = { version = "3.0.4", optional = true }

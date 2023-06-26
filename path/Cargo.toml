@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 description = "Path extension crate for GroveDB"
 homepage = "https://www.grovedb.org/"
-documentation = "docs.rs/grovedb-path/1.0.0-rc.1"
+documentation = "docs.rs/grovedb-path"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]

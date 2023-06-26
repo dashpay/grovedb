@@ -1,7 +1,12 @@
 [package]
 name = "grovedb-storage"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 edition = "2021"
+license = "MIT"
+description = "Storage extension crate for GroveDB"
+homepage = "https://www.grovedb.org/"
+documentation = "docs.rs/grovedb-storage"
+repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
 lazy_static = { version = "1.4.0", optional = true }
