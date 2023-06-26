@@ -26,9 +26,9 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Errors
+//! GroveDB Errors
 
-/// Errors
+/// GroveDB Errors
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

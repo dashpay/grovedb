@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Reference path
+//! Space efficient methods for referencing other elements in GroveDB
 
 #[cfg(feature = "full")]
 use std::fmt;

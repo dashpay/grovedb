@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! GroveDB batch operations support
+//! Apply multiple GroveDB operations atomically.
 
 mod batch_structure;
 

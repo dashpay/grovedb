@@ -86,7 +86,8 @@ impl InsertOptions {
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    /// Insert operation
+    /// Insert a GroveDB element given a path to the subtree and the key to
+    /// insert at
     pub fn insert<'b, B, P>(
         &self,
         path: P,
@@ -486,7 +487,6 @@ impl GroveDb {
         }
     }
 
-    /// TODO: it's called `replace` I guess
     /// Insert if the value changed
     /// We return if the value was inserted
     /// If the value was changed then we return the previous element

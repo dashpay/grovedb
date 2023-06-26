@@ -67,7 +67,9 @@ type LimitOffset = (Option<u16>, Option<u16>);
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    /// Prove query many
+    /// Prove one or more path queries.
+    /// If we more than one path query, we merge into a single path query before
+    /// proving.
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
         if query.len() > 1 {
             let query = cost_return_on_error_default!(PathQuery::merge(query));
@@ -77,7 +79,9 @@ impl GroveDb {
         }
     }
 
-    /// Prove verbose many
+    /// Prove one or more path queries verbose.
+    /// If we more than one path query, we merge into a single path query before
+    /// proving verbose.
     pub fn prove_verbose_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
         if query.len() > 1 {
             let query = cost_return_on_error_default!(PathQuery::merge(query));
@@ -89,12 +93,15 @@ impl GroveDb {
 
     /// Generate a minimalistic proof for a given path query
     /// doesn't allow for subset verification
+    /// Proofs generated with this can only be verified by the path query used
+    /// to generate them.
     pub fn prove_query(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
         self.prove_internal(query, false)
     }
 
     /// Generate a verbose proof for a given path query
-    /// allows for subset verification
+    /// Any path query that is a subset of the original proof generating path
+    /// query can be used to verify this (subset verification)
     pub fn prove_verbose(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
         // TODO: we need to solve the localized limit and offset problem.
         //      when using a path query that has a limit and offset value,
@@ -526,7 +533,7 @@ impl GroveDb {
     }
 
     /// Serializes a path and add it to the proof vector
-    pub fn generate_and_store_path_proof(
+    fn generate_and_store_path_proof(
         path: Vec<&[u8]>,
         proofs: &mut Vec<u8>,
     ) -> CostResult<(), Error> {
