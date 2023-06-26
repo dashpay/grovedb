@@ -1,7 +1,6 @@
-use grovedb::operations::insert::InsertOptions;
-use grovedb::Element;
-use grovedb::GroveDb;
-use grovedb::{PathQuery, Query, QueryItem, SizedQuery};
+use grovedb::{
+    operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, QueryItem, SizedQuery,
+};
 use rand::Rng;
 
 const KEY1: &[u8] = b"key1";
@@ -76,15 +75,16 @@ fn main() {
 }
 
 fn populate(db: &GroveDb) {
+    let root_path: &[&[u8]] = &[];
     // Put an empty subtree into the root tree nodes at KEY1.
     // Call this SUBTREE1.
-    db.insert([], KEY1, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(root_path, KEY1, Element::empty_tree(), INSERT_OPTIONS, None)
         .unwrap()
         .expect("successful SUBTREE1 insert");
 
     // Put an empty subtree into subtree1 at KEY2.
     // Call this SUBTREE2.
-    db.insert([KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(&[KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None)
         .unwrap()
         .expect("successful SUBTREE2 insert");
 
@@ -92,7 +92,7 @@ fn populate(db: &GroveDb) {
     for i in 0u8..50 {
         let i_vec = (i as u8).to_be_bytes().to_vec();
         db.insert(
-            [KEY1, KEY2],
+            &[KEY1, KEY2],
             &i_vec,
             Element::new_item(i_vec.clone()),
             INSERT_OPTIONS,
@@ -110,7 +110,7 @@ fn populate(db: &GroveDb) {
     // Overwrite key rn1 with a subtree
     // Call this SUBTREE3
     db.insert(
-        [KEY1, KEY2],
+        &[KEY1, KEY2],
         &rn1,
         Element::empty_tree(),
         INSERT_OPTIONS,
@@ -123,7 +123,7 @@ fn populate(db: &GroveDb) {
     for i in 50u8..75 {
         let i_vec = (i as u8).to_be_bytes().to_vec();
         db.insert(
-            [KEY1, KEY2, rn1],
+            &[KEY1, KEY2, rn1],
             &i_vec,
             Element::new_item(i_vec.clone()),
             INSERT_OPTIONS,
@@ -136,7 +136,7 @@ fn populate(db: &GroveDb) {
     // Overwrite key rn2 with a subtree
     // Call this SUBTREE4
     db.insert(
-        [KEY1, KEY2, rn1],
+        &[KEY1, KEY2, rn1],
         &rn2,
         Element::empty_tree(),
         INSERT_OPTIONS,
@@ -148,7 +148,7 @@ fn populate(db: &GroveDb) {
     // Put an empty subtree into SUBTREE4 at KEY3.
     // Call this SUBTREE5.
     db.insert(
-        [KEY1, KEY2, rn1, rn2],
+        &[KEY1, KEY2, rn1, rn2],
         KEY3,
         Element::empty_tree(),
         INSERT_OPTIONS,
@@ -161,7 +161,7 @@ fn populate(db: &GroveDb) {
     for i in 75u8..99 {
         let i_vec = (i as u8).to_be_bytes().to_vec();
         db.insert(
-            [KEY1, KEY2, rn1, rn2, KEY3],
+            &[KEY1, KEY2, rn1, rn2, KEY3],
             &i_vec,
             Element::new_item(i_vec.clone()),
             INSERT_OPTIONS,

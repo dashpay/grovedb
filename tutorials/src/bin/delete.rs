@@ -1,7 +1,8 @@
-use grovedb::GroveDb;
-use grovedb::Element;
+use grovedb::{Element, GroveDb};
 
 fn main() {
+    let root_path: &[&[u8]] = &[];
+
     // Specify a path and open GroveDB at the path as db
     let path = String::from("../tutorial-storage");
     let db = GroveDb::open(path).unwrap();
@@ -13,32 +14,44 @@ fn main() {
     let val2 = b"rocks";
 
     // Insert key-value 1 into the root tree
-    db.insert([], key1, Element::Item(val1.to_vec(), None), None, None)
-        .unwrap()
-        .expect("successful key1 insert");
+    db.insert(
+        root_path,
+        key1,
+        Element::Item(val1.to_vec(), None),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful key1 insert");
 
     // Insert key-value 2 into the root tree
-    db.insert([], key2, Element::Item(val2.to_vec(), None), None, None)
-        .unwrap()
-        .expect("successful key2 insert");
+    db.insert(
+        root_path,
+        key2,
+        Element::Item(val2.to_vec(), None),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful key2 insert");
 
     // Check the key-values are there
-    let result1 = db.get([], key1, None).unwrap();
-    let result2 = db.get([], key2, None).unwrap();
+    let result1 = db.get(root_path, key1, None).unwrap();
+    let result2 = db.get(root_path, key2, None).unwrap();
     println!("Before deleting, we have key1: {:?}", result1);
     println!("Before deleting, we have key2: {:?}", result2);
 
     // Delete the values
-    db.delete([], key1, None, None)
+    db.delete(root_path, key1, None, None)
         .unwrap()
         .expect("successfully deleted key1");
-    db.delete([], key2, None, None)
+    db.delete(root_path, key2, None, None)
         .unwrap()
         .expect("successfully deleted key2");
 
     // Check the key-values again
-    let result3 = db.get([], key1, None).unwrap();
-    let result4 = db.get([], key2, None).unwrap();
+    let result3 = db.get(root_path, key1, None).unwrap();
+    let result4 = db.get(root_path, key2, None).unwrap();
     println!("After deleting, we have key1: {:?}", result3);
     println!("After deleting, we have key2: {:?}", result4);
 }

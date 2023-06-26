@@ -1,7 +1,4 @@
-use grovedb::operations::insert::InsertOptions;
-use grovedb::Element;
-use grovedb::GroveDb;
-use grovedb::{PathQuery, Query};
+use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query};
 
 const KEY1: &[u8] = b"key1";
 const KEY2: &[u8] = b"key2";
@@ -48,15 +45,16 @@ fn main() {
 }
 
 fn populate(db: &GroveDb) {
+    let root_path: &[&[u8]] = &[];
     // Put an empty subtree into the root tree nodes at KEY1.
     // Call this SUBTREE1.
-    db.insert([], KEY1, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(root_path, KEY1, Element::empty_tree(), INSERT_OPTIONS, None)
         .unwrap()
         .expect("successful SUBTREE1 insert");
 
     // Put an empty subtree into subtree1 at KEY2.
     // Call this SUBTREE2.
-    db.insert([KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(&[KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None)
         .unwrap()
         .expect("successful SUBTREE2 insert");
 
@@ -64,7 +62,7 @@ fn populate(db: &GroveDb) {
     for i in 0u8..100 {
         let i_vec = (i as u8).to_be_bytes().to_vec();
         db.insert(
-            [KEY1, KEY2],
+            &[KEY1, KEY2],
             &i_vec,
             Element::new_item(i_vec.clone()),
             INSERT_OPTIONS,
