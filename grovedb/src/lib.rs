@@ -48,7 +48,6 @@
 //! Insert, Update, Delete and Prove elements.
 //! ```
 //! use grovedb::{Element, GroveDb};
-//! use path::SubtreePath;
 //! use tempfile::TempDir;
 //!
 //! // Specify the path where you want to set up the GroveDB instance
@@ -58,9 +57,11 @@
 //! // Open a new GroveDB at the path
 //! let db = GroveDb::open(&path).unwrap();
 //!
+//! let root_path: &[&[u8]] = &[];
+//!
 //! // Insert new tree to root
 //! db.insert(
-//!     SubtreePath::empty(),
+//!     root_path,
 //!     b"tree1",
 //!     Element::empty_tree(),
 //!     None,
