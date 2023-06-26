@@ -8,7 +8,7 @@ license = "MIT"
 homepage = "https://www.grovedb.org"
 repository = "https://github.com/dashpay/grovedb"
 readme = "../README.md"
-documentation = "docs.rs/grovedb"
+documentation = "https://docs.rs/grovedb"
 
 
 [dependencies]
