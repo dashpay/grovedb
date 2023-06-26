@@ -12,13 +12,13 @@ documentation = "docs.rs/grovedb-merk/1.0.0-rc.1"
 
 [dependencies]
 thiserror = "1.0.37"
-grovedb-storage = { path = "../storage", optional = true }
+grovedb-storage = { version = "1.0.0-rc.1", path = "../storage", optional = true }
 failure = "0.1.8"
 integer-encoding = "3.0.4"
 indexmap = "1.9.2"
-grovedb-costs = { path = "../costs" }
+grovedb-costs = { version = "1.0.0-rc.1", path = "../costs" }
 visualize = { path = "../visualize" }
-grovedb-path = { path = "../path" }
+grovedb-path = { version = "1.0.0-rc.1", path = "../path" }
 
 [dependencies.time]
 version = "0.3.17"
