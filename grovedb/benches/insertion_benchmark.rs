@@ -32,7 +32,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(feature = "full")]
 use grovedb::{Element, GroveDb};
-use path::SubtreePath;
+use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use rand::Rng;
 #[cfg(feature = "full")]

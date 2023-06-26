@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 
 #[cfg(feature = "estimated_costs")]
-use merk::estimated_costs::{
+use grovedb_merk::estimated_costs::{
     average_case_costs::EstimatedLayerInformation, worst_case_costs::WorstCaseLayerInformation,
 };
 

@@ -35,7 +35,7 @@ use std::{
 };
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
         key_value_cost::KeyValueStorageCost,

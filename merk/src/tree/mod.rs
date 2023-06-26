@@ -57,7 +57,9 @@ use std::cmp::{max, Ordering};
 #[cfg(feature = "full")]
 pub use commit::{Commit, NoopCommit};
 #[cfg(feature = "full")]
-use costs::{
+use ed::{Decode, Encode, Terminated};
+#[cfg(feature = "full")]
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
@@ -66,8 +68,6 @@ use costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
-use ed::{Decode, Encode, Terminated};
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH,
@@ -886,7 +886,7 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
-    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
     use crate::tree::{tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::BasicMerk};

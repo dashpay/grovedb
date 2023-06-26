@@ -108,7 +108,7 @@ pub enum Error {
     #[cfg(feature = "full")]
     /// Storage error
     #[error("storage error {0}")]
-    StorageError(storage::Error),
+    StorageError(grovedb_storage::Error),
 
     // Merk errors
     /// Ed error
@@ -118,5 +118,5 @@ pub enum Error {
     // Costs errors
     /// Costs errors
     #[error("costs error: {0}")]
-    CostsError(costs::error::Error),
+    CostsError(grovedb_costs::error::Error),
 }

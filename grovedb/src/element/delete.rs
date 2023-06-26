@@ -30,11 +30,11 @@
 //! Implements functions in Element for deleting
 
 #[cfg(feature = "full")]
-use costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
+use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
 #[cfg(feature = "full")]
-use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
+use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
 #[cfg(feature = "full")]
-use storage::StorageContext;
+use grovedb_storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::{Element, Error};

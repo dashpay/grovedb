@@ -29,7 +29,7 @@
 //! Merk tree hash
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use costs::{CostContext, CostsExt, OperationCost};
+use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::*;
 

@@ -31,12 +31,12 @@ use std::io::Read;
 #[cfg(feature = "full")]
 use std::io::Write;
 
-#[cfg(any(feature = "full", feature = "verify"))]
-use integer_encoding::{VarInt, VarIntReader};
-use merk::{
+use grovedb_merk::{
     proofs::query::{Key, Path, ProvedKeyValue},
     CryptoHash,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+use integer_encoding::{VarInt, VarIntReader};
 
 use crate::operations::proof::verify::ProvedKeyValues;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -375,7 +375,7 @@ impl ProvedPathKeyValue {
 
 #[cfg(test)]
 mod tests {
-    use merk::proofs::query::ProvedKeyValue;
+    use grovedb_merk::proofs::query::ProvedKeyValue;
 
     use crate::operations::proof::util::{ProofTokenType, ProvedPathKeyValue};
 

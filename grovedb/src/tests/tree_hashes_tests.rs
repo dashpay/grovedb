@@ -28,8 +28,8 @@
 
 //! Tree hashes tests
 
-use merk::tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH};
-use storage::StorageBatch;
+use grovedb_merk::tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH};
+use grovedb_storage::StorageBatch;
 
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},

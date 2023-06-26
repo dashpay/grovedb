@@ -28,12 +28,12 @@
 
 //! Delete up tree
 
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use path::SubtreePath;
+use grovedb_path::SubtreePath;
 
 use crate::{
     batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,

@@ -29,7 +29,7 @@
 //! Average case costs for Merk
 
 #[cfg(feature = "full")]
-use costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 

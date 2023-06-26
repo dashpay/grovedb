@@ -107,7 +107,7 @@ pub enum Error {
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     /// Storage error
-    StorageError(#[from] storage::error::Error),
+    StorageError(#[from] grovedb_storage::error::Error),
 
     #[error("data corruption error: {0}")]
     /// Corrupted data
@@ -161,5 +161,5 @@ pub enum Error {
     // Merk errors
     #[error("merk error: {0}")]
     /// Merk error
-    MerkError(merk::error::Error),
+    MerkError(grovedb_merk::error::Error),
 }

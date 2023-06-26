@@ -33,7 +33,7 @@
 use std::{iter::Peekable, u8};
 
 #[cfg(feature = "full")]
-use storage::{Batch, StorageContext};
+use grovedb_storage::{Batch, StorageContext};
 
 #[cfg(feature = "full")]
 use super::Merk;
@@ -392,8 +392,8 @@ impl Child {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use path::SubtreePath;
-    use storage::{
+    use grovedb_path::SubtreePath;
+    use grovedb_storage::{
         rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext},
         RawIterator, Storage,
     };

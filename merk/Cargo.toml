@@ -1,20 +1,24 @@
 [package]
-name = "merk"
+name = "grovedb-merk"
 description = "Merkle key/value store adapted for GroveDB"
-version = "0.12.2"
+version = "1.0.0-rc.1"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>", "Matt Bell <mappum@gmail.com>"]
 edition = "2021"
 license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+readme = "README.md"
+documentation = "docs.rs/grovedb-merk/1.0.0-rc.1"
 
 [dependencies]
 thiserror = "1.0.37"
-storage = { path = "../storage", optional = true }
+grovedb-storage = { version = "1.0.0-rc.1", path = "../storage", optional = true }
 failure = "0.1.8"
 integer-encoding = "3.0.4"
 indexmap = "1.9.2"
-costs = { path = "../costs" }
+grovedb-costs = { version = "1.0.0-rc.1", path = "../costs" }
 visualize = { path = "../visualize" }
-path = { path = "../path" }
+grovedb-path = { version = "1.0.0-rc.1", path = "../path" }
 
 [dependencies.time]
 version = "0.3.17"
@@ -65,8 +69,8 @@ full = ["rand",
         "ed",
         "blake3",
         "jemallocator",
-        "storage",
-        "storage/rocksdb_storage"
+        "grovedb-storage",
+        "grovedb-storage/rocksdb_storage"
 ]
 verify = [
         "ed",

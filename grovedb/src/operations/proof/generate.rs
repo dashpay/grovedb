@@ -32,20 +32,20 @@
 //  that supports multiple implementations for verbose and non-verbose
 // generation
 
-use costs::cost_return_on_error_default;
+use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use merk::{
+use grovedb_merk::{
     proofs::{encode_into, Node, Op},
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
-use path::SubtreePath;
+use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-use storage::StorageContext;
+use grovedb_storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
@@ -676,8 +676,8 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use merk::{execute_proof, proofs::Query};
-    use storage::StorageBatch;
+    use grovedb_merk::{execute_proof, proofs::Query};
+    use grovedb_storage::StorageBatch;
 
     use crate::{
         operations::proof::util::{ProofReader, ProofTokenType},

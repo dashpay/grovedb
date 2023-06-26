@@ -30,11 +30,11 @@
 //! Implements in Element functions for checking if stuff exists
 
 #[cfg(feature = "full")]
-use costs::CostResult;
+use grovedb_costs::CostResult;
 #[cfg(feature = "full")]
-use merk::Merk;
+use grovedb_merk::Merk;
 #[cfg(feature = "full")]
-use storage::StorageContext;
+use grovedb_storage::StorageContext;
 
 #[cfg(feature = "full")]
 use crate::{Element, Error};

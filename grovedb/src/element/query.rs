@@ -30,17 +30,17 @@
 //! Implements functions in Element for querying
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
 #[cfg(feature = "full")]
-use merk::proofs::query::query_item::QueryItem;
+use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
-use merk::proofs::Query;
-use path::SubtreePath;
+use grovedb_merk::proofs::Query;
+use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
 use crate::query_result_type::Path;
 #[cfg(feature = "full")]
@@ -709,8 +709,8 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::proofs::Query;
-    use storage::{Storage, StorageBatch};
+    use grovedb_merk::proofs::Query;
+    use grovedb_storage::{Storage, StorageBatch};
 
     use crate::{
         element::*,

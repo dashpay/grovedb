@@ -172,49 +172,49 @@ use std::{collections::HashMap, option::Option::None, path::Path};
 
 #[cfg(feature = "full")]
 use ::visualize::DebugByteVectors;
-#[cfg(feature = "full")]
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use element::Element;
 #[cfg(feature = "full")]
 pub use element::ElementFlags;
+#[cfg(feature = "full")]
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 #[cfg(feature = "estimated_costs")]
-pub use merk::estimated_costs::{
+pub use grovedb_merk::estimated_costs::{
     average_case_costs::{
         EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes, EstimatedSumTrees,
     },
     worst_case_costs::WorstCaseLayerInformation,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
-pub use merk::proofs::query::query_item::QueryItem;
+pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
-pub use merk::proofs::Query;
+pub use grovedb_merk::proofs::Query;
 #[cfg(feature = "full")]
-use merk::{
+use grovedb_merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-use path::SubtreePath;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use query::{PathQuery, SizedQuery};
+use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
 #[cfg(feature = "full")]
-use storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
+use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
-use storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "full")]
-use storage::{
+use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     StorageBatch,
 };
 #[cfg(feature = "full")]
-use storage::{Storage, StorageContext};
+use grovedb_storage::{Storage, StorageContext};
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use query::{PathQuery, SizedQuery};
+#[cfg(feature = "full")]
+pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
@@ -710,7 +710,7 @@ impl GroveDb {
     /// # use grovedb::{Element, Error, GroveDb};
     /// # use std::convert::TryFrom;
     /// # use tempfile::TempDir;
-    /// # use path::SubtreePath;
+    /// # use grovedb_path::SubtreePath;
     /// #
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use std::option::Option::None;

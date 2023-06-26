@@ -31,7 +31,7 @@
 macro_rules! storage_context_optional_tx {
     ($db:expr, $path:expr, $batch:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
         {
-            use ::storage::Storage;
+            use ::grovedb_storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
                     .get_transactional_storage_context($path, $batch, tx);
@@ -60,7 +60,7 @@ macro_rules! storage_context_with_parent_optional_tx {
 	{ $($body:tt)* }
     ) => {
         {
-            use ::storage::Storage;
+            use ::grovedb_storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
                     .get_transactional_storage_context($path.clone(), $batch, tx)
@@ -153,14 +153,14 @@ macro_rules! storage_context_with_parent_optional_tx {
 macro_rules! meta_storage_context_optional_tx {
     ($db:expr, $batch:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
         {
-            use ::storage::Storage;
+            use ::grovedb_storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context(::path::SubtreePath::empty(), $batch, tx);
+                    .get_transactional_storage_context(::grovedb_path::SubtreePath::empty(), $batch, tx);
                 $($body)*
             } else {
                 let $storage = $db
-                    .get_storage_context(::path::SubtreePath::empty(), $batch);
+                    .get_storage_context(::grovedb_path::SubtreePath::empty(), $batch);
                 $($body)*
             }
         }
@@ -181,10 +181,10 @@ macro_rules! merk_optional_tx {
     ) => {
             if $path.is_root() {
 use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, ::path::SubtreePath::empty(), $batch, $transaction, storage, {
+            storage_context_optional_tx!($db, ::grovedb_path::SubtreePath::empty(), $batch, $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
+                    ::grovedb_merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
                         .map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(
@@ -209,7 +209,7 @@ use crate::util::storage_context_optional_tx;
                     #[allow(unused_mut)]
                     let mut $subtree = cost_return_on_error!(
                         &mut $cost,
-                        ::merk::Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                        ::grovedb_merk::Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
                             .map(|merk_res|
                                  merk_res
                                  .map_err(|_| crate::Error::CorruptedData(
@@ -251,7 +251,7 @@ macro_rules! merk_optional_tx_path_not_empty {
                     #[allow(unused_mut)]
                     let mut $subtree = cost_return_on_error!(
                         &mut $cost,
-                        ::merk::Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                        ::grovedb_merk::Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
                             .map(|merk_res|
                                  merk_res
                                  .map_err(|_| crate::Error::CorruptedData(
@@ -279,10 +279,10 @@ macro_rules! root_merk_optional_tx {
     ) => {
         {
             use crate::util::storage_context_optional_tx;
-            storage_context_optional_tx!($db, ::path::SubtreePath::empty(), $batch, $transaction, storage, {
+            storage_context_optional_tx!($db, ::grovedb_path::SubtreePath::empty(), $batch, $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
+                    ::grovedb_merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
                         .map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(

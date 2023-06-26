@@ -29,7 +29,7 @@
 //! Walk
 
 #[cfg(feature = "full")]
-use costs::CostResult;
+use grovedb_costs::CostResult;
 
 #[cfg(feature = "full")]
 use super::super::{Link, Tree};

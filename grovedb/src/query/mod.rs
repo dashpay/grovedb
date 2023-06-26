@@ -31,10 +31,10 @@
 use std::cmp::Ordering;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use merk::proofs::query::query_item::QueryItem;
-use merk::proofs::query::SubqueryBranch;
+use grovedb_merk::proofs::query::query_item::QueryItem;
+use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "full", feature = "verify"))]
-use merk::proofs::Query;
+use grovedb_merk::proofs::Query;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::query_result_type::PathKey;
@@ -275,7 +275,7 @@ impl PathQuery {
 mod tests {
     use std::ops::RangeFull;
 
-    use merk::proofs::{query::query_item::QueryItem, Query};
+    use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
 
     use crate::{
         query_result_type::QueryResultType,

@@ -49,7 +49,7 @@ impl<T> Owner<T> {
     ///
     /// # Example
     /// ```
-    /// # use merk::owner::Owner;
+    /// # use grovedb_merk::owner::Owner;
     /// # struct SomeType();
     /// # impl SomeType {
     /// #     fn method_which_requires_ownership(self) -> SomeType { self }
@@ -76,7 +76,7 @@ impl<T> Owner<T> {
     ///
     /// # Example
     /// ```
-    /// # use merk::owner::Owner;
+    /// # use grovedb_merk::owner::Owner;
     /// let mut owner = Owner::new(123);
     /// let doubled = owner.own_return(|n| (n, n * 2));
     /// ```

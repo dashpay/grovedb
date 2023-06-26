@@ -1,6 +1,6 @@
 use std::collections::LinkedList;
 
-use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "full")]
 use crate::proofs::query::{Map, MapBuilder};

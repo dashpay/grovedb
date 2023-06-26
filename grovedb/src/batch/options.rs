@@ -29,7 +29,7 @@
 //! Options
 
 #[cfg(feature = "full")]
-use merk::MerkOptions;
+use grovedb_merk::MerkOptions;
 
 #[cfg(feature = "full")]
 use crate::operations::{delete::DeleteOptions, insert::InsertOptions};

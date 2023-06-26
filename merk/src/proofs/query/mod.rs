@@ -47,7 +47,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 #[cfg(any(feature = "full", feature = "verify"))]
 use indexmap::IndexMap;
 #[cfg(feature = "full")]
@@ -779,7 +779,7 @@ where
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {
-    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{
         super::{encoding::encode_into, *},

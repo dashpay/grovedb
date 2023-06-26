@@ -32,15 +32,17 @@
 use std::{collections::HashMap, option::Option::None};
 
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use merk::{tree::NULL_HASH, Merk, MerkOptions};
-use path::SubtreePath;
+use grovedb_merk::{tree::NULL_HASH, Merk, MerkOptions};
+use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
-use storage::{Storage, StorageBatch};
+use grovedb_storage::rocksdb_storage::{
+    PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
+};
+use grovedb_storage::{Storage, StorageBatch};
 
 #[cfg(feature = "full")]
 use crate::{
@@ -525,7 +527,7 @@ impl GroveDb {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use costs::{
+    use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };

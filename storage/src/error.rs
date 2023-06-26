@@ -36,7 +36,7 @@ pub enum Error {
     StorageError(String),
     /// Cost Error
     #[error("cost error: {0}")]
-    CostError(costs::error::Error),
+    CostError(grovedb_costs::error::Error),
     /// Rocks DB error
     #[error("rocksDB error: {0}")]
     #[cfg(feature = "rocksdb_storage")]

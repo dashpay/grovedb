@@ -30,7 +30,7 @@
 
 #[cfg(feature = "full")]
 mod tests {
-    use costs::{
+    use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };

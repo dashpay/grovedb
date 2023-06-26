@@ -32,9 +32,9 @@
 use std::io::{Read, Write};
 
 #[cfg(feature = "full")]
-use costs::{CostContext, CostsExt, OperationCost};
-#[cfg(feature = "full")]
 use ed::{Decode, Encode, Result, Terminated};
+#[cfg(feature = "full")]
+use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 

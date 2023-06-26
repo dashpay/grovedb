@@ -32,7 +32,7 @@
 mod tests {
     use std::{ops::Add, option::Option::None};
 
-    use costs::{
+    use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };

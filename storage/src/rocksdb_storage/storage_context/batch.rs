@@ -28,7 +28,7 @@
 
 //! Prefixed storage batch implementation for RocksDB backend.
 
-use costs::{
+use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, OperationCost,
 };
 use integer_encoding::VarInt;
@@ -68,7 +68,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         value: &[u8],
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), costs::error::Error> {
+    ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         // Update the key_storage_cost based on the prefixed key
@@ -98,7 +98,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), costs::error::Error> {
+    ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         self.cost_acc.seek_count += 1;
@@ -118,7 +118,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), costs::error::Error> {
+    ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         self.cost_acc.seek_count += 1;
@@ -182,7 +182,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         value: &[u8],
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), costs::error::Error> {
+    ) -> Result<(), grovedb_costs::error::Error> {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
         // Update the key_storage_cost based on the prefixed key
@@ -209,7 +209,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), costs::error::Error> {
+    ) -> Result<(), grovedb_costs::error::Error> {
         self.batch.put_aux(
             make_prefixed_key(&self.prefix, key),
             value.to_vec(),
@@ -223,7 +223,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> Result<(), costs::error::Error> {
+    ) -> Result<(), grovedb_costs::error::Error> {
         self.batch.put_root(
             make_prefixed_key(&self.prefix, key),
             value.to_vec(),

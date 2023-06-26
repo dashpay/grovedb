@@ -61,7 +61,12 @@ use std::{
     vec::IntoIter,
 };
 
-use costs::{
+#[cfg(feature = "estimated_costs")]
+use estimated_costs::{
+    average_case_costs::AverageCaseTreeCacheKnownPaths,
+    worst_case_costs::WorstCaseTreeCacheKnownPaths,
+};
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
@@ -69,15 +74,7 @@ use costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "estimated_costs")]
-use estimated_costs::{
-    average_case_costs::AverageCaseTreeCacheKnownPaths,
-    worst_case_costs::WorstCaseTreeCacheKnownPaths,
-};
-use integer_encoding::VarInt;
-use itertools::Itertools;
-use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::{
+use grovedb_merk::{
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, NULL_HASH,
@@ -85,12 +82,15 @@ use merk::{
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
-pub use options::BatchApplyOptions;
-use path::SubtreePath;
-use storage::{
+use grovedb_path::SubtreePath;
+use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
+use integer_encoding::VarInt;
+use itertools::Itertools;
+use key_info::{KeyInfo, KeyInfo::KnownKey};
+pub use options::BatchApplyOptions;
 use visualize::{Drawer, Visualize};
 
 pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
@@ -2258,8 +2258,8 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
-    use merk::proofs::Query;
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+    use grovedb_merk::proofs::Query;
 
     use super::*;
     use crate::{

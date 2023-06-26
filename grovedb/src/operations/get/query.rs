@@ -28,9 +28,9 @@
 
 //! Query operations
 
-use costs::cost_return_on_error_default;
+use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
-use costs::{
+use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
@@ -459,7 +459,7 @@ where {
 mod tests {
     use std::collections::HashMap;
 
-    use merk::proofs::{query::query_item::QueryItem, Query};
+    use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
     use pretty_assertions::assert_eq;
 
     use crate::{

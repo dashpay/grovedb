@@ -29,9 +29,9 @@
 //! Average case get costs
 
 #[cfg(feature = "full")]
-use costs::OperationCost;
+use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
-use storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 #[cfg(feature = "full")]
 use crate::{

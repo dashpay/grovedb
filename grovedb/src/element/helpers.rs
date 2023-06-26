@@ -30,13 +30,13 @@
 //! Implements helper functions in Element
 
 #[cfg(feature = "full")]
-use integer_encoding::VarInt;
-#[cfg(feature = "full")]
-use merk::{
+use grovedb_merk::{
     tree::{kv::KV, Tree},
     TreeFeatureType,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
+#[cfg(feature = "full")]
+use integer_encoding::VarInt;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{element::SUM_ITEM_COST_SIZE, Element, Error};
