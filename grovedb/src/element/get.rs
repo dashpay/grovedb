@@ -33,7 +33,6 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use integer_encoding::VarInt;
 use grovedb_merk::tree::kv::KV;
 #[cfg(feature = "full")]
 use grovedb_merk::Merk;
@@ -41,6 +40,7 @@ use grovedb_merk::Merk;
 use grovedb_merk::{ed::Decode, tree::TreeInner};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
+use integer_encoding::VarInt;
 
 use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "full")]

@@ -35,11 +35,11 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use integer_encoding::VarInt;
-#[cfg(feature = "full")]
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
+#[cfg(feature = "full")]
+use integer_encoding::VarInt;
 
 use crate::Element::SumItem;
 #[cfg(feature = "full")]

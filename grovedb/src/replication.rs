@@ -66,7 +66,8 @@ struct SubtreeChunkProducerCache<'db> {
     // This needed to be an `Option` because it requires a reference on Merk but it's within the
     // same struct and during struct init a referenced Merk would be moved inside a struct,
     // using `Option` this init happens in two steps.
-    current_chunk_producer: Option<grovedb_merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
+    current_chunk_producer:
+        Option<grovedb_merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
 }
 
 impl<'db> SubtreeChunkProducer<'db> {

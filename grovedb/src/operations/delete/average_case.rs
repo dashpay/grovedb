@@ -31,7 +31,6 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use intmap::IntMap;
 use grovedb_merk::{
     estimated_costs::{
         average_case_costs::EstimatedLayerInformation,
@@ -40,6 +39,7 @@ use grovedb_merk::{
     HASH_LENGTH_U32,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use intmap::IntMap;
 
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath},

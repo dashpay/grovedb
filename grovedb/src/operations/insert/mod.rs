@@ -39,7 +39,9 @@ use grovedb_costs::{
 use grovedb_merk::{tree::NULL_HASH, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-use grovedb_storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
+use grovedb_storage::rocksdb_storage::{
+    PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
+};
 use grovedb_storage::{Storage, StorageBatch};
 
 #[cfg(feature = "full")]

@@ -61,6 +61,11 @@ use std::{
     vec::IntoIter,
 };
 
+#[cfg(feature = "estimated_costs")]
+use estimated_costs::{
+    average_case_costs::AverageCaseTreeCacheKnownPaths,
+    worst_case_costs::WorstCaseTreeCacheKnownPaths,
+};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -69,14 +74,6 @@ use grovedb_costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "estimated_costs")]
-use estimated_costs::{
-    average_case_costs::AverageCaseTreeCacheKnownPaths,
-    worst_case_costs::WorstCaseTreeCacheKnownPaths,
-};
-use integer_encoding::VarInt;
-use itertools::Itertools;
-use key_info::{KeyInfo, KeyInfo::KnownKey};
 use grovedb_merk::{
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
@@ -85,12 +82,15 @@ use grovedb_merk::{
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
-pub use options::BatchApplyOptions;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
+use integer_encoding::VarInt;
+use itertools::Itertools;
+use key_info::{KeyInfo, KeyInfo::KnownKey};
+pub use options::BatchApplyOptions;
 use visualize::{Drawer, Visualize};
 
 pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};

@@ -30,7 +30,6 @@
 //! Implements worst case cost functions in GroveDb
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use integer_encoding::VarInt;
 use grovedb_merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
@@ -47,6 +46,7 @@ use grovedb_merk::{
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use integer_encoding::VarInt;
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},

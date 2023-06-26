@@ -38,8 +38,6 @@ use std::{
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
-use itertools::Itertools;
 use grovedb_merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use grovedb_merk::{
@@ -48,6 +46,8 @@ use grovedb_merk::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[cfg(feature = "full")]
+use itertools::Itertools;
 
 use crate::Element;
 #[cfg(feature = "full")]

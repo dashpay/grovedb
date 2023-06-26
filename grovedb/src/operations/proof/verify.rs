@@ -852,12 +852,13 @@ impl ProofVerifier {
             offset = self.offset;
         }
 
-        let (hash, result) = grovedb_merk::execute_proof(proof, query, limit, offset, left_to_right)
-            .unwrap()
-            .map_err(|e| {
-                eprintln!("{e}");
-                Error::InvalidProof("invalid proof verification parameters")
-            })?;
+        let (hash, result) =
+            grovedb_merk::execute_proof(proof, query, limit, offset, left_to_right)
+                .unwrap()
+                .map_err(|e| {
+                    eprintln!("{e}");
+                    Error::InvalidProof("invalid proof verification parameters")
+                })?;
 
         // convert the result set to proved_path_key_values
         let proved_path_key_values =

@@ -39,14 +39,14 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use itertools::Itertools;
-#[cfg(feature = "full")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
     worst_case_merk_propagate, WorstCaseLayerInformation,
 };
 use grovedb_merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[cfg(feature = "full")]
+use itertools::Itertools;
 
 use crate::Element;
 #[cfg(feature = "full")]

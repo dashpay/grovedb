@@ -28,12 +28,12 @@
 
 //! Merk benches
 
-use grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk};
+use grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use grovedb_path::SubtreePath;
-use rand::prelude::*;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
+use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk};
+use rand::prelude::*;
 
 /// 1 million gets in 2k batches
 pub fn get(c: &mut Criterion) {

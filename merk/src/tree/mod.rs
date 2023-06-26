@@ -57,6 +57,8 @@ use std::cmp::{max, Ordering};
 #[cfg(feature = "full")]
 pub use commit::{Commit, NoopCommit};
 #[cfg(feature = "full")]
+use ed::{Decode, Encode, Terminated};
+#[cfg(feature = "full")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
@@ -66,8 +68,6 @@ use grovedb_costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
-use ed::{Decode, Encode, Terminated};
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH,

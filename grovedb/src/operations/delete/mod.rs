@@ -39,13 +39,13 @@ mod worst_case;
 use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "full")]
+pub use delete_up_tree::DeleteUpTreeOptions;
+#[cfg(feature = "full")]
 use grovedb_costs::{
     cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
-pub use delete_up_tree::DeleteUpTreeOptions;
 #[cfg(feature = "full")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;

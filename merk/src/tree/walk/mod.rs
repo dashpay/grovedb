@@ -34,9 +34,9 @@ mod fetch;
 mod ref_walker;
 
 #[cfg(feature = "full")]
-use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
-#[cfg(feature = "full")]
 pub use fetch::Fetch;
+#[cfg(feature = "full")]
+use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 pub use ref_walker::RefWalker;
 
