@@ -28,11 +28,11 @@
 
 //! Delete operations and costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 mod average_case;
 #[cfg(feature = "full")]
 mod delete_up_tree;
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 mod worst_case;
 
 #[cfg(feature = "full")]
@@ -97,10 +97,6 @@ impl DeleteOptions {
         }
     }
 }
-
-#[cfg(feature = "full")]
-/// 0 represents key size, 1 represents element size
-type EstimatedKeyAndElementSize = (u32, u32);
 
 #[cfg(feature = "full")]
 impl GroveDb {

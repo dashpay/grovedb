@@ -147,7 +147,7 @@ pub mod batch;
 pub mod element;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod error;
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 mod estimated_costs;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod operations;
@@ -182,7 +182,7 @@ use element::helpers;
 pub use element::Element;
 #[cfg(feature = "full")]
 pub use element::ElementFlags;
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 pub use merk::estimated_costs::{
     average_case_costs::{
         EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes, EstimatedSumTrees,

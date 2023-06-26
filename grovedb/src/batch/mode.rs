@@ -28,15 +28,15 @@
 
 //! Batch running mode
 
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 use std::collections::HashMap;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 use merk::estimated_costs::{
     average_case_costs::EstimatedLayerInformation, worst_case_costs::WorstCaseLayerInformation,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "estimated_costs")]
 use crate::batch::KeyInfoPath;
 
 #[cfg(feature = "full")]
@@ -44,6 +44,8 @@ use crate::batch::KeyInfoPath;
 #[derive(Clone, PartialEq, Eq)]
 pub enum BatchRunMode {
     Execute,
+    #[cfg(feature = "estimated_costs")]
     AverageCase(HashMap<KeyInfoPath, EstimatedLayerInformation>),
+    #[cfg(feature = "estimated_costs")]
     WorstCase(HashMap<KeyInfoPath, WorstCaseLayerInformation>),
 }

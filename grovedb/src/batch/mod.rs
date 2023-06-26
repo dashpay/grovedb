@@ -30,6 +30,7 @@
 
 mod batch_structure;
 
+#[cfg(feature = "estimated_costs")]
 pub mod estimated_costs;
 
 pub mod key_info;
@@ -68,6 +69,7 @@ use costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "estimated_costs")]
 use estimated_costs::{
     average_case_costs::AverageCaseTreeCacheKnownPaths,
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
@@ -92,10 +94,10 @@ use storage::{
 use visualize::{Drawer, Visualize};
 
 pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
+#[cfg(feature = "estimated_costs")]
+use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
-    batch::{
-        batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
-    },
+    batch::{batch_structure::BatchStructure, mode::BatchRunMode},
     element::{MaxReferenceHop, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{
@@ -2185,6 +2187,7 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "estimated_costs")]
     /// Returns the estimated average or worst case cost for an entire batch of
     /// ops
     pub fn estimated_case_operations_for_batch(
