@@ -135,6 +135,8 @@
 //!     "3884be3d197ac49981e54b21ea423351fc4ccdb770aaf7cf40f5e65dc3e2e1aa"
 //! );
 //! ```
+//!
+//! For more documentation see our [Architectural Decision Records](https://github.com/dashpay/grovedb/tree/master/adr) or [Tutorial](https://www.grovedb.org/tutorials.html)
 
 #[cfg(feature = "full")]
 extern crate core;
