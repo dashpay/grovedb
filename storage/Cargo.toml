@@ -15,7 +15,7 @@ grovedb-costs = { version = "1.0.0-rc.1", path = "../costs" }
 thiserror = "1.0.37"
 rocksdb = { version = "0.21.0", optional = true }
 hex = "0.4.3"
-grovedb-path = { path = "../path" }
+grovedb-path = { version = "1.0.0-rc.1", path = "../path" }
 
 [features]
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static", "tempfile", "blake3", "integer-encoding"]
