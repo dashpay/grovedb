@@ -7,6 +7,5 @@ description = "Path extension crate for GroveDB"
 homepage = "https://www.grovedb.org/"
 documentation = "docs.rs/grovedb-path/1.0.0-rc.1"
 repository = "https://github.com/dashpay/grovedb"
-readme = "README.md"
 
 [dependencies]
