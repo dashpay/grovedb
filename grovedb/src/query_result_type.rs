@@ -49,6 +49,7 @@ pub enum QueryResultType {
 }
 
 /// Query result elements
+#[derive(Debug)]
 pub struct QueryResultElements {
     /// Elements
     pub elements: Vec<QueryResultElement>,
@@ -196,6 +197,7 @@ impl Default for QueryResultElements {
 }
 
 /// Query result element
+#[derive(Debug)]
 pub enum QueryResultElement {
     /// Element result item
     ElementResultItem(Element),
