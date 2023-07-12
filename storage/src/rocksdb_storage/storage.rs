@@ -28,7 +28,7 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
-use std::{fs, path::Path};
+use std::path::Path;
 
 use error::Error;
 use grovedb_costs::{
