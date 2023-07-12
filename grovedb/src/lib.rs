@@ -249,6 +249,12 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
+    // TODO: add better docs
+    /// lfksdjl
+    pub fn wipe(&mut self) -> Result<(), Error> {
+        self.db.wipe().map_err(Error::StorageError)
+    }
+
     /// Opens the transactional Merk at the given path. Returns CostResult.
     fn open_transactional_merk_at_path<'db, 'b, B>(
         &'db self,

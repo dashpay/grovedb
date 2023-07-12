@@ -28,6 +28,7 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
+use std::fs;
 use std::path::Path;
 
 use error::Error;
@@ -96,13 +97,21 @@ pub(crate) type Tx<'db> = Transaction<'db, Db>;
 
 /// Storage which uses RocksDB as its backend.
 pub struct RocksDbStorage {
-    db: OptimisticTransactionDB,
+    db: Option<OptimisticTransactionDB>,
 }
 
 impl RocksDbStorage {
     /// Create RocksDb storage with default parameters using `path`.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db = Db::open_cf_descriptors(
+        let db = Self::default_optimistic_transaction_db(path)?;
+        Ok(RocksDbStorage { db: Some(db) })
+    }
+
+    /// Create OptimisticTransactionDb with default parameters using `path`.
+    fn default_optimistic_transaction_db<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<OptimisticTransactionDB, Error> {
+        Ok(Db::open_cf_descriptors(
             &DEFAULT_OPTS,
             &path,
             [
@@ -111,9 +120,42 @@ impl RocksDbStorage {
                 ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
             ],
         )
-        .map_err(RocksDBError)?;
+        .map_err(RocksDBError)?)
+    }
 
-        Ok(RocksDbStorage { db })
+    // TODO: add better docs
+    /// lfksdjl
+    fn db(&self) -> &OptimisticTransactionDB {
+        self.db
+            .as_ref()
+            .expect("should always have an instance of optimistic db")
+    }
+
+    // TODO: add better docs
+    /// lfksdjl
+    pub fn wipe(&mut self) -> Result<(), Error> {
+        let path = self.db().path().to_path_buf();
+        let db = self.db.take().unwrap();
+        drop(db);
+        match fs::remove_dir_all(path.clone()) {
+            Ok(()) => {
+                let db = Db::open_cf_descriptors(
+                    &DEFAULT_OPTS,
+                    &path,
+                    [
+                        ColumnFamilyDescriptor::new(AUX_CF_NAME, DEFAULT_OPTS.clone()),
+                        ColumnFamilyDescriptor::new(ROOTS_CF_NAME, DEFAULT_OPTS.clone()),
+                        ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
+                    ],
+                )
+                .map_err(RocksDBError)?;
+                self.db = Some(db);
+                Ok(())
+            }
+            Err(_) => {
+                panic!("couldn't delete")
+            }
+        }
     }
 
     fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
@@ -208,7 +250,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_aux(&self.db), &key, &value);
+                    db_batch.put_cf(cf_aux(&self.db()), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -227,7 +269,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_roots(&self.db), &key, &value);
+                    db_batch.put_cf(cf_roots(&self.db()), &key, &value);
                     cost.seek_count += 1;
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
@@ -249,7 +291,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_meta(&self.db), &key, &value);
+                    db_batch.put_cf(cf_meta(&self.db()), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -277,7 +319,7 @@ impl RocksDbStorage {
                         // lets get the values
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db.get(&key).map_err(RocksDBError)
+                            self.db().get(&key).map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -293,7 +335,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteAux { key, cost_info } => {
-                    db_batch.delete_cf(cf_aux(&self.db), &key);
+                    db_batch.delete_cf(cf_aux(&self.db()), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -304,7 +346,9 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
+                            self.db()
+                                .get_cf(cf_aux(&self.db()), &key)
+                                .map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -321,7 +365,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteRoot { key, cost_info } => {
-                    db_batch.delete_cf(cf_roots(&self.db), &key);
+                    db_batch.delete_cf(cf_roots(&self.db()), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -332,8 +376,8 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db
-                                .get_cf(cf_roots(&self.db), &key)
+                            self.db()
+                                .get_cf(cf_roots(&self.db()), &key)
                                 .map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
@@ -351,7 +395,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteMeta { key, cost_info } => {
-                    db_batch.delete_cf(cf_meta(&self.db), &key);
+                    db_batch.delete_cf(cf_meta(&self.db()), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -362,8 +406,8 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db
-                                .get_cf(cf_meta(&self.db), &key)
+                            self.db()
+                                .get_cf(cf_meta(&self.db()), &key)
                                 .map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
@@ -393,7 +437,7 @@ impl RocksDbStorage {
         transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
     ) -> CostResult<(), Error> {
         let result = match transaction {
-            None => self.db.write(db_batch),
+            None => self.db().write(db_batch),
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
         };
 
@@ -414,7 +458,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     type Transaction = Tx<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
-        self.db.transaction()
+        self.db().transaction()
     }
 
     fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
@@ -430,7 +474,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(RocksDBError)
+        self.db().flush().map_err(RocksDBError)
     }
 
     fn get_storage_context<'b, B>(
@@ -442,7 +486,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         B: AsRef<[u8]> + 'b,
     {
         Self::build_prefix(path)
-            .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix, batch))
+            .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db(), prefix, batch))
     }
 
     fn get_transactional_storage_context<'b, B>(
@@ -455,7 +499,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         B: AsRef<[u8]> + 'b,
     {
         Self::build_prefix(path).map(|prefix| {
-            PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
+            PrefixedRocksDbTransactionContext::new(&self.db(), transaction, prefix, batch)
         })
     }
 
@@ -468,7 +512,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         B: AsRef<[u8]> + 'b,
     {
         Self::build_prefix(path).map(|prefix| {
-            PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
+            PrefixedRocksDbImmediateStorageContext::new(&self.db(), transaction, prefix)
         })
     }
 
@@ -497,7 +541,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        Checkpoint::new(&self.db)
+        Checkpoint::new(&self.db())
             .and_then(|x| x.create_checkpoint(path))
             .map_err(RocksDBError)
     }

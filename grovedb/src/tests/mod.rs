@@ -2907,3 +2907,44 @@ fn test_tree_value_exists_method_tx() {
         .unwrap());
     assert!(db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
 }
+
+#[test]
+fn test_storage_wipe() {
+    let dir = TempDir::new().unwrap();
+    dbg!(dir.path());
+    let mut db = GroveDb::open(dir.path()).unwrap();
+
+    db.insert(EMPTY_PATH, b"test_leaf", Element::empty_tree(), None, None)
+        .unwrap()
+        .unwrap();
+
+    // Test keys in non-root tree
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"key",
+        Element::new_item(b"ayy".to_vec()),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("cannot insert item");
+    // retrieve key
+    let elem = db
+        .get(&[TEST_LEAF.as_ref()], b"key", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(elem, Element::new_item(b"ayy".to_vec()));
+
+    // wipe the database
+    // db.wipe();
+
+    // drop(db);
+    // let mut db = GroveDb::open(dir.path()).unwrap();
+
+    // retrieve key
+    let elem = db
+        .get(&[TEST_LEAF.as_ref()], b"key", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(elem, Element::new_item(b"wow".to_vec()));
+}
