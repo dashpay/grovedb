@@ -32,8 +32,8 @@ mod batch;
 mod context_immediate;
 mod context_no_tx;
 mod context_tx;
-mod raw_iterator;
 mod guarded_option;
+mod raw_iterator;
 
 pub use batch::PrefixedRocksDbBatch;
 pub use context_immediate::PrefixedRocksDbImmediateStorageContext;

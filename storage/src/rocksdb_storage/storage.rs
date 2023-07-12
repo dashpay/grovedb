@@ -28,8 +28,7 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use error::Error;
 use grovedb_costs::{
@@ -41,8 +40,8 @@ use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
-    Transaction, WriteBatchWithTransaction,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB, Options,
+    Transaction, WriteBatchWithTransaction, DB,
 };
 
 use super::{
@@ -54,6 +53,7 @@ use crate::{
     error::Error::{CostError, RocksDBError},
     storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
+    Error::StorageError,
     Storage, StorageBatch,
 };
 
@@ -97,14 +97,14 @@ pub(crate) type Tx<'db> = Transaction<'db, Db>;
 
 /// Storage which uses RocksDB as its backend.
 pub struct RocksDbStorage {
-    db: Option<OptimisticTransactionDB>,
+    db: OptimisticTransactionDB,
 }
 
 impl RocksDbStorage {
     /// Create RocksDb storage with default parameters using `path`.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Self::default_optimistic_transaction_db(path)?;
-        Ok(RocksDbStorage { db: Some(db) })
+        Ok(RocksDbStorage { db })
     }
 
     /// Create OptimisticTransactionDb with default parameters using `path`.
@@ -123,39 +123,9 @@ impl RocksDbStorage {
         .map_err(RocksDBError)?)
     }
 
-    // TODO: add better docs
-    /// lfksdjl
+    /// Returns a reference to the OptimisticTransactionDB
     fn db(&self) -> &OptimisticTransactionDB {
-        self.db
-            .as_ref()
-            .expect("should always have an instance of optimistic db")
-    }
-
-    // TODO: add better docs
-    /// lfksdjl
-    pub fn wipe(&mut self) -> Result<(), Error> {
-        let path = self.db().path().to_path_buf();
-        let db = self.db.take().unwrap();
-        drop(db);
-        match fs::remove_dir_all(path.clone()) {
-            Ok(()) => {
-                let db = Db::open_cf_descriptors(
-                    &DEFAULT_OPTS,
-                    &path,
-                    [
-                        ColumnFamilyDescriptor::new(AUX_CF_NAME, DEFAULT_OPTS.clone()),
-                        ColumnFamilyDescriptor::new(ROOTS_CF_NAME, DEFAULT_OPTS.clone()),
-                        ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
-                    ],
-                )
-                .map_err(RocksDBError)?;
-                self.db = Some(db);
-                Ok(())
-            }
-            Err(_) => {
-                panic!("couldn't delete")
-            }
-        }
+        &self.db
     }
 
     fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
@@ -448,6 +418,14 @@ impl RocksDbStorage {
                 .map_err(RocksDBError)
                 .wrap_with_cost(OperationCost::default())
         }
+    }
+
+    /// Destroys the OptimisticTransactionDB and drops instance
+    pub fn wipe(self) -> Result<(), Error> {
+        let path = self.db().path().to_path_buf();
+        drop(self);
+        DB::destroy(&Options::default(), &path).map_err(|e| StorageError(e.into_string()))?;
+        Ok(())
     }
 }
 

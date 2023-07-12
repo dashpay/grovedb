@@ -2910,13 +2910,8 @@ fn test_tree_value_exists_method_tx() {
 
 #[test]
 fn test_storage_wipe() {
-    let dir = TempDir::new().unwrap();
-    dbg!(dir.path());
-    let mut db = GroveDb::open(dir.path()).unwrap();
-
-    db.insert(EMPTY_PATH, b"test_leaf", Element::empty_tree(), None, None)
-        .unwrap()
-        .unwrap();
+    let db = make_test_grovedb();
+    let path = db._tmp_dir.path();
 
     // Test keys in non-root tree
     db.insert(
@@ -2928,7 +2923,8 @@ fn test_storage_wipe() {
     )
     .unwrap()
     .expect("cannot insert item");
-    // retrieve key
+
+    // retrieve key before wipe
     let elem = db
         .get(&[TEST_LEAF.as_ref()], b"key", None)
         .unwrap()
@@ -2936,15 +2932,16 @@ fn test_storage_wipe() {
     assert_eq!(elem, Element::new_item(b"ayy".to_vec()));
 
     // wipe the database
-    // db.wipe();
+    db.grove_db.wipe().unwrap();
 
-    // drop(db);
-    // let mut db = GroveDb::open(dir.path()).unwrap();
+    // re-open database
+    let db = GroveDb::open(path).unwrap();
 
-    // retrieve key
-    let elem = db
-        .get(&[TEST_LEAF.as_ref()], b"key", None)
-        .unwrap()
-        .unwrap();
-    assert_eq!(elem, Element::new_item(b"wow".to_vec()));
+    // retrieve key after wipe
+    let elem_result = db.get(&[TEST_LEAF.as_ref()], b"key", None).unwrap();
+    assert!(elem_result.is_err());
+    assert!(matches!(
+        elem_result,
+        Err(Error::PathParentLayerNotFound(..))
+    ));
 }

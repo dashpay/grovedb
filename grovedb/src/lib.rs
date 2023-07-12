@@ -249,10 +249,10 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
-    // TODO: add better docs
-    /// lfksdjl
-    pub fn wipe(&mut self) -> Result<(), Error> {
-        self.db.wipe().map_err(Error::StorageError)
+    /// Deletes GroveDB folder from disk and drop GroveDB instance
+    pub fn wipe(self) -> Result<(), Error> {
+        self.db.wipe()?;
+        Ok(())
     }
 
     /// Opens the transactional Merk at the given path. Returns CostResult.
