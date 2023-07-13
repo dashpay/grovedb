@@ -103,15 +103,7 @@ pub struct RocksDbStorage {
 impl RocksDbStorage {
     /// Create RocksDb storage with default parameters using `path`.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db = Self::default_optimistic_transaction_db(path)?;
-        Ok(RocksDbStorage { db })
-    }
-
-    /// Create OptimisticTransactionDb with default parameters using `path`.
-    fn default_optimistic_transaction_db<P: AsRef<Path>>(
-        path: P,
-    ) -> Result<OptimisticTransactionDB, Error> {
-        Ok(Db::open_cf_descriptors(
+        let db = Db::open_cf_descriptors(
             &DEFAULT_OPTS,
             &path,
             [
@@ -120,7 +112,8 @@ impl RocksDbStorage {
                 ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
             ],
         )
-        .map_err(RocksDBError)?)
+        .map_err(RocksDBError)?;
+        Ok(RocksDbStorage { db })
     }
 
     fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
