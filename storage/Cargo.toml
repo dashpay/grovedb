@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 description = "Storage extension crate for GroveDB"
 homepage = "https://www.grovedb.org/"
-documentation = "docs.rs/grovedb-storage"
+documentation = "https://docs.rs/grovedb-storage"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
