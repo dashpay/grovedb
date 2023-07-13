@@ -410,7 +410,7 @@ impl RocksDbStorage {
     pub fn wipe(self) -> Result<(), Error> {
         let path = self.db.path().to_path_buf();
         drop(self);
-        DB::destroy(&Options::default(), &path).map_err(|e| StorageError(e.into_string()))?;
+        DB::destroy(&Options::default(), path).map_err(|e| StorageError(e.into_string()))?;
         Ok(())
     }
 }
