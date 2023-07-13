@@ -40,8 +40,8 @@ use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
-    Transaction, WriteBatchWithTransaction,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB, Options,
+    Transaction, WriteBatchWithTransaction, DB,
 };
 
 use super::{
@@ -53,6 +53,7 @@ use crate::{
     error::Error::{CostError, RocksDBError},
     storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
+    Error::StorageError,
     Storage, StorageBatch,
 };
 
@@ -112,7 +113,6 @@ impl RocksDbStorage {
             ],
         )
         .map_err(RocksDBError)?;
-
         Ok(RocksDbStorage { db })
     }
 
@@ -404,6 +404,14 @@ impl RocksDbStorage {
                 .map_err(RocksDBError)
                 .wrap_with_cost(OperationCost::default())
         }
+    }
+
+    /// Destroys the OptimisticTransactionDB and drops instance
+    pub fn wipe(self) -> Result<(), Error> {
+        let path = self.db.path().to_path_buf();
+        drop(self);
+        DB::destroy(&Options::default(), path).map_err(|e| StorageError(e.into_string()))?;
+        Ok(())
     }
 }
 

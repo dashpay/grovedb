@@ -249,6 +249,12 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
+    /// Deletes GroveDB folder from disk and drop GroveDB instance
+    pub fn wipe(self) -> Result<(), Error> {
+        self.db.wipe()?;
+        Ok(())
+    }
+
     /// Opens the transactional Merk at the given path. Returns CostResult.
     fn open_transactional_merk_at_path<'db, 'b, B>(
         &'db self,
