@@ -41,7 +41,7 @@ use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB, Options,
-    Transaction, WriteBatchWithTransaction, DB,
+    Transaction, WriteBatchWithTransaction, DB, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{
@@ -407,10 +407,30 @@ impl RocksDbStorage {
     }
 
     /// Destroys the OptimisticTransactionDB and drops instance
-    pub fn wipe(self) -> Result<(), Error> {
-        let path = self.db.path().to_path_buf();
-        drop(self);
-        DB::destroy(&Options::default(), path).map_err(|e| StorageError(e.into_string()))?;
+    pub fn wipe(&self) -> Result<(), Error> {
+        // TODO: fix this
+        // very inefficient way of doing this, time complexity is O(n)
+        // we can do O(1)
+        self.wipe_column_family(DEFAULT_COLUMN_FAMILY_NAME)?;
+        self.wipe_column_family(ROOTS_CF_NAME)?;
+        self.wipe_column_family(AUX_CF_NAME)?;
+        self.wipe_column_family(META_CF_NAME)?;
+        Ok(())
+    }
+
+    fn wipe_column_family(&self, column_family_name: &str) -> Result<(), Error> {
+        let cf_handle = self
+            .db
+            .cf_handle(column_family_name)
+            .ok_or(Error::StorageError(
+                "failed to get column family handle".to_string(),
+            ))?;
+        let mut iter = self.db.raw_iterator_cf(&cf_handle);
+        iter.seek_to_first();
+        while iter.valid() {
+            self.db.delete(iter.key().expect("should have key"));
+            iter.next()
+        }
         Ok(())
     }
 }
