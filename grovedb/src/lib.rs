@@ -249,7 +249,7 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
-    /// Deletes GroveDB folder from disk and drop GroveDB instance
+    /// Uses raw iter to delete GroveDB key values pairs from rocksdb
     pub fn wipe(&self) -> Result<(), Error> {
         self.db.wipe()?;
         Ok(())
