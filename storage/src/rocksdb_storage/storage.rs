@@ -408,9 +408,9 @@ impl RocksDbStorage {
 
     /// Destroys the OptimisticTransactionDB and drops instance
     pub fn wipe(&self) -> Result<(), Error> {
+        // TODO: fix this
         // very inefficient way of doing this, time complexity is O(n)
         // we can do O(1)
-        // TODO: fix this
         self.wipe_column_family(DEFAULT_COLUMN_FAMILY_NAME)?;
         self.wipe_column_family(ROOTS_CF_NAME)?;
         self.wipe_column_family(AUX_CF_NAME)?;
