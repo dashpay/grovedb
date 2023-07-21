@@ -250,7 +250,7 @@ impl GroveDb {
     }
 
     /// Deletes GroveDB folder from disk and drop GroveDB instance
-    pub fn wipe(self) -> Result<(), Error> {
+    pub fn wipe(&self) -> Result<(), Error> {
         self.db.wipe()?;
         Ok(())
     }

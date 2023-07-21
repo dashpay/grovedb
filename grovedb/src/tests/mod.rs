@@ -2934,9 +2934,6 @@ fn test_storage_wipe() {
     // wipe the database
     db.grove_db.wipe().unwrap();
 
-    // re-open database
-    let db = GroveDb::open(path).unwrap();
-
     // retrieve key after wipe
     let elem_result = db.get(&[TEST_LEAF.as_ref()], b"key", None).unwrap();
     assert!(elem_result.is_err());
