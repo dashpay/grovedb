@@ -34,7 +34,9 @@ pub(crate) mod defaults;
 
 pub mod options;
 
+mod chunks2;
 pub mod restore;
+mod restore2;
 
 use std::{
     cell::Cell,
@@ -606,6 +608,23 @@ where
             Some(tree) => tree.sum(),
         })
     }
+
+    /// Returns the height of the Merk tree
+    pub fn height(&self) -> Option<u8> {
+        self.use_tree(|tree| match tree {
+            None => None,
+            Some(tree) => Some(tree.height()),
+        })
+    }
+
+    // TODO: remove this
+    // /// Returns a clone of the Tree instance in Merk
+    // pub fn get_root_tree(&self) -> Option<Tree> {
+    //     self.use_tree(|tree| match tree {
+    //         None => None,
+    //         Some(tree) => Some(tree.clone()),
+    //     })
+    // }
 
     /// Returns the root non-prefixed key of the tree. If the tree is empty,
     /// None.
@@ -1561,6 +1580,41 @@ mod test {
                 218, 90, 71, 153, 240, 47, 227, 168, 1, 104, 239, 237, 140, 147
             ]
         );
+    }
+
+    #[test]
+    fn tree_height() {
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..1);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(1));
+
+        // height 2
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..2);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(2));
+
+        // height 5
+        // 2^5 - 1 = 31 (max number of elements in tree of height 5)
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..31);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(5));
+
+        // should still be height 5 for 29 elements
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..29);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(5));
     }
 
     #[test]

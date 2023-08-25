@@ -106,7 +106,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// to 0).
     pub fn finalize(mut self) -> Result<Merk<S>, Error> {
         if self.remaining_chunks().unwrap_or(0) != 0 {
-            return Err(Error::ChunkRestoringError(
+            return Err(Error::OldChunkRestoringError(
                 "Called finalize before all chunks were processed".to_string(),
             ));
         }
@@ -188,7 +188,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         };
 
         if root_hash != self.expected_root_hash {
-            return Err(Error::ChunkRestoringError(format!(
+            return Err(Error::OldChunkRestoringError(format!(
                 "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                 self.expected_root_hash,
                 trunk.hash()
@@ -419,7 +419,7 @@ mod tests {
                 .unwrap();
         }
 
-        let chunks = original.chunks().unwrap();
+        let chunks = original.chunks_old().unwrap();
 
         let storage = TempStorage::default();
         let _tx2 = storage.start_transaction();

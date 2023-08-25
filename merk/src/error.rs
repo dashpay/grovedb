@@ -28,6 +28,8 @@
 
 //! Errors
 
+use crate::proofs::chunk::error::ChunkError;
+
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 /// Errors
@@ -59,11 +61,21 @@ pub enum Error {
 
     /// Chunking error
     #[error("chunking error {0}")]
-    ChunkingError(&'static str),
+    ChunkingError(ChunkError),
+
+    // TODO: remove
+    /// Old chunking error
+    #[error("chunking error {0}")]
+    OldChunkingError(&'static str),
 
     /// Chunk restoring error
     #[error("chunk restoring error {0}")]
-    ChunkRestoringError(String),
+    ChunkRestoringError(ChunkError),
+
+    // TODO: remove
+    /// Chunk restoring error
+    #[error("chunk restoring error {0}")]
+    OldChunkRestoringError(String),
 
     /// Key not found error
     #[error("key not found error {0}")]
@@ -96,6 +108,10 @@ pub enum Error {
     /// Invalid operation error
     #[error("invalid operation error {0}")]
     InvalidOperation(&'static str),
+
+    /// Internal error
+    #[error("internal error {0}")]
+    InternalError(&'static str),
 
     /// Specialized costs error
     #[error("specialized costs error {0}")]

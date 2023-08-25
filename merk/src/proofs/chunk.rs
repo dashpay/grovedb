@@ -51,6 +51,18 @@ use crate::{
     TreeFeatureType::BasicMerk,
 };
 
+mod binary_range;
+#[cfg(feature = "full")]
+// TODO: remove from here
+pub mod chunk2;
+#[cfg(feature = "full")]
+// TODO: remove from here
+pub mod util;
+// TODO: remove from here
+pub mod error;
+// TODO: remove from here
+pub mod chunk_op;
+
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double
 /// this value, the trunk should be verified as a leaf chunk.
@@ -264,14 +276,14 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op, Error>>>(
 ) -> CostResult<ProofTree, Error> {
     execute(ops, false, |node| match node {
         Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => Ok(()),
-        _ => Err(Error::ChunkRestoringError(
+        _ => Err(Error::OldChunkRestoringError(
             "Leaf chunks must contain full subtree".to_string(),
         )),
     })
     .flat_map_ok(|tree| {
         tree.hash().map(|hash| {
             if hash != expected_hash {
-                Error::ChunkRestoringError(format!(
+                Error::OldChunkRestoringError(format!(
                     "Leaf chunk proof did not match expected hash\n\tExpected: {:?}\n\tActual: \
                      {:?}",
                     expected_hash,
@@ -297,7 +309,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
         Ok(match tree.child(true) {
             Some(child) => {
                 if let Node::Hash(_) = child.tree.node {
-                    return Err(Error::ChunkRestoringError(
+                    return Err(Error::OldChunkRestoringError(
                         "Expected height proof to only contain KV and KVHash nodes".to_string(),
                     ));
                 }
@@ -323,7 +335,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
             match tree.node {
                 Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => {}
                 _ => {
-                    return Err(Error::ChunkRestoringError(
+                    return Err(Error::OldChunkRestoringError(
                         "Expected trunk inner nodes to contain keys and values".to_string(),
                     ))
                 }
@@ -333,14 +345,14 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
         } else if !leftmost {
             match tree.node {
                 Node::Hash(_) => Ok(()),
-                _ => Err(Error::ChunkRestoringError(
+                _ => Err(Error::OldChunkRestoringError(
                     "Expected trunk leaves to contain Hash nodes".to_string(),
                 )),
             }
         } else {
             match &tree.node {
                 Node::KVHash(_) => Ok(()),
-                _ => Err(Error::ChunkRestoringError(
+                _ => Err(Error::OldChunkRestoringError(
                     "Expected leftmost trunk leaf to contain KVHash node".to_string(),
                 )),
             }
@@ -363,7 +375,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
 
     if trunk_height < MIN_TRUNK_HEIGHT {
         if !kv_only {
-            return Err(Error::ChunkRestoringError(
+            return Err(Error::OldChunkRestoringError(
                 "Leaf chunks must contain full subtree".to_string(),
             ))
             .wrap_with_cost(cost);

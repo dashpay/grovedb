@@ -96,7 +96,7 @@ where
     /// calling `producer.len()`.
     pub fn chunk(&mut self, index: usize) -> Result<Vec<Op>, Error> {
         if index >= self.len() {
-            return Err(Error::ChunkingError("Chunk index out-of-bounds"));
+            return Err(Error::OldChunkingError("Chunk index out-of-bounds"));
         }
 
         self.index = index;
@@ -129,7 +129,7 @@ where
     fn next_chunk(&mut self) -> Result<Vec<Op>, Error> {
         if self.index == 0 {
             if self.trunk.is_empty() {
-                return Err(Error::ChunkingError(
+                return Err(Error::OldChunkingError(
                     "Attempted to fetch chunk on empty tree",
                 ));
             }
@@ -198,7 +198,7 @@ where
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&self) -> Result<ChunkProducer<'db, S>, Error> {
+    pub fn chunks_old(&self) -> Result<ChunkProducer<'db, S>, Error> {
         ChunkProducer::new(self)
     }
 }
@@ -223,7 +223,7 @@ mod tests {
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
         merk.commit();
 
-        let chunks = merk.chunks().unwrap();
+        let chunks = merk.chunks_old().unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks.into_iter().size_hint().0, 1);
     }
@@ -235,7 +235,7 @@ mod tests {
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
         merk.commit();
 
-        let chunks = merk.chunks().unwrap();
+        let chunks = merk.chunks_old().unwrap();
         assert_eq!(chunks.len(), 129);
         assert_eq!(chunks.into_iter().size_hint().0, 129);
     }
@@ -247,7 +247,7 @@ mod tests {
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
         merk.commit();
 
-        let mut chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
+        let mut chunks = merk.chunks_old().unwrap().into_iter().map(|x| x.unwrap());
 
         let chunk = chunks.next().unwrap();
         let (trunk, height) = verify_trunk(chunk.into_iter().map(Ok)).unwrap().unwrap();
@@ -297,7 +297,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-            merk.chunks()
+            merk.chunks_old()
                 .unwrap()
                 .into_iter()
                 .map(|x| x.unwrap())
@@ -314,7 +314,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let reopen_chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
+        let reopen_chunks = merk.chunks_old().unwrap().into_iter().map(|x| x.unwrap());
 
         for (original, checkpoint) in original_chunks.zip(reopen_chunks) {
             assert_eq!(original.len(), checkpoint.len());
@@ -352,13 +352,13 @@ mod tests {
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
 
         let chunks = merk
-            .chunks()
+            .chunks_old()
             .unwrap()
             .into_iter()
             .map(|x| x.unwrap())
             .collect::<Vec<_>>();
 
-        let mut producer = merk.chunks().unwrap();
+        let mut producer = merk.chunks_old().unwrap();
         for i in 0..chunks.len() * 2 {
             let index = i % chunks.len();
             assert_eq!(producer.chunk(index).unwrap(), chunks[index]);
@@ -371,7 +371,7 @@ mod tests {
         let merk = TempMerk::new();
 
         let _chunks = merk
-            .chunks()
+            .chunks_old()
             .unwrap()
             .into_iter()
             .map(|x| x.unwrap())
@@ -385,7 +385,7 @@ mod tests {
         let batch = make_batch_seq(1..42);
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
 
-        let mut producer = merk.chunks().unwrap();
+        let mut producer = merk.chunks_old().unwrap();
         let _chunk = producer.chunk(50000).unwrap();
     }
 
@@ -493,7 +493,7 @@ mod tests {
         let batch = make_batch_seq(1..42);
         merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
 
-        let mut producer = merk.chunks().unwrap();
+        let mut producer = merk.chunks_old().unwrap();
         let _chunk1 = producer.next_chunk();
         let _chunk2 = producer.next_chunk();
     }

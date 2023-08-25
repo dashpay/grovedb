@@ -190,6 +190,7 @@ pub const fn seq_key(n: u64) -> [u8; 8] {
 
 /// Create batch entry with Put op using key n and a fixed value
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
+    let key = seq_key(n).to_vec();
     (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerk))
 }
 
@@ -274,7 +275,15 @@ pub fn make_tree_rand(
 
 /// Create tree with initial fixed values and apply `node count` Put ops using
 /// sequential keys using memory only
+/// starting tree node is [0; 20]
 pub fn make_tree_seq(node_count: u64) -> Tree {
+    make_tree_seq_with_start_key(node_count, [0; 20].to_vec())
+}
+
+/// Create tree with initial fixed values and apply `node count` Put ops using
+/// sequential keys using memory only
+/// requires a starting key vector
+pub fn make_tree_seq_with_start_key(node_count: u64, start_key: Vec<u8>) -> Tree {
     let batch_size = if node_count >= 10_000 {
         assert_eq!(node_count % 10_000, 0);
         10_000
@@ -283,7 +292,8 @@ pub fn make_tree_seq(node_count: u64) -> Tree {
     };
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value, None, BasicMerk).unwrap();
+
+    let mut tree = Tree::new(start_key, value, None, BasicMerk).unwrap();
 
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {
