@@ -199,6 +199,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+use grovedb_merk::{execute_proof, proofs::encode_into};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
@@ -857,5 +858,81 @@ impl GroveDb {
             }
         }
         issues
+    }
+
+    pub fn test_db(&self) {
+        let path = &[
+            vec![64],
+            vec![
+                79, 156, 88, 7, 249, 121, 81, 208, 107, 45, 170, 106, 98, 94, 6, 15, 79, 63, 177,
+                246, 186, 221, 225, 94, 248, 112, 89, 85, 203, 31, 11, 65,
+            ],
+            vec![1],
+            vec![
+                99, 111, 110, 116, 97, 99, 116, 82, 101, 113, 117, 101, 115, 116,
+            ],
+            vec![0],
+        ];
+        let a = self
+            .open_non_transactional_merk_at_path(SubtreePath::from(path), None)
+            .unwrap()
+            .unwrap();
+        let mut query = Query::new();
+        query.insert_key(vec![
+            0, 149, 11, 93, 106, 85, 233, 189, 236, 34, 199, 88, 201, 100, 251, 71, 144, 11, 15,
+            57, 107, 123, 165, 49, 8, 237, 119, 136, 220, 226, 230, 137,
+        ]);
+        let proof = a
+            .prove_without_encoding(query.clone(), Some(1), None)
+            .unwrap()
+            .unwrap();
+        let mut proof_bytes = vec![];
+        encode_into(proof.proof.iter(), &mut proof_bytes);
+        // dbg!(proof_bytes);
+
+        let mut all_query = Query::new();
+        all_query.insert_all();
+        let mut kv_iterator = KVIterator::new(a.storage.raw_iter(), &all_query).unwrap();
+        while let Some((key, _)) = kv_iterator.next_kv().unwrap() {
+            // dbg!(hex::decode(key));
+            // println!("{}", hex::encode(key));
+        }
+
+        // let m = execute_proof(&proof_bytes, &query, Some(1), None, true).unwrap();
+        // dbg!(m);
+
+        // dbg!(a.root_hash().unwrap());
+
+        let parent_path = &[
+            vec![64],
+            vec![
+                79, 156, 88, 7, 249, 121, 81, 208, 107, 45, 170, 106, 98, 94, 6, 15, 79, 63, 177,
+                246, 186, 221, 225, 94, 248, 112, 89, 85, 203, 31, 11, 65,
+            ],
+            vec![1],
+            vec![
+                99, 111, 110, 116, 97, 99, 116, 82, 101, 113, 117, 101, 115, 116,
+            ],
+        ];
+        let parent_merk = self
+            .open_non_transactional_merk_at_path(SubtreePath::from(parent_path), None)
+            .unwrap()
+            .unwrap();
+        let (value, vh) = parent_merk
+            .get_value_and_value_hash(&[0], false)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        // dbg!(vh);
+        // dbg!(value);
+        // // dbg!(&value_hash(&value).value());
+        // dbg!(a.root_hash().unwrap());
+
+        // let combined_root_hash =
+        //     combine_hash(&value_hash(&value).unwrap(),
+        // &a.root_hash().unwrap()).unwrap(); let combined_root_hash =
+        //     combine_hash(&a.root_hash().unwrap(),
+        // &value_hash(&value).unwrap()).unwrap();
+        // dbg!(combined_root_hash);
     }
 }

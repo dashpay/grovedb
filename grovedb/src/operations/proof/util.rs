@@ -212,7 +212,9 @@ impl<'a> ProofReader<'a> {
             }
         }
 
+        // dbg!(data_type[0]);
         let proof_token_type: ProofTokenType = data_type[0].into();
+        // dbg!(&proof_token_type);
 
         if proof_token_type == ProofTokenType::EmptyTree
             || proof_token_type == ProofTokenType::AbsentPath

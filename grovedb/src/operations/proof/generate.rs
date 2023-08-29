@@ -32,11 +32,13 @@
 //  that supports multiple implementations for verbose and non-verbose
 // generation
 
+use itertools::all;
 use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use grovedb_merk::execute_proof;
 #[cfg(feature = "full")]
 use grovedb_merk::{
     proofs::{encode_into, Node, Op},
@@ -202,6 +204,8 @@ impl GroveDb {
             );
             return Ok(()).wrap_with_cost(cost);
         }
+        // dbg!(subtree.root_hash().unwrap());
+        // dbg!(&query);
 
         let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
         if reached_limit {
@@ -509,6 +513,10 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
 
+        // dbg!(&query);
+        // dbg!(path.to_vec());
+
+
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
             .unwrap()
@@ -518,6 +526,54 @@ impl GroveDb {
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
+
+        let (root_hash, _) = execute_proof(
+            &proof_bytes,
+            &query,
+            limit_offset.0,
+            limit_offset.1,
+            query.left_to_right,
+        )
+        .unwrap()
+        .unwrap();
+        // dbg!(root_hash);
+
+        if root_hash[0] == 17 {
+            // dbg!(proof_result.proof);
+            // dbg!(&proof_bytes);
+            // dbg!(&query);
+            // let mut all_query = Query::new();
+            // all_query.insert_all();
+            // let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &all_query)
+            //     .unwrap_add_cost(&mut cost);
+            // while let Some((key, _)) = kv_iterator.next_kv().unwrap() {
+            //     // dbg!(hex::decode(key));
+            //     println!("{}", hex::encode(key));
+            // }
+
+            let mut proof_result = subtree
+                .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
+                .unwrap()
+                .expect("should generate proof");
+
+            cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
+
+            let mut proof_bytes = Vec::with_capacity(128);
+            encode_into(proof_result.proof.iter(), &mut proof_bytes);
+
+            let (root_hash, _) = execute_proof(
+                &proof_bytes,
+                &query,
+                limit_offset.0,
+                limit_offset.1,
+                query.left_to_right,
+            )
+                .unwrap()
+                .unwrap();
+
+            // dbg!(&root_hash);
+            dbg!(proof_result.proof);
+        }
 
         cost_return_on_error_no_add!(&cost, write_to_vec(proofs, &[proof_token_type.into()]));
 
@@ -622,7 +678,7 @@ impl GroveDb {
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
+                    Node::KVValueHash(key, value, vh) => {
                         let elem = Element::deserialize(value);
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
@@ -660,9 +716,11 @@ impl GroveDb {
                                 )
                             }
                             Ok(Element::Item(..)) => {
-                                *node = Node::KV(key.to_owned(), value.to_owned())
+                                *node = Node::KVValueHash(key.to_owned(), value.to_owned(), *vh)
                             }
-                            _ => continue,
+                            _ => {
+                                continue;
+                            },
                         }
                     }
                     _ => continue,

@@ -323,6 +323,7 @@ impl ProofVerifier {
                 query.as_ref(),
                 path_owned,
             )?;
+            // dbg!(last_subtree_root_hash);
 
             // validate the path elements are connected
             self.verify_path_to_root(
@@ -776,6 +777,7 @@ impl ProofVerifier {
         proof_reader: &mut ProofReader,
         expected_root_hash: &mut [u8; 32],
     ) -> Result<[u8; 32], Error> {
+        // dbg!(&expected_root_hash);
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             // for every subtree, there should be a corresponding proof for the parent
@@ -797,6 +799,7 @@ impl ProofVerifier {
                 // TODO: don't pass empty vec
                 Vec::new(),
             )?;
+            // dbg!(&proof_result);
 
             let result_set = proof_result
                 .1
@@ -806,24 +809,36 @@ impl ProofVerifier {
             }
 
             let elem = Element::deserialize(result_set[0].value.as_slice())?;
+            // TODO: remove
+            // if let Element::Tree(a, b) = &elem {
+            //     dbg!(a);
+            // }
+
             let child_hash = match elem {
                 Element::Tree(..) | Element::SumTree(..) => Ok(result_set[0].proof),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
             }?;
+            // dbg!(&child_hash);
+            // dbg!(&result_set[0].value);
 
+            // dbg!("before expected root hash");
+            // dbg!(value_hash_fn(&result_set[0].value).value());
+            // dbg!(&expected_root_hash);
             let combined_root_hash = combine_hash(
                 value_hash_fn(&result_set[0].value).value(),
                 expected_root_hash,
             )
             .value()
             .to_owned();
+            // dbg!(&combined_root_hash);
             if child_hash != combined_root_hash {
                 return Err(Error::InvalidProof(
                     "Bad path: tree hash does not have expected hash",
                 ));
             }
+            // dbg!("expected root hash");
 
             *expected_root_hash = proof_result.0;
 

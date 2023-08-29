@@ -94,6 +94,7 @@ impl ProofConstructionResult {
     }
 }
 
+
 /// Proof without encoding result
 pub struct ProofWithoutEncodingResult {
     /// Proof
