@@ -371,32 +371,34 @@ impl fmt::Debug for GroveDbOp {
 
         let op_dbg = match &self.op {
             Op::Insert { element } => match element {
-                Element::Item(..) => "Insert Item",
-                Element::Reference(..) => "Insert Ref",
-                Element::Tree(..) => "Insert Tree",
-                Element::SumTree(..) => "Insert Sum Tree",
-                Element::SumItem(..) => "Insert Sum Item",
+                Element::Item(..) => "Insert Item".to_string(),
+                Element::Reference(..) => "Insert Ref".to_string(),
+                Element::Tree(..) => "Insert Tree".to_string(),
+                Element::SumTree(..) => "Insert Sum Tree".to_string(),
+                Element::SumItem(..) => "Insert Sum Item".to_string(),
             },
             Op::Replace { element } => match element {
-                Element::Item(..) => "Replace Item",
-                Element::Reference(..) => "Replace Ref",
-                Element::Tree(..) => "Replace Tree",
-                Element::SumTree(..) => "Replace Sum Tree",
-                Element::SumItem(..) => "Replace Sum Item",
+                Element::Item(..) => "Replace Item".to_string(),
+                Element::Reference(..) => "Replace Ref".to_string(),
+                Element::Tree(..) => "Replace Tree".to_string(),
+                Element::SumTree(..) => "Replace Sum Tree".to_string(),
+                Element::SumItem(..) => "Replace Sum Item".to_string(),
             },
             Op::Patch { element, .. } => match element {
-                Element::Item(..) => "Patch Item",
-                Element::Reference(..) => "Patch Ref",
-                Element::Tree(..) => "Patch Tree",
-                Element::SumTree(..) => "Patch Sum Tree",
-                Element::SumItem(..) => "Patch Sum Item",
+                Element::Item(..) => "Patch Item".to_string(),
+                Element::Reference(..) => "Patch Ref".to_string(),
+                Element::Tree(..) => "Patch Tree".to_string(),
+                Element::SumTree(..) => "Patch Sum Tree".to_string(),
+                Element::SumItem(..) => "Patch Sum Item".to_string(),
             },
-            Op::RefreshReference { .. } => "Refresh Reference",
-            Op::Delete => "Delete",
-            Op::DeleteTree => "Delete Tree",
-            Op::DeleteSumTree => "Delete Sum Tree",
-            Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key",
-            Op::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key",
+            Op::RefreshReference { reference_path_type, max_reference_hop, trust_refresh_reference, .. } => {
+               format!("Refresh Reference: path {:?}, max_hop {:?}, trust_reference {} ", reference_path_type, max_reference_hop, trust_refresh_reference)
+            },
+            Op::Delete => "Delete".to_string(),
+            Op::DeleteTree => "Delete Tree".to_string(),
+            Op::DeleteSumTree => "Delete Sum Tree".to_string(),
+            Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
+            Op::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
@@ -766,7 +768,7 @@ where
         if recursions_allowed == 1 {
             let referenced_element_value_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(key.as_ref(), true)
+                merk.get_value_hash(key.as_ref(), false)
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
@@ -922,6 +924,7 @@ where
                     trust_refresh_reference,
                     ..
                 } => {
+                    dbg!("In RefreshReference");
                     // We are pointing towards a reference that will be refreshed
                     let reference_info = if *trust_refresh_reference {
                         Some(reference_path_type)
@@ -1168,6 +1171,7 @@ where
                         )
                         .wrap_with_cost(OperationCost::default())
                     );
+                    dbg!(&path_reference);
                     if path_reference.is_empty() {
                         return Err(Error::CorruptedReferencePathNotFound(
                             "attempting to refresh an empty reference".to_string(),
@@ -1398,6 +1402,8 @@ impl GroveDb {
             last_level,
         } = batch_structure;
         let mut current_level = last_level;
+
+        dbg!(&ops_by_level_paths);
 
         let batch_apply_options = batch_apply_options.unwrap_or_default();
         let stop_level = batch_apply_options.batch_pause_height.unwrap_or_default() as u32;

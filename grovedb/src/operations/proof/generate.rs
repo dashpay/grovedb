@@ -572,7 +572,7 @@ impl GroveDb {
                 .unwrap();
 
             // dbg!(&root_hash);
-            dbg!(proof_result.proof);
+            // dbg!(proof_result.proof);
         }
 
         cost_return_on_error_no_add!(&cost, write_to_vec(proofs, &[proof_token_type.into()]));
@@ -678,7 +678,7 @@ impl GroveDb {
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    Node::KVValueHash(key, value, vh) => {
+                    Node::KVValueHash(key, value, ..) => {
                         let elem = Element::deserialize(value);
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
@@ -716,7 +716,7 @@ impl GroveDb {
                                 )
                             }
                             Ok(Element::Item(..)) => {
-                                *node = Node::KVValueHash(key.to_owned(), value.to_owned(), *vh)
+                                *node = Node::KV(key.to_owned(), value.to_owned())
                             }
                             _ => {
                                 continue;
