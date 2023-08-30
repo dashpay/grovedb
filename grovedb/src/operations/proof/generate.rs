@@ -32,7 +32,6 @@
 //  that supports multiple implementations for verbose and non-verbose
 // generation
 
-use itertools::all;
 use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use grovedb_costs::{
@@ -48,6 +47,7 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
+use itertools::all;
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
@@ -516,7 +516,6 @@ impl GroveDb {
         // dbg!(&query);
         // dbg!(path.to_vec());
 
-
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
             .unwrap()
@@ -568,8 +567,8 @@ impl GroveDb {
                 limit_offset.1,
                 query.left_to_right,
             )
-                .unwrap()
-                .unwrap();
+            .unwrap()
+            .unwrap();
 
             // dbg!(&root_hash);
             // dbg!(proof_result.proof);
@@ -720,7 +719,7 @@ impl GroveDb {
                             }
                             _ => {
                                 continue;
-                            },
+                            }
                         }
                     }
                     _ => continue,

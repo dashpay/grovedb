@@ -391,9 +391,17 @@ impl fmt::Debug for GroveDbOp {
                 Element::SumTree(..) => "Patch Sum Tree".to_string(),
                 Element::SumItem(..) => "Patch Sum Item".to_string(),
             },
-            Op::RefreshReference { reference_path_type, max_reference_hop, trust_refresh_reference, .. } => {
-               format!("Refresh Reference: path {:?}, max_hop {:?}, trust_reference {} ", reference_path_type, max_reference_hop, trust_refresh_reference)
-            },
+            Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                trust_refresh_reference,
+                ..
+            } => {
+                format!(
+                    "Refresh Reference: path {:?}, max_hop {:?}, trust_reference {} ",
+                    reference_path_type, max_reference_hop, trust_refresh_reference
+                )
+            }
             Op::Delete => "Delete".to_string(),
             Op::DeleteTree => "Delete Tree".to_string(),
             Op::DeleteSumTree => "Delete Sum Tree".to_string(),
@@ -1022,6 +1030,11 @@ where
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } | Op::Replace { element } | Op::Patch { element, .. } => {
+                    // if let Element::Item(a, b) = &element {
+                    //     dbg!("in batch");
+                    //     dbg!(a, b);
+                    // }
+
                     match &element {
                         Element::Reference(path_reference, element_max_reference_hop, _) => {
                             let merk_feature_type = cost_return_on_error!(
@@ -1171,7 +1184,7 @@ where
                         )
                         .wrap_with_cost(OperationCost::default())
                     );
-                    dbg!(&path_reference);
+                    // dbg!(&path_reference);
                     if path_reference.is_empty() {
                         return Err(Error::CorruptedReferencePathNotFound(
                             "attempting to refresh an empty reference".to_string(),
@@ -1403,7 +1416,7 @@ impl GroveDb {
         } = batch_structure;
         let mut current_level = last_level;
 
-        dbg!(&ops_by_level_paths);
+        // dbg!(&ops_by_level_paths);
 
         let batch_apply_options = batch_apply_options.unwrap_or_default();
         let stop_level = batch_apply_options.batch_pause_height.unwrap_or_default() as u32;

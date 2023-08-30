@@ -94,7 +94,6 @@ impl ProofConstructionResult {
     }
 }
 
-
 /// Proof without encoding result
 pub struct ProofWithoutEncodingResult {
     /// Proof
@@ -1381,6 +1380,7 @@ impl Commit for MerkCommitter {
                     break;
                 } else {
                     tree.inner.kv.value_defined_cost = value_defined_cost;
+                    tree.inner.kv.value_hash =
                     let after_update_tree_plus_hook_size =
                         tree.value_encoding_length_with_parent_to_child_reference();
                     if after_update_tree_plus_hook_size == current_tree_plus_hook_size {

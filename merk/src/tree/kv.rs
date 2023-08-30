@@ -204,7 +204,22 @@ impl KV {
         let mut cost = OperationCost::default();
         // TODO: length check?
         self.value = value;
+        dbg!("hello");
+        let old_hash = self.value_hash;
         self.value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
+        let new_hash = self.value_hash;
+        if self
+            .value_as_slice()
+            .starts_with(&[0, 0, 149, 11, 93, 106, 85, 233, 189, 236, 34, 199, 88])
+            // && self.value_as_slice().ends_with(&[39, 45, 193, 0, 1])
+        {
+            todo!();
+        }
+        if new_hash[0] == 129 && new_hash[1] == 251 {
+            dbg!(self.value.as_slice());
+            dbg!(old_hash);
+            // dbg!(new_hash);
+        }
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
