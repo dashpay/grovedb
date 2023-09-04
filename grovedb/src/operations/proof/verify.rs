@@ -678,7 +678,6 @@ impl ProofVerifier {
             ProofTokenType::Merk | ProofTokenType::SizedMerk => {
                 let mut key_as_query = Query::new();
                 key_as_query.insert_key(last_key.to_owned());
-                current_path.push(last_key);
 
                 let verification_result = self.execute_merk_proof(
                     proof_token_type,
@@ -687,6 +686,8 @@ impl ProofVerifier {
                     key_as_query.left_to_right,
                     current_path.to_owned(),
                 )?;
+
+                current_path.push(last_key);
 
                 Ok((verification_result.0, verification_result.1, false))
             }
