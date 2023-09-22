@@ -182,7 +182,7 @@ where
         self
     }
 
-    /// Similar to `Tree#with_value`.
+    /// Similar to `Tree#put_value`.
     pub fn put_value(mut self, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree
@@ -190,7 +190,7 @@ where
         self.wrap_with_cost(cost)
     }
 
-    /// Similar to `Tree#with_value`.
+    /// Similar to `Tree#put_value_with_fixed_cost`.
     pub fn put_value_with_fixed_cost(
         mut self,
         value: Vec<u8>,
@@ -205,7 +205,7 @@ where
         self.wrap_with_cost(cost)
     }
 
-    /// Similar to `Tree#with_value_and_value_hash`.
+    /// Similar to `Tree#put_value_and_reference_value_hash`.
     pub fn put_value_and_reference_value_hash(
         mut self,
         value: Vec<u8>,
@@ -220,7 +220,7 @@ where
         self.wrap_with_cost(cost)
     }
 
-    /// Similar to `Tree#with_value_and_value_hash`.
+    /// Similar to `Tree#put_value_with_reference_value_hash_and_value_cost`.
     pub fn put_value_with_reference_value_hash_and_value_cost(
         mut self,
         value: Vec<u8>,

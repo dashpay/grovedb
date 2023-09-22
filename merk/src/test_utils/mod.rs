@@ -85,6 +85,7 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
                 is_sum_node,
             ))
         },
+        &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
                 BasicStorageRemoval(key_bytes_to_remove),
@@ -146,6 +147,7 @@ pub fn apply_to_memonly(
                 is_sum_tree,
             ))
         },
+        &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
                 BasicStorageRemoval(key_bytes_to_remove),

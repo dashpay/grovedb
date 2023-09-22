@@ -1150,7 +1150,8 @@ where
                     let Element::Reference(path_reference, max_reference_hop, _) = &element else {
                         return Err(Error::InvalidInput(
                             "trying to refresh a an element that is not a reference",
-                        )).wrap_with_cost(cost)
+                        ))
+                        .wrap_with_cost(cost);
                     };
 
                     let merk_feature_type = if is_sum_tree {

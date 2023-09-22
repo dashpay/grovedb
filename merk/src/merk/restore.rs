@@ -38,9 +38,10 @@ use grovedb_storage::{Batch, StorageContext};
 #[cfg(feature = "full")]
 use super::Merk;
 #[cfg(feature = "full")]
+use crate::merk::source::MerkSource;
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
-    merk::MerkSource,
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
         tree::{Child, Tree as ProofTree},

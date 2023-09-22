@@ -53,7 +53,10 @@ use Op::*;
 use super::{Fetch, Link, Tree, Walker};
 #[cfg(feature = "full")]
 use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
-use crate::{merk::KeyUpdates, tree::kv::ValueDefinedCostType::SpecializedValueDefinedCost};
+use crate::{
+    merk::KeyUpdates,
+    tree::kv::{ValueDefinedCostType, ValueDefinedCostType::SpecializedValueDefinedCost},
+};
 
 #[cfg(feature = "full")]
 /// An operation to be applied to a key in the store.
@@ -162,15 +165,21 @@ where
     /// not require a non-empty tree.
     ///
     /// Keys in batch must be sorted and unique.
-    pub fn apply_to<K: AsRef<[u8]>, C, R>(
+    pub fn apply_to<K: AsRef<[u8]>, C, U, R>(
         maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
         old_tree_cost: &C,
+        update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
     ) -> CostContext<Result<(Option<Tree>, KeyUpdates), Error>>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        U: FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
@@ -188,28 +197,38 @@ where
         } else {
             match maybe_tree {
                 None => {
-                    return Self::build(batch, source, old_tree_cost, section_removal_bytes).map_ok(
-                        |tree| {
-                            let new_keys: BTreeSet<Vec<u8>> = batch
-                                .iter()
-                                .map(|batch_entry| batch_entry.0.as_ref().to_vec())
-                                .collect();
-                            (
-                                tree,
-                                KeyUpdates::new(
-                                    new_keys,
-                                    BTreeSet::default(),
-                                    LinkedList::default(),
-                                    None,
-                                ),
-                            )
-                        },
+                    return Self::build(
+                        batch,
+                        source,
+                        old_tree_cost,
+                        update_tree_value_based_on_costs,
+                        section_removal_bytes,
                     )
+                    .map_ok(|tree| {
+                        let new_keys: BTreeSet<Vec<u8>> = batch
+                            .iter()
+                            .map(|batch_entry| batch_entry.0.as_ref().to_vec())
+                            .collect();
+                        (
+                            tree,
+                            KeyUpdates::new(
+                                new_keys,
+                                BTreeSet::default(),
+                                LinkedList::default(),
+                                None,
+                            ),
+                        )
+                    })
                 }
                 Some(tree) => {
                     cost_return_on_error!(
                         &mut cost,
-                        tree.apply_sorted(batch, old_tree_cost, section_removal_bytes)
+                        tree.apply_sorted(
+                            batch,
+                            old_tree_cost,
+                            update_tree_value_based_on_costs,
+                            section_removal_bytes
+                        )
                     )
                 }
             }
@@ -222,14 +241,20 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>, C, R>(
+    fn build<K: AsRef<[u8]>, C, U, R>(
         batch: &MerkBatch<K>,
         source: S,
         old_tree_cost: &C,
+        update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
     ) -> CostResult<Option<Tree>, Error>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        U: FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
@@ -251,6 +276,7 @@ where
                         left_batch,
                         source.clone(),
                         old_tree_cost,
+                        update_tree_value_based_on_costs,
                         section_removal_bytes
                     )
                 )
@@ -259,7 +285,12 @@ where
                     Some(tree) => {
                         cost_return_on_error!(
                             &mut cost,
-                            tree.apply_sorted(right_batch, old_tree_cost, section_removal_bytes)
+                            tree.apply_sorted(
+                                right_batch,
+                                old_tree_cost,
+                                update_tree_value_based_on_costs,
+                                section_removal_bytes
+                            )
                         )
                         .0
                     }
@@ -269,6 +300,7 @@ where
                             right_batch,
                             source.clone(),
                             old_tree_cost,
+                            update_tree_value_based_on_costs,
                             section_removal_bytes
                         )
                     )
@@ -338,6 +370,7 @@ where
                     None
                 ),
                 old_tree_cost,
+                update_tree_value_based_on_costs,
                 section_removal_bytes,
             )
         )
@@ -354,6 +387,7 @@ where
         self.apply_sorted(
             batch,
             &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -367,14 +401,20 @@ where
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply_sorted<K: AsRef<[u8]>, C, R>(
+    fn apply_sorted<K: AsRef<[u8]>, C, U, R>(
         self,
         batch: &MerkBatch<K>,
         old_specialized_cost: &C,
+        update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        U: FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
@@ -467,6 +507,7 @@ where
                             &batch[..index],
                             source.clone(),
                             old_specialized_cost,
+                            update_tree_value_based_on_costs,
                             section_removal_bytes
                         )
                     );
@@ -479,6 +520,7 @@ where
                             &batch[index + 1..],
                             source.clone(),
                             old_specialized_cost,
+                            update_tree_value_based_on_costs,
                             section_removal_bytes
                         )
                     );
@@ -520,6 +562,7 @@ where
             exclusive,
             KeyUpdates::new(new_keys, updated_keys, LinkedList::default(), None),
             old_specialized_cost,
+            update_tree_value_based_on_costs,
             section_removal_bytes,
         )
         .add_cost(cost)
@@ -530,17 +573,23 @@ where
     ///
     /// This recursion executes serially in the same thread, but in the future
     /// will be dispatched to workers in other threads.
-    fn recurse<K: AsRef<[u8]>, C, R>(
+    fn recurse<K: AsRef<[u8]>, C, U, R>(
         self,
         batch: &MerkBatch<K>,
         mid: usize,
         exclusive: bool,
         mut key_updates: KeyUpdates,
         old_tree_cost: &C,
+        update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        U: FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
@@ -564,6 +613,7 @@ where
                         left_batch,
                         source,
                         old_tree_cost,
+                        update_tree_value_based_on_costs,
                         section_removal_bytes,
                     )
                     .map_ok(|(maybe_left, mut key_updates_left)| {
@@ -592,6 +642,7 @@ where
                         right_batch,
                         source,
                         old_tree_cost,
+                        update_tree_value_based_on_costs,
                         section_removal_bytes,
                     )
                     .map_ok(|(maybe_right, mut key_updates_right)| {
@@ -895,11 +946,12 @@ mod test {
 
     #[test]
     fn apply_empty_none() {
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to::<Vec<u8>, _, _>(
+        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to::<Vec<u8>, _, _, _>(
             None,
             &[],
             PanicSource {},
             &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -922,6 +974,7 @@ mod test {
             &batch,
             PanicSource {},
             &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -947,6 +1000,7 @@ mod test {
             &batch,
             PanicSource {},
             &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -969,6 +1023,7 @@ mod test {
             &batch,
             PanicSource {},
             &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -997,6 +1052,7 @@ mod test {
             &batch,
             PanicSource {},
             &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -1020,6 +1076,7 @@ mod test {
             &batch,
             PanicSource {},
             &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
