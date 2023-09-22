@@ -5,7 +5,7 @@ use grovedb_costs::storage_cost::{
 
 use crate::{
     merk::{defaults::MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, BatchValue},
-    tree::{kv::ValueDefinedCostType, Commit, Tree},
+    tree::{kv::ValueDefinedCostType, Commit, TreeNode},
     Error,
 };
 
@@ -31,7 +31,7 @@ impl MerkCommitter {
 impl Commit for MerkCommitter {
     fn write(
         &mut self,
-        tree: &mut Tree,
+        tree: &mut TreeNode,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
@@ -112,7 +112,7 @@ impl Commit for MerkCommitter {
         Ok(())
     }
 
-    fn prune(&self, tree: &Tree) -> (bool, bool) {
+    fn prune(&self, tree: &TreeNode) -> (bool, bool) {
         // keep N top levels of tree
         let prune = (self.height - tree.height()) >= self.levels;
         (prune, prune)

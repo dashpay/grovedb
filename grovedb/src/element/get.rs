@@ -37,7 +37,7 @@ use grovedb_merk::tree::kv::KV;
 #[cfg(feature = "full")]
 use grovedb_merk::Merk;
 #[cfg(feature = "full")]
-use grovedb_merk::{ed::Decode, tree::TreeInner};
+use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 use integer_encoding::VarInt;
@@ -129,7 +129,7 @@ impl Element {
                 .get(key_ref)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
-        let maybe_tree_inner: Option<TreeInner> = cost_return_on_error_no_add!(
+        let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
             &cost,
             node_value_opt
                 .map(|node_value| {

@@ -38,7 +38,7 @@ use grovedb_storage::RawIterator;
 use {
     super::tree::{execute, Tree as ProofTree},
     crate::tree::CryptoHash,
-    crate::tree::Tree,
+    crate::tree::TreeNode,
 };
 
 #[cfg(feature = "full")]
@@ -199,7 +199,7 @@ pub(crate) fn get_next_chunk(
 
     let mut chunk = Vec::with_capacity(512);
     let mut stack = Vec::with_capacity(32);
-    let mut node = Tree::new(vec![], vec![], None, BasicMerk).unwrap_add_cost(&mut cost);
+    let mut node = TreeNode::new(vec![], vec![], None, BasicMerk).unwrap_add_cost(&mut cost);
 
     while iter.valid().unwrap_add_cost(&mut cost) {
         let key = iter.key().unwrap_add_cost(&mut cost).unwrap();
@@ -213,7 +213,7 @@ pub(crate) fn get_next_chunk(
         let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
         cost_return_on_error_no_add!(
             &cost,
-            Tree::decode_into(&mut node, vec![], encoded_node).map_err(EdError)
+            TreeNode::decode_into(&mut node, vec![], encoded_node).map_err(EdError)
         );
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
@@ -386,7 +386,7 @@ mod tests {
     use super::{super::tree::Tree, *};
     use crate::{
         test_utils::*,
-        tree::{NoopCommit, PanicSource, Tree as BaseTree},
+        tree::{NoopCommit, PanicSource, TreeNode as BaseTree},
     };
 
     #[derive(Default)]

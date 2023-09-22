@@ -47,7 +47,7 @@ use crate::{
         tree::{Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{combine_hash, value_hash, Link, RefWalker, Tree},
+    tree::{combine_hash, value_hash, Link, RefWalker, TreeNode},
     CryptoHash,
     Error::{CostsError, EdError, StorageError},
     TreeFeatureType::BasicMerk,
@@ -136,16 +136,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         tree.visit_refs(&mut |proof_node| {
             if let Some((mut node, key)) = match &proof_node.node {
                 Node::KV(key, value) => Some((
-                    Tree::new(key.clone(), value.clone(), None, BasicMerk).unwrap(),
+                    TreeNode::new(key.clone(), value.clone(), None, BasicMerk).unwrap(),
                     key,
                 )),
                 Node::KVValueHash(key, value, value_hash) => Some((
-                    Tree::new_with_value_hash(key.clone(), value.clone(), *value_hash, BasicMerk)
+                    TreeNode::new_with_value_hash(key.clone(), value.clone(), *value_hash, BasicMerk)
                         .unwrap(),
                     key,
                 )),
                 Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => Some((
-                    Tree::new_with_value_hash(
+                    TreeNode::new_with_value_hash(
                         key.clone(),
                         value.clone(),
                         *value_hash,
@@ -301,7 +301,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             }
 
             let mut cloned_node =
-                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())
+                TreeNode::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())
                     .map_err(EdError)?;
 
             let left_child = node.walk(true).unwrap()?.unwrap();

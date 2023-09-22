@@ -65,7 +65,7 @@ use crate::{
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
     proofs::{query::query_item::QueryItem, Op as ProofOp, Query},
     tree::{
-        kv::ValueDefinedCostType, AuxMerkBatch, Commit, CryptoHash, Fetch, Op, RefWalker, Tree,
+        kv::ValueDefinedCostType, AuxMerkBatch, Commit, CryptoHash, Fetch, Op, RefWalker, TreeNode,
         NULL_HASH,
     },
     Error::{CostsError, EdError, StorageError},
@@ -229,7 +229,7 @@ impl MerkType {
 
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
-    pub(crate) tree: Cell<Option<Tree>>,
+    pub(crate) tree: Cell<Option<TreeNode>>,
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
     /// Storage
     pub storage: S,
@@ -481,14 +481,14 @@ where
     }
 
     /// Use tree
-    pub(crate) fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
+    pub(crate) fn use_tree<T>(&self, f: impl FnOnce(Option<&TreeNode>) -> T) -> T {
         let tree = self.tree.take();
         let res = f(tree.as_ref());
         self.tree.set(tree);
         res
     }
 
-    fn use_tree_mut<T>(&self, mut f: impl FnMut(Option<&mut Tree>) -> T) -> T {
+    fn use_tree_mut<T>(&self, mut f: impl FnMut(Option<&mut TreeNode>) -> T) -> T {
         let mut tree = self.tree.take();
         let res = f(tree.as_mut());
         self.tree.set(tree);
@@ -524,7 +524,7 @@ where
                 if let Some(tree_root_key) = tree_root_key_opt {
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-                    Tree::get(&self.storage, tree_root_key).map_ok(|tree| {
+                    TreeNode::get(&self.storage, tree_root_key).map_ok(|tree| {
                         if let Some(t) = tree.as_ref() {
                             self.root_tree_key = Cell::new(Some(t.key().to_vec()));
                         }
@@ -544,7 +544,7 @@ where
         if let Some(tree_root_key) = self.root_tree_key.get_mut() {
             // Trying to build a tree out of it, costs will be accumulated because
             // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-            Tree::get(&self.storage, tree_root_key).map_ok(|tree| {
+            TreeNode::get(&self.storage, tree_root_key).map_ok(|tree| {
                 self.tree = Cell::new(tree);
             })
         } else {
@@ -554,10 +554,10 @@ where
     }
 }
 
-fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>, Error> {
+fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<TreeNode>, Error> {
     let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
-        Ok(Some(Tree::decode(key.to_vec(), &bytes).map_err(EdError)?))
+        Ok(Some(TreeNode::decode(key.to_vec(), &bytes).map_err(EdError)?))
     } else {
         Ok(None)
     }

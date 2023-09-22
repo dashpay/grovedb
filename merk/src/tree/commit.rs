@@ -32,7 +32,7 @@
 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
 
 #[cfg(feature = "full")]
-use super::Tree;
+use super::TreeNode;
 #[cfg(feature = "full")]
 use crate::error::Error;
 use crate::tree::kv::ValueDefinedCostType;
@@ -45,7 +45,7 @@ pub trait Commit {
     /// backing store or cache.
     fn write(
         &mut self,
-        tree: &mut Tree,
+        tree: &mut TreeNode,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
@@ -69,7 +69,7 @@ pub trait Commit {
     /// tuple specifies whether or not to prune the left and right child nodes,
     /// respectively. For example, returning `(true, true)` will prune both
     /// nodes, removing them from memory.
-    fn prune(&self, _tree: &Tree) -> (bool, bool) {
+    fn prune(&self, _tree: &TreeNode) -> (bool, bool) {
         (true, true)
     }
 }
@@ -83,7 +83,7 @@ pub struct NoopCommit {}
 impl Commit for NoopCommit {
     fn write(
         &mut self,
-        _tree: &mut Tree,
+        _tree: &mut TreeNode,
         _old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         _update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
@@ -105,7 +105,7 @@ impl Commit for NoopCommit {
         Ok(())
     }
 
-    fn prune(&self, _tree: &Tree) -> (bool, bool) {
+    fn prune(&self, _tree: &TreeNode) -> (bool, bool) {
         (false, false)
     }
 }

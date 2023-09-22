@@ -38,20 +38,20 @@ use grovedb_costs::{
 use grovedb_storage::StorageContext;
 
 #[cfg(feature = "full")]
-use super::Tree;
+use super::TreeNode;
 #[cfg(feature = "full")]
 use crate::{
     error::{Error, Error::EdError},
-    tree::TreeInner,
+    tree::TreeNodeInner,
     Error::StorageError,
 };
 
 #[cfg(feature = "full")]
-impl Tree {
+impl TreeNode {
     /// Decode given bytes and set as Tree fields. Set key to value of given
     /// key.
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
-        Tree::decode(key, bytes).map_err(EdError)
+        TreeNode::decode(key, bytes).map_err(EdError)
     }
 
     /// Get value from storage given key.
@@ -66,7 +66,7 @@ impl Tree {
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
             tree_bytes
-                .map(|x| Tree::decode_raw(&x, key.as_ref().to_vec()))
+                .map(|x| TreeNode::decode_raw(&x, key.as_ref().to_vec()))
                 .transpose()
         );
 
@@ -75,7 +75,7 @@ impl Tree {
 }
 
 #[cfg(feature = "full")]
-impl Tree {
+impl TreeNode {
     #[inline]
     /// Encode
     pub fn encode(&self) -> Vec<u8> {
@@ -112,7 +112,7 @@ impl Tree {
     #[inline]
     /// Decode bytes from reader, set as Tree fields and set key to given key
     pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
-        let mut tree_inner: TreeInner = Decode::decode(input)?;
+        let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
         self.inner = Box::new(tree_inner);
         Ok(())
@@ -121,9 +121,9 @@ impl Tree {
     #[inline]
     /// Decode input and set as Tree fields. Set the key as the given key.
     pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
-        let mut tree_inner: TreeInner = Decode::decode(input)?;
+        let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
-        Ok(Tree::new_with_tree_inner(tree_inner))
+        Ok(TreeNode::new_with_tree_inner(tree_inner))
     }
 }
 
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn encode_leaf_tree() {
-        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerk).unwrap();
+        let tree = TreeNode::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerk).unwrap();
         assert_eq!(tree.encoding_length(), 68);
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
@@ -155,14 +155,14 @@ mod tests {
     #[test]
     #[should_panic]
     fn encode_modified_tree() {
-        let tree = Tree::from_fields(
+        let tree = TreeNode::from_fields(
             vec![0],
             vec![1],
             [55; 32],
             Some(Link::Modified {
                 pending_writes: 1,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3], None, BasicMerk).unwrap(),
+                tree: TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap(),
             }),
             None,
             BasicMerk,
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn encode_loaded_tree() {
-        let tree = Tree::from_fields(
+        let tree = TreeNode::from_fields(
             vec![0],
             vec![1],
             [55; 32],
@@ -181,7 +181,7 @@ mod tests {
                 hash: [66; 32],
                 sum: None,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3], None, BasicMerk).unwrap(),
+                tree: TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap(),
             }),
             None,
             BasicMerk,
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn encode_uncommitted_tree() {
-        let tree = Tree::from_fields(
+        let tree = TreeNode::from_fields(
             vec![0],
             vec![1],
             [55; 32],
@@ -210,7 +210,7 @@ mod tests {
                 hash: [66; 32],
                 sum: Some(10),
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3], None, BasicMerk).unwrap(),
+                tree: TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap(),
             }),
             None,
             SummedMerk(5),
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn encode_reference_tree() {
-        let tree = Tree::from_fields(
+        let tree = TreeNode::from_fields(
             vec![0],
             vec![1],
             [55; 32],
@@ -275,7 +275,7 @@ mod tests {
             131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199,
             149, 144, 21, 1,
         ];
-        let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
+        let tree = TreeNode::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
         assert_eq!(tree.inner.kv.feature_type, BasicMerk);
@@ -290,7 +290,7 @@ mod tests {
             55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73,
             98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21, 1,
         ];
-        let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
+        let tree = TreeNode::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
         if let Some(Link::Reference {
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn decode_invalid_bytes_as_tree() {
         let bytes = vec![2, 3, 4, 5];
-        let tree = Tree::decode(vec![0], bytes.as_slice());
+        let tree = TreeNode::decode(vec![0], bytes.as_slice());
         assert!(matches!(tree, Err(_)));
     }
 }

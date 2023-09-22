@@ -42,7 +42,7 @@ use grovedb_merk::{
             MERK_BIGGEST_VALUE_SIZE,
         },
     },
-    tree::Tree,
+    tree::TreeNode,
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
@@ -67,7 +67,7 @@ impl GroveDb {
         match path.last() {
             None => {}
             Some(key) => {
-                cost.storage_loaded_bytes += Tree::worst_case_encoded_tree_size(
+                cost.storage_loaded_bytes += TreeNode::worst_case_encoded_tree_size(
                     key.max_length() as u32,
                     HASH_LENGTH as u32,
                     is_sum_tree,
@@ -333,7 +333,7 @@ impl GroveDb {
         max_element_size: u32,
         in_parent_tree_using_sums: bool,
     ) {
-        let value_size = Tree::worst_case_encoded_tree_size(
+        let value_size = TreeNode::worst_case_encoded_tree_size(
             key.max_length() as u32,
             max_element_size,
             in_parent_tree_using_sums,
@@ -392,7 +392,7 @@ impl GroveDb {
         max_references_sizes: Vec<u32>,
     ) {
         // todo: verify
-        let value_size: u32 = Tree::worst_case_encoded_tree_size(
+        let value_size: u32 = TreeNode::worst_case_encoded_tree_size(
             key.max_length() as u32,
             max_element_size,
             in_parent_tree_using_sums,

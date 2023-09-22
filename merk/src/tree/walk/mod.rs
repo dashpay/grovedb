@@ -41,7 +41,7 @@ use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, Ope
 pub use ref_walker::RefWalker;
 
 #[cfg(feature = "full")]
-use super::{Link, Tree};
+use super::{Link, TreeNode};
 #[cfg(feature = "full")]
 use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash, Error};
 
@@ -52,7 +52,7 @@ pub struct Walker<S>
 where
     S: Fetch + Sized + Clone,
 {
-    tree: Owner<Tree>,
+    tree: Owner<TreeNode>,
     source: S,
 }
 
@@ -62,7 +62,7 @@ where
     S: Fetch + Sized + Clone,
 {
     /// Creates a `Walker` with the given tree and source.
-    pub fn new(tree: Tree, source: S) -> Self {
+    pub fn new(tree: TreeNode, source: S) -> Self {
         Self {
             tree: Owner::new(tree),
             source,
@@ -119,7 +119,7 @@ where
     pub fn walk<F, T>(self, left: bool, f: F) -> CostResult<Self, Error>
     where
         F: FnOnce(Option<Self>) -> CostResult<Option<T>, Error>,
-        T: Into<Tree>,
+        T: Into<TreeNode>,
     {
         let mut cost = OperationCost::default();
 
@@ -137,7 +137,7 @@ where
     pub fn walk_expect<F, T>(self, left: bool, f: F) -> CostResult<Self, Error>
     where
         F: FnOnce(Self) -> CostResult<Option<T>, Error>,
-        T: Into<Tree>,
+        T: Into<TreeNode>,
     {
         let mut cost = OperationCost::default();
 
@@ -151,18 +151,18 @@ where
     }
 
     /// Returns an immutable reference to the `Tree` wrapped by this walker.
-    pub fn tree(&self) -> &Tree {
+    pub fn tree(&self) -> &TreeNode {
         &self.tree
     }
 
     /// Consumes the `Walker` and returns the `Tree` it wraps.
-    pub fn into_inner(self) -> Tree {
+    pub fn into_inner(self) -> TreeNode {
         self.tree.into_inner()
     }
 
     /// Takes a `Tree` and returns a `Walker` which fetches from the same source
     /// as `self`.
-    fn wrap(&self, tree: Tree) -> Self {
+    fn wrap(&self, tree: TreeNode) -> Self {
         Self::new(tree, self.source.clone())
     }
 
@@ -175,7 +175,7 @@ where
     /// implements `Into<Tree>`.
     pub fn attach<T>(mut self, left: bool, maybe_child: Option<T>) -> Self
     where
-        T: Into<Tree>,
+        T: Into<TreeNode>,
     {
         self.tree
             .own(|t| t.attach(left, maybe_child.map(|t| t.into())));
@@ -243,7 +243,7 @@ where
 }
 
 #[cfg(feature = "full")]
-impl<S> From<Walker<S>> for Tree
+impl<S> From<Walker<S>> for TreeNode
 where
     S: Fetch + Sized + Clone,
 {
@@ -258,31 +258,31 @@ mod test {
     use grovedb_costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostsExt};
 
     use super::{super::NoopCommit, *};
-    use crate::tree::{Tree, TreeFeatureType::BasicMerk};
+    use crate::tree::{TreeNode, TreeFeatureType::BasicMerk};
 
     #[derive(Clone)]
     struct MockSource {}
 
     impl Fetch for MockSource {
-        fn fetch(&self, link: &Link) -> CostResult<Tree, Error> {
-            Tree::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerk).map(Ok)
+        fn fetch(&self, link: &Link) -> CostResult<TreeNode, Error> {
+            TreeNode::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerk).map(Ok)
         }
     }
 
     #[test]
     fn walk_modified() {
-        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk)
+        let tree = TreeNode::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap()),
+                Some(TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap()),
             );
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk(true, |child| -> CostResult<Option<Tree>, Error> {
+            .walk(true, |child| -> CostResult<Option<TreeNode>, Error> {
                 assert_eq!(child.expect("should have child").tree().key(), b"foo");
                 Ok(None).wrap_with_cost(Default::default())
             })
@@ -293,11 +293,11 @@ mod test {
 
     #[test]
     fn walk_stored() {
-        let mut tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk)
+        let mut tree = TreeNode::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap()),
+                Some(TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap()),
             );
         tree.commit(
             &mut NoopCommit {},
@@ -312,7 +312,7 @@ mod test {
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk(true, |child| -> CostResult<Option<Tree>, Error> {
+            .walk(true, |child| -> CostResult<Option<TreeNode>, Error> {
                 assert_eq!(child.expect("should have child").tree().key(), b"foo");
                 Ok(None).wrap_with_cost(Default::default())
             })
@@ -323,7 +323,7 @@ mod test {
 
     #[test]
     fn walk_pruned() {
-        let tree = Tree::from_fields(
+        let tree = TreeNode::from_fields(
             b"test".to_vec(),
             b"abc".to_vec(),
             Default::default(),
@@ -342,7 +342,7 @@ mod test {
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk_expect(true, |child| -> CostResult<Option<Tree>, Error> {
+            .walk_expect(true, |child| -> CostResult<Option<TreeNode>, Error> {
                 assert_eq!(child.tree().key(), b"foo");
                 Ok(None).wrap_with_cost(Default::default())
             })
@@ -353,13 +353,13 @@ mod test {
 
     #[test]
     fn walk_none() {
-        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk).unwrap();
+        let tree = TreeNode::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerk).unwrap();
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);
 
         walker
-            .walk(true, |child| -> CostResult<Option<Tree>, Error> {
+            .walk(true, |child| -> CostResult<Option<TreeNode>, Error> {
                 assert!(child.is_none());
                 Ok(None).wrap_with_cost(Default::default())
             })

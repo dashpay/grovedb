@@ -31,7 +31,7 @@
 
 #[cfg(feature = "full")]
 use grovedb_merk::{
-    tree::{kv::KV, Tree},
+    tree::{kv::KV, TreeNode},
     TreeFeatureType,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
@@ -312,7 +312,7 @@ impl Element {
 #[cfg(feature = "full")]
 /// Decode from bytes
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
-    let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
+    let tree = TreeNode::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice())?;
     Ok(element)
 }

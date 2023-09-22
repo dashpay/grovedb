@@ -32,15 +32,15 @@ use std::fmt::{Debug, Formatter, Result};
 
 use colored::Colorize;
 
-use super::{Link, Tree};
+use super::{Link, TreeNode};
 
 #[cfg(feature = "full")]
-impl Debug for Tree {
+impl Debug for TreeNode {
     // TODO: unwraps should be results that bubble up
     fn fmt(&self, f: &mut Formatter) -> Result {
         fn traverse(
             f: &mut Formatter,
-            cursor: &Tree,
+            cursor: &TreeNode,
             stack: &mut Vec<(Vec<u8>, Vec<u8>)>,
             left: bool,
         ) {

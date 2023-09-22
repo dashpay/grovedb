@@ -33,7 +33,7 @@ use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "full")]
 use super::{
-    super::{Link, Tree},
+    super::{Link, TreeNode},
     Fetch,
 };
 #[cfg(feature = "full")]
@@ -50,7 +50,7 @@ pub struct RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
 {
-    tree: &'a mut Tree,
+    tree: &'a mut TreeNode,
     source: S,
 }
 
@@ -60,13 +60,13 @@ where
     S: Fetch + Sized + Clone,
 {
     /// Creates a `RefWalker` with the given tree and source.
-    pub fn new(tree: &'a mut Tree, source: S) -> Self {
+    pub fn new(tree: &'a mut TreeNode, source: S) -> Self {
         // TODO: check if tree has modified links, panic if so
         RefWalker { tree, source }
     }
 
     /// Gets an immutable reference to the `Tree` wrapped by this `RefWalker`.
-    pub fn tree(&self) -> &Tree {
+    pub fn tree(&self) -> &TreeNode {
         self.tree
     }
 

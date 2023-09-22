@@ -37,7 +37,7 @@ use integer_encoding::VarInt;
 use crate::{
     error::Error,
     estimated_costs::LAYER_COST_SIZE,
-    tree::{kv::KV, Link, Tree},
+    tree::{kv::KV, Link, TreeNode},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
 
@@ -318,7 +318,7 @@ impl EstimatedLayerCount {
 }
 
 #[cfg(feature = "full")]
-impl Tree {
+impl TreeNode {
     /// Return estimate of average encoded tree size
     pub fn average_case_encoded_tree_size(
         not_prefixed_key_len: u32,
@@ -347,7 +347,7 @@ pub fn add_average_case_get_merk_node(
 
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
-    cost.storage_loaded_bytes += Tree::average_case_encoded_tree_size(
+    cost.storage_loaded_bytes += TreeNode::average_case_encoded_tree_size(
         not_prefixed_key_len,
         approximate_element_size,
         is_sum_tree,

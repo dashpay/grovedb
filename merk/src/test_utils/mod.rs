@@ -39,13 +39,13 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
-    tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
+    tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, TreeNode, Walker},
     Merk,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
 /// Assert tree invariants
-pub fn assert_tree_invariants(tree: &Tree) {
+pub fn assert_tree_invariants(tree: &TreeNode) {
     assert!(tree.balance_factor().abs() < 2);
 
     let maybe_left = tree.link(true);
@@ -71,7 +71,7 @@ pub fn assert_tree_invariants(tree: &Tree) {
 /// Apply given batch to given tree and commit using memory only.
 /// Used by `apply_memonly` which also performs checks using
 /// `assert_tree_invariants`. Return Tree.
-pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
+pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> TreeNode {
     let is_sum_node = tree.is_sum_node();
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
     let mut tree = Walker::<PanicSource>::apply_to(
@@ -122,7 +122,7 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
 
 /// Apply given batch to given tree and commit using memory only.
 /// Perform checks using `assert_tree_invariants`. Return Tree.
-pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
+pub fn apply_memonly(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> TreeNode {
     let tree = apply_memonly_unchecked(tree, batch);
     assert_tree_invariants(&tree);
     tree
@@ -131,10 +131,10 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
 /// Applies given batch to given tree or creates a new tree to apply to and
 /// commits to memory only.
 pub fn apply_to_memonly(
-    maybe_tree: Option<Tree>,
+    maybe_tree: Option<TreeNode>,
     batch: &MerkBatch<Vec<u8>>,
     is_sum_tree: bool,
-) -> Option<Tree> {
+) -> Option<TreeNode> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
     Walker::<PanicSource>::apply_to(
         maybe_walker,
@@ -250,7 +250,7 @@ pub fn make_tree_rand(
     batch_size: u64,
     initial_seed: u64,
     is_sum_tree: bool,
-) -> Tree {
+) -> TreeNode {
     assert!(node_count >= batch_size);
     assert_eq!((node_count % batch_size), 0);
 
@@ -260,7 +260,7 @@ pub fn make_tree_rand(
     } else {
         BasicMerk
     };
-    let mut tree = Tree::new(vec![0; 20], value, None, feature_type).unwrap();
+    let mut tree = TreeNode::new(vec![0; 20], value, None, feature_type).unwrap();
 
     let mut seed = initial_seed;
 
@@ -276,7 +276,7 @@ pub fn make_tree_rand(
 
 /// Create tree with initial fixed values and apply `node count` Put ops using
 /// sequential keys using memory only
-pub fn make_tree_seq(node_count: u64) -> Tree {
+pub fn make_tree_seq(node_count: u64) -> TreeNode {
     let batch_size = if node_count >= 10_000 {
         assert_eq!(node_count % 10_000, 0);
         10_000
@@ -285,7 +285,7 @@ pub fn make_tree_seq(node_count: u64) -> Tree {
     };
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value, None, BasicMerk).unwrap();
+    let mut tree = TreeNode::new(vec![0; 20], value, None, BasicMerk).unwrap();
 
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {

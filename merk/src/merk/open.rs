@@ -75,6 +75,7 @@ mod test {
         Storage, StorageBatch,
     };
     use tempfile::TempDir;
+    use grovedb_costs::OperationCost;
 
     use crate::{Merk, Op, TreeFeatureType::BasicMerk};
 
@@ -132,7 +133,6 @@ mod test {
                 .unwrap(),
             false,
         );
-
         // Opening not existing merk should cost only root key seek (except context
         // creation)
         assert!(matches!(

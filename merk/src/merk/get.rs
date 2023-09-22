@@ -1,7 +1,7 @@
 use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
 
-use crate::{tree::Tree, CryptoHash, Error, Error::StorageError, Merk, TreeFeatureType};
+use crate::{tree::TreeNode, CryptoHash, Error, Error::StorageError, Merk, TreeFeatureType};
 
 impl<'db, S> Merk<S>
 where
@@ -136,7 +136,7 @@ where
 
     /// See if a node's field exists
     fn has_node_direct(&self, key: &[u8]) -> CostResult<bool, Error> {
-        Tree::get(&self.storage, key).map_ok(|x| x.is_some())
+        TreeNode::get(&self.storage, key).map_ok(|x| x.is_some())
     }
 
     /// See if a node's field exists
@@ -173,9 +173,9 @@ where
     /// Generic way to get a node's field
     fn get_node_direct_fn<T, F>(&self, key: &[u8], f: F) -> CostResult<Option<T>, Error>
     where
-        F: FnOnce(&Tree) -> CostContext<T>,
+        F: FnOnce(&TreeNode) -> CostContext<T>,
     {
-        Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
+        TreeNode::get(&self.storage, key).flat_map_ok(|maybe_node| {
             let mut cost = OperationCost::default();
             Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost))).wrap_with_cost(cost)
         })
@@ -184,7 +184,7 @@ where
     /// Generic way to get a node's field
     fn get_node_fn<T, F>(&self, key: &[u8], f: F) -> CostResult<Option<T>, Error>
     where
-        F: FnOnce(&Tree) -> CostContext<T>,
+        F: FnOnce(&TreeNode) -> CostContext<T>,
     {
         self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {

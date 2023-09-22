@@ -32,7 +32,7 @@
 use grovedb_costs::CostResult;
 
 #[cfg(feature = "full")]
-use super::super::{Link, Tree};
+use super::super::{Link, TreeNode};
 #[cfg(feature = "full")]
 use crate::error::Error;
 
@@ -43,5 +43,5 @@ use crate::error::Error;
 pub trait Fetch {
     /// Called when the tree needs to fetch a node with the given `Link`. The
     /// `link` value will always be a `Link::Reference` variant.
-    fn fetch(&self, link: &Link) -> CostResult<Tree, Error>;
+    fn fetch(&self, link: &Link) -> CostResult<TreeNode, Error>;
 }
