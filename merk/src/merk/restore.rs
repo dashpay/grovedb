@@ -140,8 +140,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     key,
                 )),
                 Node::KVValueHash(key, value, value_hash) => Some((
-                    TreeNode::new_with_value_hash(key.clone(), value.clone(), *value_hash, BasicMerk)
-                        .unwrap(),
+                    TreeNode::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        *value_hash,
+                        BasicMerk,
+                    )
+                    .unwrap(),
                     key,
                 )),
                 Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => Some((

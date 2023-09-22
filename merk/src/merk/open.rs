@@ -69,13 +69,13 @@ where
 
 #[cfg(test)]
 mod test {
+    use grovedb_costs::OperationCost;
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
         Storage, StorageBatch,
     };
     use tempfile::TempDir;
-    use grovedb_costs::OperationCost;
 
     use crate::{Merk, Op, TreeFeatureType::BasicMerk};
 

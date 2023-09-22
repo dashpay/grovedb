@@ -47,22 +47,6 @@ pub trait Commit {
         &mut self,
         tree: &mut TreeNode,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        update_tree_value_based_on_costs: &mut impl FnMut(
-            &StorageCost,
-            &Vec<u8>,
-            &mut Vec<u8>,
-        ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
-            Error,
-        >,
-        section_removal_bytes: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            Error,
-        >,
     ) -> Result<(), Error>;
 
     /// Called once per node after writing a node and its children. The returned
@@ -85,22 +69,6 @@ impl Commit for NoopCommit {
         &mut self,
         _tree: &mut TreeNode,
         _old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        _update_tree_value_based_on_costs: &mut impl FnMut(
-            &StorageCost,
-            &Vec<u8>,
-            &mut Vec<u8>,
-        ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
-            Error,
-        >,
-        _section_removal_bytes: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            Error,
-        >,
     ) -> Result<(), Error> {
         Ok(())
     }

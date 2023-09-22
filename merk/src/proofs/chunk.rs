@@ -460,14 +460,9 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![], None, BasicMerk).unwrap();
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -491,14 +486,9 @@ mod tests {
                 false,
                 Some(BaseTree::new(vec![1], vec![], None, BasicMerk).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -521,14 +511,9 @@ mod tests {
                 true,
                 Some(BaseTree::new(vec![0], vec![], None, BasicMerk).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -555,14 +540,9 @@ mod tests {
                 false,
                 Some(BaseTree::new(vec![2], vec![], None, BasicMerk).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();

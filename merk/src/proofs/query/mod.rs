@@ -818,14 +818,9 @@ mod test {
                 false,
                 Some(TreeNode::new(vec![7], vec![7], None, BasicMerk).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
         tree
     }
 
@@ -837,12 +832,7 @@ mod test {
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
         three_tree
-            .commit(
-                &mut NoopCommit {},
-                &|_, _| Ok(0),
-                &mut |_, _, _| Ok((false, None)),
-                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-            )
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
 
@@ -851,12 +841,7 @@ mod test {
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
-            .commit(
-                &mut NoopCommit {},
-                &|_, _| Ok(0),
-                &mut |_, _, _| Ok((false, None)),
-                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-            )
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
 
@@ -865,12 +850,7 @@ mod test {
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
         root_tree
-            .commit(
-                &mut NoopCommit {},
-                &|_, _| Ok(0),
-                &mut |_, _, _| Ok((false, None)),
-                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-            )
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
 
@@ -1571,7 +1551,10 @@ mod test {
                                     .unwrap()
                                     .attach(
                                         true,
-                                        Some(TreeNode::new(vec![3], vec![3], None, BasicMerk).unwrap()),
+                                        Some(
+                                            TreeNode::new(vec![3], vec![3], None, BasicMerk)
+                                                .unwrap(),
+                                        ),
                                     ),
                             ),
                         ),
@@ -1589,11 +1572,17 @@ mod test {
                                     .unwrap()
                                     .attach(
                                         true,
-                                        Some(TreeNode::new(vec![6], vec![6], None, BasicMerk).unwrap()),
+                                        Some(
+                                            TreeNode::new(vec![6], vec![6], None, BasicMerk)
+                                                .unwrap(),
+                                        ),
                                     )
                                     .attach(
                                         false,
-                                        Some(TreeNode::new(vec![8], vec![8], None, BasicMerk).unwrap()),
+                                        Some(
+                                            TreeNode::new(vec![8], vec![8], None, BasicMerk)
+                                                .unwrap(),
+                                        ),
                                     ),
                             ),
                         )
@@ -1605,21 +1594,17 @@ mod test {
                                     .attach(
                                         true,
                                         Some(
-                                            TreeNode::new(vec![10], vec![10], None, BasicMerk).unwrap(),
+                                            TreeNode::new(vec![10], vec![10], None, BasicMerk)
+                                                .unwrap(),
                                         ),
                                     ),
                             ),
                         ),
                 ),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -5756,14 +5741,9 @@ mod test {
     #[test]
     fn verify_ops() {
         let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerk).unwrap();
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
 
         let root_hash = tree.hash().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -5787,14 +5767,9 @@ mod test {
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
         let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerk).unwrap();
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 

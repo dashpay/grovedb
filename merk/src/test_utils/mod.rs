@@ -98,23 +98,13 @@ pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> Tr
     .0
     .expect("expected tree");
     let is_sum_node = tree.is_sum_node();
-    tree.commit(
-        &mut NoopCommit {},
-        &|key, value| {
-            Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                key.len() as u32,
-                value.len() as u32,
-                is_sum_node,
-            ))
-        },
-        &mut |_, _, _| Ok((false, None)),
-        &mut |_, key_bytes_to_remove, value_bytes_to_remove| {
-            Ok((
-                BasicStorageRemoval(key_bytes_to_remove),
-                BasicStorageRemoval(value_bytes_to_remove),
-            ))
-        },
-    )
+    tree.commit(&mut NoopCommit {}, &|key, value| {
+        Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+            key.len() as u32,
+            value.len() as u32,
+            is_sum_node,
+        ))
+    })
     .unwrap()
     .expect("commit failed");
     tree
@@ -160,26 +150,15 @@ pub fn apply_to_memonly(
     .0
     .map(|mut tree| {
         let is_sum_node = tree.is_sum_node();
-        tree.commit(
-            &mut NoopCommit {},
-            &|key, value| {
-                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key.len() as u32,
-                    value.len() as u32,
-                    is_sum_node,
-                ))
-            },
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, key_bytes_to_remove, value_bytes_to_remove| {
-                Ok((
-                    BasicStorageRemoval(key_bytes_to_remove),
-                    BasicStorageRemoval(value_bytes_to_remove),
-                ))
-            },
-        )
+        tree.commit(&mut NoopCommit {}, &|key, value| {
+            Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                key.len() as u32,
+                value.len() as u32,
+                is_sum_node,
+            ))
+        })
         .unwrap()
         .expect("commit failed");
-        println!("{:?}", &tree);
         assert_tree_invariants(&tree);
         tree
     })

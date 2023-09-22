@@ -41,6 +41,8 @@ mod hash;
 #[cfg(feature = "full")]
 mod iter;
 #[cfg(feature = "full")]
+mod just_in_time_value_update;
+#[cfg(feature = "full")]
 pub mod kv;
 #[cfg(feature = "full")]
 mod link;
@@ -737,22 +739,6 @@ impl TreeNode {
         &mut self,
         c: &mut C,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        update_tree_value_based_on_costs: &mut impl FnMut(
-            &StorageCost,
-            &Vec<u8>,
-            &mut Vec<u8>,
-        ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
-            Error,
-        >,
-        section_removal_bytes: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            Error,
-        >,
     ) -> CostResult<(), Error> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
@@ -769,15 +755,7 @@ impl TreeNode {
             }) = self.inner.left.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(
-                    &mut cost,
-                    tree.commit(
-                        c,
-                        old_specialized_cost,
-                        update_tree_value_based_on_costs,
-                        section_removal_bytes
-                    )
-                );
+                cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let sum = cost_return_on_error_default!(tree.sum());
 
                 self.inner.left = Some(Link::Loaded {
@@ -800,15 +778,7 @@ impl TreeNode {
             }) = self.inner.right.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(
-                    &mut cost,
-                    tree.commit(
-                        c,
-                        old_specialized_cost,
-                        update_tree_value_based_on_costs,
-                        section_removal_bytes
-                    )
-                );
+                cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let sum = cost_return_on_error_default!(tree.sum());
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -821,15 +791,7 @@ impl TreeNode {
             }
         }
 
-        cost_return_on_error_no_add!(
-            &cost,
-            c.write(
-                self,
-                old_specialized_cost,
-                update_tree_value_based_on_costs,
-                section_removal_bytes
-            )
-        );
+        cost_return_on_error_no_add!(&cost, c.write(self, old_specialized_cost,));
 
         // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 
@@ -981,14 +943,9 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
         assert!(tree.child(true).is_some());
 
@@ -1009,14 +966,9 @@ mod test {
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
         assert_eq!(
             tree.child_hash(true),
             &[
@@ -1086,14 +1038,9 @@ mod test {
                 false,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
 
         assert!(tree.link(false).expect("expected link").is_stored());
     }
@@ -1106,14 +1053,9 @@ mod test {
                 false,
                 Some(TreeNode::new(vec![2], vec![3], None, SummedMerk(5)).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
 
         assert_eq!(Some(8), tree.sum().expect("expected to get sum from tree"));
     }

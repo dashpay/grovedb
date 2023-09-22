@@ -37,7 +37,6 @@ pub(crate) fn prepend_version_to_bytes(mut bytes: Vec<u8>, version: u32) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use integer_encoding::VarIntWriter;
 
     use crate::versioning::{
         prepend_version_to_bytes, read_and_consume_proof_version, read_proof_version,

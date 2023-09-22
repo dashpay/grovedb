@@ -135,7 +135,8 @@ mod tests {
 
     #[test]
     fn encode_leaf_tree() {
-        let tree = TreeNode::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerk).unwrap();
+        let tree =
+            TreeNode::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerk).unwrap();
         assert_eq!(tree.encoding_length(), 68);
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),

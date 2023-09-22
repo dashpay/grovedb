@@ -336,12 +336,7 @@ where
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 cost_return_on_error!(
                     &mut inner_cost,
-                    tree.commit(
-                        &mut committer,
-                        old_specialized_cost,
-                        update_tree_value_based_on_costs,
-                        section_removal_bytes
-                    )
+                    tree.commit(&mut committer, old_specialized_cost,)
                 );
 
                 let tree_key = tree.key();
@@ -557,7 +552,9 @@ where
 fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<TreeNode>, Error> {
     let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
-        Ok(Some(TreeNode::decode(key.to_vec(), &bytes).map_err(EdError)?))
+        Ok(Some(
+            TreeNode::decode(key.to_vec(), &bytes).map_err(EdError)?,
+        ))
     } else {
         Ok(None)
     }

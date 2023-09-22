@@ -258,7 +258,7 @@ mod test {
     use grovedb_costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostsExt};
 
     use super::{super::NoopCommit, *};
-    use crate::tree::{TreeNode, TreeFeatureType::BasicMerk};
+    use crate::tree::{TreeFeatureType::BasicMerk, TreeNode};
 
     #[derive(Clone)]
     struct MockSource {}
@@ -299,14 +299,9 @@ mod test {
                 true,
                 Some(TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerk).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);
