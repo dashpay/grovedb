@@ -784,7 +784,7 @@ impl GroveDb {
 
     /// Method to visualize hash mismatch after verification
     pub fn visualize_verify_grovedb(&self) -> HashMap<String, (String, String, String)> {
-        self.verify_grovedb()
+        self.verify_grovedb(None)
             .iter()
             .map(|(path, (root_hash, expected, actual))| {
                 (
@@ -804,19 +804,27 @@ impl GroveDb {
 
     /// Method to check that the value_hash of Element::Tree nodes are computed
     /// correctly.
-    pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
-        let root_merk = self
-            .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
-            .unwrap()
-            .expect("should exist");
-        self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), None)
+    pub fn verify_grovedb(&self, transaction: TransactionArg) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+        if let Some(transaction) = transaction {
+            let root_merk = self
+                .open_transactional_merk_at_path(SubtreePath::empty(), transaction, None)
+                .unwrap()
+                .expect("should exist");
+            self.verify_merk_and_submerks_in_transaction(root_merk, &SubtreePath::empty(), None, transaction)
+        } else {
+            let root_merk = self
+                .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
+                .unwrap()
+                .expect("should exist");
+            self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), None)
+        }
     }
 
     /// Verifies that the root hash of the given merk and all submerks match
     /// those of the merk and submerks at the given path. Returns any issues.
-    fn verify_merk_and_submerks<'db, B: AsRef<[u8]>>(
+    fn verify_merk_and_submerks<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
         &'db self,
-        merk: Merk<PrefixedRocksDbStorageContext>,
+        merk: Merk<S>,
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
     ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
@@ -854,6 +862,78 @@ impl GroveDb {
                     );
                 }
                 issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch));
+            } else if element.is_item() {
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key, true)
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let actual_value_hash = value_hash(&kv_value).unwrap();
+                if actual_value_hash != element_value_hash {
+                    issues.insert(
+                        path.derive_owned_with_child(key).to_vec(),
+                        (actual_value_hash, element_value_hash, actual_value_hash)
+                    );
+                }
+            }
+        }
+        issues
+    }
+
+    fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
+        &'db self,
+        merk: Merk<S>,
+        path: &SubtreePath<B>,
+        batch: Option<&'db StorageBatch>,
+        transaction: &Transaction
+    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+        let mut all_query = Query::new();
+        all_query.insert_all();
+
+        let _in_sum_tree = merk.is_sum_tree;
+        let mut issues = HashMap::new();
+        let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
+
+        while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
+            let element = raw_decode(&element_value).unwrap();
+            if element.is_tree() {
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key, true)
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let new_path = path.derive_owned_with_child(key);
+                let new_path_ref = SubtreePath::from(&new_path);
+
+                let inner_merk = self
+                    .open_transactional_merk_at_path(new_path_ref.clone(), transaction, batch)
+                    .unwrap()
+                    .expect("should exist");
+                let root_hash = inner_merk.root_hash().unwrap();
+
+                let actual_value_hash = value_hash(&kv_value).unwrap();
+                let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+
+                if combined_value_hash != element_value_hash {
+                    issues.insert(
+                        new_path.to_vec(),
+                        (root_hash, combined_value_hash, element_value_hash),
+                    );
+                }
+                issues.extend(self.verify_merk_and_submerks_in_transaction(inner_merk, &new_path_ref, batch, transaction));
+            } else if element.is_item() {
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key, true)
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let actual_value_hash = value_hash(&kv_value).unwrap();
+                if actual_value_hash != element_value_hash {
+                    issues.insert(
+                        path.derive_owned_with_child(key).to_vec(),
+                        (actual_value_hash, element_value_hash, actual_value_hash)
+                    );
+                }
             }
         }
         issues
