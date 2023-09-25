@@ -807,12 +807,11 @@ impl GroveDb {
     pub fn verify_grovedb(
         &self,
         transaction: TransactionArg,
-    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         if let Some(transaction) = transaction {
             let root_merk = self
                 .open_transactional_merk_at_path(SubtreePath::empty(), transaction, None)
-                .unwrap()
-                .expect("should exist");
+                .unwrap()?;
             self.verify_merk_and_submerks_in_transaction(
                 root_merk,
                 &SubtreePath::empty(),
@@ -822,8 +821,7 @@ impl GroveDb {
         } else {
             let root_merk = self
                 .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
-                .unwrap()
-                .expect("should exist");
+                .unwrap()?;
             self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), None)
         }
     }
@@ -835,7 +833,7 @@ impl GroveDb {
         merk: Merk<S>,
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
-    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
@@ -844,20 +842,18 @@ impl GroveDb {
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
-            let element = raw_decode(&element_value).unwrap();
+            let element = raw_decode(&element_value)?;
             if element.is_tree() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
+                let (kv_value, element_value_hash) =
+                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
+                        Error::CorruptedData("expected merk to contain value at key".to_string()),
+                    )?;
                 let new_path = path.derive_owned_with_child(key);
                 let new_path_ref = SubtreePath::from(&new_path);
 
                 let inner_merk = self
                     .open_non_transactional_merk_at_path(new_path_ref.clone(), batch)
-                    .unwrap()
-                    .expect("should exist");
+                    .unwrap()?;
                 let root_hash = inner_merk.root_hash().unwrap();
 
                 let actual_value_hash = value_hash(&kv_value).unwrap();
@@ -871,11 +867,10 @@ impl GroveDb {
                 }
                 issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch));
             } else if element.is_item() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
+                let (kv_value, element_value_hash) =
+                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
+                        Error::CorruptedData("expected merk to contain value at key".to_string()),
+                    )?;
                 let actual_value_hash = value_hash(&kv_value).unwrap();
                 if actual_value_hash != element_value_hash {
                     issues.insert(
@@ -894,7 +889,7 @@ impl GroveDb {
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
         transaction: &Transaction,
-    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
@@ -903,20 +898,18 @@ impl GroveDb {
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
-            let element = raw_decode(&element_value).unwrap();
+            let element = raw_decode(&element_value)?;
             if element.is_tree() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
+                let (kv_value, element_value_hash) =
+                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
+                        Error::CorruptedData("expected merk to contain value at key".to_string()),
+                    )?;
                 let new_path = path.derive_owned_with_child(key);
                 let new_path_ref = SubtreePath::from(&new_path);
 
                 let inner_merk = self
                     .open_transactional_merk_at_path(new_path_ref.clone(), transaction, batch)
-                    .unwrap()
-                    .expect("should exist");
+                    .unwrap()?;
                 let root_hash = inner_merk.root_hash().unwrap();
 
                 let actual_value_hash = value_hash(&kv_value).unwrap();
@@ -935,11 +928,10 @@ impl GroveDb {
                     transaction,
                 ));
             } else if element.is_item() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
+                let (kv_value, element_value_hash) =
+                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
+                        Error::CorruptedData("expected merk to contain value at key".to_string()),
+                    )?;
                 let actual_value_hash = value_hash(&kv_value).unwrap();
                 if actual_value_hash != element_value_hash {
                     issues.insert(
