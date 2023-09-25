@@ -144,6 +144,7 @@ pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
     pub(crate) old_size_with_parent_to_child_hook: u32,
     pub(crate) old_value: Option<Vec<u8>>,
+    pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 
 #[cfg(feature = "full")]
@@ -165,6 +166,7 @@ impl TreeNode {
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
@@ -176,6 +178,7 @@ impl TreeNode {
             inner: Box::new(inner_tree),
             old_size_with_parent_to_child_hook: decode_size,
             old_value: Some(old_value),
+            known_storage_cost: None,
         }
     }
 
@@ -266,6 +269,7 @@ impl TreeNode {
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
@@ -286,6 +290,7 @@ impl TreeNode {
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
@@ -308,6 +313,7 @@ impl TreeNode {
                 }),
                 old_size_with_parent_to_child_hook: 0,
                 old_value: None,
+                known_storage_cost: None,
             },
         )
     }
@@ -330,6 +336,7 @@ impl TreeNode {
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
@@ -655,15 +662,49 @@ impl TreeNode {
     /// Replaces the root node's value with the given value and returns the
     /// modified `Tree`.
     #[inline]
-    pub fn put_value(mut self, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
+    pub fn put_value(
+        mut self,
+        value: Vec<u8>,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
-        self.inner.kv = self
-            .inner
-            .kv
-            .put_value_then_update(value)
-            .unwrap_add_cost(&mut cost);
+
+        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
         self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self.inner.kv.update_hashes().unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
     }
 
     /// Replaces the root node's value with the given value and returns the
@@ -674,15 +715,47 @@ impl TreeNode {
         value: Vec<u8>,
         value_fixed_cost: u32,
         feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         self.inner.kv = self
             .inner
             .kv
-            .put_value_with_fixed_cost_then_update(value, value_fixed_cost)
-            .unwrap_add_cost(&mut cost);
+            .put_value_with_fixed_cost_no_update_of_hashes(value, value_fixed_cost);
         self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self.inner.kv.update_hashes().unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
     }
 
     /// Replaces the root node's value with the given value and value hash
@@ -693,15 +766,49 @@ impl TreeNode {
         value: Vec<u8>,
         value_hash: CryptoHash,
         feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
+
+        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
+        self.inner.kv.feature_type = feature_type;
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
         self.inner.kv = self
             .inner
             .kv
-            .put_value_and_reference_value_hash_then_update(value, value_hash)
+            .update_hashes_using_reference_value_hash(value_hash)
             .unwrap_add_cost(&mut cost);
-        self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
+        Ok(self).wrap_with_cost(cost)
     }
 
     /// Replaces the root node's value with the given value and value hash
@@ -713,17 +820,52 @@ impl TreeNode {
         value_hash: CryptoHash,
         value_cost: u32,
         feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
+
         self.inner.kv = self
             .inner
             .kv
-            .put_value_with_reference_value_hash_and_value_cost_then_update(
-                value, value_hash, value_cost,
-            )
-            .unwrap_add_cost(&mut cost);
+            .put_value_with_fixed_cost_no_update_of_hashes(value, value_cost);
         self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self
+            .inner
+            .kv
+            .update_hashes_using_reference_value_hash(value_hash)
+            .unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
     }
 
     // TODO: add compute_hashes method

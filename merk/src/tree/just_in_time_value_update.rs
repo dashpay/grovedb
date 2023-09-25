@@ -10,7 +10,7 @@ use crate::{
 };
 
 impl TreeNode {
-    pub(in crate::tree) fn just_in_time_tree_value_update(
+    pub(in crate::tree) fn just_in_time_tree_node_value_update(
         &mut self,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
@@ -76,6 +76,7 @@ impl TreeNode {
         // Update old tree size after generating value storage_cost cost
         self.old_size_with_parent_to_child_hook = current_tree_plus_hook_size;
         self.old_value = Some(self.value_ref().clone());
+        self.known_storage_cost = Some(storage_costs);
 
         Ok(())
     }

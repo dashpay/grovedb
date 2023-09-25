@@ -1,3 +1,5 @@
+use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
+
 use crate::{
     merk::BatchValue,
     tree::{Commit, TreeNode},
@@ -30,8 +32,12 @@ impl Commit for MerkCommitter {
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
     ) -> Result<(), Error> {
         let tree_size = tree.encoding_length();
-        let (_, storage_costs) =
-            tree.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
+        let storage_costs = if let Some(storage_costs) = tree.known_storage_cost.take() {
+            storage_costs
+        } else {
+            tree.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?
+                .1
+        };
 
         let mut buf = Vec::with_capacity(tree_size);
         tree.encode_into(&mut buf);
@@ -42,7 +48,7 @@ impl Commit for MerkCommitter {
             tree.key().to_vec(),
             tree.feature_type().sum_length(),
             Some((buf, left_child_sizes, right_child_sizes)),
-            Some(storage_costs),
+            storage_costs,
         ));
         Ok(())
     }

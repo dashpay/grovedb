@@ -37,11 +37,16 @@ mod ref_walker;
 pub use fetch::Fetch;
 #[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error_no_add,
+    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+};
 #[cfg(feature = "full")]
 pub use ref_walker::RefWalker;
 
 #[cfg(feature = "full")]
 use super::{Link, TreeNode};
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash, Error};
 
@@ -183,11 +188,42 @@ where
     }
 
     /// Similar to `Tree#put_value`.
-    pub fn put_value(mut self, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
+    pub fn put_value(
+        mut self,
+        value: Vec<u8>,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
-        self.tree
-            .own(|t| t.put_value(value, feature_type).unwrap_add_cost(&mut cost));
-        self.wrap_with_cost(cost)
+        cost_return_on_error_no_add!(
+            &cost,
+            self.tree.own_result(|t| t
+                .put_value(
+                    value,
+                    feature_type,
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+                .unwrap_add_cost(&mut cost))
+        );
+        Ok(self).wrap_with_cost(cost)
     }
 
     /// Similar to `Tree#put_value_with_fixed_cost`.
@@ -196,13 +232,39 @@ where
         value: Vec<u8>,
         value_fixed_cost: u32,
         feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
-        self.tree.own(|t| {
-            t.put_value_with_fixed_cost(value, value_fixed_cost, feature_type)
-                .unwrap_add_cost(&mut cost)
-        });
-        self.wrap_with_cost(cost)
+        cost_return_on_error_no_add!(
+            &cost,
+            self.tree.own_result(|t| t
+                .put_value_with_fixed_cost(
+                    value,
+                    value_fixed_cost,
+                    feature_type,
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+                .unwrap_add_cost(&mut cost))
+        );
+        Ok(self).wrap_with_cost(cost)
     }
 
     /// Similar to `Tree#put_value_and_reference_value_hash`.
@@ -211,13 +273,39 @@ where
         value: Vec<u8>,
         value_hash: CryptoHash,
         feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
-        self.tree.own(|t| {
-            t.put_value_and_reference_value_hash(value, value_hash, feature_type)
-                .unwrap_add_cost(&mut cost)
-        });
-        self.wrap_with_cost(cost)
+        cost_return_on_error_no_add!(
+            &cost,
+            self.tree.own_result(|t| t
+                .put_value_and_reference_value_hash(
+                    value,
+                    value_hash,
+                    feature_type,
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+                .unwrap_add_cost(&mut cost))
+        );
+        Ok(self).wrap_with_cost(cost)
     }
 
     /// Similar to `Tree#put_value_with_reference_value_hash_and_value_cost`.
@@ -227,18 +315,40 @@ where
         value_hash: CryptoHash,
         value_fixed_cost: u32,
         feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
-        self.tree.own(|t| {
-            t.put_value_with_reference_value_hash_and_value_cost(
-                value,
-                value_hash,
-                value_fixed_cost,
-                feature_type,
-            )
-            .unwrap_add_cost(&mut cost)
-        });
-        self.wrap_with_cost(cost)
+        cost_return_on_error_no_add!(
+            &cost,
+            self.tree.own_result(|t| t
+                .put_value_with_reference_value_hash_and_value_cost(
+                    value,
+                    value_hash,
+                    value_fixed_cost,
+                    feature_type,
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+                .unwrap_add_cost(&mut cost))
+        );
+        Ok(self).wrap_with_cost(cost)
     }
 }
 

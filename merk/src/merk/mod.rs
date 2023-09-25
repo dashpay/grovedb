@@ -76,7 +76,7 @@ use crate::{
 pub struct KeyUpdates {
     pub new_keys: BTreeSet<Vec<u8>>,
     pub updated_keys: BTreeSet<Vec<u8>>,
-    pub deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
+    pub deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
     pub updated_root_key_from: Option<Vec<u8>>,
 }
 
@@ -85,7 +85,7 @@ impl KeyUpdates {
     pub fn new(
         new_keys: BTreeSet<Vec<u8>>,
         updated_keys: BTreeSet<Vec<u8>>,
-        deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
+        deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
         updated_root_key_from: Option<Vec<u8>>,
     ) -> Self {
         Self {
@@ -102,7 +102,7 @@ pub type BatchValue = (
     Vec<u8>,
     Option<FeatureSumLength>,
     ChildrenSizesWithValue,
-    Option<KeyValueStorageCost>,
+    KeyValueStorageCost,
 );
 
 /// A bool type
@@ -251,7 +251,7 @@ pub type UseTreeMutResult = CostResult<
         Vec<u8>,
         Option<FeatureSumLength>,
         ChildrenSizesWithValue,
-        Option<KeyValueStorageCost>,
+        KeyValueStorageCost,
     )>,
     Error,
 >;
@@ -304,22 +304,6 @@ where
         aux: &AuxMerkBatch<K>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        update_tree_value_based_on_costs: &mut impl FnMut(
-            &StorageCost,
-            &Vec<u8>,
-            &mut Vec<u8>,
-        ) -> Result<
-            (bool, Option<ValueDefinedCostType>),
-            Error,
-        >,
-        section_removal_bytes: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            Error,
-        >,
     ) -> CostResult<(), Error>
     where
         K: AsRef<[u8]>,
@@ -398,7 +382,7 @@ where
             to_batch.push((key, None, None, maybe_cost));
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
-        for (key, maybe_sum_tree_cost, maybe_value, maybe_cost) in to_batch {
+        for (key, maybe_sum_tree_cost, maybe_value, storage_cost) in to_batch {
             if let Some((value, left_size, right_size)) = maybe_value {
                 cost_return_on_error_no_add!(
                     &cost,
@@ -407,12 +391,12 @@ where
                             &key,
                             &value,
                             Some((maybe_sum_tree_cost, left_size, right_size)),
-                            maybe_cost
+                            Some(storage_cost)
                         )
                         .map_err(CostsError)
                 );
             } else {
-                batch.delete(&key, maybe_cost);
+                batch.delete(&key, Some(storage_cost));
             }
         }
 

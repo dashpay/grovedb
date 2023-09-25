@@ -197,14 +197,42 @@ impl KV {
         }
     }
 
+    /// Replaces the `KV`'s value with the given value, does not update the hash
+    /// or value hash.
+    #[inline]
+    pub fn put_value_no_update_of_hashes(mut self, value: Vec<u8>) -> Self {
+        self.value = value;
+        self
+    }
+
     /// Replaces the `KV`'s value with the given value, updates the hash,
     /// value hash and returns the modified `KV`.
     #[inline]
     pub fn put_value_then_update(mut self, value: Vec<u8>) -> CostContext<Self> {
-        let mut cost = OperationCost::default();
-        // TODO: length check?
         self.value = value;
+        self.update_hashes()
+    }
+
+    /// Updates the hash, value hash and returns the modified `KV`.
+    #[inline]
+    pub fn update_hashes(mut self) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
         self.value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
+        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
+        self.wrap_with_cost(cost)
+    }
+
+    /// Updates the hashes and returns the modified `KV`.
+    #[inline]
+    pub fn update_hashes_using_reference_value_hash(
+        mut self,
+        reference_value_hash: CryptoHash,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        let actual_value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
+        let combined_value_hash =
+            combine_hash(&actual_value_hash, &reference_value_hash).unwrap_add_cost(&mut cost);
+        self.value_hash = combined_value_hash;
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
@@ -220,6 +248,19 @@ impl KV {
     ) -> CostContext<Self> {
         self.value_defined_cost = Some(SpecializedValueDefinedCost(value_cost));
         self.put_value_then_update(value)
+    }
+
+    /// Replaces the `KV`'s value with the given value, does not update the
+    /// hashes, value hash and returns the modified `KV`.
+    /// This is used when we want a fixed cost, for example in sum trees
+    #[inline]
+    pub fn put_value_with_fixed_cost_no_update_of_hashes(
+        mut self,
+        value: Vec<u8>,
+        value_cost: u32,
+    ) -> Self {
+        self.value_defined_cost = Some(SpecializedValueDefinedCost(value_cost));
+        self.put_value_no_update_of_hashes(value)
     }
 
     /// Replaces the `KV`'s value with the given value and value hash,

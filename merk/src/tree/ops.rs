@@ -430,28 +430,59 @@ where
             // a key matches this node's key, apply op to this node
             match op {
                 // TODO: take vec from batch so we don't need to clone
-                Put(value, feature_type) => self
-                    .put_value(value.to_vec(), feature_type.to_owned())
-                    .unwrap_add_cost(&mut cost),
-                PutWithSpecializedCost(value, value_cost, feature_type) => self
-                    .put_value_with_fixed_cost(value.to_vec(), *value_cost, feature_type.to_owned())
-                    .unwrap_add_cost(&mut cost),
-                PutCombinedReference(value, referenced_value, feature_type) => self
-                    .put_value_and_reference_value_hash(
-                        value.to_vec(),
-                        referenced_value.to_owned(),
-                        feature_type.to_owned(),
+                Put(value, feature_type) => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.put_value(
+                            value.to_vec(),
+                            feature_type.to_owned(),
+                            old_specialized_cost,
+                            update_tree_value_based_on_costs,
+                            section_removal_bytes
+                        )
                     )
-                    .unwrap_add_cost(&mut cost),
+                }
+
+                PutWithSpecializedCost(value, value_cost, feature_type) => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.put_value_with_fixed_cost(
+                            value.to_vec(),
+                            *value_cost,
+                            feature_type.to_owned(),
+                            old_specialized_cost,
+                            update_tree_value_based_on_costs,
+                            section_removal_bytes
+                        )
+                    )
+                }
+                PutCombinedReference(value, referenced_value, feature_type) => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.put_value_and_reference_value_hash(
+                            value.to_vec(),
+                            referenced_value.to_owned(),
+                            feature_type.to_owned(),
+                            old_specialized_cost,
+                            update_tree_value_based_on_costs,
+                            section_removal_bytes,
+                        )
+                    )
+                }
                 PutLayeredReference(value, value_cost, referenced_value, feature_type)
                 | ReplaceLayeredReference(value, value_cost, referenced_value, feature_type) => {
-                    self.put_value_with_reference_value_hash_and_value_cost(
-                        value.to_vec(),
-                        referenced_value.to_owned(),
-                        *value_cost,
-                        feature_type.to_owned(),
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.put_value_with_reference_value_hash_and_value_cost(
+                            value.to_vec(),
+                            referenced_value.to_owned(),
+                            *value_cost,
+                            feature_type.to_owned(),
+                            old_specialized_cost,
+                            update_tree_value_based_on_costs,
+                            section_removal_bytes,
+                        )
                     )
-                    .unwrap_add_cost(&mut cost)
                 }
                 Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
@@ -481,7 +512,7 @@ where
                         &cost,
                         section_removal_bytes(value, total_key_len, old_cost)
                     );
-                    let deletion_cost = Some(KeyValueStorageCost {
+                    let deletion_cost = KeyValueStorageCost {
                         key_storage_cost: StorageCost {
                             added_bytes: 0,
                             replaced_bytes: 0,
@@ -494,7 +525,7 @@ where
                         },
                         new_node: false,
                         needs_value_verification: false,
-                    });
+                    };
 
                     let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
 
