@@ -224,6 +224,7 @@ pub use crate::error::Error;
 use crate::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
+use crate::Error::MerkError;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -783,8 +784,11 @@ impl GroveDb {
     }
 
     /// Method to visualize hash mismatch after verification
-    pub fn visualize_verify_grovedb(&self) -> HashMap<String, (String, String, String)> {
-        self.verify_grovedb(None)
+    pub fn visualize_verify_grovedb(
+        &self,
+    ) -> Result<HashMap<String, (String, String, String)>, Error> {
+        Ok(self
+            .verify_grovedb(None)?
             .iter()
             .map(|(path, (root_hash, expected, actual))| {
                 (
@@ -799,7 +803,7 @@ impl GroveDb {
                     ),
                 )
             })
-            .collect()
+            .collect())
     }
 
     /// Method to check that the value_hash of Element::Tree nodes are computed
@@ -844,10 +848,13 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value)?;
             if element.is_tree() {
-                let (kv_value, element_value_hash) =
-                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
-                        Error::CorruptedData("expected merk to contain value at key".to_string()),
-                    )?;
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key, true)
+                    .unwrap()
+                    .map_err(MerkError)?
+                    .ok_or(Error::CorruptedData(
+                        "expected merk to contain value at key".to_string(),
+                    ))?;
                 let new_path = path.derive_owned_with_child(key);
                 let new_path_ref = SubtreePath::from(&new_path);
 
@@ -865,12 +872,15 @@ impl GroveDb {
                         (root_hash, combined_value_hash, element_value_hash),
                     );
                 }
-                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch));
+                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch)?);
             } else if element.is_item() {
-                let (kv_value, element_value_hash) =
-                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
-                        Error::CorruptedData("expected merk to contain value at key".to_string()),
-                    )?;
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key, true)
+                    .unwrap()
+                    .map_err(MerkError)?
+                    .ok_or(Error::CorruptedData(
+                        "expected merk to contain value at key".to_string(),
+                    ))?;
                 let actual_value_hash = value_hash(&kv_value).unwrap();
                 if actual_value_hash != element_value_hash {
                     issues.insert(
@@ -880,7 +890,7 @@ impl GroveDb {
                 }
             }
         }
-        issues
+        Ok(issues)
     }
 
     fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -900,10 +910,13 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value)?;
             if element.is_tree() {
-                let (kv_value, element_value_hash) =
-                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
-                        Error::CorruptedData("expected merk to contain value at key".to_string()),
-                    )?;
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key, true)
+                    .unwrap()
+                    .map_err(MerkError)?
+                    .ok_or(Error::CorruptedData(
+                        "expected merk to contain value at key".to_string(),
+                    ))?;
                 let new_path = path.derive_owned_with_child(key);
                 let new_path_ref = SubtreePath::from(&new_path);
 
@@ -926,12 +939,15 @@ impl GroveDb {
                     &new_path_ref,
                     batch,
                     transaction,
-                ));
+                )?);
             } else if element.is_item() {
-                let (kv_value, element_value_hash) =
-                    merk.get_value_and_value_hash(&key, true).unwrap()?.ok_or(
-                        Error::CorruptedData("expected merk to contain value at key".to_string()),
-                    )?;
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key, true)
+                    .unwrap()
+                    .map_err(MerkError)?
+                    .ok_or(Error::CorruptedData(
+                        "expected merk to contain value at key".to_string(),
+                    ))?;
                 let actual_value_hash = value_hash(&kv_value).unwrap();
                 if actual_value_hash != element_value_hash {
                     issues.insert(
@@ -941,6 +957,6 @@ impl GroveDb {
                 }
             }
         }
-        issues
+        Ok(issues)
     }
 }
