@@ -257,9 +257,9 @@ impl KV {
     pub fn put_value_with_fixed_cost_no_update_of_hashes(
         mut self,
         value: Vec<u8>,
-        value_cost: u32,
+        value_cost: ValueDefinedCostType,
     ) -> Self {
-        self.value_defined_cost = Some(SpecializedValueDefinedCost(value_cost));
+        self.value_defined_cost = Some(value_cost);
         self.put_value_no_update_of_hashes(value)
     }
 

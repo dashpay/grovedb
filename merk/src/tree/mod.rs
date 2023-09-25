@@ -92,6 +92,7 @@ pub use walk::{Fetch, RefWalker, Walker};
 
 #[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;
+use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
 
@@ -142,7 +143,6 @@ impl Terminated for Box<TreeNodeInner> {}
 #[derive(Clone)]
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
-    pub(crate) old_size_with_parent_to_child_hook: u32,
     pub(crate) old_value: Option<Vec<u8>>,
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
@@ -164,7 +164,6 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
             known_storage_cost: None,
         })
@@ -172,11 +171,9 @@ impl TreeNode {
 
     /// Creates a new `Tree` given an inner tree
     pub fn new_with_tree_inner(inner_tree: TreeNodeInner) -> Self {
-        let decode_size = inner_tree.kv.value_byte_cost_size();
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
-            old_size_with_parent_to_child_hook: decode_size,
             old_value: Some(old_value),
             known_storage_cost: None,
         }
@@ -223,7 +220,7 @@ impl TreeNode {
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost, // the key storage cost is added later
             value_storage_cost,
-            new_node: self.old_size_with_parent_to_child_hook == 0,
+            new_node: self.old_value.is_none(),
             needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
         };
 
@@ -239,10 +236,10 @@ impl TreeNode {
     ) -> Result<(u32, KeyValueStorageCost), Error> {
         let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference();
 
-        let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
-            old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
+        let old_cost = if let Some(old_value) = self.old_value.as_ref() {
+            old_tree_cost(self.key_as_ref(), old_value)
         } else {
-            Ok(self.old_size_with_parent_to_child_hook)
+            Ok(0) // there was no old value, hence old cost would be 0
         }?;
 
         self.kv_with_parent_hook_size_and_storage_cost_from_old_cost(
@@ -267,7 +264,6 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
             known_storage_cost: None,
         })
@@ -288,7 +284,6 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
             known_storage_cost: None,
         })
@@ -311,7 +306,6 @@ impl TreeNode {
                     left: None,
                     right: None,
                 }),
-                old_size_with_parent_to_child_hook: 0,
                 old_value: None,
                 known_storage_cost: None,
             },
@@ -334,7 +328,6 @@ impl TreeNode {
                 left,
                 right,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
             known_storage_cost: None,
         })
@@ -734,10 +727,10 @@ impl TreeNode {
         >,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
-        self.inner.kv = self
-            .inner
-            .kv
-            .put_value_with_fixed_cost_no_update_of_hashes(value, value_fixed_cost);
+        self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
+            value,
+            SpecializedValueDefinedCost(value_fixed_cost),
+        );
         self.inner.kv.feature_type = feature_type;
 
         if self.old_value.is_some() {
@@ -840,10 +833,10 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
-        self.inner.kv = self
-            .inner
-            .kv
-            .put_value_with_fixed_cost_no_update_of_hashes(value, value_cost);
+        self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
+            value,
+            LayeredValueDefinedCost(value_cost),
+        );
         self.inner.kv.feature_type = feature_type;
 
         if self.old_value.is_some() {
