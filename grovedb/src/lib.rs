@@ -804,13 +804,21 @@ impl GroveDb {
 
     /// Method to check that the value_hash of Element::Tree nodes are computed
     /// correctly.
-    pub fn verify_grovedb(&self, transaction: TransactionArg) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+    pub fn verify_grovedb(
+        &self,
+        transaction: TransactionArg,
+    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         if let Some(transaction) = transaction {
             let root_merk = self
                 .open_transactional_merk_at_path(SubtreePath::empty(), transaction, None)
                 .unwrap()
                 .expect("should exist");
-            self.verify_merk_and_submerks_in_transaction(root_merk, &SubtreePath::empty(), None, transaction)
+            self.verify_merk_and_submerks_in_transaction(
+                root_merk,
+                &SubtreePath::empty(),
+                None,
+                transaction,
+            )
         } else {
             let root_merk = self
                 .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
@@ -872,7 +880,7 @@ impl GroveDb {
                 if actual_value_hash != element_value_hash {
                     issues.insert(
                         path.derive_owned_with_child(key).to_vec(),
-                        (actual_value_hash, element_value_hash, actual_value_hash)
+                        (actual_value_hash, element_value_hash, actual_value_hash),
                     );
                 }
             }
@@ -885,7 +893,7 @@ impl GroveDb {
         merk: Merk<S>,
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
-        transaction: &Transaction
+        transaction: &Transaction,
     ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
@@ -920,7 +928,12 @@ impl GroveDb {
                         (root_hash, combined_value_hash, element_value_hash),
                     );
                 }
-                issues.extend(self.verify_merk_and_submerks_in_transaction(inner_merk, &new_path_ref, batch, transaction));
+                issues.extend(self.verify_merk_and_submerks_in_transaction(
+                    inner_merk,
+                    &new_path_ref,
+                    batch,
+                    transaction,
+                ));
             } else if element.is_item() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(&key, true)
@@ -931,7 +944,7 @@ impl GroveDb {
                 if actual_value_hash != element_value_hash {
                     issues.insert(
                         path.derive_owned_with_child(key).to_vec(),
-                        (actual_value_hash, element_value_hash, actual_value_hash)
+                        (actual_value_hash, element_value_hash, actual_value_hash),
                     );
                 }
             }

@@ -391,9 +391,17 @@ impl fmt::Debug for GroveDbOp {
                 Element::SumTree(..) => "Patch Sum Tree".to_string(),
                 Element::SumItem(..) => "Patch Sum Item".to_string(),
             },
-            Op::RefreshReference { reference_path_type, max_reference_hop, trust_refresh_reference, .. } => {
-               format!("Refresh Reference: path {:?}, max_hop {:?}, trust_reference {} ", reference_path_type, max_reference_hop, trust_refresh_reference)
-            },
+            Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                trust_refresh_reference,
+                ..
+            } => {
+                format!(
+                    "Refresh Reference: path {:?}, max_hop {:?}, trust_reference {} ",
+                    reference_path_type, max_reference_hop, trust_refresh_reference
+                )
+            }
             Op::Delete => "Delete".to_string(),
             Op::DeleteTree => "Delete Tree".to_string(),
             Op::DeleteSumTree => "Delete Sum Tree".to_string(),
@@ -768,7 +776,7 @@ where
         if recursions_allowed == 1 {
             let referenced_element_value_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(key.as_ref(), false)
+                merk.get_value_hash(key.as_ref(), true)
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
@@ -924,7 +932,6 @@ where
                     trust_refresh_reference,
                     ..
                 } => {
-                    dbg!("In RefreshReference");
                     // We are pointing towards a reference that will be refreshed
                     let reference_info = if *trust_refresh_reference {
                         Some(reference_path_type)
@@ -1153,7 +1160,8 @@ where
                     let Element::Reference(path_reference, max_reference_hop, _) = &element else {
                         return Err(Error::InvalidInput(
                             "trying to refresh a an element that is not a reference",
-                        )).wrap_with_cost(cost)
+                        ))
+                        .wrap_with_cost(cost);
                     };
 
                     let merk_feature_type = if is_sum_tree {
@@ -1171,7 +1179,6 @@ where
                         )
                         .wrap_with_cost(OperationCost::default())
                     );
-                    dbg!(&path_reference);
                     if path_reference.is_empty() {
                         return Err(Error::CorruptedReferencePathNotFound(
                             "attempting to refresh an empty reference".to_string(),
@@ -1402,8 +1409,6 @@ impl GroveDb {
             last_level,
         } = batch_structure;
         let mut current_level = last_level;
-
-        dbg!(&ops_by_level_paths);
 
         let batch_apply_options = batch_apply_options.unwrap_or_default();
         let stop_level = batch_apply_options.batch_pause_height.unwrap_or_default() as u32;
