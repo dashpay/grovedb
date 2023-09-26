@@ -320,7 +320,7 @@ where
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 cost_return_on_error!(
                     &mut inner_cost,
-                    tree.commit(&mut committer, old_specialized_cost,)
+                    tree.commit(&mut committer, old_specialized_cost)
                 );
 
                 let tree_key = tree.key();
