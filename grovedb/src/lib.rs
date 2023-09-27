@@ -193,6 +193,7 @@ pub use grovedb_merk::estimated_costs::{
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
+#[cfg(feature = "full")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use grovedb_merk::{

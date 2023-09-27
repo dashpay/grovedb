@@ -29,6 +29,7 @@
 //! Helpers
 //! Implements helper functions in Element
 
+#[cfg(feature = "full")]
 use grovedb_merk::tree::kv::{
     ValueDefinedCostType,
     ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},

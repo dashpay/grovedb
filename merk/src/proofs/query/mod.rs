@@ -67,6 +67,7 @@ use {super::Op, std::collections::LinkedList};
 use super::Node;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::error::Error;
+#[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::tree::{Fetch, Link, RefWalker};

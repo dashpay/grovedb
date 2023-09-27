@@ -92,6 +92,7 @@ pub use walk::{Fetch, RefWalker, Walker};
 
 #[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;
+#[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
