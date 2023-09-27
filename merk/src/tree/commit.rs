@@ -29,13 +29,9 @@
 //! Merk tree commit
 
 #[cfg(feature = "full")]
-use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-
-#[cfg(feature = "full")]
 use super::TreeNode;
 #[cfg(feature = "full")]
 use crate::error::Error;
-use crate::tree::kv::ValueDefinedCostType;
 
 #[cfg(feature = "full")]
 /// To be used when committing a tree (writing it to a store after applying the

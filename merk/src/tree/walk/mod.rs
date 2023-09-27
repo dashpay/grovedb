@@ -36,7 +36,7 @@ mod ref_walker;
 #[cfg(feature = "full")]
 pub use fetch::Fetch;
 #[cfg(feature = "full")]
-use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_costs::{
     cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
@@ -397,7 +397,7 @@ where
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
-    use grovedb_costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostsExt};
+    use grovedb_costs::CostsExt;
 
     use super::{super::NoopCommit, *};
     use crate::tree::{TreeFeatureType::BasicMerkNode, TreeNode};

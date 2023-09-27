@@ -40,8 +40,8 @@ use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB, Options,
-    Transaction, WriteBatchWithTransaction, DB, DEFAULT_COLUMN_FAMILY_NAME,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
+    Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{
@@ -53,7 +53,6 @@ use crate::{
     error::Error::{CostError, RocksDBError},
     storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
-    Error::StorageError,
     Storage, StorageBatch,
 };
 

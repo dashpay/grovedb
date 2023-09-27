@@ -2929,7 +2929,7 @@ fn test_tree_value_exists_method_tx() {
 #[test]
 fn test_storage_wipe() {
     let db = make_test_grovedb();
-    let path = db._tmp_dir.path();
+    let _path = db._tmp_dir.path();
 
     // Test keys in non-root tree
     db.insert(

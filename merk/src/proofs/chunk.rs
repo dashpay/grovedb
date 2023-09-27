@@ -397,7 +397,6 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
 mod tests {
     use std::usize;
 
-    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use grovedb_storage::StorageContext;
 
     use super::{super::tree::Tree, *};

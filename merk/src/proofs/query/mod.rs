@@ -782,7 +782,6 @@ where
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {
-    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{
         super::{encoding::encode_into, *},

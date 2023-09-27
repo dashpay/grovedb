@@ -52,10 +52,8 @@ use std::{
 use committer::MerkCommitter;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
-    storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes, StorageCost,
-    },
-    ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithValue, CostContext,
+    CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use source::MerkSource;
@@ -63,10 +61,9 @@ use source::MerkSource;
 use crate::{
     error::Error,
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
-    proofs::{query::query_item::QueryItem, Op as ProofOp, Query},
+    proofs::{query::query_item::QueryItem, Query},
     tree::{
-        kv::ValueDefinedCostType, AuxMerkBatch, Commit, CryptoHash, Fetch, Op, RefWalker, TreeNode,
-        NULL_HASH,
+        kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
     },
     Error::{CostsError, EdError, StorageError},
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},

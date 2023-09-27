@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
-use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
+use integer_encoding::{VarInt, VarIntReader};
 
-use crate::{Error, Error::InternalError};
+use crate::Error;
 
 pub(crate) const PROOF_VERSION: u32 = 1;
 
@@ -44,11 +44,11 @@ mod tests {
 
     #[test]
     fn read_correct_version() {
-        let mut data = vec![1, 2, 3];
+        let data = vec![1, 2, 3];
         let version = 500_u32;
 
         // prepend the version information to the data vector
-        let mut new_data = prepend_version_to_bytes(data, version).unwrap();
+        let new_data = prepend_version_to_bytes(data, version).unwrap();
         assert_eq!(new_data, [244, 3, 1, 2, 3]);
 
         // show that read_version doesn't consume

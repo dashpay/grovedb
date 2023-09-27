@@ -992,7 +992,6 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
-    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{commit::NoopCommit, hash::NULL_HASH, TreeNode};
     use crate::tree::{

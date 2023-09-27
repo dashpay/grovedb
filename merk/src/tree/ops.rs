@@ -153,7 +153,7 @@ impl Fetch for PanicSource {
     fn fetch(
         &self,
         _link: &Link,
-        value_defined_cost_fn: Option<&impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        _value_defined_cost_fn: Option<&impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<TreeNode, Error> {
         unreachable!("'fetch' should not have been called")
     }
