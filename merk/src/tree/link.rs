@@ -37,7 +37,7 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 #[cfg(feature = "full")]
-use super::{hash::CryptoHash, Tree};
+use super::{hash::CryptoHash, TreeNode};
 #[cfg(feature = "full")]
 use crate::HASH_LENGTH_U32;
 
@@ -72,7 +72,7 @@ pub enum Link {
         /// Child heights
         child_heights: (u8, u8),
         /// Tree
-        tree: Tree
+        tree: TreeNode
     },
 
     /// Represents a tree node which has been modified since the `Tree`'s last
@@ -84,7 +84,7 @@ pub enum Link {
         /// Child heights
         child_heights: (u8, u8),
         /// Tree
-        tree: Tree,
+        tree: TreeNode,
         /// Sum
         sum: Option<i64>,
     },
@@ -97,7 +97,7 @@ pub enum Link {
         /// Child heights
         child_heights: (u8, u8),
         /// Tree
-        tree: Tree,
+        tree: TreeNode,
         /// Sum
         sum: Option<i64>,
     },
@@ -107,7 +107,7 @@ pub enum Link {
 impl Link {
     /// Creates a `Link::Modified` from the given `Tree`.
     #[inline]
-    pub const fn from_modified_tree(tree: Tree) -> Self {
+    pub const fn from_modified_tree(tree: TreeNode) -> Self {
         let pending_writes = 1 + tree.child_pending_writes(true) + tree.child_pending_writes(false);
 
         Self::Modified {
@@ -119,7 +119,7 @@ impl Link {
 
     /// Creates a `Link::Modified` from the given tree, if any. If `None`,
     /// returns `None`.
-    pub fn maybe_from_modified_tree(maybe_tree: Option<Tree>) -> Option<Self> {
+    pub fn maybe_from_modified_tree(maybe_tree: Option<TreeNode>) -> Option<Self> {
         maybe_tree.map(Self::from_modified_tree)
     }
 
@@ -161,7 +161,7 @@ impl Link {
     /// Returns the `Tree` instance of the tree referenced by the link. If the
     /// link is of variant `Link::Reference`, the returned value will be `None`.
     #[inline]
-    pub const fn tree(&self) -> Option<&Tree> {
+    pub const fn tree(&self) -> Option<&TreeNode> {
         match self {
             // TODO: panic for Reference, don't return Option?
             Link::Reference { .. } => None,
@@ -483,14 +483,14 @@ fn read_u8<R: Read>(mut input: R) -> Result<u8> {
 #[cfg(test)]
 mod test {
     use super::{
-        super::{hash::NULL_HASH, Tree},
+        super::{hash::NULL_HASH, TreeNode},
         *,
     };
-    use crate::TreeFeatureType::BasicMerk;
+    use crate::TreeFeatureType::BasicMerkNode;
 
     #[test]
     fn from_modified_tree() {
-        let tree = Tree::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         let link = Link::from_modified_tree(tree);
         assert!(link.is_modified());
         assert_eq!(link.height(), 1);
@@ -507,7 +507,7 @@ mod test {
         let link = Link::maybe_from_modified_tree(None);
         assert!(link.is_none());
 
-        let tree = Tree::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         let link = Link::maybe_from_modified_tree(Some(tree));
         assert!(link.expect("expected link").is_modified());
     }
@@ -519,7 +519,7 @@ mod test {
         let child_heights = (0, 0);
         let pending_writes = 1;
         let key = vec![0];
-        let tree = || Tree::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = || TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
 
         let reference = Link::Reference {
             hash,
@@ -585,7 +585,7 @@ mod test {
         Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1], None, BasicMerk).unwrap(),
+            tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
         }
         .hash();
     }
@@ -596,7 +596,7 @@ mod test {
         Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1], None, BasicMerk).unwrap(),
+            tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
         }
         .into_reference();
     }
@@ -608,7 +608,7 @@ mod test {
             hash: [1; 32],
             sum: None,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1], None, BasicMerk).unwrap(),
+            tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
         }
         .into_reference();
     }

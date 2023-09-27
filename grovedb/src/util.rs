@@ -198,8 +198,11 @@ macro_rules! merk_optional_tx {
                 {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::grovedb_merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
-                        .map(|merk_res|
+                    ::grovedb_merk::Merk::open_base(
+                        storage.unwrap_add_cost(&mut $cost),
+                        false,
+                        Some(&Element::value_defined_cost_for_serialized_value)
+                    ).map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(
                                     "cannot open a subtree".to_owned()
@@ -226,7 +229,8 @@ macro_rules! merk_optional_tx {
                         ::grovedb_merk::Merk::open_layered_with_root_key(
                             storage,
                             root_key,
-                            is_sum_tree
+                            is_sum_tree,
+                            Some(&Element::value_defined_cost_for_serialized_value),
                         ).map(|merk_res|
                                  merk_res
                                  .map_err(|_| crate::Error::CorruptedData(
@@ -271,7 +275,8 @@ macro_rules! merk_optional_tx_path_not_empty {
                         ::grovedb_merk::Merk::open_layered_with_root_key(
                             storage,
                             root_key,
-                            is_sum_tree
+                            is_sum_tree,
+                            Some(&Element::value_defined_cost_for_serialized_value),
                         ).map(|merk_res|
                                  merk_res
                                  .map_err(|_| crate::Error::CorruptedData(
@@ -308,8 +313,11 @@ macro_rules! root_merk_optional_tx {
                 {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::grovedb_merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), false)
-                        .map(|merk_res|
+                    ::grovedb_merk::Merk::open_base(
+                        storage.unwrap_add_cost(&mut $cost),
+                        false,
+                        Some(&Element::value_defined_cost_for_serialized_value)
+                    ).map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(
                                     "cannot open a subtree".to_owned()

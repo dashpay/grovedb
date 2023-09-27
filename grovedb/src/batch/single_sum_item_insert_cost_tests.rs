@@ -209,7 +209,7 @@ mod tests {
                 seek_count: 5,
                 storage_cost: StorageCost {
                     added_bytes: 124,
-                    replaced_bytes: 106, // todo: this should actually be less
+                    replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 71, // todo: verify and explain
@@ -287,7 +287,7 @@ mod tests {
                 seek_count: 5,
                 storage_cost: StorageCost {
                     added_bytes: 124,
-                    replaced_bytes: 107, // todo: this should actually be less
+                    replaced_bytes: 84,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 72, // todo: verify and explain

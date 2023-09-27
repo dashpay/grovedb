@@ -335,9 +335,6 @@ mod tests {
         // Replaced bytes
 
         // 37 + 36 = 74 (key is not replaced) //needs update
-        // We instead are getting 106, because we are paying for (+ hash - key byte
-        // size) this means 31 extra bytes.
-        // In reality though we really are replacing 106 bytes. TBD what to do.
 
         // Hash node calls 8
         // 1 to get tree hash
@@ -359,7 +356,7 @@ mod tests {
                 seek_count: 5,
                 storage_cost: StorageCost {
                     added_bytes: 115,
-                    replaced_bytes: 106, // todo: this should actually be less
+                    replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 71, // todo: verify and explain

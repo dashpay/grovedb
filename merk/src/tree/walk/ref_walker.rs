@@ -33,9 +33,10 @@ use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "full")]
 use super::{
-    super::{Link, Tree},
+    super::{Link, TreeNode},
     Fetch,
 };
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::Error;
 
@@ -50,7 +51,7 @@ pub struct RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
 {
-    tree: &'a mut Tree,
+    tree: &'a mut TreeNode,
     source: S,
 }
 
@@ -60,20 +61,27 @@ where
     S: Fetch + Sized + Clone,
 {
     /// Creates a `RefWalker` with the given tree and source.
-    pub fn new(tree: &'a mut Tree, source: S) -> Self {
+    pub fn new(tree: &'a mut TreeNode, source: S) -> Self {
         // TODO: check if tree has modified links, panic if so
         RefWalker { tree, source }
     }
 
     /// Gets an immutable reference to the `Tree` wrapped by this `RefWalker`.
-    pub fn tree(&self) -> &Tree {
+    pub fn tree(&self) -> &TreeNode {
         self.tree
     }
 
     /// Traverses to the child on the given side (if any), fetching from the
     /// source if pruned. When fetching, the link is upgraded from
     /// `Link::Reference` to `Link::Loaded`.
-    pub fn walk(&mut self, left: bool) -> CostResult<Option<RefWalker<S>>, Error> {
+    pub fn walk<V>(
+        &mut self,
+        left: bool,
+        value_defined_cost_fn: Option<&V>,
+    ) -> CostResult<Option<RefWalker<S>>, Error>
+    where
+        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+    {
         let link = match self.tree.link(left) {
             None => return Ok(None).wrap_with_cost(Default::default()),
             Some(link) => link,
@@ -84,7 +92,7 @@ where
             Link::Reference { .. } => {
                 let load_res = self
                     .tree
-                    .load(left, &self.source)
+                    .load(left, &self.source, value_defined_cost_fn)
                     .unwrap_add_cost(&mut cost);
                 if let Err(e) = load_res {
                     return Err(e).wrap_with_cost(cost);

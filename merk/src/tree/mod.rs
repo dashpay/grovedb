@@ -41,6 +41,8 @@ mod hash;
 #[cfg(feature = "full")]
 mod iter;
 #[cfg(feature = "full")]
+mod just_in_time_value_update;
+#[cfg(feature = "full")]
 pub mod kv;
 #[cfg(feature = "full")]
 mod link;
@@ -91,6 +93,8 @@ pub use walk::{Fetch, RefWalker, Walker};
 #[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
+use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
+#[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
@@ -99,14 +103,14 @@ use crate::{error::Error, Error::Overflow};
 #[cfg(feature = "full")]
 /// The fields of the `Tree` type, stored on the heap.
 #[derive(Clone, Encode, Decode, Debug)]
-pub struct TreeInner {
+pub struct TreeNodeInner {
     pub(crate) left: Option<Link>,
     pub(crate) right: Option<Link>,
     pub(crate) kv: KV,
 }
 
 #[cfg(feature = "full")]
-impl TreeInner {
+impl TreeNodeInner {
     /// Get the value as owned of the key value struct
     pub fn value_as_owned(self) -> Vec<u8> {
         self.kv.value
@@ -129,7 +133,7 @@ impl TreeInner {
 }
 
 #[cfg(feature = "full")]
-impl Terminated for Box<TreeInner> {}
+impl Terminated for Box<TreeNodeInner> {}
 
 #[cfg(feature = "full")]
 /// A binary AVL tree data structure, with Merkle hashes.
@@ -138,14 +142,14 @@ impl Terminated for Box<TreeInner> {}
 /// link to each other, and so we can detach nodes from their parents, then
 /// reattach without allocating or freeing heap memory.
 #[derive(Clone)]
-pub struct Tree {
-    pub(crate) inner: Box<TreeInner>,
-    pub(crate) old_size_with_parent_to_child_hook: u32,
+pub struct TreeNode {
+    pub(crate) inner: Box<TreeNodeInner>,
     pub(crate) old_value: Option<Vec<u8>>,
+    pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 
 #[cfg(feature = "full")]
-impl Tree {
+impl TreeNode {
     /// Creates a new `Tree` with the given key and value, and no children.
     ///
     /// Hashes the key/value pair and initializes the `kv_hash` field.
@@ -156,24 +160,23 @@ impl Tree {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new(key, value, value_defined_cost, feature_type).map(|kv| Self {
-            inner: Box::new(TreeInner {
+            inner: Box::new(TreeNodeInner {
                 kv,
                 left: None,
                 right: None,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
     /// Creates a new `Tree` given an inner tree
-    pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
-        let decode_size = inner_tree.kv.value_byte_cost_size();
+    pub fn new_with_tree_inner(inner_tree: TreeNodeInner) -> Self {
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
-            old_size_with_parent_to_child_hook: decode_size,
             old_value: Some(old_value),
+            known_storage_cost: None,
         }
     }
 
@@ -218,7 +221,7 @@ impl Tree {
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost, // the key storage cost is added later
             value_storage_cost,
-            new_node: self.old_size_with_parent_to_child_hook == 0,
+            new_node: self.old_value.is_none(),
             needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
         };
 
@@ -234,10 +237,10 @@ impl Tree {
     ) -> Result<(u32, KeyValueStorageCost), Error> {
         let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference();
 
-        let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
-            old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
+        let old_cost = if let Some(old_value) = self.old_value.as_ref() {
+            old_tree_cost(self.key_as_ref(), old_value)
         } else {
-            Ok(self.old_size_with_parent_to_child_hook)
+            Ok(0) // there was no old value, hence old cost would be 0
         }?;
 
         self.kv_with_parent_hook_size_and_storage_cost_from_old_cost(
@@ -257,13 +260,13 @@ impl Tree {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
-            inner: Box::new(TreeInner {
+            inner: Box::new(TreeNodeInner {
                 kv,
                 left: None,
                 right: None,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
@@ -277,13 +280,13 @@ impl Tree {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_combined_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
-            inner: Box::new(TreeInner {
+            inner: Box::new(TreeNodeInner {
                 kv,
                 left: None,
                 right: None,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
@@ -299,13 +302,13 @@ impl Tree {
     ) -> CostContext<Self> {
         KV::new_with_layered_value_hash(key, value, value_cost, value_hash, feature_type).map(
             |kv| Self {
-                inner: Box::new(TreeInner {
+                inner: Box::new(TreeNodeInner {
                     kv,
                     left: None,
                     right: None,
                 }),
-                old_size_with_parent_to_child_hook: 0,
                 old_value: None,
+                known_storage_cost: None,
             },
         )
     }
@@ -321,13 +324,13 @@ impl Tree {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         value_hash(value.as_slice()).map(|vh| Self {
-            inner: Box::new(TreeInner {
+            inner: Box::new(TreeNodeInner {
                 kv: KV::from_fields(key, value, kv_hash, vh, feature_type),
                 left,
                 right,
             }),
-            old_size_with_parent_to_child_hook: 0,
             old_value: None,
+            known_storage_cost: None,
         })
     }
 
@@ -485,8 +488,8 @@ impl Tree {
     #[inline]
     pub fn sum(&self) -> Result<Option<i64>, Error> {
         match self.inner.kv.feature_type {
-            TreeFeatureType::BasicMerk => Ok(None),
-            TreeFeatureType::SummedMerk(value) => value
+            TreeFeatureType::BasicMerkNode => Ok(None),
+            TreeFeatureType::SummedMerkNode(value) => value
                 .checked_add(self.child_sum(true))
                 .and_then(|a| a.checked_add(self.child_sum(false)))
                 .ok_or(Overflow("sum is overflowing"))
@@ -653,89 +656,10 @@ impl Tree {
     /// Replaces the root node's value with the given value and returns the
     /// modified `Tree`.
     #[inline]
-    pub fn put_value(mut self, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
-        let mut cost = OperationCost::default();
-        self.inner.kv = self
-            .inner
-            .kv
-            .put_value_then_update(value)
-            .unwrap_add_cost(&mut cost);
-        self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
-    }
-
-    /// Replaces the root node's value with the given value and returns the
-    /// modified `Tree`.
-    #[inline]
-    pub fn put_value_with_fixed_cost(
+    pub fn put_value(
         mut self,
         value: Vec<u8>,
-        value_fixed_cost: u32,
         feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
-        let mut cost = OperationCost::default();
-        self.inner.kv = self
-            .inner
-            .kv
-            .put_value_with_fixed_cost_then_update(value, value_fixed_cost)
-            .unwrap_add_cost(&mut cost);
-        self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
-    }
-
-    /// Replaces the root node's value with the given value and value hash
-    /// and returns the modified `Tree`.
-    #[inline]
-    pub fn put_value_and_reference_value_hash(
-        mut self,
-        value: Vec<u8>,
-        value_hash: CryptoHash,
-        feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
-        let mut cost = OperationCost::default();
-        self.inner.kv = self
-            .inner
-            .kv
-            .put_value_and_reference_value_hash_then_update(value, value_hash)
-            .unwrap_add_cost(&mut cost);
-        self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
-    }
-
-    /// Replaces the root node's value with the given value and value hash
-    /// and returns the modified `Tree`.
-    #[inline]
-    pub fn put_value_with_reference_value_hash_and_value_cost(
-        mut self,
-        value: Vec<u8>,
-        value_hash: CryptoHash,
-        value_cost: u32,
-        feature_type: TreeFeatureType,
-    ) -> CostContext<Self> {
-        let mut cost = OperationCost::default();
-        self.inner.kv = self
-            .inner
-            .kv
-            .put_value_with_reference_value_hash_and_value_cost_then_update(
-                value, value_hash, value_cost,
-            )
-            .unwrap_add_cost(&mut cost);
-        self.inner.kv.feature_type = feature_type;
-        self.wrap_with_cost(cost)
-    }
-
-    // TODO: add compute_hashes method
-
-    /// Called to finalize modifications to a tree, recompute its hashes, and
-    /// write the updated nodes to a backing store.
-    ///
-    /// Traverses through the tree, computing hashes for all modified links and
-    /// replacing them with `Link::Loaded` variants, writes out all changes to
-    /// the given `Commit` object's `write` method, and calls the its `prune`
-    /// method to test whether or not to keep or prune nodes from memory.
-    pub fn commit<C: Commit>(
-        &mut self,
-        c: &mut C,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
@@ -753,6 +677,204 @@ impl Tree {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+
+        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
+        self.inner.kv.feature_type = feature_type;
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self.inner.kv.update_hashes().unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
+    }
+
+    /// Replaces the root node's value with the given value and returns the
+    /// modified `Tree`.
+    #[inline]
+    pub fn put_value_with_fixed_cost(
+        mut self,
+        value: Vec<u8>,
+        value_fixed_cost: u32,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+        self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
+            value,
+            SpecializedValueDefinedCost(value_fixed_cost),
+        );
+        self.inner.kv.feature_type = feature_type;
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self.inner.kv.update_hashes().unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
+    }
+
+    /// Replaces the root node's value with the given value and value hash
+    /// and returns the modified `Tree`.
+    #[inline]
+    pub fn put_value_and_reference_value_hash(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+
+        self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
+        self.inner.kv.feature_type = feature_type;
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self
+            .inner
+            .kv
+            .update_hashes_using_reference_value_hash(value_hash)
+            .unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
+    }
+
+    /// Replaces the root node's value with the given value and value hash
+    /// and returns the modified `Tree`.
+    #[inline]
+    pub fn put_value_with_reference_value_hash_and_value_cost(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        value_cost: u32,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+
+        self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
+            value,
+            LayeredValueDefinedCost(value_cost),
+        );
+        self.inner.kv.feature_type = feature_type;
+
+        if self.old_value.is_some() {
+            // we are replacing a value
+            // in this case there is a possibility that the client would want to update the
+            // element flags based on the change of values
+            cost_return_on_error_no_add!(
+                &cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self
+            .inner
+            .kv
+            .update_hashes_using_reference_value_hash(value_hash)
+            .unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
+    }
+
+    // TODO: add compute_hashes method
+
+    /// Called to finalize modifications to a tree, recompute its hashes, and
+    /// write the updated nodes to a backing store.
+    ///
+    /// Traverses through the tree, computing hashes for all modified links and
+    /// replacing them with `Link::Loaded` variants, writes out all changes to
+    /// the given `Commit` object's `write` method, and calls the its `prune`
+    /// method to test whether or not to keep or prune nodes from memory.
+    pub fn commit<C: Commit>(
+        &mut self,
+        c: &mut C,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
     ) -> CostResult<(), Error> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
@@ -769,15 +891,7 @@ impl Tree {
             }) = self.inner.left.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(
-                    &mut cost,
-                    tree.commit(
-                        c,
-                        old_specialized_cost,
-                        update_tree_value_based_on_costs,
-                        section_removal_bytes
-                    )
-                );
+                cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let sum = cost_return_on_error_default!(tree.sum());
 
                 self.inner.left = Some(Link::Loaded {
@@ -800,15 +914,7 @@ impl Tree {
             }) = self.inner.right.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(
-                    &mut cost,
-                    tree.commit(
-                        c,
-                        old_specialized_cost,
-                        update_tree_value_based_on_costs,
-                        section_removal_bytes
-                    )
-                );
+                cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let sum = cost_return_on_error_default!(tree.sum());
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -821,15 +927,7 @@ impl Tree {
             }
         }
 
-        cost_return_on_error_no_add!(
-            &cost,
-            c.write(
-                self,
-                old_specialized_cost,
-                update_tree_value_based_on_costs,
-                section_removal_bytes
-            )
-        );
+        cost_return_on_error_no_add!(&cost, c.write(self, old_specialized_cost,));
 
         // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 
@@ -847,7 +945,15 @@ impl Tree {
     /// Fetches the child on the given side using the given data source, and
     /// places it in the child slot (upgrading the link from `Link::Reference`
     /// to `Link::Loaded`).
-    pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> CostResult<(), Error> {
+    pub fn load<S: Fetch, V>(
+        &mut self,
+        left: bool,
+        source: &S,
+        value_defined_cost_fn: Option<&V>,
+    ) -> CostResult<(), Error>
+    where
+        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+    {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
         let (child_heights, hash, sum) = match link {
@@ -861,7 +967,7 @@ impl Tree {
         };
 
         let mut cost = OperationCost::default();
-        let tree = cost_return_on_error!(&mut cost, source.fetch(link));
+        let tree = cost_return_on_error!(&mut cost, source.fetch(link, value_defined_cost_fn));
         debug_assert_eq!(tree.key(), link.key());
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,
@@ -886,14 +992,15 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
-    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
-    use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
-    use crate::tree::{tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::BasicMerk};
+    use super::{commit::NoopCommit, hash::NULL_HASH, TreeNode};
+    use crate::tree::{
+        tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
+    };
 
     #[test]
     fn build_tree() {
-        let tree = Tree::new(vec![1], vec![101], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![1], vec![101], None, BasicMerkNode).unwrap();
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.value_as_slice(), &[101]);
         assert!(tree.child(true).is_none());
@@ -905,13 +1012,13 @@ mod test {
 
         let tree = tree.attach(
             true,
-            Some(Tree::new(vec![2], vec![102], None, BasicMerk).unwrap()),
+            Some(TreeNode::new(vec![2], vec![102], None, BasicMerkNode).unwrap()),
         );
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
         assert!(tree.child(false).is_none());
 
-        let tree = Tree::new(vec![3], vec![103], None, BasicMerk)
+        let tree = TreeNode::new(vec![3], vec![103], None, BasicMerkNode)
             .unwrap()
             .attach(false, Some(tree));
         assert_eq!(tree.key(), &[3]);
@@ -922,29 +1029,29 @@ mod test {
     #[should_panic]
     #[test]
     fn attach_existing() {
-        Tree::new(vec![0], vec![1], None, BasicMerk)
+        TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
             .attach(
                 true,
-                Some(Tree::new(vec![4], vec![5], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
             );
     }
 
     #[test]
     fn modify() {
-        let tree = Tree::new(vec![0], vec![1], None, BasicMerk)
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
             .attach(
                 false,
-                Some(Tree::new(vec![4], vec![5], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
             );
 
         let tree = tree.walk(true, |left_opt| {
@@ -956,7 +1063,7 @@ mod test {
 
         let tree = tree.walk(true, |left_opt| {
             assert!(left_opt.is_none());
-            Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap())
+            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap())
         });
         assert_eq!(tree.link(true).unwrap().key(), &[2]);
 
@@ -970,25 +1077,20 @@ mod test {
 
     #[test]
     fn child_and_link() {
-        let mut tree = Tree::new(vec![0], vec![1], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             );
         assert!(tree.link(true).expect("expected link").is_modified());
         assert!(tree.child(true).is_some());
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
         assert!(tree.child(true).is_some());
 
@@ -1003,20 +1105,15 @@ mod test {
 
     #[test]
     fn child_hash() {
-        let mut tree = Tree::new(vec![0], vec![1], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
         assert_eq!(
             tree.child_hash(true),
             &[
@@ -1029,7 +1126,7 @@ mod test {
 
     #[test]
     fn hash() {
-        let tree = Tree::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         assert_eq!(
             tree.hash().unwrap(),
             [
@@ -1041,13 +1138,13 @@ mod test {
 
     #[test]
     fn child_pending_writes() {
-        let tree = Tree::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         assert_eq!(tree.child_pending_writes(true), 0);
         assert_eq!(tree.child_pending_writes(false), 0);
 
         let tree = tree.attach(
             true,
-            Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
         );
         assert_eq!(tree.child_pending_writes(true), 1);
         assert_eq!(tree.child_pending_writes(false), 0);
@@ -1055,7 +1152,7 @@ mod test {
 
     #[test]
     fn height_and_balance() {
-        let tree = Tree::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         assert_eq!(tree.height(), 1);
         assert_eq!(tree.child_height(true), 0);
         assert_eq!(tree.child_height(false), 0);
@@ -1063,7 +1160,7 @@ mod test {
 
         let tree = tree.attach(
             true,
-            Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
         );
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 1);
@@ -1080,40 +1177,30 @@ mod test {
 
     #[test]
     fn commit() {
-        let mut tree = Tree::new(vec![0], vec![1], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 false,
-                Some(Tree::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
 
         assert!(tree.link(false).expect("expected link").is_stored());
     }
 
     #[test]
     fn sum_tree() {
-        let mut tree = Tree::new(vec![0], vec![1], None, SummedMerk(3))
+        let mut tree = TreeNode::new(vec![0], vec![1], None, SummedMerkNode(3))
             .unwrap()
             .attach(
                 false,
-                Some(Tree::new(vec![2], vec![3], None, SummedMerk(5)).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, SummedMerkNode(5)).unwrap()),
             );
-        tree.commit(
-            &mut NoopCommit {},
-            &|_, _| Ok(0),
-            &mut |_, _, _| Ok((false, None)),
-            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
-        )
-        .unwrap()
-        .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
 
         assert_eq!(Some(8), tree.sum().expect("expected to get sum from tree"));
     }

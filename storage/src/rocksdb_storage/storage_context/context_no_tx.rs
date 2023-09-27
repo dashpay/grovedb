@@ -265,7 +265,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
     fn new_batch(&self) -> Self::Batch {
         PrefixedMultiContextBatchPart {
-            prefix: self.prefix.clone(),
+            prefix: self.prefix,
             batch: StorageBatch::new(),
         }
     }
@@ -279,7 +279,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
     fn raw_iter(&self) -> Self::RawIterator {
         PrefixedRocksDbRawIterator {
-            prefix: self.prefix.clone(),
+            prefix: self.prefix,
             raw_iterator: self.storage.raw_iterator(),
         }
     }

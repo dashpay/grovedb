@@ -214,6 +214,7 @@ mod tests {
     use crate::{
         proofs::chunk::{verify_leaf, verify_trunk},
         test_utils::*,
+        tree::kv::ValueDefinedCostType,
     };
 
     #[test]
@@ -275,6 +276,7 @@ mod tests {
                     .get_storage_context(SubtreePath::empty(), Some(&batch))
                     .unwrap(),
                 false,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .unwrap()
             .unwrap();
@@ -293,6 +295,7 @@ mod tests {
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),
                 false,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .unwrap()
             .unwrap();
@@ -311,6 +314,7 @@ mod tests {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();

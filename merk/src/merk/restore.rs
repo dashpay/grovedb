@@ -38,18 +38,20 @@ use grovedb_storage::{Batch, StorageContext};
 #[cfg(feature = "full")]
 use super::Merk;
 #[cfg(feature = "full")]
+use crate::merk::source::MerkSource;
+use crate::tree::kv::ValueDefinedCostType;
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
-    merk::MerkSource,
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
         tree::{Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{combine_hash, value_hash, Link, RefWalker, Tree},
+    tree::{combine_hash, value_hash, Link, RefWalker, TreeNode},
     CryptoHash,
     Error::{CostsError, EdError, StorageError},
-    TreeFeatureType::BasicMerk,
+    TreeFeatureType::BasicMerkNode,
 };
 
 #[cfg(feature = "full")]
@@ -115,7 +117,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             self.rewrite_trunk_child_heights()?;
         }
 
-        self.merk.load_base_root().unwrap()?;
+        self.merk
+            .load_base_root(None::<fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            .unwrap()?;
 
         Ok(self.merk)
     }
@@ -135,16 +139,21 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         tree.visit_refs(&mut |proof_node| {
             if let Some((mut node, key)) = match &proof_node.node {
                 Node::KV(key, value) => Some((
-                    Tree::new(key.clone(), value.clone(), None, BasicMerk).unwrap(),
+                    TreeNode::new(key.clone(), value.clone(), None, BasicMerkNode).unwrap(),
                     key,
                 )),
                 Node::KVValueHash(key, value, value_hash) => Some((
-                    Tree::new_with_value_hash(key.clone(), value.clone(), *value_hash, BasicMerk)
-                        .unwrap(),
+                    TreeNode::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        *value_hash,
+                        BasicMerkNode,
+                    )
+                    .unwrap(),
                     key,
                 )),
                 Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => Some((
-                    Tree::new_with_value_hash(
+                    TreeNode::new_with_value_hash(
                         key.clone(),
                         value.clone(),
                         *value_hash,
@@ -264,8 +273,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     fn rewrite_parent_link(&mut self, leaf: &ProofTree) -> Result<(), Error> {
         let parent_keys = self.parent_keys.as_mut().unwrap();
         let parent_key = parent_keys.peek().unwrap().clone();
-        let mut parent = crate::merk::fetch_node(&self.merk.storage, parent_key.as_slice())?
-            .expect("Could not find parent of leaf chunk");
+        let mut parent = crate::merk::fetch_node(
+            &self.merk.storage,
+            parent_key.as_slice(),
+            None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )?
+        .expect("Could not find parent of leaf chunk");
 
         let is_left_child = self.remaining_chunks_unchecked() % 2 == 0;
         if let Some(Link::Reference { ref mut key, .. }) = parent.link_mut(is_left_child) {
@@ -299,16 +312,25 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 return Ok(node.tree().child_heights());
             }
 
-            let mut cloned_node =
-                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())
-                    .map_err(EdError)?;
+            let mut cloned_node = TreeNode::decode(
+                node.tree().key().to_vec(),
+                node.tree().encode().as_slice(),
+                None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            )
+            .map_err(EdError)?;
 
-            let left_child = node.walk(true).unwrap()?.unwrap();
+            let left_child = node
+                .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()?
+                .unwrap();
             let left_child_heights = recurse(left_child, remaining_depth - 1, batch)?;
             let left_height = left_child_heights.0.max(left_child_heights.1) + 1;
             *cloned_node.link_mut(true).unwrap().child_heights_mut() = left_child_heights;
 
-            let right_child = node.walk(false).unwrap()?.unwrap();
+            let right_child = node
+                .walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()?
+                .unwrap();
             let right_child_heights = recurse(right_child, remaining_depth - 1, batch)?;
             let right_height = right_child_heights.0.max(right_child_heights.1) + 1;
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
@@ -321,7 +343,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             Ok((left_height, right_height))
         }
 
-        self.merk.load_base_root().unwrap()?;
+        self.merk
+            .load_base_root(None::<fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            .unwrap()?;
 
         let mut batch = self.merk.storage.new_batch();
 
@@ -409,6 +433,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -426,7 +451,13 @@ mod tests {
         let ctx = storage
             .get_immediate_storage_context(SubtreePath::empty(), &tx)
             .unwrap();
-        let merk = Merk::open_base(ctx, false).unwrap().unwrap();
+        let merk = Merk::open_base(
+            ctx,
+            false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
+        .unwrap()
+        .unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
         assert_eq!(restorer.remaining_chunks(), None);
@@ -460,8 +491,8 @@ mod tests {
     fn restore_2_left_heavy() {
         restore_test(
             &[
-                &[(vec![0], Op::Put(vec![], BasicMerk))],
-                &[(vec![1], Op::Put(vec![], BasicMerk))],
+                &[(vec![0], Op::Put(vec![], BasicMerkNode))],
+                &[(vec![1], Op::Put(vec![], BasicMerkNode))],
             ],
             2,
         );
@@ -471,8 +502,8 @@ mod tests {
     fn restore_2_right_heavy() {
         restore_test(
             &[
-                &[(vec![1], Op::Put(vec![], BasicMerk))],
-                &[(vec![0], Op::Put(vec![], BasicMerk))],
+                &[(vec![1], Op::Put(vec![], BasicMerkNode))],
+                &[(vec![0], Op::Put(vec![], BasicMerkNode))],
             ],
             2,
         );
