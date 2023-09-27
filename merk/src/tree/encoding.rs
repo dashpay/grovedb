@@ -129,7 +129,8 @@ impl TreeNode {
         let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
         if let Some(value_defined_cost_fn) = value_defined_cost_fn {
-            tree_inner.kv.value_defined_cost = value_defined_cost_fn(input);
+            tree_inner.kv.value_defined_cost =
+                value_defined_cost_fn(tree_inner.kv.value.as_slice());
         }
         self.inner = Box::new(tree_inner);
         Ok(())
@@ -145,7 +146,8 @@ impl TreeNode {
         let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
         if let Some(value_defined_cost_fn) = value_defined_cost_fn {
-            tree_inner.kv.value_defined_cost = value_defined_cost_fn(input);
+            tree_inner.kv.value_defined_cost =
+                value_defined_cost_fn(tree_inner.kv.value.as_slice());
         }
         Ok(TreeNode::new_with_tree_inner(tree_inner))
     }

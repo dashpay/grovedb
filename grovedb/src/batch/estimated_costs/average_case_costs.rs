@@ -576,7 +576,7 @@ mod tests {
                 seek_count: 5, // todo: why is this 5
                 storage_cost: StorageCost {
                     added_bytes: 115,
-                    replaced_bytes: 106,
+                    replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 109,
