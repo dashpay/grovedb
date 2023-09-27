@@ -461,16 +461,16 @@ pub fn add_average_case_merk_propagate(
             estimated_sum_trees,
             average_flags_size,
         ) => {
-            let flags_len = average_flags_size.unwrap_or(0);
-
             // it is normal to have LAYER_COST_SIZE here, as we add estimated sum tree
             // additions right after
-            let value_len = LAYER_COST_SIZE + flags_len;
+            let value_len = LAYER_COST_SIZE
+                + average_flags_size
+                    .map_or(0, |flags_len| flags_len + flags_len.required_space() as u32);
             // in order to simplify calculations we get the estimated size and remove the
             // cost for the basic merk
             let sum_tree_addition = estimated_sum_trees.estimated_size()?;
             nodes_updated
-                * (KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                * (KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     *average_key_size as u32,
                     value_len,
                     *is_sum_tree,
@@ -520,7 +520,7 @@ pub fn add_average_case_merk_propagate(
                         let flags_len = average_flags_size.unwrap_or(0);
                         let value_len = LAYER_COST_SIZE + flags_len;
                         let sum_tree_addition = estimated_sum_trees.estimated_size()?;
-                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                        let cost = KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                             *average_key_size as u32,
                             value_len,
                             in_sum_tree,

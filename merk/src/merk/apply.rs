@@ -146,12 +146,14 @@ where
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
+    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, v, o| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     ///
     /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use grovedb_merk::Op;
+    /// use grovedb_merk::tree::kv::ValueDefinedCostType;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
     ///
     /// let batch = &[
@@ -166,6 +168,7 @@ where
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
+    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, v, o| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
@@ -244,12 +247,14 @@ where
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
+    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, o, v| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     ///
     /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use grovedb_merk::Op;
+    /// use grovedb_merk::tree::kv::ValueDefinedCostType;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
     ///
     /// let batch = &[
@@ -258,12 +263,12 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _>(    /// /// ///
+    ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _>(    /// /// ///
     ///     batch,
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
-    ///     &|v| None,
+    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, o, v| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
