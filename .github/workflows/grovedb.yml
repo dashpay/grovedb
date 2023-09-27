@@ -25,10 +25,10 @@ jobs:
         with:
           toolchain: stable
 
-#      - name: Enable Rust cache
-#        uses: Swatinem/rust-cache@v2
-#        with:
-#          cache-on-failure: "false"
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - run: cargo test --workspace --all-features
 
@@ -52,10 +52,10 @@ jobs:
           default: true
           components: clippy
 
-#      - name: Enable Rust cache
-#        uses: Swatinem/rust-cache@v2
-#        with:
-#          cache-on-failure: "false"
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - uses: actions-rs/clippy-check@v1
         with:
@@ -80,10 +80,10 @@ jobs:
           default: true
           components: rustfmt
 
-#      - name: Enable Rust cache
-#        uses: Swatinem/rust-cache@v2
-#        with:
-#          cache-on-failure: "false"
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - run: exit `cargo +nightly fmt --check | wc -l`
 
@@ -104,10 +104,10 @@ jobs:
           toolchain: stable
           default: true
 
-#      - name: Enable Rust cache
-#        uses: Swatinem/rust-cache@v2
-#        with:
-#          cache-on-failure: "false"
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - run: cargo check
 
