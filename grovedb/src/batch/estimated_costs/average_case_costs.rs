@@ -211,9 +211,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             &cost,
             self.paths.get(path).ok_or_else(|| {
                 let paths = self
-                    .paths
-                    .iter()
-                    .map(|(k, _v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
+                    .paths.keys().map(|k| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
                     .join(" | ");
                 Error::PathNotFoundInCacheForEstimatedCosts(format!(
                     "required path {} not found in paths {}",
@@ -233,9 +231,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 &cost,
                 self.paths.get(path).ok_or_else(|| {
                     let paths = self
-                        .paths
-                        .iter()
-                        .map(|(k, _v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
+                        .paths.keys().map(|k| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
                         .join(" | ");
                     Error::PathNotFoundInCacheForEstimatedCosts(format!(
                         "required path for estimated merk caching {} not found in paths {}",

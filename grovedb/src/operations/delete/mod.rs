@@ -269,7 +269,7 @@ impl GroveDb {
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
                 }
             },
-            &batch,
+            batch,
         )
     }
 
@@ -522,7 +522,7 @@ impl GroveDb {
                 cost_return_on_error!(
                     &mut cost,
                     self.propagate_changes_with_batch_transaction(
-                        &batch,
+                        batch,
                         merk_cache,
                         &path,
                         transaction

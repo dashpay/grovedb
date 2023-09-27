@@ -50,8 +50,10 @@ pub type StorageRemovalPerEpochByIdentifier = BTreeMap<Identifier, IntMap<u32>>;
 
 /// Removal bytes
 #[derive(Debug, PartialEq, Clone, Eq)]
+#[derive(Default)]
 pub enum StorageRemovedBytes {
     /// No storage removal
+    #[default]
     NoStorageRemoval,
     /// Basic storage removal
     BasicStorageRemoval(u32),
@@ -59,11 +61,7 @@ pub enum StorageRemovedBytes {
     SectionedStorageRemoval(StorageRemovalPerEpochByIdentifier),
 }
 
-impl Default for StorageRemovedBytes {
-    fn default() -> Self {
-        NoStorageRemoval
-    }
-}
+
 
 impl Add for StorageRemovedBytes {
     type Output = Self;

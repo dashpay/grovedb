@@ -57,8 +57,10 @@ pub type Weight = u8;
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Estimated number of sum trees
+#[derive(Default)]
 pub enum EstimatedSumTrees {
     /// No sum trees
+    #[default]
     NoSumTrees,
     /// Some sum trees
     SomeSumTrees {
@@ -72,11 +74,7 @@ pub enum EstimatedSumTrees {
 }
 
 #[cfg(feature = "full")]
-impl Default for EstimatedSumTrees {
-    fn default() -> Self {
-        EstimatedSumTrees::NoSumTrees
-    }
-}
+
 
 #[cfg(feature = "full")]
 impl EstimatedSumTrees {

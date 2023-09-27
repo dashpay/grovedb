@@ -1581,9 +1581,7 @@ impl GroveDb {
                 // we need to pause the batch execution
                 return Ok(Some(ops_by_level_paths)).wrap_with_cost(cost);
             }
-            if current_level > 0 {
-                current_level -= 1;
-            }
+            current_level = current_level.saturating_sub(1);
         }
         Ok(None).wrap_with_cost(cost)
     }
@@ -1809,18 +1807,16 @@ impl GroveDb {
                     .wrap_with_cost(OperationCost::default())
                 }
             }
+        } else if new_merk {
+            Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
         } else {
-            if new_merk {
-                Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
-            } else {
-                Merk::open_base(
-                    storage,
-                    false,
-                    Some(&Element::value_defined_cost_for_serialized_value),
-                )
-                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-                .add_cost(cost)
-            }
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+            .add_cost(cost)
         }
     }
 

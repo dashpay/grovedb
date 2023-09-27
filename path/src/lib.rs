@@ -44,7 +44,7 @@ mod tests {
     use super::*;
     use crate::util::calculate_hash;
 
-    fn assert_path_properties<'b, B>(path: SubtreePath<'b, B>, reference: Vec<Vec<u8>>)
+    fn assert_path_properties<B>(path: SubtreePath<'_, B>, reference: Vec<Vec<u8>>)
     where
         B: AsRef<[u8]> + std::fmt::Debug,
     {

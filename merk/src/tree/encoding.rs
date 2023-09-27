@@ -353,6 +353,6 @@ mod tests {
             bytes.as_slice(),
             None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         );
-        assert!(matches!(tree, Err(_)));
+        assert!(tree.is_err());
     }
 }
