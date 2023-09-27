@@ -28,7 +28,9 @@
 
 //! Tree hashes tests
 
-use grovedb_merk::tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH};
+use grovedb_merk::tree::{
+    combine_hash, kv::ValueDefinedCostType, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH,
+};
 use grovedb_storage::StorageBatch;
 
 use crate::{
@@ -58,19 +60,31 @@ fn test_node_hashes_when_inserting_item() {
         .expect("should open merk");
 
     let (elem_value, elem_value_hash) = test_leaf_merk
-        .get_value_and_value_hash(b"key1", true)
+        .get_value_and_value_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_kv_hash = test_leaf_merk
-        .get_kv_hash(b"key1", true)
+        .get_kv_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_node_hash = test_leaf_merk
-        .get_hash(b"key1", true)
+        .get_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -110,19 +124,31 @@ fn test_tree_hashes_when_inserting_empty_tree() {
         .expect("should open merk");
 
     let (elem_value, elem_value_hash) = test_leaf_merk
-        .get_value_and_value_hash(b"key1", true)
+        .get_value_and_value_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_kv_hash = test_leaf_merk
-        .get_kv_hash(b"key1", true)
+        .get_kv_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_node_hash = test_leaf_merk
-        .get_hash(b"key1", true)
+        .get_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -187,7 +213,11 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     // Let's first verify that the lowest nodes hashes are as we expect
 
     let (elem_value, elem_value_hash) = middle_merk_key1
-        .get_value_and_value_hash(b"key2", true)
+        .get_value_and_value_hash(
+            b"key2",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -210,7 +240,11 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     assert_eq!(elem_value_hash, combined_value_hash_key2);
 
     let elem_kv_hash = middle_merk_key1
-        .get_kv_hash(b"key2", true)
+        .get_kv_hash(
+            b"key2",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get kv hash")
         .expect("value hash should be some");
@@ -220,7 +254,11 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     assert_eq!(elem_kv_hash, kv_hash_key2);
 
     let elem_node_hash = middle_merk_key1
-        .get_hash(b"key2", true)
+        .get_hash(
+            b"key2",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get kv hash")
         .expect("value hash should be some");
@@ -238,7 +276,11 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     assert_eq!(root_hash, node_hash_key2);
 
     let (middle_elem_value_key1, middle_elem_value_hash_key1) = under_top_merk
-        .get_value_and_value_hash(b"key1", true)
+        .get_value_and_value_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -276,7 +318,11 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     );
 
     let middle_elem_kv_hash_key1 = under_top_merk
-        .get_kv_hash(b"key1", true)
+        .get_kv_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -290,7 +336,11 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     );
 
     let middle_elem_node_hash_key1 = under_top_merk
-        .get_hash(b"key1", true)
+        .get_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");

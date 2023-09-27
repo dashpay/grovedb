@@ -39,6 +39,7 @@ use grovedb_storage::StorageContext;
 
 #[cfg(feature = "full")]
 use super::TreeNode;
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::{
     error::{Error, Error::EdError},
@@ -50,12 +51,20 @@ use crate::{
 impl TreeNode {
     /// Decode given bytes and set as Tree fields. Set key to value of given
     /// key.
-    pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
-        TreeNode::decode(key, bytes).map_err(EdError)
+    pub fn decode_raw(
+        bytes: &[u8],
+        key: Vec<u8>,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> Result<Self, Error> {
+        TreeNode::decode(key, bytes, value_defined_cost_fn).map_err(EdError)
     }
 
     /// Get value from storage given key.
-    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostResult<Option<Self>, Error>
+    pub(crate) fn get<'db, S, K>(
+        storage: &S,
+        key: K,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<Option<Self>, Error>
     where
         S: StorageContext<'db>,
         K: AsRef<[u8]>,
@@ -66,7 +75,7 @@ impl TreeNode {
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
             tree_bytes
-                .map(|x| TreeNode::decode_raw(&x, key.as_ref().to_vec()))
+                .map(|x| TreeNode::decode_raw(&x, key.as_ref().to_vec(), value_defined_cost_fn))
                 .transpose()
         );
 
@@ -111,18 +120,33 @@ impl TreeNode {
 
     #[inline]
     /// Decode bytes from reader, set as Tree fields and set key to given key
-    pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
+    pub fn decode_into(
+        &mut self,
+        key: Vec<u8>,
+        input: &[u8],
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> ed::Result<()> {
         let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
+        if let Some(value_defined_cost_fn) = value_defined_cost_fn {
+            tree_inner.kv.value_defined_cost = value_defined_cost_fn(input);
+        }
         self.inner = Box::new(tree_inner);
         Ok(())
     }
 
     #[inline]
     /// Decode input and set as Tree fields. Set the key as the given key.
-    pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
+    pub fn decode(
+        key: Vec<u8>,
+        input: &[u8],
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> ed::Result<Self> {
         let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
+        if let Some(value_defined_cost_fn) = value_defined_cost_fn {
+            tree_inner.kv.value_defined_cost = value_defined_cost_fn(input);
+        }
         Ok(TreeNode::new_with_tree_inner(tree_inner))
     }
 }
@@ -131,12 +155,12 @@ impl TreeNode {
 #[cfg(test)]
 mod tests {
     use super::{super::Link, *};
-    use crate::TreeFeatureType::{BasicMerk, SummedMerk};
+    use crate::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
 
     #[test]
     fn encode_leaf_tree() {
         let tree =
-            TreeNode::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerk).unwrap();
+            TreeNode::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerkNode).unwrap();
         assert_eq!(tree.encoding_length(), 68);
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
@@ -163,10 +187,10 @@ mod tests {
             Some(Link::Modified {
                 pending_writes: 1,
                 child_heights: (123, 124),
-                tree: TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap(),
+                tree: TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap(),
             }),
             None,
-            BasicMerk,
+            BasicMerkNode,
         )
         .unwrap();
         tree.encode();
@@ -182,10 +206,10 @@ mod tests {
                 hash: [66; 32],
                 sum: None,
                 child_heights: (123, 124),
-                tree: TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap(),
+                tree: TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap(),
             }),
             None,
-            BasicMerk,
+            BasicMerkNode,
         )
         .unwrap();
         assert_eq!(
@@ -211,10 +235,10 @@ mod tests {
                 hash: [66; 32],
                 sum: Some(10),
                 child_heights: (123, 124),
-                tree: TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap(),
+                tree: TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap(),
             }),
             None,
-            SummedMerk(5),
+            SummedMerkNode(5),
         )
         .unwrap();
         assert_eq!(
@@ -243,7 +267,7 @@ mod tests {
                 key: vec![2],
             }),
             None,
-            BasicMerk,
+            BasicMerkNode,
         )
         .unwrap();
         assert_eq!(
@@ -276,10 +300,15 @@ mod tests {
             131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199,
             149, 144, 21, 1,
         ];
-        let tree = TreeNode::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
+        let tree = TreeNode::decode(
+            vec![0],
+            bytes.as_slice(),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
+        .expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
-        assert_eq!(tree.inner.kv.feature_type, BasicMerk);
+        assert_eq!(tree.inner.kv.feature_type, BasicMerkNode);
     }
 
     #[test]
@@ -291,7 +320,12 @@ mod tests {
             55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73,
             98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21, 1,
         ];
-        let tree = TreeNode::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
+        let tree = TreeNode::decode(
+            vec![0],
+            bytes.as_slice(),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
+        .expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
         if let Some(Link::Reference {
@@ -312,7 +346,11 @@ mod tests {
     #[test]
     fn decode_invalid_bytes_as_tree() {
         let bytes = vec![2, 3, 4, 5];
-        let tree = TreeNode::decode(vec![0], bytes.as_slice());
+        let tree = TreeNode::decode(
+            vec![0],
+            bytes.as_slice(),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        );
         assert!(matches!(tree, Err(_)));
     }
 }

@@ -80,7 +80,7 @@ use grovedb_merk::{
         value_hash, NULL_HASH,
     },
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -766,8 +766,12 @@ where
         if recursions_allowed == 1 {
             let referenced_element_value_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(key.as_ref(), true)
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
+                merk.get_value_hash(
+                    key.as_ref(),
+                    true,
+                    Some(Element::value_defined_cost_for_serialized_value)
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
             let referenced_element_value_hash = cost_return_on_error!(
@@ -806,8 +810,12 @@ where
             // change in the batch.
             let referenced_element = cost_return_on_error!(
                 &mut cost,
-                merk.get(key.as_ref(), true)
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
+                merk.get(
+                    key.as_ref(),
+                    true,
+                    Some(Element::value_defined_cost_for_serialized_value)
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
             let referenced_element = cost_return_on_error_no_add!(
@@ -1130,14 +1138,18 @@ where
                     } else {
                         let value = cost_return_on_error!(
                             &mut cost,
-                            merk.get(key_info.as_slice(), true)
-                                .map(|result_value| result_value
-                                    .map_err(Error::MerkError)
-                                    .and_then(|maybe_value| maybe_value.ok_or(
-                                        Error::InvalidInput(
-                                            "trying to refresh a non existing reference",
-                                        )
-                                    )))
+                            merk.get(
+                                key_info.as_slice(),
+                                true,
+                                Some(Element::value_defined_cost_for_serialized_value)
+                            )
+                            .map(
+                                |result_value| result_value.map_err(Error::MerkError).and_then(
+                                    |maybe_value| maybe_value.ok_or(Error::InvalidInput(
+                                        "trying to refresh a non existing reference",
+                                    ))
+                                )
+                            )
                         );
                         cost_return_on_error_no_add!(
                             &cost,
@@ -1155,9 +1167,9 @@ where
                     };
 
                     let merk_feature_type = if is_sum_tree {
-                        SummedMerk(0)
+                        SummedMerkNode(0)
                     } else {
-                        BasicMerk
+                        BasicMerkNode
                     };
 
                     let path_reference = cost_return_on_error!(
@@ -1276,7 +1288,7 @@ where
         }
         cost_return_on_error!(
             &mut cost,
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
                 &batch_operations,
                 &[],
                 Some(batch_apply_options.as_merk_options()),
@@ -1284,6 +1296,7 @@ where
                     Element::specialized_costs_for_key_value(key, value, is_sum_tree)
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
+                Some(&Element::value_defined_cost_for_serialized_value),
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization
                     let old_element = Element::deserialize(old_value.as_slice())
@@ -1779,13 +1792,16 @@ impl GroveDb {
                 );
                 let is_sum_tree = element.is_sum_tree();
                 if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                        .map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                        .add_cost(cost)
+                    Merk::open_layered_with_root_key(
+                        storage,
+                        root_key,
+                        is_sum_tree,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                    )
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                    .add_cost(cost)
                 } else {
                     Err(Error::CorruptedPath(
                         "cannot open a subtree as parent exists but is not a tree",
@@ -1797,9 +1813,13 @@ impl GroveDb {
             if new_merk {
                 Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
             } else {
-                Merk::open_base(storage, false)
-                    .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-                    .add_cost(cost)
+                Merk::open_base(
+                    storage,
+                    false,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                )
+                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+                .add_cost(cost)
             }
         }
     }
@@ -1835,11 +1855,16 @@ impl GroveDb {
             );
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                    .map_err(|_| {
-                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
-                    })
-                    .add_cost(local_cost)
+                Merk::open_layered_with_root_key(
+                    storage,
+                    root_key,
+                    is_sum_tree,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                )
+                .map_err(|_| {
+                    Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                })
+                .add_cost(local_cost)
             } else {
                 Err(Error::CorruptedData(
                     "cannot open a subtree as parent exists but is not a tree".to_owned(),
@@ -1847,9 +1872,13 @@ impl GroveDb {
                 .wrap_with_cost(local_cost)
             }
         } else {
-            Merk::open_base(storage, false)
-                .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                .add_cost(local_cost)
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+            .add_cost(local_cost)
         }
     }
 

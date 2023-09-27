@@ -218,7 +218,11 @@ impl GroveDb {
             let maybe_element_bytes = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into
-                    .get(key, true)
+                    .get(
+                        key,
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value)
+                    )
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
             if let Some(element_bytes) = maybe_element_bytes {
@@ -353,7 +357,11 @@ impl GroveDb {
             let maybe_element_bytes = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into
-                    .get(key, true)
+                    .get(
+                        key,
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value)
+                    )
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
             if let Some(element_bytes) = maybe_element_bytes {
@@ -867,6 +875,11 @@ mod tests {
         // Child Heights 2
 
         // Total 37 + 85 + 48 = 170
+
+        // replaced bytes
+        // 133 for key1 (higher node/same merk level)
+        // ?
+
         assert_eq!(
             cost,
             OperationCost {

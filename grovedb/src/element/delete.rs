@@ -57,10 +57,16 @@ impl Element {
         };
         let batch = [(key, op)];
         let uses_sum_nodes = merk.is_sum_tree;
-        merk.apply_with_specialized_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
-            Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-        })
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch,
+            &[],
+            merk_options,
+            &|key, value| {
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
+            Some(&Element::value_defined_cost_for_serialized_value),
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -97,6 +103,7 @@ impl Element {
                 Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
+            Some(&Element::value_defined_cost_for_serialized_value),
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
         )

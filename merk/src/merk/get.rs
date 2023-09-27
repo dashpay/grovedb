@@ -1,7 +1,12 @@
 use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
 
-use crate::{tree::TreeNode, CryptoHash, Error, Error::StorageError, Merk, TreeFeatureType};
+use crate::{
+    tree::{kv::ValueDefinedCostType, TreeNode},
+    CryptoHash, Error,
+    Error::StorageError,
+    Merk, TreeFeatureType,
+};
 
 impl<'db, S> Merk<S>
 where
@@ -16,8 +21,12 @@ where
     ///
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
-    pub fn exists(&self, key: &[u8]) -> CostResult<bool, Error> {
-        self.has_node_direct(key)
+    pub fn exists(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<bool, Error> {
+        self.has_node_direct(key, value_defined_cost_fn)
     }
 
     /// Returns if the value at the given key exists
@@ -26,8 +35,12 @@ where
     /// should be a fast operation and has almost no tree overhead.
     /// Contrary to a simple exists, this traverses the tree and can be faster
     /// if the tree is cached, but slower if it is not
-    pub fn exists_by_traversing_tree(&self, key: &[u8]) -> CostResult<bool, Error> {
-        self.has_node(key)
+    pub fn exists_by_traversing_tree(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<bool, Error> {
+        self.has_node(key, value_defined_cost_fn)
     }
 
     /// Gets a value for the given key. If the key is not found, `None` is
@@ -35,19 +48,32 @@ where
     ///
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
-    pub fn get(&self, key: &[u8], allow_cache: bool) -> CostResult<Option<Vec<u8>>, Error> {
+    pub fn get(
+        &self,
+        key: &[u8],
+        allow_cache: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<Option<Vec<u8>>, Error> {
         if allow_cache {
-            self.get_node_fn(key, |node| {
-                node.value_as_slice()
-                    .to_vec()
-                    .wrap_with_cost(Default::default())
-            })
+            self.get_node_fn(
+                key,
+                |node| {
+                    node.value_as_slice()
+                        .to_vec()
+                        .wrap_with_cost(Default::default())
+                },
+                value_defined_cost_fn,
+            )
         } else {
-            self.get_node_direct_fn(key, |node| {
-                node.value_as_slice()
-                    .to_vec()
-                    .wrap_with_cost(Default::default())
-            })
+            self.get_node_direct_fn(
+                key,
+                |node| {
+                    node.value_as_slice()
+                        .to_vec()
+                        .wrap_with_cost(Default::default())
+                },
+                value_defined_cost_fn,
+            )
         }
     }
 
@@ -56,25 +82,35 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Option<TreeFeatureType>, Error> {
         if allow_cache {
-            self.get_node_fn(key, |node| {
-                node.feature_type().wrap_with_cost(Default::default())
-            })
+            self.get_node_fn(
+                key,
+                |node| node.feature_type().wrap_with_cost(Default::default()),
+                value_defined_cost_fn,
+            )
         } else {
-            self.get_node_direct_fn(key, |node| {
-                node.feature_type().wrap_with_cost(Default::default())
-            })
+            self.get_node_direct_fn(
+                key,
+                |node| node.feature_type().wrap_with_cost(Default::default()),
+                value_defined_cost_fn,
+            )
         }
     }
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_hash(&self, key: &[u8], allow_cache: bool) -> CostResult<Option<CryptoHash>, Error> {
+    pub fn get_hash(
+        &self,
+        key: &[u8],
+        allow_cache: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<Option<CryptoHash>, Error> {
         if allow_cache {
-            self.get_node_fn(key, |node| node.hash())
+            self.get_node_fn(key, |node| node.hash(), value_defined_cost_fn)
         } else {
-            self.get_node_direct_fn(key, |node| node.hash())
+            self.get_node_direct_fn(key, |node| node.hash(), value_defined_cost_fn)
         }
     }
 
@@ -84,15 +120,20 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Option<CryptoHash>, Error> {
         if allow_cache {
-            self.get_node_fn(key, |node| {
-                (*node.value_hash()).wrap_with_cost(OperationCost::default())
-            })
+            self.get_node_fn(
+                key,
+                |node| (*node.value_hash()).wrap_with_cost(OperationCost::default()),
+                value_defined_cost_fn,
+            )
         } else {
-            self.get_node_direct_fn(key, |node| {
-                (*node.value_hash()).wrap_with_cost(OperationCost::default())
-            })
+            self.get_node_direct_fn(
+                key,
+                |node| (*node.value_hash()).wrap_with_cost(OperationCost::default()),
+                value_defined_cost_fn,
+            )
         }
     }
 
@@ -102,15 +143,20 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Option<CryptoHash>, Error> {
         if allow_cache {
-            self.get_node_fn(key, |node| {
-                (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default())
-            })
+            self.get_node_fn(
+                key,
+                |node| (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default()),
+                value_defined_cost_fn,
+            )
         } else {
-            self.get_node_direct_fn(key, |node| {
-                (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default())
-            })
+            self.get_node_direct_fn(
+                key,
+                |node| (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default()),
+                value_defined_cost_fn,
+            )
         }
     }
 
@@ -120,27 +166,44 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error> {
         if allow_cache {
-            self.get_node_fn(key, |node| {
-                (node.value_as_slice().to_vec(), *node.value_hash())
-                    .wrap_with_cost(OperationCost::default())
-            })
+            self.get_node_fn(
+                key,
+                |node| {
+                    (node.value_as_slice().to_vec(), *node.value_hash())
+                        .wrap_with_cost(OperationCost::default())
+                },
+                value_defined_cost_fn,
+            )
         } else {
-            self.get_node_direct_fn(key, |node| {
-                (node.value_as_slice().to_vec(), *node.value_hash())
-                    .wrap_with_cost(OperationCost::default())
-            })
+            self.get_node_direct_fn(
+                key,
+                |node| {
+                    (node.value_as_slice().to_vec(), *node.value_hash())
+                        .wrap_with_cost(OperationCost::default())
+                },
+                value_defined_cost_fn,
+            )
         }
     }
 
     /// See if a node's field exists
-    fn has_node_direct(&self, key: &[u8]) -> CostResult<bool, Error> {
-        TreeNode::get(&self.storage, key).map_ok(|x| x.is_some())
+    fn has_node_direct(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<bool, Error> {
+        TreeNode::get(&self.storage, key, value_defined_cost_fn).map_ok(|x| x.is_some())
     }
 
     /// See if a node's field exists
-    fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {
+    fn has_node(
+        &self,
+        key: &[u8],
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<bool, Error> {
         self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {
                 None => return Ok(false).wrap_with_cost(Default::default()), // empty tree
@@ -162,7 +225,7 @@ where
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break self.has_node_direct(key);
+                        break self.has_node_direct(key, value_defined_cost_fn);
                     }
                     Some(child) => cursor = child, // traverse to child
                 }
@@ -171,18 +234,28 @@ where
     }
 
     /// Generic way to get a node's field
-    fn get_node_direct_fn<T, F>(&self, key: &[u8], f: F) -> CostResult<Option<T>, Error>
+    fn get_node_direct_fn<T, F>(
+        &self,
+        key: &[u8],
+        f: F,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<Option<T>, Error>
     where
         F: FnOnce(&TreeNode) -> CostContext<T>,
     {
-        TreeNode::get(&self.storage, key).flat_map_ok(|maybe_node| {
+        TreeNode::get(&self.storage, key, value_defined_cost_fn).flat_map_ok(|maybe_node| {
             let mut cost = OperationCost::default();
             Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost))).wrap_with_cost(cost)
         })
     }
 
     /// Generic way to get a node's field
-    fn get_node_fn<T, F>(&self, key: &[u8], f: F) -> CostResult<Option<T>, Error>
+    fn get_node_fn<T, F>(
+        &self,
+        key: &[u8],
+        f: F,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<Option<T>, Error>
     where
         F: FnOnce(&TreeNode) -> CostContext<T>,
     {
@@ -207,7 +280,7 @@ where
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break self.get_node_direct_fn(key, f);
+                        break self.get_node_direct_fn(key, f, value_defined_cost_fn);
                     }
                     Some(child) => cursor = child, // traverse to child
                 }
@@ -218,7 +291,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::{test_utils::TempMerk, Op, TreeFeatureType::BasicMerk};
+    use crate::{
+        test_utils::TempMerk, tree::kv::ValueDefinedCostType, Op, TreeFeatureType::BasicMerkNode,
+    };
 
     #[test]
     fn test_has_node_with_empty_tree() {
@@ -226,11 +301,14 @@ mod test {
 
         let key = b"something";
 
-        let result = merk.has_node(key).unwrap().unwrap();
+        let result = merk
+            .has_node(key, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            .unwrap()
+            .unwrap();
 
         assert!(!result);
 
-        let batch_entry = (key, Op::Put(vec![123; 60], BasicMerk));
+        let batch_entry = (key, Op::Put(vec![123; 60], BasicMerkNode));
 
         let batch = vec![batch_entry];
 
@@ -238,7 +316,10 @@ mod test {
             .unwrap()
             .expect("should ...");
 
-        let result = merk.has_node(key).unwrap().unwrap();
+        let result = merk
+            .has_node(key, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            .unwrap()
+            .unwrap();
 
         assert!(result);
     }

@@ -465,7 +465,7 @@ mod test {
     use super::super::{Node, Op};
     use crate::{
         tree::HASH_LENGTH,
-        TreeFeatureType::{BasicMerk, SummedMerk},
+        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
     };
 
     #[test]
@@ -567,7 +567,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            BasicMerk,
+            BasicMerkNode,
         ));
         assert_eq!(op.encoding_length(), 43);
 
@@ -585,7 +585,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            SummedMerk(6),
+            SummedMerkNode(6),
         ));
         assert_eq!(op.encoding_length(), 44);
 
@@ -683,7 +683,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            BasicMerk,
+            BasicMerkNode,
         ));
         assert_eq!(op.encoding_length(), 43);
 
@@ -701,7 +701,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            SummedMerk(5),
+            SummedMerkNode(5),
         ));
         assert_eq!(op.encoding_length(), 44);
 
@@ -860,7 +860,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                BasicMerk
+                BasicMerkNode
             ))
         );
 
@@ -875,7 +875,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                SummedMerk(6)
+                SummedMerkNode(6)
             ))
         );
     }
@@ -960,7 +960,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                BasicMerk
+                BasicMerkNode
             ))
         );
 
@@ -975,7 +975,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                SummedMerk(6)
+                SummedMerkNode(6)
             ))
         );
     }

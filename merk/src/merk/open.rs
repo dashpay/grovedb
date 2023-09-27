@@ -4,6 +4,7 @@ use grovedb_costs::CostResult;
 use grovedb_storage::StorageContext;
 
 use crate::{
+    tree::kv::ValueDefinedCostType,
     Error, Merk, MerkType,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
@@ -24,7 +25,11 @@ where
     }
 
     /// Open standalone tree
-    pub fn open_standalone(storage: S, is_sum_tree: bool) -> CostResult<Self, Error> {
+    pub fn open_standalone(
+        storage: S,
+        is_sum_tree: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -33,11 +38,15 @@ where
             is_sum_tree,
         };
 
-        merk.load_base_root().map_ok(|_| merk)
+        merk.load_base_root(value_defined_cost_fn).map_ok(|_| merk)
     }
 
     /// Open base tree
-    pub fn open_base(storage: S, is_sum_tree: bool) -> CostResult<Self, Error> {
+    pub fn open_base(
+        storage: S,
+        is_sum_tree: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -46,7 +55,7 @@ where
             is_sum_tree,
         };
 
-        merk.load_base_root().map_ok(|_| merk)
+        merk.load_base_root(value_defined_cost_fn).map_ok(|_| merk)
     }
 
     /// Open layered tree with root key
@@ -54,6 +63,7 @@ where
         storage: S,
         root_key: Option<Vec<u8>>,
         is_sum_tree: bool,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
@@ -63,7 +73,7 @@ where
             is_sum_tree,
         };
 
-        merk.load_root().map_ok(|_| merk)
+        merk.load_root(value_defined_cost_fn).map_ok(|_| merk)
     }
 }
 
@@ -77,7 +87,7 @@ mod test {
     };
     use tempfile::TempDir;
 
-    use crate::{Merk, Op, TreeFeatureType::BasicMerk};
+    use crate::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType::BasicMerkNode};
 
     #[test]
     fn test_reopen_root_hash() {
@@ -92,12 +102,13 @@ mod test {
                 .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
 
         merk.apply::<_, Vec<_>>(
-            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk))],
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))],
             &[],
             None,
         )
@@ -116,6 +127,7 @@ mod test {
                 .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -132,6 +144,7 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), Some(&batch))
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         );
         // Opening not existing merk should cost only root key seek (except context
         // creation)
@@ -142,7 +155,7 @@ mod test {
 
         let mut merk = merk_fee_context.unwrap().unwrap();
         merk.apply::<_, Vec<_>>(
-            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk))],
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))],
             &[],
             None,
         )
@@ -159,6 +172,7 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         );
 
         // Opening existing merk should cost two seeks. (except context creation)

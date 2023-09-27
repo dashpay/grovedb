@@ -67,6 +67,7 @@ use {super::Op, std::collections::LinkedList};
 use super::Node;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::error::Error;
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::tree::{Fetch, Link, RefWalker};
 
@@ -752,14 +753,15 @@ where
         left_to_right: bool,
     ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         if !query.is_empty() {
-            self.walk(left).flat_map_ok(|child_opt| {
-                if let Some(mut child) = child_opt {
-                    child.create_proof(query, limit, offset, left_to_right)
-                } else {
-                    Ok((LinkedList::new(), (true, true), limit, offset))
-                        .wrap_with_cost(Default::default())
-                }
-            })
+            self.walk(left, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .flat_map_ok(|child_opt| {
+                    if let Some(mut child) = child_opt {
+                        child.create_proof(query, limit, offset, left_to_right)
+                    } else {
+                        Ok((LinkedList::new(), (true, true), limit, offset))
+                            .wrap_with_cost(Default::default())
+                    }
+                })
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
             proof.push_back(if left_to_right {
@@ -793,7 +795,7 @@ mod test {
         },
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, TreeNode},
-        TreeFeatureType::BasicMerk,
+        TreeFeatureType::BasicMerkNode,
     };
 
     fn compare_result_tuples(
@@ -808,15 +810,15 @@ mod test {
     }
 
     fn make_3_node_tree() -> TreeNode {
-        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(TreeNode::new(vec![3], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![3], vec![3], None, BasicMerkNode).unwrap()),
             )
             .attach(
                 false,
-                Some(TreeNode::new(vec![7], vec![7], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![7], vec![7], None, BasicMerkNode).unwrap()),
             );
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
@@ -825,9 +827,9 @@ mod test {
     }
 
     fn make_6_node_tree() -> TreeNode {
-        let two_tree = TreeNode::new(vec![2], vec![2], None, BasicMerk).unwrap();
-        let four_tree = TreeNode::new(vec![4], vec![4], None, BasicMerk).unwrap();
-        let mut three_tree = TreeNode::new(vec![3], vec![3], None, BasicMerk)
+        let two_tree = TreeNode::new(vec![2], vec![2], None, BasicMerkNode).unwrap();
+        let four_tree = TreeNode::new(vec![4], vec![4], None, BasicMerkNode).unwrap();
+        let mut three_tree = TreeNode::new(vec![3], vec![3], None, BasicMerkNode)
             .unwrap()
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
@@ -836,8 +838,8 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let seven_tree = TreeNode::new(vec![7], vec![7], None, BasicMerk).unwrap();
-        let mut eight_tree = TreeNode::new(vec![8], vec![8], None, BasicMerk)
+        let seven_tree = TreeNode::new(vec![7], vec![7], None, BasicMerkNode).unwrap();
+        let mut eight_tree = TreeNode::new(vec![8], vec![8], None, BasicMerkNode)
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
@@ -845,7 +847,7 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let mut root_tree = TreeNode::new(vec![5], vec![5], None, BasicMerk)
+        let mut root_tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode)
             .unwrap()
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
@@ -1533,26 +1535,26 @@ mod test {
 
     #[test]
     fn doc_proof() {
-        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
                 Some(
-                    TreeNode::new(vec![2], vec![2], None, BasicMerk)
+                    TreeNode::new(vec![2], vec![2], None, BasicMerkNode)
                         .unwrap()
                         .attach(
                             true,
-                            Some(TreeNode::new(vec![1], vec![1], None, BasicMerk).unwrap()),
+                            Some(TreeNode::new(vec![1], vec![1], None, BasicMerkNode).unwrap()),
                         )
                         .attach(
                             false,
                             Some(
-                                TreeNode::new(vec![4], vec![4], None, BasicMerk)
+                                TreeNode::new(vec![4], vec![4], None, BasicMerkNode)
                                     .unwrap()
                                     .attach(
                                         true,
                                         Some(
-                                            TreeNode::new(vec![3], vec![3], None, BasicMerk)
+                                            TreeNode::new(vec![3], vec![3], None, BasicMerkNode)
                                                 .unwrap(),
                                         ),
                                     ),
@@ -1563,24 +1565,24 @@ mod test {
             .attach(
                 false,
                 Some(
-                    TreeNode::new(vec![9], vec![9], None, BasicMerk)
+                    TreeNode::new(vec![9], vec![9], None, BasicMerkNode)
                         .unwrap()
                         .attach(
                             true,
                             Some(
-                                TreeNode::new(vec![7], vec![7], None, BasicMerk)
+                                TreeNode::new(vec![7], vec![7], None, BasicMerkNode)
                                     .unwrap()
                                     .attach(
                                         true,
                                         Some(
-                                            TreeNode::new(vec![6], vec![6], None, BasicMerk)
+                                            TreeNode::new(vec![6], vec![6], None, BasicMerkNode)
                                                 .unwrap(),
                                         ),
                                     )
                                     .attach(
                                         false,
                                         Some(
-                                            TreeNode::new(vec![8], vec![8], None, BasicMerk)
+                                            TreeNode::new(vec![8], vec![8], None, BasicMerkNode)
                                                 .unwrap(),
                                         ),
                                     ),
@@ -1589,12 +1591,12 @@ mod test {
                         .attach(
                             false,
                             Some(
-                                TreeNode::new(vec![11], vec![11], None, BasicMerk)
+                                TreeNode::new(vec![11], vec![11], None, BasicMerkNode)
                                     .unwrap()
                                     .attach(
                                         true,
                                         Some(
-                                            TreeNode::new(vec![10], vec![10], None, BasicMerk)
+                                            TreeNode::new(vec![10], vec![10], None, BasicMerkNode)
                                                 .unwrap(),
                                         ),
                                     ),
@@ -5740,7 +5742,7 @@ mod test {
 
     #[test]
     fn verify_ops() {
-        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerk).unwrap();
+        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode).unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
@@ -5766,7 +5768,7 @@ mod test {
     #[test]
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
-        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerk).unwrap();
+        let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode).unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");

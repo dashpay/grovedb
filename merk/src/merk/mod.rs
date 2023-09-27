@@ -494,7 +494,10 @@ where
     /// Loads the Merk from the base root key
     /// The base root key should only be used if the Merk tree is independent
     /// Meaning that it doesn't have a parent Merk
-    pub(crate) fn load_base_root(&mut self) -> CostResult<(), Error> {
+    pub(crate) fn load_base_root(
+        &mut self,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<(), Error> {
         self.storage
             .get_root(ROOT_KEY_KEY)
             .map(|root_result| root_result.map_err(Error::StorageError))
@@ -503,12 +506,14 @@ where
                 if let Some(tree_root_key) = tree_root_key_opt {
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-                    TreeNode::get(&self.storage, tree_root_key).map_ok(|tree| {
-                        if let Some(t) = tree.as_ref() {
-                            self.root_tree_key = Cell::new(Some(t.key().to_vec()));
-                        }
-                        self.tree = Cell::new(tree);
-                    })
+                    TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn).map_ok(
+                        |tree| {
+                            if let Some(t) = tree.as_ref() {
+                                self.root_tree_key = Cell::new(Some(t.key().to_vec()));
+                            }
+                            self.tree = Cell::new(tree);
+                        },
+                    )
                 } else {
                     Ok(()).wrap_with_cost(Default::default())
                 }
@@ -518,12 +523,15 @@ where
     /// Loads the Merk from it's parent root key
     /// The base root key should only be used if the Merk tree is independent
     /// Meaning that it doesn't have a parent Merk
-    pub(crate) fn load_root(&mut self) -> CostResult<(), Error> {
+    pub(crate) fn load_root(
+        &mut self,
+        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<(), Error> {
         // In case of successful seek for root key check if it exists
         if let Some(tree_root_key) = self.root_tree_key.get_mut() {
             // Trying to build a tree out of it, costs will be accumulated because
             // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-            TreeNode::get(&self.storage, tree_root_key).map_ok(|tree| {
+            TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn).map_ok(|tree| {
                 self.tree = Cell::new(tree);
             })
         } else {
@@ -533,11 +541,15 @@ where
     }
 }
 
-fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<TreeNode>, Error> {
+fn fetch_node<'db>(
+    db: &impl StorageContext<'db>,
+    key: &[u8],
+    value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+) -> Result<Option<TreeNode>, Error> {
     let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
         Ok(Some(
-            TreeNode::decode(key.to_vec(), &bytes).map_err(EdError)?,
+            TreeNode::decode(key.to_vec(), &bytes, value_defined_cost_fn).map_err(EdError)?,
         ))
     } else {
         Ok(None)
@@ -556,7 +568,10 @@ mod test {
     use tempfile::TempDir;
 
     use super::{Merk, RefWalker};
-    use crate::{merk::source::MerkSource, test_utils::*, Op, TreeFeatureType::BasicMerk};
+    use crate::{
+        merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType, Op,
+        TreeFeatureType::BasicMerkNode,
+    };
 
     // TODO: Close and then reopen test
 
@@ -656,7 +671,7 @@ mod test {
         let mut merk = TempMerk::new();
         merk.apply::<Vec<_>, _>(
             &[],
-            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk), None)],
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode), None)],
             None,
         )
         .unwrap()
@@ -672,27 +687,55 @@ mod test {
         let mut merk = TempMerk::new();
 
         // no root
-        assert!(merk.get(&[1, 2, 3], true).unwrap().unwrap().is_none());
+        assert!(merk
+            .get(
+                &[1, 2, 3],
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
+            .unwrap()
+            .unwrap()
+            .is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![], BasicMerk))], &[], None)
+        merk.apply::<_, Vec<_>>(
+            &[(vec![5, 5, 5], Op::Put(vec![], BasicMerkNode))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(merk
+            .get(
+                &[1, 2, 3],
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
             .unwrap()
-            .unwrap();
-        assert!(merk.get(&[1, 2, 3], true).unwrap().unwrap().is_none());
+            .unwrap()
+            .is_none());
 
         // uncached
         merk.apply::<_, Vec<_>>(
             &[
-                (vec![0, 0, 0], Op::Put(vec![], BasicMerk)),
-                (vec![1, 1, 1], Op::Put(vec![], BasicMerk)),
-                (vec![2, 2, 2], Op::Put(vec![], BasicMerk)),
+                (vec![0, 0, 0], Op::Put(vec![], BasicMerkNode)),
+                (vec![1, 1, 1], Op::Put(vec![], BasicMerkNode)),
+                (vec![2, 2, 2], Op::Put(vec![], BasicMerkNode)),
             ],
             &[],
             None,
         )
         .unwrap()
         .unwrap();
-        assert!(merk.get(&[3, 3, 3], true).unwrap().unwrap().is_none());
+        assert!(merk
+            .get(
+                &[3, 3, 3],
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
+            .unwrap()
+            .unwrap()
+            .is_none());
     }
 
     // TODO: what this test should do?
@@ -706,6 +749,7 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -729,6 +773,7 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -746,10 +791,18 @@ mod test {
             nodes: &mut Vec<Vec<u8>>,
         ) {
             nodes.push(node.tree().encode());
-            if let Some(c) = node.walk(true).unwrap().unwrap() {
+            if let Some(c) = node
+                .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()
+                .unwrap()
+            {
                 collect(c, nodes);
             }
-            if let Some(c) = node.walk(false).unwrap().unwrap() {
+            if let Some(c) = node
+                .walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()
+                .unwrap()
+            {
                 collect(c, nodes);
             }
         }
@@ -765,6 +818,7 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), Some(&batch))
                     .unwrap(),
                 false,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .unwrap()
             .expect("cannot open merk");
@@ -782,6 +836,7 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),
                 false,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .unwrap()
             .expect("cannot open merk");
@@ -801,6 +856,7 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -841,6 +897,7 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), Some(&batch))
                     .unwrap(),
                 false,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .unwrap()
             .expect("cannot open merk");
@@ -860,6 +917,7 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),
                 false,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .unwrap()
             .expect("cannot open merk");
@@ -873,6 +931,7 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -894,19 +953,20 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), Some(&batch))
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .expect("cannot open merk");
 
         merk.apply::<_, Vec<_>>(
-            &[(b"9".to_vec(), Op::Put(b"a".to_vec(), BasicMerk))],
+            &[(b"9".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))],
             &[],
             None,
         )
         .unwrap()
         .expect("should insert successfully");
         merk.apply::<_, Vec<_>>(
-            &[(b"10".to_vec(), Op::Put(b"a".to_vec(), BasicMerk))],
+            &[(b"10".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))],
             &[],
             None,
         )
@@ -914,21 +974,29 @@ mod test {
         .expect("should insert successfully");
 
         let result = merk
-            .get(b"10".as_slice(), true)
+            .get(
+                b"10".as_slice(),
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            )
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"a".to_vec()));
 
         // Update the node
         merk.apply::<_, Vec<_>>(
-            &[(b"10".to_vec(), Op::Put(b"b".to_vec(), BasicMerk))],
+            &[(b"10".to_vec(), Op::Put(b"b".to_vec(), BasicMerkNode))],
             &[],
             None,
         )
         .unwrap()
         .expect("should insert successfully");
         let result = merk
-            .get(b"10".as_slice(), true)
+            .get(
+                b"10".as_slice(),
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            )
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"b".to_vec()));
@@ -943,20 +1011,25 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .expect("cannot open merk");
 
         // Update the node after dropping merk
         merk.apply::<_, Vec<_>>(
-            &[(b"10".to_vec(), Op::Put(b"c".to_vec(), BasicMerk))],
+            &[(b"10".to_vec(), Op::Put(b"c".to_vec(), BasicMerkNode))],
             &[],
             None,
         )
         .unwrap()
         .expect("should insert successfully");
         let result = merk
-            .get(b"10".as_slice(), true)
+            .get(
+                b"10".as_slice(),
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            )
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"c".to_vec()));

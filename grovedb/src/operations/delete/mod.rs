@@ -495,7 +495,8 @@ impl GroveDb {
                     Merk::open_layered_with_root_key(
                         storage,
                         subtree_to_delete_from.root_key(),
-                        element.is_sum_tree()
+                        element.is_sum_tree(),
+                        Some(&Element::value_defined_cost_for_serialized_value),
                     )
                     .map_err(|_| {
                         Error::CorruptedData("cannot open a subtree with given root key".to_owned())

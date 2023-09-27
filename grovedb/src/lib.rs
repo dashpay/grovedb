@@ -193,6 +193,7 @@ pub use grovedb_merk::estimated_costs::{
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
+use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use grovedb_merk::{
     self,
@@ -289,11 +290,16 @@ impl GroveDb {
             );
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                    .map_err(|_| {
-                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
-                    })
-                    .add_cost(cost)
+                Merk::open_layered_with_root_key(
+                    storage,
+                    root_key,
+                    is_sum_tree,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                )
+                .map_err(|_| {
+                    Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                })
+                .add_cost(cost)
             } else {
                 Err(Error::CorruptedPath(
                     "cannot open a subtree as parent exists but is not a tree",
@@ -301,9 +307,13 @@ impl GroveDb {
                 .wrap_with_cost(cost)
             }
         } else {
-            Merk::open_base(storage, false)
-                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-                .add_cost(cost)
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+            .add_cost(cost)
         }
     }
 
@@ -340,20 +350,29 @@ impl GroveDb {
                 .unwrap()?;
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                    .map_err(|_| {
-                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
-                    })
-                    .unwrap()
+                Merk::open_layered_with_root_key(
+                    storage,
+                    root_key,
+                    is_sum_tree,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                )
+                .map_err(|_| {
+                    Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                })
+                .unwrap()
             } else {
                 Err(Error::CorruptedPath(
                     "cannot open a subtree as parent exists but is not a tree",
                 ))
             }
         } else {
-            Merk::open_base(storage, false)
-                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-                .unwrap()
+            Merk::open_base(
+                storage,
+                false,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+            .unwrap()
         }
     }
 
@@ -391,11 +410,16 @@ impl GroveDb {
             );
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                    .map_err(|_| {
-                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
-                    })
-                    .add_cost(cost)
+                Merk::open_layered_with_root_key(
+                    storage,
+                    root_key,
+                    is_sum_tree,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                )
+                .map_err(|_| {
+                    Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                })
+                .add_cost(cost)
             } else {
                 Err(Error::CorruptedPath(
                     "cannot open a subtree as parent exists but is not a tree",
@@ -403,9 +427,13 @@ impl GroveDb {
                 .wrap_with_cost(cost)
             }
         } else {
-            Merk::open_base(storage, false)
-                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-                .add_cost(cost)
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+            .add_cost(cost)
         }
     }
 
@@ -675,7 +703,11 @@ impl GroveDb {
         key: K,
     ) -> CostResult<Element, Error> {
         subtree
-            .get(key.as_ref(), true)
+            .get(
+                key.as_ref(),
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value),
+            )
             .map_err(|_| {
                 Error::InvalidPath("can't find subtree in parent during propagation".to_owned())
             })
@@ -831,7 +863,11 @@ impl GroveDb {
             let element = raw_decode(&element_value).unwrap();
             if element.is_tree() {
                 let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
+                    .get_value_and_value_hash(
+                        &key,
+                        true,
+                        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    )
                     .unwrap()
                     .unwrap()
                     .unwrap();

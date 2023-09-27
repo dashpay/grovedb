@@ -411,6 +411,7 @@ mod test {
     use grovedb_merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
         test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
+        tree::kv::ValueDefinedCostType,
     };
     use grovedb_storage::{
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
@@ -451,7 +452,11 @@ mod test {
         // 2. Left link exists
         // 3. Right link exists
         // Based on merk's avl rotation algorithm node is key 8 satisfies this
-        let node_result = merk.get(&8_u64.to_be_bytes(), true);
+        let node_result = merk.get(
+            &8_u64.to_be_bytes(),
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        );
 
         // By tweaking the max element size, we can adapt the worst case function to
         // this scenario. make_batch_seq creates values that are 60 bytes in size

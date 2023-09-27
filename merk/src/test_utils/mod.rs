@@ -39,9 +39,12 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
-    tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, TreeNode, Walker},
+    tree::{
+        kv::{ValueDefinedCostType, KV},
+        BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, TreeNode, Walker,
+    },
     Merk,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 
 /// Assert tree invariants
@@ -85,6 +88,7 @@ pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> Tr
                 is_sum_node,
             ))
         },
+        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
@@ -137,6 +141,7 @@ pub fn apply_to_memonly(
                 is_sum_tree,
             ))
         },
+        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
@@ -171,7 +176,7 @@ pub const fn seq_key(n: u64) -> [u8; 8] {
 
 /// Create batch entry with Put op using key n and a fixed value
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
-    (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerk))
+    (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerkNode))
 }
 
 /// Create batch entry with Delete op using key n
@@ -235,9 +240,9 @@ pub fn make_tree_rand(
 
     let value = vec![123; 60];
     let feature_type = if is_sum_tree {
-        SummedMerk(0)
+        SummedMerkNode(0)
     } else {
-        BasicMerk
+        BasicMerkNode
     };
     let mut tree = TreeNode::new(vec![0; 20], value, None, feature_type).unwrap();
 
@@ -264,7 +269,7 @@ pub fn make_tree_seq(node_count: u64) -> TreeNode {
     };
 
     let value = vec![123; 60];
-    let mut tree = TreeNode::new(vec![0; 20], value, None, BasicMerk).unwrap();
+    let mut tree = TreeNode::new(vec![0; 20], value, None, BasicMerkNode).unwrap();
 
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {
@@ -288,6 +293,7 @@ where
             .get_storage_context(SubtreePath::empty(), Some(batch))
             .unwrap(),
         false,
+        None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
     )
     .unwrap()
     .unwrap()
@@ -305,6 +311,7 @@ where
             .get_storage_context(SubtreePath::empty(), None)
             .unwrap(),
         false,
+        None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
     )
     .unwrap()
     .unwrap()

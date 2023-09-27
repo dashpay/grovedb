@@ -487,8 +487,8 @@ impl TreeNode {
     #[inline]
     pub fn sum(&self) -> Result<Option<i64>, Error> {
         match self.inner.kv.feature_type {
-            TreeFeatureType::BasicMerk => Ok(None),
-            TreeFeatureType::SummedMerk(value) => value
+            TreeFeatureType::BasicMerkNode => Ok(None),
+            TreeFeatureType::SummedMerkNode(value) => value
                 .checked_add(self.child_sum(true))
                 .and_then(|a| a.checked_add(self.child_sum(false)))
                 .ok_or(Overflow("sum is overflowing"))
@@ -944,7 +944,15 @@ impl TreeNode {
     /// Fetches the child on the given side using the given data source, and
     /// places it in the child slot (upgrading the link from `Link::Reference`
     /// to `Link::Loaded`).
-    pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> CostResult<(), Error> {
+    pub fn load<S: Fetch, V>(
+        &mut self,
+        left: bool,
+        source: &S,
+        value_defined_cost_fn: Option<&V>,
+    ) -> CostResult<(), Error>
+    where
+        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+    {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
         let (child_heights, hash, sum) = match link {
@@ -958,7 +966,7 @@ impl TreeNode {
         };
 
         let mut cost = OperationCost::default();
-        let tree = cost_return_on_error!(&mut cost, source.fetch(link));
+        let tree = cost_return_on_error!(&mut cost, source.fetch(link, value_defined_cost_fn));
         debug_assert_eq!(tree.key(), link.key());
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,
@@ -986,11 +994,13 @@ mod test {
     use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{commit::NoopCommit, hash::NULL_HASH, TreeNode};
-    use crate::tree::{tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::BasicMerk};
+    use crate::tree::{
+        tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
+    };
 
     #[test]
     fn build_tree() {
-        let tree = TreeNode::new(vec![1], vec![101], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![1], vec![101], None, BasicMerkNode).unwrap();
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.value_as_slice(), &[101]);
         assert!(tree.child(true).is_none());
@@ -1002,13 +1012,13 @@ mod test {
 
         let tree = tree.attach(
             true,
-            Some(TreeNode::new(vec![2], vec![102], None, BasicMerk).unwrap()),
+            Some(TreeNode::new(vec![2], vec![102], None, BasicMerkNode).unwrap()),
         );
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
         assert!(tree.child(false).is_none());
 
-        let tree = TreeNode::new(vec![3], vec![103], None, BasicMerk)
+        let tree = TreeNode::new(vec![3], vec![103], None, BasicMerkNode)
             .unwrap()
             .attach(false, Some(tree));
         assert_eq!(tree.key(), &[3]);
@@ -1019,29 +1029,29 @@ mod test {
     #[should_panic]
     #[test]
     fn attach_existing() {
-        TreeNode::new(vec![0], vec![1], None, BasicMerk)
+        TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
             .attach(
                 true,
-                Some(TreeNode::new(vec![4], vec![5], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
             );
     }
 
     #[test]
     fn modify() {
-        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerk)
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
             .attach(
                 false,
-                Some(TreeNode::new(vec![4], vec![5], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
             );
 
         let tree = tree.walk(true, |left_opt| {
@@ -1053,7 +1063,7 @@ mod test {
 
         let tree = tree.walk(true, |left_opt| {
             assert!(left_opt.is_none());
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap())
+            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap())
         });
         assert_eq!(tree.link(true).unwrap().key(), &[2]);
 
@@ -1067,11 +1077,11 @@ mod test {
 
     #[test]
     fn child_and_link() {
-        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             );
         assert!(tree.link(true).expect("expected link").is_modified());
         assert!(tree.child(true).is_some());
@@ -1095,11 +1105,11 @@ mod test {
 
     #[test]
     fn child_hash() {
-        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             );
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
@@ -1116,7 +1126,7 @@ mod test {
 
     #[test]
     fn hash() {
-        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         assert_eq!(
             tree.hash().unwrap(),
             [
@@ -1128,13 +1138,13 @@ mod test {
 
     #[test]
     fn child_pending_writes() {
-        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         assert_eq!(tree.child_pending_writes(true), 0);
         assert_eq!(tree.child_pending_writes(false), 0);
 
         let tree = tree.attach(
             true,
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
         );
         assert_eq!(tree.child_pending_writes(true), 1);
         assert_eq!(tree.child_pending_writes(false), 0);
@@ -1142,7 +1152,7 @@ mod test {
 
     #[test]
     fn height_and_balance() {
-        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerk).unwrap();
+        let tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
         assert_eq!(tree.height(), 1);
         assert_eq!(tree.child_height(true), 0);
         assert_eq!(tree.child_height(false), 0);
@@ -1150,7 +1160,7 @@ mod test {
 
         let tree = tree.attach(
             true,
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
         );
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 1);
@@ -1167,11 +1177,11 @@ mod test {
 
     #[test]
     fn commit() {
-        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerk)
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 false,
-                Some(TreeNode::new(vec![2], vec![3], None, BasicMerk).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             );
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
@@ -1182,11 +1192,11 @@ mod test {
 
     #[test]
     fn sum_tree() {
-        let mut tree = TreeNode::new(vec![0], vec![1], None, SummedMerk(3))
+        let mut tree = TreeNode::new(vec![0], vec![1], None, SummedMerkNode(3))
             .unwrap()
             .attach(
                 false,
-                Some(TreeNode::new(vec![2], vec![3], None, SummedMerk(5)).unwrap()),
+                Some(TreeNode::new(vec![2], vec![3], None, SummedMerkNode(5)).unwrap()),
             );
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()

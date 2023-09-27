@@ -39,6 +39,7 @@ use grovedb_storage::{
     Storage,
 };
 
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::Merk;
 
@@ -62,7 +63,13 @@ impl TempMerk {
             .get_storage_context(SubtreePath::empty(), Some(batch))
             .unwrap();
 
-        let merk = Merk::open_base(context, false).unwrap().unwrap();
+        let merk = Merk::open_base(
+            context,
+            false,
+            None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
+        .unwrap()
+        .unwrap();
         TempMerk {
             storage,
             merk,
@@ -82,7 +89,13 @@ impl TempMerk {
             .storage
             .get_storage_context(SubtreePath::empty(), Some(self.batch))
             .unwrap();
-        self.merk = Merk::open_base(context, false).unwrap().unwrap();
+        self.merk = Merk::open_base(
+            context,
+            false,
+            None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
+        .unwrap()
+        .unwrap();
     }
 }
 

@@ -29,11 +29,15 @@
 //! Helpers
 //! Implements helper functions in Element
 
+use grovedb_merk::tree::kv::{
+    ValueDefinedCostType,
+    ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+};
 #[cfg(feature = "full")]
 use grovedb_merk::{
     tree::{kv::KV, TreeNode},
     TreeFeatureType,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
@@ -114,8 +118,8 @@ impl Element {
     /// Get the tree feature type
     pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
-            true => Ok(SummedMerk(self.sum_value_or_default())),
-            false => Ok(BasicMerk),
+            true => Ok(SummedMerkNode(self.sum_value_or_default())),
+            false => Ok(BasicMerkNode),
         }
     }
 
@@ -307,13 +311,44 @@ impl Element {
             )),
         }
     }
+
+    #[cfg(feature = "full")]
+    /// Get the value defined cost for a serialized value
+    pub fn value_defined_cost(&self) -> Option<ValueDefinedCostType> {
+        let Some(value_cost) = self.get_specialized_cost().ok() else {
+            return None;
+        };
+
+        let cost = value_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        match self {
+            Element::Tree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::SumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "full")]
+    /// Get the value defined cost for a serialized value
+    pub fn value_defined_cost_for_serialized_value(value: &[u8]) -> Option<ValueDefinedCostType> {
+        let element = Element::deserialize(value).ok()?;
+        element.value_defined_cost()
+    }
 }
 
 #[cfg(feature = "full")]
 /// Decode from bytes
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
-    let tree =
-        TreeNode::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
+    let tree = TreeNode::decode_raw(
+        bytes,
+        vec![],
+        Some(Element::value_defined_cost_for_serialized_value),
+    )
+    .map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice())?;
     Ok(element)
 }

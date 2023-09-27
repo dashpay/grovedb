@@ -181,6 +181,7 @@ impl<'db> Restorer<'db> {
                         .get_immediate_storage_context(SubtreePath::empty(), tx)
                         .unwrap(),
                     false,
+                    Some(&Element::value_defined_cost_for_serialized_value),
                 )
                 .unwrap()
                 .map_err(|e| RestorerError(e.to_string()))?,

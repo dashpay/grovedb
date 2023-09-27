@@ -30,7 +30,8 @@
 
 use grovedb_merk::{
     proofs::Query,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+    tree::kv::ValueDefinedCostType,
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 use grovedb_storage::StorageBatch;
 
@@ -266,28 +267,44 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
-        merk.get_feature_type(b"item1", true)
-            .unwrap()
-            .expect("node should exist"),
-        Some(SummedMerk(30))
+        merk.get_feature_type(
+            b"item1",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+        )
+        .unwrap()
+        .expect("node should exist"),
+        Some(SummedMerkNode(30))
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item2", true)
-            .unwrap()
-            .expect("node should exist"),
-        Some(SummedMerk(10))
+        merk.get_feature_type(
+            b"item2",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+        )
+        .unwrap()
+        .expect("node should exist"),
+        Some(SummedMerkNode(10))
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item3", true)
-            .unwrap()
-            .expect("node should exist"),
-        Some(SummedMerk(0))
+        merk.get_feature_type(
+            b"item3",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+        )
+        .unwrap()
+        .expect("node should exist"),
+        Some(SummedMerkNode(0))
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item4", true)
-            .unwrap()
-            .expect("node should exist"),
-        Some(SummedMerk(0))
+        merk.get_feature_type(
+            b"item4",
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+        )
+        .unwrap()
+        .expect("node should exist"),
+        Some(SummedMerkNode(0))
     ));
     assert_eq!(merk.sum().expect("expected to get sum"), Some(40));
 
@@ -326,16 +343,24 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
-        merk.get_feature_type(b"item1", true)
-            .unwrap()
-            .expect("node should exist"),
-        Some(BasicMerk)
+        merk.get_feature_type(
+            b"item1",
+            true,
+            Some(&Element::value_defined_cost_for_serialized_value)
+        )
+        .unwrap()
+        .expect("node should exist"),
+        Some(BasicMerkNode)
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item2", true)
-            .unwrap()
-            .expect("node should exist"),
-        Some(BasicMerk)
+        merk.get_feature_type(
+            b"item2",
+            true,
+            Some(&Element::value_defined_cost_for_serialized_value)
+        )
+        .unwrap()
+        .expect("node should exist"),
+        Some(BasicMerkNode)
     ));
     assert_eq!(merk.sum().expect("expected to get sum"), None);
 }
@@ -582,10 +607,14 @@ fn test_sum_tree_propagation() {
         .expect("should open tree");
     assert!(matches!(
         test_leaf_merk
-            .get_feature_type(b"key", true)
+            .get_feature_type(
+                b"key",
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value)
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(BasicMerk)
+        Some(BasicMerkNode)
     ));
 
     let parent_sum_tree = db
@@ -594,12 +623,16 @@ fn test_sum_tree_propagation() {
         .expect("should open tree");
     assert!(matches!(
         parent_sum_tree
-            .get_feature_type(b"tree2", true)
+            .get_feature_type(
+                b"tree2",
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value)
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(15)) /* 15 because the child sum tree has one sum item of
-                              * value 5 and
-                              * another of value 10 */
+        Some(SummedMerkNode(15)) /* 15 because the child sum tree has one sum item of
+                                  * value 5 and
+                                  * another of value 10 */
     ));
 
     let child_sum_tree = db
@@ -611,33 +644,49 @@ fn test_sum_tree_propagation() {
         .expect("should open tree");
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"item1", true)
+            .get_feature_type(
+                b"item1",
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(0))
+        Some(SummedMerkNode(0))
     ));
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"sumitem1", true)
+            .get_feature_type(
+                b"sumitem1",
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(5))
+        Some(SummedMerkNode(5))
     ));
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"sumitem2", true)
+            .get_feature_type(
+                b"sumitem2",
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(10))
+        Some(SummedMerkNode(10))
     ));
 
     // TODO: should references take the sum of the referenced element??
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"item2", true)
+            .get_feature_type(
+                b"item2",
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(0))
+        Some(SummedMerkNode(0))
     ));
 }
 
@@ -673,17 +722,25 @@ fn test_sum_tree_with_batches() {
 
     assert!(matches!(
         sum_tree
-            .get_feature_type(b"a", true)
+            .get_feature_type(
+                b"a",
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value)
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(0))
+        Some(SummedMerkNode(0))
     ));
     assert!(matches!(
         sum_tree
-            .get_feature_type(b"b", true)
+            .get_feature_type(
+                b"b",
+                true,
+                Some(&Element::value_defined_cost_for_serialized_value)
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(10))
+        Some(SummedMerkNode(10))
     ));
 
     // Create new batch to use existing tree
@@ -703,10 +760,14 @@ fn test_sum_tree_with_batches() {
         .expect("should open tree");
     assert!(matches!(
         sum_tree
-            .get_feature_type(b"c", true)
+            .get_feature_type(
+                b"c",
+                true,
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(10))
+        Some(SummedMerkNode(10))
     ));
     assert_eq!(sum_tree.sum().expect("expected to get sum"), Some(20));
 

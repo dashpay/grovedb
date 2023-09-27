@@ -43,12 +43,13 @@ use {
 
 #[cfg(feature = "full")]
 use super::{Node, Op};
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::{
     error::Error,
     tree::{Fetch, RefWalker},
     Error::EdError,
-    TreeFeatureType::BasicMerk,
+    TreeFeatureType::BasicMerkNode,
 };
 
 /// The minimum number of layers the trunk will be guaranteed to have before
@@ -95,7 +96,10 @@ where
         depth: usize,
     ) -> CostResult<usize, Error> {
         let mut cost = OperationCost::default();
-        let maybe_left = match self.walk(true).unwrap_add_cost(&mut cost) {
+        let maybe_left = match self
+            .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            .unwrap_add_cost(&mut cost)
+        {
             Ok(maybe_left) => maybe_left,
             Err(e) => {
                 return Err(e).wrap_with_cost(cost);
@@ -159,7 +163,11 @@ where
         // traverse left
         let has_left_child = self.tree().link(true).is_some();
         if has_left_child {
-            let mut left = cost_return_on_error!(&mut cost, self.walk(true)).unwrap();
+            let mut left = cost_return_on_error!(
+                &mut cost,
+                self.walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            )
+            .unwrap();
             cost_return_on_error!(
                 &mut cost,
                 left.traverse_for_trunk(proof, remaining_depth - 1, is_leftmost)
@@ -174,7 +182,10 @@ where
         }
 
         // traverse right
-        if let Some(mut right) = cost_return_on_error!(&mut cost, self.walk(false)) {
+        if let Some(mut right) = cost_return_on_error!(
+            &mut cost,
+            self.walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+        ) {
             cost_return_on_error!(
                 &mut cost,
                 right.traverse_for_trunk(proof, remaining_depth - 1, false)
@@ -199,7 +210,7 @@ pub(crate) fn get_next_chunk(
 
     let mut chunk = Vec::with_capacity(512);
     let mut stack = Vec::with_capacity(32);
-    let mut node = TreeNode::new(vec![], vec![], None, BasicMerk).unwrap_add_cost(&mut cost);
+    let mut node = TreeNode::new(vec![], vec![], None, BasicMerkNode).unwrap_add_cost(&mut cost);
 
     while iter.valid().unwrap_add_cost(&mut cost) {
         let key = iter.key().unwrap_add_cost(&mut cost).unwrap();
@@ -213,7 +224,13 @@ pub(crate) fn get_next_chunk(
         let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
         cost_return_on_error_no_add!(
             &cost,
-            TreeNode::decode_into(&mut node, vec![], encoded_node).map_err(EdError)
+            TreeNode::decode_into(
+                &mut node,
+                vec![],
+                encoded_node,
+                None::<fn(&[u8]) -> Option<ValueDefinedCostType>>
+            )
+            .map_err(EdError)
         );
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
@@ -459,7 +476,7 @@ mod tests {
 
     #[test]
     fn one_node_tree_trunk_roundtrip() {
-        let mut tree = BaseTree::new(vec![0], vec![], None, BasicMerk).unwrap();
+        let mut tree = BaseTree::new(vec![0], vec![], None, BasicMerkNode).unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .unwrap();
@@ -480,11 +497,11 @@ mod tests {
         // 0
         //  \
         //   1
-        let mut tree = BaseTree::new(vec![0], vec![], None, BasicMerk)
+        let mut tree = BaseTree::new(vec![0], vec![], None, BasicMerkNode)
             .unwrap()
             .attach(
                 false,
-                Some(BaseTree::new(vec![1], vec![], None, BasicMerk).unwrap()),
+                Some(BaseTree::new(vec![1], vec![], None, BasicMerkNode).unwrap()),
             );
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
@@ -505,11 +522,11 @@ mod tests {
         //   1
         //  /
         // 0
-        let mut tree = BaseTree::new(vec![1], vec![], None, BasicMerk)
+        let mut tree = BaseTree::new(vec![1], vec![], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(BaseTree::new(vec![0], vec![], None, BasicMerk).unwrap()),
+                Some(BaseTree::new(vec![0], vec![], None, BasicMerkNode).unwrap()),
             );
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
@@ -530,15 +547,15 @@ mod tests {
         //   1
         //  / \
         // 0   2
-        let mut tree = BaseTree::new(vec![1], vec![], None, BasicMerk)
+        let mut tree = BaseTree::new(vec![1], vec![], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
-                Some(BaseTree::new(vec![0], vec![], None, BasicMerk).unwrap()),
+                Some(BaseTree::new(vec![0], vec![], None, BasicMerkNode).unwrap()),
             )
             .attach(
                 false,
-                Some(BaseTree::new(vec![2], vec![], None, BasicMerk).unwrap()),
+                Some(BaseTree::new(vec![2], vec![], None, BasicMerkNode).unwrap()),
             );
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()

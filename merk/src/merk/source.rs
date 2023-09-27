@@ -2,7 +2,7 @@ use grovedb_costs::CostResult;
 use grovedb_storage::StorageContext;
 
 use crate::{
-    tree::{Fetch, TreeNode},
+    tree::{kv::ValueDefinedCostType, Fetch, TreeNode},
     Error, Link, Merk,
 };
 
@@ -37,8 +37,12 @@ impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
     S: StorageContext<'db>,
 {
-    fn fetch(&self, link: &Link) -> CostResult<TreeNode, Error> {
-        TreeNode::get(self.storage, link.key())
+    fn fetch(
+        &self,
+        link: &Link,
+        value_defined_cost_fn: Option<&impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ) -> CostResult<TreeNode, Error> {
+        TreeNode::get(self.storage, link.key(), value_defined_cost_fn)
             .map_ok(|x| x.ok_or(Error::KeyNotFoundError("Key not found for fetch")))
             .flatten()
     }
