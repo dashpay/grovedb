@@ -912,7 +912,11 @@ impl GroveDb {
                 issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch)?);
             } else if element.is_item() {
                 let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
+                    .get_value_and_value_hash(
+                        &key,
+                        true,
+                        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    )
                     .unwrap()
                     .map_err(MerkError)?
                     .ok_or(Error::CorruptedData(
@@ -948,7 +952,11 @@ impl GroveDb {
             let element = raw_decode(&element_value)?;
             if element.is_tree() {
                 let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
+                    .get_value_and_value_hash(
+                        &key,
+                        true,
+                        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    )
                     .unwrap()
                     .map_err(MerkError)?
                     .ok_or(Error::CorruptedData(
@@ -979,7 +987,11 @@ impl GroveDb {
                 )?);
             } else if element.is_item() {
                 let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key, true)
+                    .get_value_and_value_hash(
+                        &key,
+                        true,
+                        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    )
                     .unwrap()
                     .map_err(MerkError)?
                     .ok_or(Error::CorruptedData(
