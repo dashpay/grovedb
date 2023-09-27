@@ -33,6 +33,7 @@ use std::{
     collections::{BTreeSet, LinkedList},
     fmt,
 };
+use backtrace::Backtrace;
 
 #[cfg(feature = "full")]
 use grovedb_costs::{
@@ -502,6 +503,11 @@ where
                     )
                 }
                 Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
+                    let bt = Backtrace::new();
+                    if batch.len() > 50 || bt.frames() > 50 {
+                        println!("dl bt {}: {:?}", batch.len(), bt);
+                    }
+
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
                     let wrap = |maybe_tree: Option<TreeNode>| {
