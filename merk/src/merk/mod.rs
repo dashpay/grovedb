@@ -871,10 +871,7 @@ mod test {
 
     #[test]
     fn reopen_iter() {
-        fn collect(
-            iter: PrefixedStorageIter<'_, '_>,
-            nodes: &mut Vec<(Vec<u8>, Vec<u8>)>,
-        ) {
+        fn collect(iter: PrefixedStorageIter<'_, '_>, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
             while iter.valid().unwrap() {
                 nodes.push((
                     iter.key().unwrap().unwrap().to_vec(),

@@ -74,8 +74,6 @@ pub enum EstimatedSumTrees {
 }
 
 #[cfg(feature = "full")]
-
-
 #[cfg(feature = "full")]
 impl EstimatedSumTrees {
     fn estimated_size(&self) -> Result<u32, Error> {

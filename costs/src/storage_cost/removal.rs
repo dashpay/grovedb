@@ -49,8 +49,7 @@ pub const UNKNOWN_EPOCH: u64 = u64::MAX;
 pub type StorageRemovalPerEpochByIdentifier = BTreeMap<Identifier, IntMap<u32>>;
 
 /// Removal bytes
-#[derive(Debug, PartialEq, Clone, Eq)]
-#[derive(Default)]
+#[derive(Debug, PartialEq, Clone, Eq, Default)]
 pub enum StorageRemovedBytes {
     /// No storage removal
     #[default]
@@ -60,8 +59,6 @@ pub enum StorageRemovedBytes {
     /// Storage removal is given as sections
     SectionedStorageRemoval(StorageRemovalPerEpochByIdentifier),
 }
-
-
 
 impl Add for StorageRemovedBytes {
     type Output = Self;
