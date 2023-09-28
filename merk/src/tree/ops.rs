@@ -636,7 +636,7 @@ where
                                         section_removal_bytes,
                                     )
                                 );
-                                let new_keys: BTreeSet<Vec<u8>> = batch[..index]
+                                let new_keys: BTreeSet<Vec<u8>> = batch[index + 1..]
                                     .iter()
                                     .map(|batch_entry| batch_entry.0.as_ref().to_vec())
                                     .collect();
