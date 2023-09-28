@@ -612,7 +612,7 @@ where
                                 cost_return_on_error!(
                                     &mut cost,
                                     tree.apply_sorted(
-                                        batch,
+                                        &batch[..index],
                                         old_specialized_cost,
                                         value_defined_cost_fn,
                                         update_tree_value_based_on_costs,
@@ -668,7 +668,7 @@ where
                                 cost_return_on_error!(
                                     &mut cost,
                                     tree.apply_sorted(
-                                        batch,
+                                        &batch[index + 1..],
                                         old_specialized_cost,
                                         value_defined_cost_fn,
                                         update_tree_value_based_on_costs,
