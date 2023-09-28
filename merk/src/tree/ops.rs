@@ -35,6 +35,14 @@ use std::{
 };
 use backtrace::Backtrace;
 
+#[macro_use]
+extern crate lazy_static;
+use std::sync::Mutex;
+
+lazy_static! {
+    static ref COUNTER: Mutex<u32> = Mutex::new(0);
+}
+
 #[cfg(feature = "full")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
@@ -47,6 +55,7 @@ use grovedb_costs::{
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
+use lazy_static::lazy_static;
 #[cfg(feature = "full")]
 use Op::*;
 
@@ -505,7 +514,9 @@ where
                 Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                     let bt = Backtrace::new();
                     if batch.len() > 50 || bt.frames().len() > 50 {
-                        println!("dl bt {}/{}: {:?}", batch.len(), bt.frames().len(), bt);
+                        let mut counter = COUNTER.lock().unwrap();
+                        *counter += 1;
+                        println!("dl bt {}/{} [{}]: {:?}", batch.len(), bt.frames().len(), *counter, bt);
                     }
 
                     // TODO: we shouldn't have to do this as 2 different calls to apply

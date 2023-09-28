@@ -20,6 +20,7 @@ grovedb-costs = { version = "1.0.0-rc.2", path = "../costs" }
 grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize" }
 grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
 backtrace = "0.3.67"
+lazy_static = "1.4.0"
 
 [dependencies.time]
 version = "0.3.17"
