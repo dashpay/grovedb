@@ -439,7 +439,7 @@ where
         let key_vec = self.tree().key().to_vec();
         // binary search to see if this node's key is in the batch, and to split
         // into left and right batches
-        let search = batch.binary_search_by(|(key, _op)| key.as_ref().cmp(self.tree().key()));
+        let search = batch.binary_search_by(|(key, _op)| key.as_ref().cmp(&key_vec));
 
         let tree = if let Ok(index) = search {
             let (_, op) = &batch[index];
@@ -502,33 +502,39 @@ where
                     )
                 }
                 Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
-                    // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
-                    let wrap = |maybe_tree: Option<TreeNode>| {
-                        maybe_tree.map(|tree| Self::new(tree, source.clone()))
+
+                    let (r_key_cost, r_value_cost) = {
+                        let value = self.tree().value_ref();
+
+                        let old_cost = match &batch[index].1 {
+                            Delete => self.tree().inner.kv.value_byte_cost_size(),
+                            DeleteLayered | DeleteLayeredMaybeSpecialized => {
+                                cost_return_on_error_no_add!(
+                                    &cost,
+                                    old_specialized_cost(&key_vec, value)
+                                )
+                            }
+                            DeleteMaybeSpecialized => {
+                                cost_return_on_error_no_add!(
+                                    &cost,
+                                    old_specialized_cost(&key_vec, value)
+                                )
+                            }
+                            _ => 0, // can't get here anyways
+                        };
+
+                        let key_len = key_vec.len() as u32;
+
+                        let prefixed_key_len = HASH_LENGTH_U32 + key_len;
+                        let total_key_len =
+                            prefixed_key_len + prefixed_key_len.required_space() as u32;
+                        let value = self.tree().value_ref();
+                        cost_return_on_error_no_add!(
+                            &cost,
+                            section_removal_bytes(value, total_key_len, old_cost)
+                        )
                     };
-                    let key = self.tree().key().to_vec();
-                    let key_len = key.len() as u32;
-
-                    let prefixed_key_len = HASH_LENGTH_U32 + key_len;
-                    let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
-                    let value = self.tree().value_ref();
-
-                    let old_cost = match &batch[index].1 {
-                        Delete => self.tree().inner.kv.value_byte_cost_size(),
-                        DeleteLayered | DeleteLayeredMaybeSpecialized => {
-                            cost_return_on_error_no_add!(&cost, old_specialized_cost(&key, value))
-                        }
-                        DeleteMaybeSpecialized => {
-                            cost_return_on_error_no_add!(&cost, old_specialized_cost(&key, value))
-                        }
-                        _ => 0, // can't get here anyways
-                    };
-
-                    let (r_key_cost, r_value_cost) = cost_return_on_error_no_add!(
-                        &cost,
-                        section_removal_bytes(value, total_key_len, old_cost)
-                    );
                     let deletion_cost = KeyValueStorageCost {
                         key_storage_cost: StorageCost {
                             added_bytes: 0,
@@ -544,38 +550,120 @@ where
                         needs_value_verification: false,
                     };
 
-                    let maybe_tree =
+                    let maybe_tree_walker =
                         cost_return_on_error!(&mut cost, self.remove(value_defined_cost_fn));
 
-                    #[rustfmt::skip]
-                    let (maybe_tree, mut key_updates)
-                        = cost_return_on_error!(
-                        &mut cost,
-                        Self::apply_to(
-                            maybe_tree,
-                            &batch[..index],
-                            source.clone(),
-                            old_specialized_cost,
-                            value_defined_cost_fn,
-                            update_tree_value_based_on_costs,
-                            section_removal_bytes
-                        )
-                    );
-                    let maybe_walker = wrap(maybe_tree);
+                    // If there are no more batch updates to the left this means that the index is 0
+                    // There would be no key updates to the left of this part of the tree.
 
-                    let (maybe_tree, mut key_updates_right) = cost_return_on_error!(
-                        &mut cost,
-                        Self::apply_to(
-                            maybe_walker,
-                            &batch[index + 1..],
-                            source.clone(),
-                            old_specialized_cost,
-                            value_defined_cost_fn,
-                            update_tree_value_based_on_costs,
-                            section_removal_bytes
+                    let (maybe_tree_walker, mut key_updates) = if index == 0 {
+                        (
+                            maybe_tree_walker,
+                            KeyUpdates::new(
+                                BTreeSet::default(),
+                                BTreeSet::default(),
+                                LinkedList::default(),
+                                None,
+                            ),
                         )
-                    );
-                    let maybe_walker = wrap(maybe_tree);
+                    } else {
+                        match maybe_tree_walker {
+                            None => {
+                                let new_tree_node = cost_return_on_error!(
+                                    &mut cost,
+                                    Self::build(
+                                        &batch[..index],
+                                        source.clone(),
+                                        old_specialized_cost,
+                                        value_defined_cost_fn,
+                                        update_tree_value_based_on_costs,
+                                        section_removal_bytes,
+                                    )
+                                );
+                                let new_keys: BTreeSet<Vec<u8>> = batch[..index]
+                                    .iter()
+                                    .map(|batch_entry| batch_entry.0.as_ref().to_vec())
+                                    .collect();
+                                (
+                                    new_tree_node.map(|tree| Self::new(tree, source.clone())),
+                                    KeyUpdates::new(
+                                        new_keys,
+                                        BTreeSet::default(),
+                                        LinkedList::default(),
+                                        None,
+                                    ),
+                                )
+                            }
+                            Some(tree) => {
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    tree.apply_sorted(
+                                        batch,
+                                        old_specialized_cost,
+                                        value_defined_cost_fn,
+                                        update_tree_value_based_on_costs,
+                                        section_removal_bytes
+                                    )
+                                )
+                            }
+                        }
+                    };
+
+                    // We not have a new top tree node, and a set of batch operations to the right
+                    // of the node
+
+                    let (maybe_tree_walker, mut key_updates_right) = if index == batch.len() - 1 {
+                        (
+                            maybe_tree_walker,
+                            KeyUpdates::new(
+                                BTreeSet::default(),
+                                BTreeSet::default(),
+                                LinkedList::default(),
+                                None,
+                            ),
+                        )
+                    } else {
+                        match maybe_tree_walker {
+                            None => {
+                                let new_tree_node = cost_return_on_error!(
+                                    &mut cost,
+                                    Self::build(
+                                        &batch[index + 1..],
+                                        source.clone(),
+                                        old_specialized_cost,
+                                        value_defined_cost_fn,
+                                        update_tree_value_based_on_costs,
+                                        section_removal_bytes,
+                                    )
+                                );
+                                let new_keys: BTreeSet<Vec<u8>> = batch[..index]
+                                    .iter()
+                                    .map(|batch_entry| batch_entry.0.as_ref().to_vec())
+                                    .collect();
+                                (
+                                    new_tree_node.map(|tree| Self::new(tree, source)),
+                                    KeyUpdates::new(
+                                        new_keys,
+                                        BTreeSet::default(),
+                                        LinkedList::default(),
+                                        None,
+                                    ),
+                                )
+                            }
+                            Some(tree) => {
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    tree.apply_sorted(
+                                        batch,
+                                        old_specialized_cost,
+                                        value_defined_cost_fn,
+                                        update_tree_value_based_on_costs,
+                                        section_removal_bytes
+                                    )
+                                )
+                            }
+                        }
+                    };
 
                     key_updates.new_keys.append(&mut key_updates_right.new_keys);
                     key_updates
@@ -584,10 +672,12 @@ where
                     key_updates
                         .deleted_keys
                         .append(&mut key_updates_right.deleted_keys);
-                    key_updates.deleted_keys.push_back((key, deletion_cost));
+                    key_updates
+                        .deleted_keys
+                        .push_back((key_vec.clone(), deletion_cost));
                     key_updates.updated_root_key_from = Some(key_vec);
 
-                    return Ok((maybe_walker, key_updates)).wrap_with_cost(cost);
+                    return Ok((maybe_tree_walker, key_updates)).wrap_with_cost(cost);
                 }
             }
         } else {
