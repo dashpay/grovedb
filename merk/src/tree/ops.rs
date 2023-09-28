@@ -511,7 +511,7 @@ where
                 }
                 Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                     let bt = Backtrace::new();
-                    if batch.len() > 50 || bt.frames().len() > 50 {
+                    if batch.len() > 100 || bt.frames().len() > 110 {
                         let mut counter = COUNTER.lock().unwrap();
                         *counter += 1;
                         println!("dl bt {}/{} [{}]: {:?}", batch.len(), bt.frames().len(), *counter, bt);
