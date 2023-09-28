@@ -514,7 +514,7 @@ where
                     if batch.len() > 100 || bt.frames().len() > 130 {
                         let mut counter = COUNTER.lock().unwrap();
                         *counter += 1;
-                        println!("dl bt {}/{} [{}]: {:?}", batch.len(), bt.frames().len(), *counter, bt);
+                        println!("key: {}, dl bt {}/{} [{}]: {:?}", hex::encode(&key_vec), batch.len(), bt.frames().len(), *counter, bt);
                     }
                     let source = self.clone_source();
 
