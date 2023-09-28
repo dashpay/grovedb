@@ -35,8 +35,6 @@ use std::{
 };
 use backtrace::Backtrace;
 
-#[macro_use]
-extern crate lazy_static;
 use std::sync::Mutex;
 
 lazy_static! {
