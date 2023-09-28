@@ -504,8 +504,8 @@ where
                 }
                 Delete | DeleteLayered | DeleteLayeredMaybeSpecialized | DeleteMaybeSpecialized => {
                     let bt = Backtrace::new();
-                    if batch.len() > 50 || bt.frames() > 50 {
-                        println!("dl bt {}: {:?}", batch.len(), bt);
+                    if batch.len() > 50 || bt.frames().len() > 50 {
+                        println!("dl bt {}/{}: {:?}", batch.len(), bt.frames().len(), bt);
                     }
 
                     // TODO: we shouldn't have to do this as 2 different calls to apply
