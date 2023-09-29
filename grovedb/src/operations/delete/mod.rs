@@ -38,7 +38,6 @@ mod worst_case;
 #[cfg(feature = "full")]
 use std::collections::{BTreeSet, HashMap};
 
-use bincode::options;
 #[cfg(feature = "full")]
 pub use delete_up_tree::DeleteUpTreeOptions;
 #[cfg(feature = "full")]
