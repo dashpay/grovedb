@@ -165,7 +165,7 @@ impl GroveDb {
 
     /// Delete all elements in a specified subtree
     /// Returns if we successfully cleared the subtree
-    fn clear_subtree<'b, B, P>(
+    pub fn clear_subtree<'b, B, P>(
         &self,
         path: P,
         options: Option<ClearOptions>,
