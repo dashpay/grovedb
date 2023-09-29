@@ -38,6 +38,7 @@ mod worst_case;
 #[cfg(feature = "full")]
 use std::collections::{BTreeSet, HashMap};
 
+use bincode::options;
 #[cfg(feature = "full")]
 pub use delete_up_tree::DeleteUpTreeOptions;
 #[cfg(feature = "full")]
@@ -46,6 +47,7 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_merk::{proofs::Query, KVIterator};
 #[cfg(feature = "full")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
@@ -55,13 +57,13 @@ use grovedb_storage::{
     Storage, StorageBatch, StorageContext,
 };
 
-use crate::util::merk_optional_tx_path_not_empty;
 #[cfg(feature = "full")]
 use crate::{
     batch::{GroveDbOp, Op},
     util::{storage_context_optional_tx, storage_context_with_parent_optional_tx},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
+use crate::{raw_decode, util::merk_optional_tx_path_not_empty};
 
 #[cfg(feature = "full")]
 #[derive(Clone)]
@@ -136,6 +138,135 @@ impl GroveDb {
                 .commit_multi_context_batch(batch, transaction)
                 .map_err(Into::into)
         })
+    }
+
+    /// Delete all elements in a specified subtree
+    pub fn clear_subtree<'b, B, P>(
+        &self,
+        path: P,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let subtree_path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+        let batch = StorageBatch::new();
+
+        if let Some(transaction) = transaction {
+            let mut merk_to_clear = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(
+                    subtree_path.clone(),
+                    transaction,
+                    Some(&batch)
+                )
+            );
+
+            let mut all_query = Query::new();
+            all_query.insert_all();
+
+            let mut element_iterator =
+                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
+
+            // delete all nested subtrees
+            while let Some((key, element_value)) =
+                element_iterator.next_kv().unwrap_add_cost(&mut cost)
+            {
+                let element = raw_decode(&element_value).unwrap();
+                if element.is_tree() {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.delete(
+                            subtree_path.clone(),
+                            key.as_slice(),
+                            Some(DeleteOptions {
+                                allow_deleting_non_empty_trees: true,
+                                deleting_non_empty_trees_returns_error: false,
+                                ..Default::default()
+                            }),
+                            Some(transaction),
+                        )
+                    );
+                }
+            }
+
+            // delete non subtree values
+            merk_to_clear.clear();
+
+            // propagate changes
+            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
+                HashMap::default();
+            merk_cache.insert(subtree_path.clone(), merk_to_clear);
+            cost_return_on_error!(
+                &mut cost,
+                self.propagate_changes_with_transaction(
+                    merk_cache,
+                    subtree_path.clone(),
+                    transaction,
+                    &batch,
+                )
+            );
+        } else {
+            let mut merk_to_clear = cost_return_on_error!(
+                &mut cost,
+                self.open_non_transactional_merk_at_path(subtree_path.clone(), Some(&batch))
+            );
+
+            let mut all_query = Query::new();
+            all_query.insert_all();
+
+            let mut element_iterator =
+                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
+
+            // delete all nested subtrees
+            while let Some((key, element_value)) =
+                element_iterator.next_kv().unwrap_add_cost(&mut cost)
+            {
+                let element = raw_decode(&element_value).unwrap();
+                if element.is_tree() {
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.delete(
+                            subtree_path.clone(),
+                            key.as_slice(),
+                            Some(DeleteOptions {
+                                allow_deleting_non_empty_trees: true,
+                                deleting_non_empty_trees_returns_error: false,
+                                ..Default::default()
+                            }),
+                            None
+                        )
+                    );
+                }
+            }
+
+            // delete non subtree values
+            merk_to_clear.clear();
+
+            // propagate changes
+            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
+                HashMap::default();
+            merk_cache.insert(subtree_path.clone(), merk_to_clear);
+            cost_return_on_error!(
+                &mut cost,
+                self.propagate_changes_without_transaction(
+                    merk_cache,
+                    subtree_path.clone(),
+                    &batch,
+                )
+            );
+        }
+
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, transaction)
+                .map_err(Into::into)
+        );
+
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Delete element with sectional storage function
@@ -1444,5 +1575,93 @@ mod tests {
                 hash_node_calls: 5,
             }
         );
+    }
+
+    #[test]
+    fn test_subtree_clear() {
+        let element = Element::new_item(b"ayy".to_vec());
+
+        let db = make_test_grovedb();
+
+        // Insert some nested subtrees
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 1 insert");
+        db.insert(
+            [TEST_LEAF, b"key1"].as_ref(),
+            b"key2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 2 insert");
+
+        // Insert an element into subtree
+        db.insert(
+            [TEST_LEAF, b"key1", b"key2"].as_ref(),
+            b"key3",
+            element,
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful value insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key4",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree 3 insert");
+
+        let key1_tree = db
+            .get([TEST_LEAF].as_ref(), b"key1", None)
+            .unwrap()
+            .unwrap();
+        assert!(!matches!(key1_tree, Element::Tree(None, _)));
+        let key1_merk = db
+            .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), None)
+            .unwrap()
+            .unwrap();
+        assert_ne!(key1_merk.root_hash().unwrap(), [0; 32]);
+
+        let root_hash_before_clear = db.root_hash(None).unwrap().unwrap();
+        db.clear_subtree([TEST_LEAF, b"key1"].as_ref(), None)
+            .unwrap()
+            .expect("unable to delete subtree");
+
+        assert!(matches!(
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+        assert!(matches!(
+            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
+                .unwrap(),
+            Err(Error::PathParentLayerNotFound(_))
+        ));
+        let key1_tree = db
+            .get([TEST_LEAF].as_ref(), b"key1", None)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(key1_tree, Element::Tree(None, _)));
+
+        let key1_merk = db
+            .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(key1_merk.root_hash().unwrap(), [0; 32]);
+
+        let root_hash_after_clear = db.root_hash(None).unwrap().unwrap();
+        assert_ne!(root_hash_before_clear, root_hash_after_clear);
     }
 }
