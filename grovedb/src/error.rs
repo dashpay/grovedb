@@ -132,6 +132,10 @@ pub enum Error {
     /// Deleting non empty tree
     DeletingNonEmptyTree(&'static str),
 
+    #[error("clearing tree with subtrees not allowed error: {0}")]
+    /// Clearing tree with subtrees not allowed
+    ClearingTreeWithSubtreesNotAllowed(&'static str),
+
     // Client allowed errors
     #[error("just in time element flags client error: {0}")]
     /// Just in time element flags client error

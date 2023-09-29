@@ -66,6 +66,30 @@ use crate::{raw_decode, util::merk_optional_tx_path_not_empty};
 
 #[cfg(feature = "full")]
 #[derive(Clone)]
+/// Clear options
+pub struct ClearOptions {
+    /// Check for Subtrees
+    pub check_for_subtrees: bool,
+    /// Allow deleting non empty trees if we check for subtrees
+    pub allow_deleting_subtrees: bool,
+    /// If we check for subtrees, and we don't allow deleting and there are
+    /// some, should we error?
+    pub trying_to_clear_with_subtrees_returns_error: bool,
+}
+
+#[cfg(feature = "full")]
+impl Default for ClearOptions {
+    fn default() -> Self {
+        ClearOptions {
+            check_for_subtrees: true,
+            allow_deleting_subtrees: false,
+            trying_to_clear_with_subtrees_returns_error: true,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
+#[derive(Clone)]
 /// Delete options
 pub struct DeleteOptions {
     /// Allow deleting non empty trees
@@ -140,11 +164,31 @@ impl GroveDb {
     }
 
     /// Delete all elements in a specified subtree
-    pub fn clear_subtree<'b, B, P>(
+    /// Returns if we successfully cleared the subtree
+    fn clear_subtree<'b, B, P>(
         &self,
         path: P,
+        options: Option<ClearOptions>,
         transaction: TransactionArg,
-    ) -> CostResult<(), Error>
+    ) -> Result<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.clear_subtree_with_costs(path, options, transaction)
+            .unwrap()
+    }
+
+    /// Delete all elements in a specified subtree and get back costs
+    /// Warning: The costs for this operation are not yet correct, hence we
+    /// should keep this private for now
+    /// Returns if we successfully cleared the subtree
+    fn clear_subtree_with_costs<'b, B, P>(
+        &self,
+        path: P,
+        options: Option<ClearOptions>,
+        transaction: TransactionArg,
+    ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -152,6 +196,8 @@ impl GroveDb {
         let subtree_path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let batch = StorageBatch::new();
+
+        let options = options.unwrap_or_default();
 
         if let Some(transaction) = transaction {
             let mut merk_to_clear = cost_return_on_error!(
@@ -163,36 +209,48 @@ impl GroveDb {
                 )
             );
 
-            let mut all_query = Query::new();
-            all_query.insert_all();
+            if options.check_for_subtrees {
+                let mut all_query = Query::new();
+                all_query.insert_all();
 
-            let mut element_iterator =
-                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
+                let mut element_iterator =
+                    KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
 
-            // delete all nested subtrees
-            while let Some((key, element_value)) =
-                element_iterator.next_kv().unwrap_add_cost(&mut cost)
-            {
-                let element = raw_decode(&element_value).unwrap();
-                if element.is_tree() {
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.delete(
-                            subtree_path.clone(),
-                            key.as_slice(),
-                            Some(DeleteOptions {
-                                allow_deleting_non_empty_trees: true,
-                                deleting_non_empty_trees_returns_error: false,
-                                ..Default::default()
-                            }),
-                            Some(transaction),
-                        )
-                    );
+                // delete all nested subtrees
+                while let Some((key, element_value)) =
+                    element_iterator.next_kv().unwrap_add_cost(&mut cost)
+                {
+                    let element = raw_decode(&element_value).unwrap();
+                    if element.is_tree() {
+                        if options.allow_deleting_subtrees {
+                            cost_return_on_error!(
+                                &mut cost,
+                                self.delete(
+                                    subtree_path.clone(),
+                                    key.as_slice(),
+                                    Some(DeleteOptions {
+                                        allow_deleting_non_empty_trees: true,
+                                        deleting_non_empty_trees_returns_error: false,
+                                        ..Default::default()
+                                    }),
+                                    Some(transaction),
+                                )
+                            );
+                        } else if options.trying_to_clear_with_subtrees_returns_error {
+                            return Err(Error::ClearingTreeWithSubtreesNotAllowed(
+                                "options do not allow to clear this merk tree as it contains \
+                                 subtrees",
+                            ))
+                            .wrap_with_cost(cost);
+                        } else {
+                            return Ok(false).wrap_with_cost(cost);
+                        }
+                    }
                 }
             }
 
             // delete non subtree values
-            merk_to_clear.clear();
+            cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
 
             // propagate changes
             let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
@@ -213,36 +271,47 @@ impl GroveDb {
                 self.open_non_transactional_merk_at_path(subtree_path.clone(), Some(&batch))
             );
 
-            let mut all_query = Query::new();
-            all_query.insert_all();
+            if options.check_for_subtrees {
+                let mut all_query = Query::new();
+                all_query.insert_all();
 
-            let mut element_iterator =
-                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
+                let mut element_iterator =
+                    KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
 
-            // delete all nested subtrees
-            while let Some((key, element_value)) =
-                element_iterator.next_kv().unwrap_add_cost(&mut cost)
-            {
-                let element = raw_decode(&element_value).unwrap();
-                if element.is_tree() {
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.delete(
-                            subtree_path.clone(),
-                            key.as_slice(),
-                            Some(DeleteOptions {
-                                allow_deleting_non_empty_trees: true,
-                                deleting_non_empty_trees_returns_error: false,
-                                ..Default::default()
-                            }),
-                            None
-                        )
-                    );
+                // delete all nested subtrees
+                while let Some((key, element_value)) =
+                    element_iterator.next_kv().unwrap_add_cost(&mut cost)
+                {
+                    let element = raw_decode(&element_value).unwrap();
+                    if options.allow_deleting_subtrees {
+                        if element.is_tree() {
+                            cost_return_on_error!(
+                                &mut cost,
+                                self.delete(
+                                    subtree_path.clone(),
+                                    key.as_slice(),
+                                    Some(DeleteOptions {
+                                        allow_deleting_non_empty_trees: true,
+                                        deleting_non_empty_trees_returns_error: false,
+                                        ..Default::default()
+                                    }),
+                                    None
+                                )
+                            );
+                        }
+                    } else if options.trying_to_clear_with_subtrees_returns_error {
+                        return Err(Error::ClearingTreeWithSubtreesNotAllowed(
+                            "options do not allow to clear this merk tree as it contains subtrees",
+                        ))
+                        .wrap_with_cost(cost);
+                    } else {
+                        return Ok(false).wrap_with_cost(cost);
+                    }
                 }
             }
 
             // delete non subtree values
-            merk_to_clear.clear();
+            cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
 
             // propagate changes
             let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
@@ -265,7 +334,7 @@ impl GroveDb {
                 .map_err(Into::into)
         );
 
-        Ok(()).wrap_with_cost(cost)
+        Ok(true).wrap_with_cost(cost)
     }
 
     /// Delete element with sectional storage function
@@ -868,7 +937,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{
-        operations::delete::{delete_up_tree::DeleteUpTreeOptions, DeleteOptions},
+        operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
         tests::{
             common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
@@ -1634,9 +1703,35 @@ mod tests {
         assert_ne!(key1_merk.root_hash().unwrap(), [0; 32]);
 
         let root_hash_before_clear = db.root_hash(None).unwrap().unwrap();
-        db.clear_subtree([TEST_LEAF, b"key1"].as_ref(), None)
-            .unwrap()
+        db.clear_subtree([TEST_LEAF, b"key1"].as_ref(), None, None)
+            .expect_err("unable to delete subtree");
+
+        let success = db
+            .clear_subtree(
+                [TEST_LEAF, b"key1"].as_ref(),
+                Some(ClearOptions {
+                    check_for_subtrees: true,
+                    allow_deleting_subtrees: false,
+                    trying_to_clear_with_subtrees_returns_error: false,
+                }),
+                None,
+            )
+            .expect("expected no error");
+        assert!(!success);
+
+        let success = db
+            .clear_subtree(
+                [TEST_LEAF, b"key1"].as_ref(),
+                Some(ClearOptions {
+                    check_for_subtrees: true,
+                    allow_deleting_subtrees: true,
+                    trying_to_clear_with_subtrees_returns_error: false,
+                }),
+                None,
+            )
             .expect("unable to delete subtree");
+
+        assert!(success);
 
         assert!(matches!(
             db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
