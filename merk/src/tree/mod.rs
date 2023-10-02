@@ -98,7 +98,7 @@ use crate::{error::Error, Error::Overflow};
 
 #[cfg(feature = "full")]
 /// The fields of the `Tree` type, stored on the heap.
-#[derive(Clone, Encode, Decode, Debug)]
+#[derive(Clone, Encode, Decode, Debug, PartialEq)]
 pub struct TreeInner {
     pub(crate) left: Option<Link>,
     pub(crate) right: Option<Link>,
@@ -137,7 +137,7 @@ impl Terminated for Box<TreeInner> {}
 /// Trees' inner fields are stored on the heap so that nodes can recursively
 /// link to each other, and so we can detach nodes from their parents, then
 /// reattach without allocating or freeing heap memory.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Tree {
     pub(crate) inner: Box<TreeInner>,
     pub(crate) old_size_with_parent_to_child_hook: u32,

@@ -215,8 +215,8 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-#[cfg(feature = "full")]
-pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+// #[cfg(feature = "full")]
+// pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;

@@ -29,19 +29,14 @@
 //! Merk
 
 pub mod chunks;
-
 pub(crate) mod defaults;
-
 pub mod options;
-
-mod chunks2;
 pub mod restore;
-mod restore2;
 
 use std::{
     cell::Cell,
     cmp::Ordering,
-    collections::{BTreeSet, LinkedList},
+    collections::{BTreeMap, BTreeSet, LinkedList},
     fmt,
 };
 
@@ -62,12 +57,21 @@ use crate::{
         defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
         options::MerkOptions,
     },
-    proofs::{encode_into, query::query_item::QueryItem, Op as ProofOp, Query},
+    proofs::{
+        chunk::{
+            chunk::{LEFT, RIGHT},
+            util::traversal_instruction_as_string,
+        },
+        encode_into,
+        query::query_item::QueryItem,
+        Op as ProofOp, Query,
+    },
     tree::{
         kv::{ValueDefinedCostType, KV},
         AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree, Walker,
         NULL_HASH,
     },
+    verify_query,
     Error::{CostsError, EdError, StorageError},
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
     TreeFeatureType,
@@ -1283,6 +1287,126 @@ where
             // The tree is empty
             Ok(()).wrap_with_cost(Default::default())
         }
+    }
+
+    /// Verifies the correctness of a merk tree
+    /// hash values are computed correctly, heights are accurate and links
+    /// consistent with backing store.
+    // TODO: define the return types
+    pub fn verify(&self) -> (BTreeMap<String, CryptoHash>, BTreeMap<String, Vec<u8>>) {
+        let tree = self.tree.take();
+
+        let mut bad_link_map: BTreeMap<String, CryptoHash> = BTreeMap::new();
+        let mut parent_keys: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut root_traversal_instruction = vec![];
+
+        // TODO: remove clone
+        self.verify_tree(
+            // TODO: handle unwrap
+            &tree.clone().unwrap(),
+            &mut root_traversal_instruction,
+            &mut bad_link_map,
+            &mut parent_keys,
+        );
+        self.tree.set(tree);
+
+        return (bad_link_map, parent_keys);
+    }
+
+    fn verify_tree(
+        &self,
+        tree: &Tree,
+        traversal_instruction: &mut Vec<bool>,
+        bad_link_map: &mut BTreeMap<String, CryptoHash>,
+        parent_keys: &mut BTreeMap<String, Vec<u8>>,
+    ) {
+        if let Some(link) = tree.link(LEFT) {
+            traversal_instruction.push(LEFT);
+            self.verify_link(
+                link,
+                tree.key(),
+                traversal_instruction,
+                bad_link_map,
+                parent_keys,
+            );
+            traversal_instruction.pop();
+        }
+
+        if let Some(link) = tree.link(RIGHT) {
+            traversal_instruction.push(RIGHT);
+            self.verify_link(
+                link,
+                tree.key(),
+                traversal_instruction,
+                bad_link_map,
+                parent_keys,
+            );
+            traversal_instruction.pop();
+        }
+    }
+
+    fn verify_link(
+        &self,
+        link: &Link,
+        parent_key: &[u8],
+        traversal_instruction: &mut Vec<bool>,
+        bad_link_map: &mut BTreeMap<String, CryptoHash>,
+        parent_keys: &mut BTreeMap<String, Vec<u8>>,
+    ) {
+        let (hash, key, sum) = match link {
+            Link::Reference { hash, key, sum, .. } => {
+                (hash.to_owned(), key.to_owned(), sum.to_owned())
+            }
+            Link::Modified {
+                tree,
+                child_heights,
+                ..
+            } => (
+                tree.hash().unwrap(),
+                tree.key().to_vec(),
+                tree.sum().unwrap(),
+            ),
+            Link::Loaded {
+                hash,
+                child_heights,
+                sum,
+                tree,
+            } => (hash.to_owned(), tree.key().to_vec(), sum.to_owned()),
+            _ => todo!(),
+        };
+
+        let instruction_id = traversal_instruction_as_string(&traversal_instruction);
+        let node = Tree::get(&self.storage, key).unwrap();
+
+        if node.is_err() {
+            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        let node = node.unwrap();
+        if node.is_none() {
+            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        let node = node.unwrap();
+        if &node.hash().unwrap() != &hash {
+            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        if node.sum().unwrap() != sum {
+            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        // TODO: check child heights
+        // all checks passed, recurse
+        self.verify_tree(&node, traversal_instruction, bad_link_map, parent_keys);
     }
 }
 

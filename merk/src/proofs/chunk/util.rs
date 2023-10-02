@@ -1,32 +1,58 @@
-// TODO: add MIT License
-// TODO: add module description
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Collection of state independent algorithms needed for facilitate chunk
+//! production and restoration
 
 use std::io::Write;
 
 // TODO: figure out better nomenclature
 use crate::{proofs::chunk::binary_range::BinaryRange, Error};
-use crate::{proofs::chunk::error::ChunkError, Error::InternalError};
-
-// TODO: add documentation
-fn chunk_height_per_layer(height: usize) -> Vec<usize> {
-    // every chunk has a fixed height of 2
-    // it is possible for a chunk to not reach full capacity
-    let mut two_count = height / 2;
-    if height % 2 != 0 {
-        two_count += 1;
-    }
-
-    return vec![2; two_count];
-}
+use crate::{
+    proofs::chunk::{
+        chunk::{LEFT, RIGHT},
+        error::{ChunkError, ChunkError::BadTraversalInstruction},
+    },
+    Error::InternalError,
+};
 
 /// Represents the height as a linear combination of 3 amd 2
 /// of the form 3x + 2y
 /// this breaks the tree into layers of height 3 or 2
 /// the minimum chunk height is 2, so if tree height is less than 2
 /// we just return a single layer of height 2
-fn chunk_height_per_layer_lin_comb(height: usize) -> Vec<usize> {
+fn chunk_height_per_layer(height: usize) -> Vec<usize> {
     let mut two_count = 0;
     let mut three_count = height / 3;
+
+    if height == 0 {
+        return vec![];
+    }
 
     // minimum chunk height is 2, if tree height is less than 2
     // return a single layer with chunk height 2
@@ -200,17 +226,142 @@ pub fn generate_traversal_instruction(height: usize, chunk_id: usize) -> Result<
     return Ok(instructions);
 }
 
+/// Determine the chunk id given the traversal instruction and the max height of
+/// the tree
+pub fn chunk_id_from_traversal_instruction(
+    traversal_instruction: &[bool],
+    height: usize,
+) -> Result<usize, Error> {
+    // empty traversal instruction points to the first chunk
+    if traversal_instruction.is_empty() {
+        return Ok(1);
+    }
+
+    let mut chunk_count = number_of_chunks(height);
+    let mut current_chunk_id = 1;
+
+    let mut layer_heights = chunk_height_per_layer(height);
+    let last_layer_height = layer_heights.pop().expect("confirmed not empty");
+
+    // traversal instructions should only point to the root node of chunks (chunk
+    // boundaries) the layer heights represent the height of each chunk layer
+    // the last chunk layer is at height = total_height - last_chunk_height + 1
+    // traversal instructions require 1 less than height to address it
+    // e.g. height 1 is represented by [] - len of 0
+    //      height 2 is represented by [left] or [right] len of 1
+    // therefore last chunk root node is address with total_height -
+    // last_chunk_height
+    if traversal_instruction.len() > height - last_layer_height {
+        return Err(Error::ChunkingError(BadTraversalInstruction(
+            "traversal instruction should not address nodes past the root of the last layer chunks",
+        )));
+    }
+
+    // verify that the traversal instruction points to a chunk boundary
+    let mut traversal_length = traversal_instruction.len();
+    let mut relevant_layer_heights = vec![];
+    for layer_height in layer_heights {
+        // the traversal_length should be a perfect sum of a subset of the layer_height
+        // if the traversal_length is not 0, it should be larger than or equal to the
+        // next layer height.
+        if traversal_length < layer_height {
+            return Err(Error::ChunkingError(BadTraversalInstruction(
+                "traversal instruction should point to a chunk boundary",
+            )));
+        }
+
+        traversal_length -= layer_height;
+        relevant_layer_heights.push(layer_height);
+
+        if traversal_length == 0 {
+            break;
+        }
+    }
+
+    // take layer_height instructions and determine the updated chunk id
+    let mut start_index = 0;
+    for layer_height in relevant_layer_heights {
+        let end_index = start_index + layer_height;
+        let subset_instructions = &traversal_instruction[start_index..end_index];
+
+        // offset multiplier determines what subchunk we are on based on the given
+        // instruction offset multiplier just converts the binary instruction to
+        // decimal, taking left as 0 and right as 0 i.e [left, left, left] = 0
+        // means we are at subchunk 0
+        let mut offset_multiplier = 0;
+        for (i, instruction) in subset_instructions.iter().enumerate() {
+            offset_multiplier += 2_usize.pow((subset_instructions.len() - i - 1) as u32)
+                * (1 - *instruction as usize);
+        }
+
+        if chunk_count % 2 != 0 {
+            // remove the current chunk from the chunk count
+            chunk_count = chunk_count - 1;
+        }
+
+        chunk_count = chunk_count / exit_node_count(layer_height);
+
+        current_chunk_id = current_chunk_id + offset_multiplier as usize * chunk_count + 1;
+
+        start_index = end_index;
+    }
+
+    Ok(current_chunk_id)
+}
+
+/// Determine the chunk id given the traversal instruction and the max height of
+/// the tree. This can recover from traversal instructions not pointing to a
+/// chunk boundary, in such a case, it backtracks until it hits a chunk
+/// boundary.
+pub fn chunk_id_from_traversal_instruction_with_recovery(
+    traversal_instruction: &[bool],
+    height: usize,
+) -> Result<usize, Error> {
+    let chunk_id_result = chunk_id_from_traversal_instruction(traversal_instruction, height);
+    if chunk_id_result.is_err() {
+        return chunk_id_from_traversal_instruction_with_recovery(
+            &traversal_instruction[0..traversal_instruction.len() - 1],
+            height,
+        );
+    }
+    return chunk_id_result;
+}
+
+/// Generate instruction for traversing to a given chunk in a binary tree,
+/// returns string representation
+pub fn generate_traversal_instruction_as_string(
+    height: usize,
+    chunk_id: usize,
+) -> Result<String, Error> {
+    let instruction = generate_traversal_instruction(height, chunk_id)?;
+    Ok(traversal_instruction_as_string(&instruction))
+}
+
 /// Convert traversal instruction to byte string
-/// 1 represents left
-/// 0 represents right
-pub fn traversal_instruction_as_string(instruction: Vec<bool>) -> String {
+/// 1 represents left (true)
+/// 0 represents right (false)
+pub fn traversal_instruction_as_string(instruction: &Vec<bool>) -> String {
     instruction
         .iter()
         .map(|v| if *v { "1" } else { "0" })
         .collect()
 }
 
-// TODO: move this to a better file
+/// Converts a string that represents a traversal instruction
+/// to a vec of bool, true = left and false = right
+pub fn string_as_traversal_instruction(instruction_string: &str) -> Result<Vec<bool>, Error> {
+    instruction_string
+        .chars()
+        .map(|char| match char {
+            '1' => Ok(LEFT),
+            '0' => Ok(RIGHT),
+            _ => Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(
+                "failed to parse instruction string",
+            ))),
+        })
+        .collect()
+}
+
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) -> Result<(), Error> {
     dest.write_all(value)
         .map_err(|_e| InternalError("failed to write to vector"))
@@ -221,17 +372,17 @@ mod test {
     use byteorder::LE;
 
     use super::*;
-    use crate::proofs::chunk::chunk2::{LEFT, RIGHT};
+    use crate::proofs::chunk::chunk::{LEFT, RIGHT};
 
     #[test]
     fn test_chunk_height_per_layer() {
         let layer_heights = chunk_height_per_layer(10);
         assert_eq!(layer_heights.iter().sum::<usize>(), 10);
-        assert_eq!(layer_heights, [2, 2, 2, 2, 2]);
+        assert_eq!(layer_heights, [3, 3, 2, 2]);
 
         let layer_heights = chunk_height_per_layer(45);
-        assert_eq!(layer_heights.iter().sum::<usize>(), 46);
-        assert_eq!(layer_heights, [2; 23]);
+        assert_eq!(layer_heights.iter().sum::<usize>(), 45);
+        assert_eq!(layer_heights, [3; 15]);
 
         let layer_heights = chunk_height_per_layer(2);
         assert_eq!(layer_heights.iter().sum::<usize>(), 2);
@@ -271,23 +422,20 @@ mod test {
         // hence total chunk count = 1 + 4 = 5
         assert_eq!(number_of_chunks(4), 5);
 
-        // tree with height 6 should have 21 chunks
-        // will be split into three layers of chunk height 2 = [2,2,2]
-        // first chunk takes 1, has 2^2 = 4 exit nodes
-        // second chunk takes 4 with each having 2^2 exit nodes
-        // total exit from second chunk = 4 * 4 = 16
-        // total chunks = 1 + 4 + 16 = 21
-        assert_eq!(number_of_chunks(6), 21);
+        // tree with height 6 should have 9 chunks
+        // will be split into two layers of chunk height 3 = [3,3]
+        // first chunk takes 1, has 2^3 = 8 exit nodes
+        // total chunks = 1 + 8 = 9
+        assert_eq!(number_of_chunks(6), 9);
 
         // tree with height 10 should have 341 chunks
-        // will be split into 5 layers = [2,2,2,2,2]
-        // first layer has just 1 chunk, exit nodes = 2^2 = 4
-        // second layer has 4 chunks, exit nodes = 2^2 * 4 = 16
-        // third layer has 16 chunks, exit nodes = 2^2 * 16 = 64
-        // fourth layer has 64 chunks, exit nodes = 2^2 * 64 = 256
-        // fifth layer has 256 chunks
-        // total chunks = 1 + 4 + 16 + 64 + 256 = 341 chunks
-        assert_eq!(number_of_chunks(10), 341);
+        // will be split into 5 layers = [3, 3, 2, 2]
+        // first layer has just 1 chunk, exit nodes = 2^3 = 8
+        // second layer has 4 chunks, exit nodes = 2^3 * 8 = 64
+        // third layer has 16 chunks, exit nodes = 2^2 * 64 = 256
+        // fourth layer has 256 chunks
+        // total chunks = 1 + 8 + 64 + 256 = 329 chunks
+        assert_eq!(number_of_chunks(10), 329);
     }
 
     #[test]
@@ -307,28 +455,26 @@ mod test {
         assert_eq!(number_of_chunks_under_chunk_id(4, 4).unwrap(), 1);
         assert_eq!(number_of_chunks_under_chunk_id(4, 5).unwrap(), 1);
 
-        // tree with height 10 should have 341 chunks
-        // layer_heights = [2, 2, 2, 2, 2]
-        // chunk_id 1 = 341
-        // chunk_id 2 = 85 i.e (341 - 1) / 2^2
-        // chunk_id 3 = 21 i.e (85 - 1) / 2^2
-        // chunk_id 4 = 5 i.e (21 - 1) / 2^2
-        // chunk_id 5 = 1 i.e (5 - 1) / 2^2
-        // chunk_id 6 = 1 on the same layer as 5
-        // chunk_id 87 = 85 as chunk 87 should wrap back to the same layer as chunk_id 2
-        // chunk_id 88 = mirrors chunk_id 3
-        // chunk_id 89 = mirrors chunk_id 4
-        // chunk_id 90 = mirrors chunk_id 5
-        assert_eq!(number_of_chunks_under_chunk_id(10, 1).unwrap(), 341);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 2).unwrap(), 85);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 3).unwrap(), 21);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 4).unwrap(), 5);
+        // tree with height 10 should have 329 chunks
+        // layer_heights = [3, 3, 2, 2]
+        // chunk_id 1 = 329
+        // chunk_id 2 = 41 i.e (329 - 1) / 2^3
+        // chunk_id 3 = 5 i.e (41 - 1) / 2^3
+        // chunk_id 4 = 1 i.e (5 - 1) / 2^2
+        // chunk_id 5 = 1 on the same layer as 4
+        // chunk_id 43 = 41 as chunk 43 should wrap back to the same layer as chunk_id 2
+        // chunk_id 44 = mirrors chunk_id 3
+        // chunk_id 45 = mirrors chunk_id 4
+        // chunk_id 46 = mirrors chunk_id 5
+        assert_eq!(number_of_chunks_under_chunk_id(10, 1).unwrap(), 329);
+        assert_eq!(number_of_chunks_under_chunk_id(10, 2).unwrap(), 41);
+        assert_eq!(number_of_chunks_under_chunk_id(10, 3).unwrap(), 5);
+        assert_eq!(number_of_chunks_under_chunk_id(10, 4).unwrap(), 1);
         assert_eq!(number_of_chunks_under_chunk_id(10, 5).unwrap(), 1);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 6).unwrap(), 1);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 87).unwrap(), 85);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 88).unwrap(), 21);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 89).unwrap(), 5);
-        assert_eq!(number_of_chunks_under_chunk_id(10, 90).unwrap(), 1);
+        assert_eq!(number_of_chunks_under_chunk_id(10, 43).unwrap(), 41);
+        assert_eq!(number_of_chunks_under_chunk_id(10, 44).unwrap(), 5);
+        assert_eq!(number_of_chunks_under_chunk_id(10, 45).unwrap(), 1);
+        assert_eq!(number_of_chunks_under_chunk_id(10, 46).unwrap(), 1);
     }
 
     #[test]
@@ -396,24 +542,26 @@ mod test {
     fn test_chunk_height() {
         // tree of height 6
         // all chunks have the same height
-        // since layer height = [2,2,2]
-        // we have 21 chunks in a tree of this height
-        for i in 1..=21 {
-            assert_eq!(chunk_height(6, i).unwrap(), 2);
+        // since layer height = [3,3]
+        // we have 9 chunks in a tree of this height
+        for i in 1..=9 {
+            assert_eq!(chunk_height(6, i).unwrap(), 3);
         }
 
         // tree of height 5
-        // layer_height = [2, 2]
-        // we also have 21 chunks here
-        for i in 1..=21 {
+        // layer_height = [3, 2]
+        // we have 9 chunks, just the first chunk is of height 3
+        // the rest are of height 2
+        assert_eq!(chunk_height(5, 1).unwrap(), 3);
+        for i in 2..=9 {
             assert_eq!(chunk_height(5, i).unwrap(), 2);
         }
 
         // tree of height 10
-        // layer_height = [3, 3, 3, 3]
+        // layer_height = [3, 3, 2, 2]
         // just going to check chunk 1 - 5
-        assert_eq!(chunk_height(10, 1).unwrap(), 2);
-        assert_eq!(chunk_height(10, 2).unwrap(), 2);
+        assert_eq!(chunk_height(10, 1).unwrap(), 3);
+        assert_eq!(chunk_height(10, 2).unwrap(), 3);
         assert_eq!(chunk_height(10, 3).unwrap(), 2);
         assert_eq!(chunk_height(10, 4).unwrap(), 2);
         assert_eq!(chunk_height(10, 5).unwrap(), 2);
@@ -421,12 +569,133 @@ mod test {
 
     #[test]
     fn test_traversal_instruction_as_string() {
-        assert_eq!(traversal_instruction_as_string(vec![]), "");
-        assert_eq!(traversal_instruction_as_string(vec![LEFT]), "1");
-        assert_eq!(traversal_instruction_as_string(vec![RIGHT]), "0");
+        assert_eq!(traversal_instruction_as_string(&vec![]), "");
+        assert_eq!(traversal_instruction_as_string(&vec![LEFT]), "1");
+        assert_eq!(traversal_instruction_as_string(&vec![RIGHT]), "0");
         assert_eq!(
-            traversal_instruction_as_string(vec![RIGHT, LEFT, LEFT, RIGHT]),
+            traversal_instruction_as_string(&vec![RIGHT, LEFT, LEFT, RIGHT]),
             "0110"
+        );
+    }
+
+    #[test]
+    fn test_instruction_string_to_traversal_instruction() {
+        assert_eq!(string_as_traversal_instruction("1").unwrap(), vec![LEFT]);
+        assert_eq!(string_as_traversal_instruction("0").unwrap(), vec![RIGHT]);
+        assert_eq!(
+            string_as_traversal_instruction("001").unwrap(),
+            vec![RIGHT, RIGHT, LEFT]
+        );
+        assert_eq!(string_as_traversal_instruction("002").is_err(), true);
+        assert_eq!(string_as_traversal_instruction("").unwrap(), vec![]);
+    }
+
+    #[test]
+    fn test_chunk_id_from_traversal_instruction() {
+        // tree of height 4
+        let traversal_instruction = generate_traversal_instruction(4, 1).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            1
+        );
+        let traversal_instruction = generate_traversal_instruction(4, 2).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            2
+        );
+        let traversal_instruction = generate_traversal_instruction(4, 3).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            3
+        );
+        let traversal_instruction = generate_traversal_instruction(4, 4).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            4
+        );
+
+        // tree of height 6
+        let traversal_instruction = generate_traversal_instruction(6, 1).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            1
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 2).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            2
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 3).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            3
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 4).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            4
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 5).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            5
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 6).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            6
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 7).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            7
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 8).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            8
+        );
+        let traversal_instruction = generate_traversal_instruction(6, 9).unwrap();
+        assert_eq!(
+            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            9
+        );
+    }
+
+    #[test]
+    fn test_chunk_id_from_traversal_instruction_with_recovery() {
+        // tree of height 5
+        // layer heights = [3, 2]
+        // first chunk boundary is at instruction len 0 e.g. []
+        // second chunk boundary is at instruction len 3 e.g. [left, left, left]
+        // anything outside of this should return an error with regular chunk_id
+        // function with recovery we expect this to backtrack to the last chunk
+        // boundary e.g. [left] should backtrack to []
+        //      [left, left, right, left] should backtrack to [left, left, right]
+        assert_eq!(
+            chunk_id_from_traversal_instruction(&[LEFT], 5).is_err(),
+            true
+        );
+        assert_eq!(
+            chunk_id_from_traversal_instruction_with_recovery(&[LEFT], 5).unwrap(),
+            1
+        );
+        assert_eq!(
+            chunk_id_from_traversal_instruction_with_recovery(&[LEFT, LEFT], 5).unwrap(),
+            1
+        );
+        assert_eq!(
+            chunk_id_from_traversal_instruction_with_recovery(&[LEFT, LEFT, RIGHT], 5).unwrap(),
+            3
+        );
+        assert_eq!(
+            chunk_id_from_traversal_instruction_with_recovery(&[LEFT, LEFT, RIGHT, LEFT], 5)
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            chunk_id_from_traversal_instruction_with_recovery(&[LEFT; 50], 5).unwrap(),
+            2
         );
     }
 }

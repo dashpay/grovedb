@@ -59,6 +59,10 @@ pub enum Error {
     #[error("corrupted code execution error {0}")]
     CorruptedCodeExecution(&'static str),
 
+    /// Corrupted state
+    #[error("corrupted state: {0}")]
+    CorruptedState(&'static str),
+
     /// Chunking error
     #[error("chunking error {0}")]
     ChunkingError(ChunkError),
