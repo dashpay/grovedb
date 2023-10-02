@@ -621,15 +621,6 @@ where
         })
     }
 
-    // TODO: remove this
-    // /// Returns a clone of the Tree instance in Merk
-    // pub fn get_root_tree(&self) -> Option<Tree> {
-    //     self.use_tree(|tree| match tree {
-    //         None => None,
-    //         Some(tree) => Some(tree.clone()),
-    //     })
-    // }
-
     /// Returns the root non-prefixed key of the tree. If the tree is empty,
     /// None.
     pub fn root_key(&self) -> Option<Vec<u8>> {
