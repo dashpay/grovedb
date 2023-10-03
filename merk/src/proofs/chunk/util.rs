@@ -65,7 +65,7 @@ fn chunk_height_per_layer(height: usize) -> Vec<usize> {
                 // reduce the three_count by 1
                 // so the remainder becomes 3 + 1
                 // which is equivalent to 2 + 2
-                three_count = three_count - 1;
+                three_count -= 1;
                 two_count += 2;
             }
             2 => {
@@ -100,8 +100,8 @@ pub fn chunk_layer(height: usize, chunk_id: usize) -> Result<usize, Error> {
         // and remaining depth points to a chunk
         debug_assert!(remaining_depth > layer_heights[layer - 1]);
 
-        remaining_depth = remaining_depth - layer_heights[layer - 1];
-        layer = layer + 1;
+        remaining_depth -= layer_heights[layer - 1];
+        layer += 1;
     }
 
     Ok(layer - 1)
@@ -162,7 +162,7 @@ fn number_of_chunks_internal(layer_heights: Vec<usize>) -> usize {
         chunk_counts_per_layer.push(current_layer_chunk_count);
     }
 
-    return chunk_counts_per_layer.into_iter().sum();
+    chunk_counts_per_layer.into_iter().sum()
 }
 
 /// Calculates the maximum number of exit nodes for a tree of height h.
@@ -193,7 +193,7 @@ pub fn generate_traversal_instruction(height: usize, chunk_id: usize) -> Result<
     // from the initial chunk (1) we have an even number of
     // exit nodes, and they have even numbers of exit nodes ...
     // so total_chunk_count = 1 + some_even_number = odd
-    debug_assert_eq!(chunk_range.odd(), true);
+    debug_assert!(chunk_range.odd());
 
     // bisect and reduce the chunk range until we get to the desired chunk
     // we keep track of every left right decision we make
@@ -223,7 +223,7 @@ pub fn generate_traversal_instruction(height: usize, chunk_id: usize) -> Result<
     // chunk range len is exactly 1
     // this must be the desired chunk id
     // return instructions that got us here
-    return Ok(instructions);
+    Ok(instructions)
 }
 
 /// Determine the chunk id given the traversal instruction and the max height of
@@ -296,12 +296,12 @@ pub fn chunk_id_from_traversal_instruction(
 
         if chunk_count % 2 != 0 {
             // remove the current chunk from the chunk count
-            chunk_count = chunk_count - 1;
+            chunk_count -= 1;
         }
 
-        chunk_count = chunk_count / exit_node_count(layer_height);
+        chunk_count /= exit_node_count(layer_height);
 
-        current_chunk_id = current_chunk_id + offset_multiplier as usize * chunk_count + 1;
+        current_chunk_id = current_chunk_id + offset_multiplier * chunk_count + 1;
 
         start_index = end_index;
     }
@@ -324,7 +324,7 @@ pub fn chunk_id_from_traversal_instruction_with_recovery(
             height,
         );
     }
-    return chunk_id_result;
+    chunk_id_result
 }
 
 /// Generate instruction for traversing to a given chunk in a binary tree,
@@ -369,7 +369,6 @@ pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) -> Result<(), Error> {
 
 #[cfg(test)]
 mod test {
-    use byteorder::LE;
 
     use super::*;
     use crate::proofs::chunk::chunk::{LEFT, RIGHT};
@@ -534,8 +533,8 @@ mod test {
         assert_eq!(instruction, &[RIGHT, RIGHT]);
 
         // out of bound tests
-        assert_eq!(generate_traversal_instruction(4, 6).is_err(), true);
-        assert_eq!(generate_traversal_instruction(4, 0).is_err(), true);
+        assert!(generate_traversal_instruction(4, 6).is_err());
+        assert!(generate_traversal_instruction(4, 0).is_err());
     }
 
     #[test]
@@ -586,7 +585,7 @@ mod test {
             string_as_traversal_instruction("001").unwrap(),
             vec![RIGHT, RIGHT, LEFT]
         );
-        assert_eq!(string_as_traversal_instruction("002").is_err(), true);
+        assert!(string_as_traversal_instruction("002").is_err());
         assert_eq!(
             string_as_traversal_instruction("").unwrap(),
             Vec::<bool>::new()
@@ -675,10 +674,7 @@ mod test {
         // function with recovery we expect this to backtrack to the last chunk
         // boundary e.g. [left] should backtrack to []
         //      [left, left, right, left] should backtrack to [left, left, right]
-        assert_eq!(
-            chunk_id_from_traversal_instruction(&[LEFT], 5).is_err(),
-            true
-        );
+        assert!(chunk_id_from_traversal_instruction(&[LEFT], 5).is_err());
         assert_eq!(
             chunk_id_from_traversal_instruction_with_recovery(&[LEFT], 5).unwrap(),
             1

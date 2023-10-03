@@ -26,35 +26,28 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::{
-    cmp::max,
-    collections::{LinkedList, VecDeque},
-    path::Iter,
-};
+use std::collections::VecDeque;
 
 use ed::Encode;
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
-use integer_encoding::VarInt;
 
 use crate::{
     error::Error,
     proofs::{
         chunk::{
             chunk_op::ChunkOp,
-            error::{ChunkError, ChunkError::InternalError},
+            error::ChunkError,
             util::{
                 chunk_height, chunk_id_from_traversal_instruction,
                 chunk_id_from_traversal_instruction_with_recovery, generate_traversal_instruction,
                 generate_traversal_instruction_as_string, number_of_chunks,
-                string_as_traversal_instruction, traversal_instruction_as_string, write_to_vec,
+                string_as_traversal_instruction,
             },
         },
         Node, Op,
     },
-    tree::RefWalker,
     Error::ChunkingError,
-    Merk, PanicSource,
+    Merk,
 };
 
 /// ChunkProof for replication of a single subtree
@@ -221,7 +214,7 @@ where
 
         // generate as many subtree chunks as we can
         // until we have exhausted all or hit a limit restriction
-        while current_index != None {
+        while current_index.is_some() {
             let current_index_traversal_instruction = generate_traversal_instruction(
                 self.height,
                 current_index.expect("confirmed is Some"),
@@ -230,7 +223,7 @@ where
 
             // factor in the ChunkId encoding length in limit calculations
             let temp_limit = if let Some(limit) = current_limit {
-                let chunk_id_op_encoding_len = chunk_id_op.encoding_length().map_err(|e| {
+                let chunk_id_op_encoding_len = chunk_id_op.encoding_length().map_err(|_e| {
                     Error::ChunkingError(ChunkError::InternalError("cannot get encoding length"))
                 })?;
                 if limit >= chunk_id_op_encoding_len {
@@ -297,7 +290,7 @@ where
         // we first get the chunk at the given index
         // TODO: use the returned chunk index rather than tracking
         let (chunk_ops, _) = self.chunk_with_index(chunk_index)?;
-        chunk_byte_length = chunk_ops.encoding_length().map_err(|e| {
+        chunk_byte_length = chunk_ops.encoding_length().map_err(|_e| {
             Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
         })?;
         chunk_index += 1;
@@ -322,10 +315,10 @@ where
                 let (replacement_chunk, _) = self.chunk_with_index(chunk_index)?;
 
                 // calculate the new total
-                let new_total = replacement_chunk.encoding_length().map_err(|e| {
+                let new_total = replacement_chunk.encoding_length().map_err(|_e| {
                     Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
                 })? + chunk_byte_length
-                    - chunk[iteration_index].encoding_length().map_err(|e| {
+                    - chunk[iteration_index].encoding_length().map_err(|_e| {
                         Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
                     })?;
 
@@ -368,7 +361,7 @@ where
 
     /// Returns the total number of chunks for the underlying Merk tree.
     pub fn len(&self) -> usize {
-        number_of_chunks(self.height as usize)
+        number_of_chunks(self.height)
     }
 
     /// Gets the next chunk based on the `ChunkProducer`'s internal index state.
@@ -390,7 +383,7 @@ where
                     chunk_index
                         .map(|index| generate_traversal_instruction_as_string(self.height, index))
                         .transpose()
-                        .and_then(|v| Ok((chunk, v)))
+                        .map(|v| (chunk, v))
                 }),
         )
     }
@@ -432,14 +425,19 @@ mod test {
     use super::*;
     use crate::{
         proofs::{
-            chunk::chunk::{
-                tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
-                LEFT, RIGHT,
+            chunk::{
+                chunk::{
+                    tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
+                    LEFT, RIGHT,
+                },
+                util::traversal_instruction_as_string,
             },
             tree::execute,
             Tree,
         },
         test_utils::{make_batch_seq, TempMerk},
+        tree::RefWalker,
+        PanicSource,
     };
 
     #[derive(Default)]
@@ -455,13 +453,13 @@ mod test {
 
     impl NodeCounts {
         fn sum(&self) -> usize {
-            return self.hash
+            self.hash
                 + self.kv_hash
                 + self.kv
                 + self.kv_value_hash
                 + self.kv_digest
                 + self.kv_ref_value_hash
-                + self.kv_value_hash_feature_type;
+                + self.kv_value_hash_feature_type
         }
     }
 
@@ -548,7 +546,7 @@ mod test {
         }
 
         // returns None after max
-        assert_eq!(chunks.next().is_none(), true);
+        assert!(chunks.next().is_none());
     }
 
     #[test]
@@ -582,8 +580,8 @@ mod test {
         assert_eq!(chunk_producer.len(), 5);
 
         // assert bounds
-        assert_eq!(chunk_producer.chunk_with_index(0).is_err(), true);
-        assert_eq!(chunk_producer.chunk_with_index(6).is_err(), true);
+        assert!(chunk_producer.chunk_with_index(0).is_err());
+        assert!(chunk_producer.chunk_with_index(6).is_err());
 
         // first chunk
         // expected:
@@ -750,7 +748,7 @@ mod test {
 
         // generate multi chunk with no limit
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut chunk_result = chunk_producer
+        let chunk_result = chunk_producer
             .subtree_multi_chunk_with_limit(1, None)
             .expect("should generate chunk with limit");
 
@@ -798,7 +796,7 @@ mod test {
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(2));
 
-        let mut chunk = chunk_result.chunk;
+        let chunk = chunk_result.chunk;
         assert_eq!(chunk.encoding_length().unwrap(), 453);
         assert_eq!(chunk.len(), 13); // op count
         let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
@@ -818,7 +816,7 @@ mod test {
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(3));
 
-        let mut chunk = chunk_result.chunk;
+        let chunk = chunk_result.chunk;
         assert_eq!(chunk.encoding_length().unwrap(), 737);
         assert_eq!(chunk.len(), 17); // op count
         let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
@@ -838,7 +836,7 @@ mod test {
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(4));
 
-        let mut chunk = chunk_result.chunk;
+        let chunk = chunk_result.chunk;
         assert_eq!(chunk.encoding_length().unwrap(), 1021);
         assert_eq!(chunk.len(), 21); // op count
         let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
@@ -858,7 +856,7 @@ mod test {
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(5));
 
-        let mut chunk = chunk_result.chunk;
+        let chunk = chunk_result.chunk;
         assert_eq!(chunk.encoding_length().unwrap(), 1305);
         assert_eq!(chunk.len(), 25); // op count
         let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
@@ -878,7 +876,7 @@ mod test {
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, None);
 
-        let mut chunk = chunk_result.chunk;
+        let chunk = chunk_result.chunk;
         assert_eq!(chunk.encoding_length().unwrap(), 1589);
         assert_eq!(chunk.len(), 29); // op count
         let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
@@ -898,7 +896,7 @@ mod test {
         assert_eq!(chunk_result.remaining_limit, Some(18446744073709550026));
         assert_eq!(chunk_result.next_index, None);
 
-        let mut chunk = chunk_result.chunk;
+        let chunk = chunk_result.chunk;
         assert_eq!(chunk.encoding_length().unwrap(), 1589);
         assert_eq!(chunk.len(), 29); // op count
         let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))

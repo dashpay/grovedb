@@ -55,7 +55,7 @@ impl BinaryRange {
             ));
         }
 
-        return Ok(Self { start, end });
+        Ok(Self { start, end })
     }
 
     /// Returns the len of the current range
@@ -103,7 +103,7 @@ impl BinaryRange {
         let half_size = self.len() / 2;
         let second_half_start = self.start + half_size;
 
-        return Ok(if left {
+        Ok(if left {
             Self {
                 start: self.start,
                 end: second_half_start - 1,
@@ -113,7 +113,7 @@ impl BinaryRange {
                 start: second_half_start,
                 end: self.end,
             }
-        });
+        })
     }
 
     /// Returns a new range that increments the start value
@@ -144,36 +144,36 @@ mod test {
     #[test]
     fn cannot_create_invalid_range() {
         let invalid_range = BinaryRange::new(5, 3);
-        assert_eq!(invalid_range.is_err(), true);
+        assert!(invalid_range.is_err());
     }
 
     #[test]
     fn can_get_range_len() {
         let range = BinaryRange::new(2, 5).expect("should create range");
         assert_eq!(range.len(), 4);
-        assert_eq!(range.odd(), false);
+        assert!(!range.odd());
 
         let range = BinaryRange::new(2, 2).expect("should create range");
         assert_eq!(range.len(), 1);
-        assert_eq!(range.odd(), true);
+        assert!(range.odd());
     }
 
     #[test]
     fn can_determine_correct_half() {
         let range = BinaryRange::new(3, 7).expect("should create range");
         assert_eq!(range.len(), 5);
-        assert_eq!(range.odd(), true);
+        assert!(range.odd());
 
         // cannot determine half for value outside a range
-        assert_eq!(range.which_half(1).is_none(), true);
-        assert_eq!(range.which_half(7).is_none(), true);
+        assert!(range.which_half(1).is_none());
+        assert!(range.which_half(7).is_none());
 
         // cannot determine half when range is odd
-        assert_eq!(range.which_half(3).is_none(), true);
+        assert!(range.which_half(3).is_none());
 
         let range = BinaryRange::new(3, 6).expect("should create range");
         assert_eq!(range.len(), 4);
-        assert_eq!(range.odd(), false);
+        assert!(!range.odd());
 
         assert_eq!(range.which_half(3), Some(LEFT));
         assert_eq!(range.which_half(4), Some(LEFT));
@@ -207,19 +207,19 @@ mod test {
 
         // should not be allowed to advance the range anymore
         let advance_result = range.advance_range_start();
-        assert_eq!(advance_result.is_err(), true);
+        assert!(advance_result.is_err());
     }
 
     #[test]
     fn can_break_range_into_halves() {
         let range = BinaryRange::new(2, 10).expect("should create range");
         assert_eq!(range.len(), 9);
-        assert_eq!(range.odd(), true);
-        assert_eq!(range.get_half(LEFT).is_err(), true);
+        assert!(range.odd());
+        assert!(range.get_half(LEFT).is_err());
 
         let range = BinaryRange::new(2, 11).expect("should create range");
         assert_eq!(range.len(), 10);
-        assert_eq!(range.odd(), false);
+        assert!(!range.odd());
 
         let left_range = range.get_half(LEFT).expect("should get sub range");
         assert_eq!(left_range.start, 2);
@@ -230,7 +230,7 @@ mod test {
         assert_eq!(right_range.end, 11);
 
         // right_range is false, advance to make even
-        let (right_range, prev) = right_range.advance_range_start().expect("should advance");
+        let (right_range, _prev) = right_range.advance_range_start().expect("should advance");
         let right_left_range = right_range.get_half(LEFT).expect("should get sub range");
         assert_eq!(right_left_range.len(), 2);
         assert_eq!(right_left_range.start, 8);

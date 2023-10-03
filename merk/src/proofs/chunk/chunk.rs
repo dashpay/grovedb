@@ -103,7 +103,7 @@ where
         depth: usize,
     ) -> Result<Vec<Op>, Error> {
         // base case
-        if instructions.len() == 0 {
+        if instructions.is_empty() {
             // we are at the desired node
             return self.create_chunk(depth);
         }
@@ -213,11 +213,10 @@ pub mod tests {
             chunk::chunk::{verify_height_proof, LEFT, RIGHT},
             tree::execute,
             Node, Op,
-            Op::Parent,
         },
-        test_utils::{make_tree_seq, make_tree_seq_with_start_key},
+        test_utils::make_tree_seq_with_start_key,
         tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
-        CryptoHash, PanicSource, TreeFeatureType,
+        PanicSource, TreeFeatureType,
     };
 
     fn build_tree_10_nodes() -> TreeNode {
@@ -234,39 +233,39 @@ pub mod tests {
     /// Traverses a tree to a certain node and returns the node hash of that
     /// node
     pub fn traverse_get_node_hash(
-        mut walker: &mut RefWalker<PanicSource>,
+        walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
     ) -> Node {
-        return traverse_and_apply(walker, traverse_instructions, |walker| {
+        traverse_and_apply(walker, traverse_instructions, |walker| {
             walker.to_hash_node().unwrap()
-        });
+        })
     }
 
     /// Traverses a tree to a certain node and returns the kv_feature_type of
     /// that node
     pub fn traverse_get_kv_feature_type(
-        mut walker: &mut RefWalker<PanicSource>,
+        walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
     ) -> Node {
-        return traverse_and_apply(walker, traverse_instructions, |walker| {
+        traverse_and_apply(walker, traverse_instructions, |walker| {
             walker.to_kv_value_hash_feature_type_node()
-        });
+        })
     }
     /// Traverses a tree to a certain node and returns the kv_hash of
     /// that node
     pub fn traverse_get_kv_hash(
-        mut walker: &mut RefWalker<PanicSource>,
+        walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
     ) -> Node {
-        return traverse_and_apply(walker, traverse_instructions, |walker| {
+        traverse_and_apply(walker, traverse_instructions, |walker| {
             walker.to_kvhash_node()
-        });
+        })
     }
 
     /// Traverses a tree to a certain node and returns the result of applying
     /// some arbitrary function
     pub fn traverse_and_apply<T>(
-        mut walker: &mut RefWalker<PanicSource>,
+        walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
         apply_fn: T,
     ) -> Node
@@ -285,7 +284,7 @@ pub mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        return traverse_and_apply(&mut child, &traverse_instructions[1..], apply_fn);
+        traverse_and_apply(&mut child, &traverse_instructions[1..], apply_fn)
     }
 
     #[test]

@@ -41,18 +41,15 @@ use crate::{
             chunk::{LEFT, RIGHT},
             chunk_op::ChunkOp,
             error::{ChunkError, ChunkError::InternalError},
-            util::{
-                string_as_traversal_instruction, traversal_instruction_as_string, write_to_vec,
-            },
+            util::{string_as_traversal_instruction, traversal_instruction_as_string},
         },
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
     tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
     CryptoHash, Error,
-    Error::{CostsError, EdError, StorageError},
+    Error::{CostsError, StorageError},
     Link, Merk,
-    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 
 /// Restorer handles verification of chunks and replication of Merk trees.
@@ -203,7 +200,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         let mut tree = TreeNode::new_with_value_hash(
                             key.clone(),
                             value.clone(),
-                            value_hash.clone(),
+                            *value_hash,
                             *feature_type,
                         )
                         .unwrap();
@@ -222,8 +219,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         // we get the chunk id and add the hash to restorer state
                         let chunk_id = traversal_instruction_as_string(node_traversal_instruction);
                         new_chunk_ids.push(chunk_id.clone());
-                        self.chunk_id_to_root_hash
-                            .insert(chunk_id.clone(), hash.clone());
+                        self.chunk_id_to_root_hash.insert(chunk_id.clone(), *hash);
                         // TODO: handle unwrap
                         self.parent_keys
                             .insert(chunk_id, parent_key.unwrap().to_owned());
@@ -282,7 +278,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let updated_key = chunk_tree.key();
         let updated_sum = chunk_tree.sum();
 
-        if let Some(Link::Reference { key, sum, .. }) = parent.link_mut(is_left.clone()) {
+        if let Some(Link::Reference { key, sum, .. }) = parent.link_mut(*is_left) {
             *key = updated_key.to_vec();
             *sum = updated_sum;
         }
@@ -343,13 +339,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .put(walker.tree().key(), &bytes, None, None)
                 .map_err(CostsError)?;
 
-            return Ok((left_height, right_height));
+            Ok((left_height, right_height))
         }
 
         let mut batch = self.merk.storage.new_batch();
         // TODO: deal with unwrap
         let mut tree = self.merk.tree.take().unwrap();
-        let mut walker = RefWalker::new(&mut tree, self.merk.source());
+        let walker = RefWalker::new(&mut tree, self.merk.source());
 
         rewrite_child_heights(walker, &mut batch)?;
 
@@ -379,7 +375,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// processing all chunks.
     pub fn finalize(mut self) -> Result<Merk<S>, Error> {
         // ensure all chunks have been processed
-        if self.chunk_id_to_root_hash.len() != 0 || self.parent_keys.len() != 0 {
+        if !self.chunk_id_to_root_hash.is_empty() || !self.parent_keys.is_empty() {
             return Err(Error::ChunkRestoringError(
                 ChunkError::RestorationNotComplete,
             ));
@@ -397,7 +393,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
         }
 
-        if self.merk.verify().0.len() != 0 {
+        if !self.merk.verify().0.is_empty() {
             return Err(Error::ChunkRestoringError(ChunkError::InternalError(
                 "restored tree invalid",
             )));
@@ -411,7 +407,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     fn verify_height(&self) -> Result<(), Error> {
         let tree = self.merk.tree.take();
         let height_verification_result = if let Some(tree) = &tree {
-            self.verify_tree_height(&tree, tree.height())
+            self.verify_tree_height(tree, tree.height())
         } else {
             Ok(())
         };
@@ -450,7 +446,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             if left_tree.is_none() {
                 let left_tree = TreeNode::get(
                     &self.merk.storage,
-                    link.key().to_vec(),
+                    link.key(),
                     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
                 )
                 .unwrap()?
@@ -466,7 +462,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             if right_tree.is_none() {
                 let right_tree = TreeNode::get(
                     &self.merk.storage,
-                    link.key().to_vec(),
+                    link.key(),
                     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
                 )
                 .unwrap()?
@@ -494,18 +490,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        execute_proof,
         merk::chunks::ChunkProducer,
-        proofs::{
-            chunk::{
-                chunk::tests::traverse_get_node_hash, chunk_op::ChunkOp::Chunk,
-                error::ChunkError::InvalidChunkProof,
-            },
-            Query,
+        proofs::chunk::{
+            chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
         test_utils::{make_batch_seq, TempMerk},
         Error::ChunkRestoringError,
-        KVIterator, Merk, PanicSource,
+        Merk, PanicSource,
     };
 
     #[test]
@@ -604,7 +595,7 @@ mod tests {
 
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -682,7 +673,7 @@ mod tests {
         // apply second chunk
         let chunk_process_result =
             restorer.process_chunk(traversal_instruction_as_string(&vec![LEFT, LEFT]), chunk);
-        assert_eq!(chunk_process_result.is_err(), true);
+        assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
             Err(Error::ChunkRestoringError(ChunkError::UnexpectedChunk))
@@ -693,7 +684,7 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
         let chunk_process_result =
             restorer.process_chunk(traversal_instruction_as_string(&vec![LEFT, RIGHT]), chunk);
-        assert_eq!(chunk_process_result.is_err(), true);
+        assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
             Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
@@ -735,7 +726,7 @@ mod tests {
         assert_eq!(restorer.chunk_id_to_root_hash.get("01"), None);
 
         // finalize merk
-        let mut restored_merk = restorer.finalize().expect("should finalized successfully");
+        let restored_merk = restorer.finalize().expect("should finalized successfully");
 
         assert_eq!(
             restored_merk.root_hash().unwrap(),
@@ -802,7 +793,7 @@ mod tests {
         // build the restoration merk
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -873,7 +864,7 @@ mod tests {
 
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -938,7 +929,7 @@ mod tests {
 
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -1010,7 +1001,7 @@ mod tests {
 
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -1096,7 +1087,7 @@ mod tests {
         // build the restoration merk
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -1124,7 +1115,7 @@ mod tests {
         let mut chunk_id_opt = Some("".to_string());
         while let Some(chunk_id) = chunk_id_opt {
             let multi_chunk = chunk_producer
-                .multi_chunk_with_limit(chunk_id.as_str(), limit.clone())
+                .multi_chunk_with_limit(chunk_id.as_str(), limit)
                 .expect("should get chunk");
             restorer
                 .process_multi_chunk(multi_chunk.chunk)
@@ -1176,7 +1167,7 @@ mod tests {
 
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -1221,7 +1212,7 @@ mod tests {
         // drop the restorer and the restoration merk
         drop(restorer);
         // open the restoration merk again and build a restorer from it
-        let mut restoration_merk = Merk::open_base(
+        let restoration_merk = Merk::open_base(
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
@@ -1238,7 +1229,7 @@ mod tests {
 
         // recover state
         let recovery_attempt = restorer.attempt_state_recovery();
-        assert_eq!(recovery_attempt.is_ok(), true);
+        assert!(recovery_attempt.is_ok());
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
         assert_eq!(restorer.parent_keys.len(), 4);
 

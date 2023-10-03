@@ -66,7 +66,7 @@ impl Child {
             Node::KV(key, _) | Node::KVValueHash(key, ..) => (key.as_slice(), None),
             Node::KVValueHashFeatureType(key, _, _, feature_type) => {
                 let sum_value = match feature_type {
-                    SummedMerkNode(sum) => Some(sum.clone()),
+                    SummedMerkNode(sum) => Some(*sum),
                     _ => None,
                 };
                 (key.as_slice(), sum_value)
@@ -358,8 +358,7 @@ impl<'a> Iterator for LayerIter<'a> {
     type Item = &'a Tree;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while !self.stack.is_empty() {
-            let (item, item_depth) = self.stack.pop().expect("confirmed not None");
+        while let Some((item, item_depth)) = self.stack.pop() {
             if item_depth != self.depth {
                 if let Some(right_child) = item.child(false) {
                     self.stack.push((&right_child.tree, item_depth + 1))
@@ -372,7 +371,7 @@ impl<'a> Iterator for LayerIter<'a> {
             }
         }
 
-        return None;
+        None
     }
 }
 
@@ -665,7 +664,7 @@ mod test {
         assert_eq!(
             left_link,
             Link::Reference {
-                hash: tree.left.as_ref().map(|node| node.hash).clone().unwrap(),
+                hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
                 sum: None,
                 child_heights: (0, 0),
                 key: vec![1]
@@ -675,7 +674,7 @@ mod test {
         assert_eq!(
             right_link,
             Link::Reference {
-                hash: tree.right.as_ref().map(|node| node.hash).clone().unwrap(),
+                hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
                 sum: None,
                 child_heights: (0, 0),
                 key: vec![3]
@@ -714,7 +713,7 @@ mod test {
         assert_eq!(
             left_link,
             Link::Reference {
-                hash: tree.left.as_ref().map(|node| node.hash).clone().unwrap(),
+                hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
                 sum: Some(3),
                 child_heights: (0, 0),
                 key: vec![1]
@@ -724,7 +723,7 @@ mod test {
         assert_eq!(
             right_link,
             Link::Reference {
-                hash: tree.right.as_ref().map(|node| node.hash).clone().unwrap(),
+                hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
                 sum: Some(1),
                 child_heights: (0, 0),
                 key: vec![3]

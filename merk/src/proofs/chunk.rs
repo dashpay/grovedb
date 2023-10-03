@@ -28,29 +28,6 @@
 
 //! Chunk proofs
 
-#[cfg(feature = "full")]
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
-#[cfg(feature = "full")]
-use grovedb_storage::RawIterator;
-#[cfg(feature = "full")]
-use {
-    super::tree::{execute, Tree as ProofTree},
-    crate::tree::CryptoHash,
-    crate::tree::TreeNode,
-};
-
-#[cfg(feature = "full")]
-use super::{Node, Op};
-#[cfg(feature = "full")]
-use crate::{
-    error::Error,
-    tree::{Fetch, RefWalker},
-    Error::EdError,
-    TreeFeatureType::BasicMerkNode,
-};
-
 mod binary_range;
 #[cfg(feature = "full")]
 pub mod chunk;

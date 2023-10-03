@@ -31,7 +31,7 @@ use std::io::{Read, Write};
 use ed::{Decode, Encode};
 use integer_encoding::{VarInt, VarIntReader};
 
-use crate::proofs::{chunk::chunk_op::ChunkOp::Chunk, Op};
+use crate::proofs::Op;
 
 /// Represents the chunk generated from a given starting chunk id
 #[derive(PartialEq, Debug)]

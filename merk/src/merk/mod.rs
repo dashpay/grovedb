@@ -44,7 +44,6 @@ pub mod source;
 
 use std::{
     cell::Cell,
-    cmp::Ordering,
     collections::{BTreeMap, BTreeSet, LinkedList},
     fmt,
 };
@@ -60,18 +59,14 @@ use source::MerkSource;
 
 use crate::{
     error::Error,
-    merk::{
-        defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
-        options::MerkOptions,
-    },
+    merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
             util::traversal_instruction_as_string,
         },
-        encode_into,
         query::query_item::QueryItem,
-        Op as ProofOp, Query,
+        Query,
     },
     tree::{
         kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
@@ -290,10 +285,7 @@ where
 
     /// Returns the height of the Merk tree
     pub fn height(&self) -> Option<u8> {
-        self.use_tree(|tree| match tree {
-            None => None,
-            Some(tree) => Some(tree.height()),
-        })
+        self.use_tree(|tree| tree.map(|tree| tree.height()))
     }
 
     /// Returns the root non-prefixed key of the tree. If the tree is empty,
@@ -578,7 +570,7 @@ where
         );
         self.tree.set(tree);
 
-        return (bad_link_map, parent_keys);
+        (bad_link_map, parent_keys)
     }
 
     fn verify_tree(
@@ -625,25 +617,21 @@ where
             Link::Reference { hash, key, sum, .. } => {
                 (hash.to_owned(), key.to_owned(), sum.to_owned())
             }
-            Link::Modified {
-                tree,
-                child_heights,
-                ..
-            } => (
+            Link::Modified { tree, .. } => (
                 tree.hash().unwrap(),
                 tree.key().to_vec(),
                 tree.sum().unwrap(),
             ),
             Link::Loaded {
                 hash,
-                child_heights,
+                child_heights: _,
                 sum,
                 tree,
             } => (hash.to_owned(), tree.key().to_vec(), sum.to_owned()),
             _ => todo!(),
         };
 
-        let instruction_id = traversal_instruction_as_string(&traversal_instruction);
+        let instruction_id = traversal_instruction_as_string(traversal_instruction);
         let node = TreeNode::get(
             &self.storage,
             key,
@@ -652,27 +640,27 @@ where
         .unwrap();
 
         if node.is_err() {
-            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            bad_link_map.insert(instruction_id.clone(), hash);
             parent_keys.insert(instruction_id, parent_key.to_vec());
             return;
         }
 
         let node = node.unwrap();
         if node.is_none() {
-            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            bad_link_map.insert(instruction_id.clone(), hash);
             parent_keys.insert(instruction_id, parent_key.to_vec());
             return;
         }
 
         let node = node.unwrap();
         if &node.hash().unwrap() != &hash {
-            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            bad_link_map.insert(instruction_id.clone(), hash);
             parent_keys.insert(instruction_id, parent_key.to_vec());
             return;
         }
 
         if node.sum().unwrap() != sum {
-            bad_link_map.insert(instruction_id.clone(), hash.clone());
+            bad_link_map.insert(instruction_id.clone(), hash);
             parent_keys.insert(instruction_id, parent_key.to_vec());
             return;
         }
@@ -702,7 +690,7 @@ fn fetch_node<'db>(
 
 #[cfg(test)]
 mod test {
-    use grovedb_costs::OperationCost;
+
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
         rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
