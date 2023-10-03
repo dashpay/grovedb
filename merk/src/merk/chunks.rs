@@ -432,7 +432,7 @@ mod test {
     use super::*;
     use crate::{
         proofs::{
-            chunk::chunk2::{
+            chunk::chunk::{
                 tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
                 LEFT, RIGHT,
             },

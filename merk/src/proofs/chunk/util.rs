@@ -35,7 +35,7 @@ use std::io::Write;
 use crate::{proofs::chunk::binary_range::BinaryRange, Error};
 use crate::{
     proofs::chunk::{
-        chunk2::{LEFT, RIGHT},
+        chunk::{LEFT, RIGHT},
         error::{ChunkError, ChunkError::BadTraversalInstruction},
     },
     Error::InternalError,
@@ -372,7 +372,7 @@ mod test {
     use byteorder::LE;
 
     use super::*;
-    use crate::proofs::chunk::chunk2::{LEFT, RIGHT};
+    use crate::proofs::chunk::chunk::{LEFT, RIGHT};
 
     #[test]
     fn test_chunk_height_per_layer() {

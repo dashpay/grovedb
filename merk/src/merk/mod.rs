@@ -28,11 +28,10 @@
 
 //! Merk
 
-pub mod chunks2;
+pub mod chunks;
 pub(crate) mod defaults;
 
 pub mod options;
-pub mod restore2;
 
 pub mod apply;
 pub mod clear;
@@ -67,7 +66,7 @@ use crate::{
     },
     proofs::{
         chunk::{
-            chunk2::{LEFT, RIGHT},
+            chunk::{LEFT, RIGHT},
             util::traversal_instruction_as_string,
         },
         encode_into,

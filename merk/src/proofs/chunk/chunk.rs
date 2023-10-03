@@ -210,7 +210,7 @@ pub mod tests {
 
     use crate::{
         proofs::{
-            chunk::chunk2::{verify_height_proof, LEFT, RIGHT},
+            chunk::chunk::{verify_height_proof, LEFT, RIGHT},
             tree::execute,
             Node, Op,
             Op::Parent,

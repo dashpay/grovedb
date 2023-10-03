@@ -44,7 +44,7 @@ use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{error::Error, tree::CryptoHash};
 use crate::{
-    proofs::chunk::chunk2::{LEFT, RIGHT},
+    proofs::chunk::chunk::{LEFT, RIGHT},
     Link,
     TreeFeatureType::SummedMerkNode,
 };
