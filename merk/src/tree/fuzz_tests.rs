@@ -95,7 +95,7 @@ fn fuzz_case(seed: u64, using_sum_trees: bool) {
 }
 
 #[cfg(feature = "full")]
-fn make_batch(maybe_tree: Option<&Tree>, size: u64, seed: u64) -> Vec<BatchEntry> {
+fn make_batch(maybe_tree: Option<&TreeNode>, size: u64, seed: u64) -> Vec<BatchEntry> {
     let rng: RefCell<SmallRng> = RefCell::new(SeedableRng::seed_from_u64(seed));
     let mut batch = Vec::with_capacity(size as usize);
 
@@ -170,7 +170,7 @@ fn apply_to_map(map: &mut Map, batch: &Batch) {
 }
 
 #[cfg(feature = "full")]
-fn assert_map(maybe_tree: Option<&Tree>, map: &Map) {
+fn assert_map(maybe_tree: Option<&TreeNode>, map: &Map) {
     if map.is_empty() {
         assert!(maybe_tree.is_none(), "expected tree to be None");
         return;

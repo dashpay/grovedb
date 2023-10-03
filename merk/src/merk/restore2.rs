@@ -48,11 +48,11 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{RefWalker, Tree},
+    tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
     CryptoHash, Error,
     Error::{CostsError, EdError, StorageError},
     Link, Merk,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 
 /// Restorer handles verification of chunks and replication of Merk trees.
@@ -200,7 +200,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 match &proof_node.node {
                     Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => {
                         // build tree from node value
-                        let mut tree = Tree::new_with_value_hash(
+                        let mut tree = TreeNode::new_with_value_hash(
                             key.clone(),
                             value.clone(),
                             value_hash.clone(),
@@ -266,11 +266,14 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 "after successful chunk verification parent key should exist",
             )))?;
 
-        let mut parent = merk::fetch_node(&self.merk.storage, parent_key.as_slice())?.ok_or(
-            Error::ChunkRestoringError(InternalError(
-                "cannot find expected parent in memory, most likely state corruption issue",
-            )),
-        )?;
+        let mut parent = merk::fetch_node(
+            &self.merk.storage,
+            parent_key.as_slice(),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )?
+        .ok_or(Error::ChunkRestoringError(InternalError(
+            "cannot find expected parent in memory, most likely state corruption issue",
+        )))?;
 
         let is_left = traversal_instruction
             .last()
@@ -307,22 +310,29 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             batch: &mut <S as StorageContext<'db>>::Batch,
         ) -> Result<(u8, u8), Error> {
             // TODO: remove unwrap
-            let mut cloned_node = Tree::decode(
+            let mut cloned_node = TreeNode::decode(
                 walker.tree().key().to_vec(),
                 walker.tree().encode().as_slice(),
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .unwrap();
 
             let mut left_height = 0;
             let mut right_height = 0;
 
-            if let Some(left_walker) = walker.walk(LEFT).unwrap()? {
+            if let Some(left_walker) = walker
+                .walk(LEFT, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()?
+            {
                 let left_child_heights = rewrite_child_heights(left_walker, batch)?;
                 left_height = left_child_heights.0.max(left_child_heights.1) + 1;
                 *cloned_node.link_mut(LEFT).unwrap().child_heights_mut() = left_child_heights;
             }
 
-            if let Some(right_walker) = walker.walk(RIGHT).unwrap()? {
+            if let Some(right_walker) = walker
+                .walk(RIGHT, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()?
+            {
                 let right_child_heights = rewrite_child_heights(right_walker, batch)?;
                 right_height = right_child_heights.0.max(right_child_heights.1) + 1;
                 *cloned_node.link_mut(RIGHT).unwrap().child_heights_mut() = right_child_heights;
@@ -376,13 +386,15 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         // get the latest version of the root node
-        self.merk.load_base_root();
+        self.merk
+            .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
 
         // if height values are wrong, rewrite height
         if self.verify_height().is_err() {
             self.rewrite_heights();
             // update the root node after height rewrite
-            self.merk.load_base_root();
+            self.merk
+                .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
         }
 
         if self.merk.verify().0.len() != 0 {
@@ -407,7 +419,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         height_verification_result
     }
 
-    fn verify_tree_height(&self, tree: &Tree, parent_height: u8) -> Result<(), Error> {
+    fn verify_tree_height(&self, tree: &TreeNode, parent_height: u8) -> Result<(), Error> {
         let (left_height, right_height) = tree.child_heights();
 
         if (left_height.abs_diff(right_height)) > 1 {
@@ -436,9 +448,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         if let Some(link) = left_link {
             let left_tree = link.tree();
             if left_tree.is_none() {
-                let left_tree = Tree::get(&self.merk.storage, link.key().to_vec())
-                    .unwrap()?
-                    .ok_or(Error::CorruptedState("link points to non-existent node"))?;
+                let left_tree = TreeNode::get(
+                    &self.merk.storage,
+                    link.key().to_vec(),
+                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                )
+                .unwrap()?
+                .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height)?;
             } else {
                 self.verify_tree_height(left_tree.unwrap(), left_height)?;
@@ -448,9 +464,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         if let Some(link) = right_link {
             let right_tree = link.tree();
             if right_tree.is_none() {
-                let right_tree = Tree::get(&self.merk.storage, link.key().to_vec())
-                    .unwrap()?
-                    .ok_or(Error::CorruptedState("link points to non-existent node"))?;
+                let right_tree = TreeNode::get(
+                    &self.merk.storage,
+                    link.key().to_vec(),
+                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                )
+                .unwrap()?
+                .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height)?;
             } else {
                 self.verify_tree_height(right_tree.unwrap(), right_height)?;
@@ -589,6 +609,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -768,6 +789,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -785,6 +807,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -855,6 +878,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -919,6 +943,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -990,6 +1015,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -1075,6 +1101,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -1154,6 +1181,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();
@@ -1198,6 +1226,7 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         )
         .unwrap()
         .unwrap();

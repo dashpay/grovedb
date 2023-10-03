@@ -2365,9 +2365,13 @@ fn test_find_subtrees() {
 fn test_root_subtree_has_root_key() {
     let db = make_test_grovedb();
     let storage = db.db.get_storage_context(EMPTY_PATH, None).unwrap();
-    let root_merk = Merk::open_base(storage, false)
-        .unwrap()
-        .expect("expected to get root merk");
+    let root_merk = Merk::open_base(
+        storage,
+        false,
+        Some(&Element::value_defined_cost_for_serialized_value),
+    )
+    .unwrap()
+    .expect("expected to get root merk");
     let (_, root_key, _) = root_merk
         .root_hash_key_and_sum()
         .unwrap()
@@ -2457,10 +2461,14 @@ fn test_get_subtree() {
             .db
             .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into(), None)
             .unwrap();
-        let subtree =
-            Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
-                .unwrap()
-                .expect("cannot open merk");
+        let subtree = Merk::open_layered_with_root_key(
+            subtree_storage,
+            Some(b"key3".to_vec()),
+            false,
+            Some(&Element::value_defined_cost_for_serialized_value),
+        )
+        .unwrap()
+        .expect("cannot open merk");
         let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
@@ -2497,9 +2505,14 @@ fn test_get_subtree() {
             &transaction,
         )
         .unwrap();
-    let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key4".to_vec()), false)
-        .unwrap()
-        .expect("cannot open merk");
+    let subtree = Merk::open_layered_with_root_key(
+        subtree_storage,
+        Some(b"key4".to_vec()),
+        false,
+        Some(&Element::value_defined_cost_for_serialized_value),
+    )
+    .unwrap()
+    .expect("cannot open merk");
     let result_element = Element::get(&subtree, b"key4", true).unwrap().unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
@@ -2509,9 +2522,14 @@ fn test_get_subtree() {
         .db
         .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into(), None)
         .unwrap();
-    let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
-        .unwrap()
-        .expect("cannot open merk");
+    let subtree = Merk::open_layered_with_root_key(
+        subtree_storage,
+        Some(b"key3".to_vec()),
+        false,
+        Some(&Element::value_defined_cost_for_serialized_value),
+    )
+    .unwrap()
+    .expect("cannot open merk");
     let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 }
@@ -2911,7 +2929,7 @@ fn test_tree_value_exists_method_tx() {
 #[test]
 fn test_storage_wipe() {
     let db = make_test_grovedb();
-    let path = db._tmp_dir.path();
+    let _path = db._tmp_dir.path();
 
     // Test keys in non-root tree
     db.insert(

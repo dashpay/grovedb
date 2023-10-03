@@ -37,7 +37,7 @@ use grovedb_merk::tree::kv::KV;
 #[cfg(feature = "full")]
 use grovedb_merk::Merk;
 #[cfg(feature = "full")]
-use grovedb_merk::{ed::Decode, tree::TreeInner};
+use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 use integer_encoding::VarInt;
@@ -78,8 +78,12 @@ impl Element {
 
         let value_opt = cost_return_on_error!(
             &mut cost,
-            merk.get(key.as_ref(), allow_cache)
-                .map_err(|e| Error::CorruptedData(e.to_string()))
+            merk.get(
+                key.as_ref(),
+                allow_cache,
+                Some(&Element::value_defined_cost_for_serialized_value)
+            )
+            .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let element = cost_return_on_error_no_add!(
             &cost,
@@ -129,7 +133,7 @@ impl Element {
                 .get(key_ref)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
-        let maybe_tree_inner: Option<TreeInner> = cost_return_on_error_no_add!(
+        let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
             &cost,
             node_value_opt
                 .map(|node_value| {
@@ -230,8 +234,12 @@ impl Element {
 
         let value_hash = cost_return_on_error!(
             &mut cost,
-            merk.get_value_hash(key.as_ref(), allow_cache)
-                .map_err(|e| Error::CorruptedData(e.to_string()))
+            merk.get_value_hash(
+                key.as_ref(),
+                allow_cache,
+                Some(&Element::value_defined_cost_for_serialized_value)
+            )
+            .map_err(|e| Error::CorruptedData(e.to_string()))
         );
 
         Ok(value_hash).wrap_with_cost(cost)
@@ -253,7 +261,13 @@ mod tests {
         let ctx = storage
             .get_storage_context(SubtreePath::empty(), Some(&batch))
             .unwrap();
-        let mut merk = Merk::open_base(ctx, false).unwrap().unwrap();
+        let mut merk = Merk::open_base(
+            ctx,
+            false,
+            Some(&Element::value_defined_cost_for_serialized_value),
+        )
+        .unwrap()
+        .unwrap();
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None)
             .unwrap()
@@ -271,7 +285,13 @@ mod tests {
         let ctx = storage
             .get_storage_context(SubtreePath::empty(), None)
             .unwrap();
-        let mut merk = Merk::open_base(ctx, false).unwrap().unwrap();
+        let mut merk = Merk::open_base(
+            ctx,
+            false,
+            Some(&Element::value_defined_cost_for_serialized_value),
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(
             Element::get(&merk, b"another-key", true)

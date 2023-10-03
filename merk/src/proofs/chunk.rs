@@ -38,7 +38,7 @@ use grovedb_storage::RawIterator;
 use {
     super::tree::{execute, Tree as ProofTree},
     crate::tree::CryptoHash,
-    crate::tree::Tree,
+    crate::tree::TreeNode,
 };
 
 #[cfg(feature = "full")]
@@ -48,7 +48,7 @@ use crate::{
     error::Error,
     tree::{Fetch, RefWalker},
     Error::EdError,
-    TreeFeatureType::BasicMerk,
+    TreeFeatureType::BasicMerkNode,
 };
 
 mod binary_range;

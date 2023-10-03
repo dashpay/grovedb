@@ -29,7 +29,12 @@
 //! Merk benches ops
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use merk::{owner::Owner, test_utils::*};
+use grovedb_merk::{
+    owner::Owner,
+    test_utils::{
+        apply_memonly_unchecked, make_batch_rand, make_batch_seq, make_tree_rand, make_tree_seq,
+    },
+};
 
 /// 1m sequential inserts in 10k batches, memonly
 fn insert_1m_10k_seq_memonly(c: &mut Criterion) {

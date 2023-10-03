@@ -32,7 +32,7 @@ use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use crate::proofs::{Node, Op, Tree};
 use crate::{
     proofs::{chunk::error::ChunkError, tree::execute},
-    tree::{Fetch, RefWalker},
+    tree::{kv::ValueDefinedCostType, Fetch, RefWalker},
     CryptoHash, Error,
 };
 
@@ -68,7 +68,10 @@ where
         // traverse left
         let has_left_child = self.tree().link(true).is_some();
         if has_left_child {
-            let mut left = self.walk(true).unwrap()?.expect("confirmed is some");
+            let mut left = self
+                .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()?
+                .expect("confirmed is some");
             left.create_chunk_internal(proof, remaining_depth - 1)?;
         }
 
@@ -80,7 +83,10 @@ where
         }
 
         // traverse right
-        if let Some(mut right) = self.walk(false).unwrap()? {
+        if let Some(mut right) = self
+            .walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            .unwrap()?
+        {
             right.create_chunk_internal(proof, remaining_depth - 1)?;
 
             proof.push(Op::Child);
@@ -112,7 +118,10 @@ where
 
         // grab child
         let mut child = self
-            .walk(instructions[0])
+            .walk(
+                instructions[0],
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            )
             .unwrap()?
             .expect("confirmed link exists so cannot be none");
 
@@ -137,7 +146,10 @@ where
         //  existing chunk, we don't want to repeat nodes unnecessarily
         let mut cost = OperationCost::default();
 
-        let maybe_left = cost_return_on_error!(&mut cost, self.walk(LEFT));
+        let maybe_left = cost_return_on_error!(
+            &mut cost,
+            self.walk(LEFT, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+        );
         let has_left_child = maybe_left.is_some();
 
         // recurse to leftmost element
@@ -204,11 +216,11 @@ pub mod tests {
             Op::Parent,
         },
         test_utils::{make_tree_seq, make_tree_seq_with_start_key},
-        tree::{RefWalker, Tree},
+        tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
         CryptoHash, PanicSource, TreeFeatureType,
     };
 
-    fn build_tree_10_nodes() -> Tree {
+    fn build_tree_10_nodes() -> TreeNode {
         //              3
         //           /      \
         //          1         7
@@ -266,7 +278,10 @@ pub mod tests {
         }
 
         let mut child = walker
-            .walk(traverse_instructions[0])
+            .walk(
+                traverse_instructions[0],
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            )
             .unwrap()
             .unwrap()
             .unwrap();
@@ -589,7 +604,7 @@ pub mod tests {
                 vec![1],
                 vec![2],
                 [0; 32],
-                TreeFeatureType::BasicMerk,
+                TreeFeatureType::BasicMerkNode,
             )),
         ];
         let encoded_chunk = chunk.encode().expect("should encode");

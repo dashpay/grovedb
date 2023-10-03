@@ -91,6 +91,27 @@ impl<T> Owner<T> {
         return_value
     }
 
+    /// Takes temporary ownership of the contained value by passing it to `f`.
+    /// The function must return a result of the same type (the same value, or a
+    /// new value to take its place).
+    ///
+    /// Like `own`, but uses a tuple return type which allows specifying a value
+    /// to return from the call to `own_result` for convenience.
+    pub fn own_result<F, E>(&mut self, f: F) -> Result<(), E>
+    where
+        F: FnOnce(T) -> Result<T, E>,
+    {
+        let old_value = unwrap(self.inner.take());
+        let new_value_result = f(old_value);
+        match new_value_result {
+            Ok(new_value) => {
+                self.inner = Some(new_value);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Sheds the `Owner` container and returns the value it contained.
     pub fn into_inner(mut self) -> T {
         unwrap(self.inner.take())

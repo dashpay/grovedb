@@ -29,7 +29,7 @@
 //! Merk tree iterator
 
 #[cfg(feature = "full")]
-use super::Tree;
+use super::TreeNode;
 
 #[cfg(feature = "full")]
 /// An entry stored on an `Iter`'s stack, containing a reference to a `Tree`,
@@ -38,7 +38,7 @@ use super::Tree;
 /// The `traversed` field represents whether or not the left child, self, and
 /// right child have been visited, respectively (`(left, self, right)`).
 struct StackItem<'a> {
-    tree: &'a Tree,
+    tree: &'a TreeNode,
     traversed: (bool, bool, bool),
 }
 
@@ -47,7 +47,7 @@ impl<'a> StackItem<'a> {
     /// Creates a new `StackItem` for the given tree. The `traversed` state will
     /// be `false` since the children and self have not been visited yet, but
     /// will default to `true` for sides that do not have a child.
-    const fn new(tree: &'a Tree) -> Self {
+    const fn new(tree: &'a TreeNode) -> Self {
         StackItem {
             tree,
             traversed: (
@@ -77,14 +77,14 @@ pub struct Iter<'a> {
 #[cfg(feature = "full")]
 impl<'a> Iter<'a> {
     /// Creates a new iterator for the given tree.
-    pub fn new(tree: &'a Tree) -> Self {
+    pub fn new(tree: &'a TreeNode) -> Self {
         let stack = vec![StackItem::new(tree)];
         Iter { stack }
     }
 }
 
 #[cfg(feature = "full")]
-impl<'a> Tree {
+impl<'a> TreeNode {
     /// Creates an iterator which yields `(key, value)` tuples for all of the
     /// tree's nodes which are retained in memory (skipping pruned subtrees).
     pub fn iter(&'a self) -> Iter<'a> {

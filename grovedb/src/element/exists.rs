@@ -48,7 +48,10 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
     ) -> CostResult<bool, Error> {
-        merk.exists(key.as_ref())
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.exists(
+            key.as_ref(),
+            Some(&Element::value_defined_cost_for_serialized_value),
+        )
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 }

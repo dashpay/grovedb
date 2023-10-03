@@ -46,7 +46,7 @@ use crate::{error::Error, tree::CryptoHash};
 use crate::{
     proofs::chunk::chunk2::{LEFT, RIGHT},
     Link,
-    TreeFeatureType::SummedMerk,
+    TreeFeatureType::SummedMerkNode,
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -66,7 +66,7 @@ impl Child {
             Node::KV(key, _) | Node::KVValueHash(key, ..) => (key.as_slice(), None),
             Node::KVValueHashFeatureType(key, _, _, feature_type) => {
                 let sum_value = match feature_type {
-                    SummedMerk(sum) => Some(sum.clone()),
+                    SummedMerkNode(sum) => Some(sum.clone()),
                     _ => None,
                 };
                 (key.as_slice(), sum_value)
@@ -323,7 +323,7 @@ impl Tree {
     pub(crate) fn sum(&self) -> Option<i64> {
         match self.node {
             Node::KVValueHashFeatureType(.., feature_type) => match feature_type {
-                SummedMerk(sum) => Some(sum),
+                SummedMerkNode(sum) => Some(sum),
                 _ => None,
             },
             _ => panic!("Expected node to be type KVValueHashFeatureType"),
@@ -687,20 +687,20 @@ mod test {
                 vec![1],
                 vec![1],
                 [0; 32],
-                SummedMerk(3),
+                SummedMerkNode(3),
             )),
             Op::Push(Node::KVValueHashFeatureType(
                 vec![2],
                 vec![2],
                 [0; 32],
-                SummedMerk(1),
+                SummedMerkNode(1),
             )),
             Op::Parent,
             Op::Push(Node::KVValueHashFeatureType(
                 vec![3],
                 vec![3],
                 [0; 32],
-                SummedMerk(1),
+                SummedMerkNode(1),
             )),
             Op::Child,
         ];

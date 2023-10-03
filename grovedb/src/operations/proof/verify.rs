@@ -260,7 +260,7 @@ impl ProofVerifier {
         query: &PathQuery,
         is_verbose: bool,
     ) -> Result<[u8; 32], Error> {
-        let (proof_version, proof) = read_and_consume_proof_version(proof)?;
+        let (_proof_version, proof) = read_and_consume_proof_version(proof)?;
         let mut proof_reader = ProofReader::new_with_verbose_status(proof, is_verbose);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
@@ -678,7 +678,6 @@ impl ProofVerifier {
             ProofTokenType::Merk | ProofTokenType::SizedMerk => {
                 let mut key_as_query = Query::new();
                 key_as_query.insert_key(last_key.to_owned());
-                current_path.push(last_key);
 
                 let verification_result = self.execute_merk_proof(
                     proof_token_type,
@@ -687,6 +686,8 @@ impl ProofVerifier {
                     key_as_query.left_to_right,
                     current_path.to_owned(),
                 )?;
+
+                current_path.push(last_key);
 
                 Ok((verification_result.0, verification_result.1, false))
             }

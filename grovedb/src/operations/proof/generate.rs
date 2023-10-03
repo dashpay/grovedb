@@ -32,40 +32,31 @@
 //  that supports multiple implementations for verbose and non-verbose
 // generation
 
-use grovedb_costs::cost_return_on_error_default;
-#[cfg(feature = "full")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
+    CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
 use grovedb_merk::{
     proofs::{encode_into, Node, Op},
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 
-#[cfg(feature = "full")]
-use crate::element::helpers::raw_decode;
-#[cfg(feature = "full")]
 use crate::{
+    element::helpers::raw_decode,
     operations::proof::util::{
-        reduce_limit_and_offset_by, write_to_vec, ProofTokenType, EMPTY_TREE_HASH,
+        reduce_limit_and_offset_by, write_slice_of_slice_to_slice, write_slice_to_vec,
+        write_to_vec, ProofTokenType, EMPTY_TREE_HASH,
     },
     reference_path::path_from_reference_path_type,
+    versioning::{prepend_version_to_bytes, PROOF_VERSION},
     Element, Error, GroveDb, PathQuery, Query,
 };
-use crate::{
-    operations::proof::util::{write_slice_of_slice_to_slice, write_slice_to_vec},
-    versioning::{prepend_version_to_bytes, PROOF_VERSION},
-};
 
-#[cfg(feature = "full")]
 type LimitOffset = (Option<u16>, Option<u16>);
 
-#[cfg(feature = "full")]
 impl GroveDb {
     /// Prove one or more path queries.
     /// If we more than one path query, we merge into a single path query before

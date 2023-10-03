@@ -68,7 +68,7 @@ impl GroveDb {
             let mut used_path = path.0.as_slice();
             let mut ops = vec![];
             let path_len = path.len() as u16;
-            for height in (stop_path_height..(path_len as u16)).rev() {
+            for height in (stop_path_height..path_len).rev() {
                 let (
                     path_at_level,
                     key_at_level,

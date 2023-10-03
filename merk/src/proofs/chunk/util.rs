@@ -587,7 +587,10 @@ mod test {
             vec![RIGHT, RIGHT, LEFT]
         );
         assert_eq!(string_as_traversal_instruction("002").is_err(), true);
-        assert_eq!(string_as_traversal_instruction("").unwrap(), vec![]);
+        assert_eq!(
+            string_as_traversal_instruction("").unwrap(),
+            Vec::<bool>::new()
+        );
     }
 
     #[test]

@@ -212,8 +212,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             self.paths.get(path).ok_or_else(|| {
                 let paths = self
                     .paths
-                    .iter()
-                    .map(|(k, _v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
+                    .keys()
+                    .map(|k| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
                     .join(" | ");
                 Error::PathNotFoundInCacheForEstimatedCosts(format!(
                     "required path {} not found in paths {}",
@@ -234,8 +234,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 self.paths.get(path).ok_or_else(|| {
                     let paths = self
                         .paths
-                        .iter()
-                        .map(|(k, _v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
+                        .keys()
+                        .map(|k| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
                         .join(" | ");
                     Error::PathNotFoundInCacheForEstimatedCosts(format!(
                         "required path for estimated merk caching {} not found in paths {}",
@@ -576,7 +576,7 @@ mod tests {
                 seek_count: 5, // todo: why is this 5
                 storage_cost: StorageCost {
                     added_bytes: 115,
-                    replaced_bytes: 106,
+                    replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 109,
@@ -723,7 +723,7 @@ mod tests {
                 seek_count: 41,
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 5625,
+                    replaced_bytes: 5594,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 7669,

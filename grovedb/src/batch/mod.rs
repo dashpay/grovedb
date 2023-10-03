@@ -80,7 +80,7 @@ use grovedb_merk::{
         value_hash, NULL_HASH,
     },
     CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -371,32 +371,42 @@ impl fmt::Debug for GroveDbOp {
 
         let op_dbg = match &self.op {
             Op::Insert { element } => match element {
-                Element::Item(..) => "Insert Item",
-                Element::Reference(..) => "Insert Ref",
-                Element::Tree(..) => "Insert Tree",
-                Element::SumTree(..) => "Insert Sum Tree",
-                Element::SumItem(..) => "Insert Sum Item",
+                Element::Item(..) => "Insert Item".to_string(),
+                Element::Reference(..) => "Insert Ref".to_string(),
+                Element::Tree(..) => "Insert Tree".to_string(),
+                Element::SumTree(..) => "Insert Sum Tree".to_string(),
+                Element::SumItem(..) => "Insert Sum Item".to_string(),
             },
             Op::Replace { element } => match element {
-                Element::Item(..) => "Replace Item",
-                Element::Reference(..) => "Replace Ref",
-                Element::Tree(..) => "Replace Tree",
-                Element::SumTree(..) => "Replace Sum Tree",
-                Element::SumItem(..) => "Replace Sum Item",
+                Element::Item(..) => "Replace Item".to_string(),
+                Element::Reference(..) => "Replace Ref".to_string(),
+                Element::Tree(..) => "Replace Tree".to_string(),
+                Element::SumTree(..) => "Replace Sum Tree".to_string(),
+                Element::SumItem(..) => "Replace Sum Item".to_string(),
             },
             Op::Patch { element, .. } => match element {
-                Element::Item(..) => "Patch Item",
-                Element::Reference(..) => "Patch Ref",
-                Element::Tree(..) => "Patch Tree",
-                Element::SumTree(..) => "Patch Sum Tree",
-                Element::SumItem(..) => "Patch Sum Item",
+                Element::Item(..) => "Patch Item".to_string(),
+                Element::Reference(..) => "Patch Ref".to_string(),
+                Element::Tree(..) => "Patch Tree".to_string(),
+                Element::SumTree(..) => "Patch Sum Tree".to_string(),
+                Element::SumItem(..) => "Patch Sum Item".to_string(),
             },
-            Op::RefreshReference { .. } => "Refresh Reference",
-            Op::Delete => "Delete",
-            Op::DeleteTree => "Delete Tree",
-            Op::DeleteSumTree => "Delete Sum Tree",
-            Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key",
-            Op::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key",
+            Op::RefreshReference {
+                reference_path_type,
+                max_reference_hop,
+                trust_refresh_reference,
+                ..
+            } => {
+                format!(
+                    "Refresh Reference: path {:?}, max_hop {:?}, trust_reference {} ",
+                    reference_path_type, max_reference_hop, trust_refresh_reference
+                )
+            }
+            Op::Delete => "Delete".to_string(),
+            Op::DeleteTree => "Delete Tree".to_string(),
+            Op::DeleteSumTree => "Delete Sum Tree".to_string(),
+            Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
+            Op::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
@@ -766,8 +776,12 @@ where
         if recursions_allowed == 1 {
             let referenced_element_value_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get_value_hash(key.as_ref(), true)
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
+                merk.get_value_hash(
+                    key.as_ref(),
+                    true,
+                    Some(Element::value_defined_cost_for_serialized_value)
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
             let referenced_element_value_hash = cost_return_on_error!(
@@ -806,8 +820,12 @@ where
             // change in the batch.
             let referenced_element = cost_return_on_error!(
                 &mut cost,
-                merk.get(key.as_ref(), true)
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
+                merk.get(
+                    key.as_ref(),
+                    true,
+                    Some(Element::value_defined_cost_for_serialized_value)
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
             let referenced_element = cost_return_on_error_no_add!(
@@ -1130,14 +1148,18 @@ where
                     } else {
                         let value = cost_return_on_error!(
                             &mut cost,
-                            merk.get(key_info.as_slice(), true)
-                                .map(|result_value| result_value
-                                    .map_err(Error::MerkError)
-                                    .and_then(|maybe_value| maybe_value.ok_or(
-                                        Error::InvalidInput(
-                                            "trying to refresh a non existing reference",
-                                        )
-                                    )))
+                            merk.get(
+                                key_info.as_slice(),
+                                true,
+                                Some(Element::value_defined_cost_for_serialized_value)
+                            )
+                            .map(
+                                |result_value| result_value.map_err(Error::MerkError).and_then(
+                                    |maybe_value| maybe_value.ok_or(Error::InvalidInput(
+                                        "trying to refresh a non existing reference",
+                                    ))
+                                )
+                            )
                         );
                         cost_return_on_error_no_add!(
                             &cost,
@@ -1150,13 +1172,14 @@ where
                     let Element::Reference(path_reference, max_reference_hop, _) = &element else {
                         return Err(Error::InvalidInput(
                             "trying to refresh a an element that is not a reference",
-                        )).wrap_with_cost(cost)
+                        ))
+                        .wrap_with_cost(cost);
                     };
 
                     let merk_feature_type = if is_sum_tree {
-                        SummedMerk(0)
+                        SummedMerkNode(0)
                     } else {
-                        BasicMerk
+                        BasicMerkNode
                     };
 
                     let path_reference = cost_return_on_error!(
@@ -1275,7 +1298,7 @@ where
         }
         cost_return_on_error!(
             &mut cost,
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
                 &batch_operations,
                 &[],
                 Some(batch_apply_options.as_merk_options()),
@@ -1283,6 +1306,7 @@ where
                     Element::specialized_costs_for_key_value(key, value, is_sum_tree)
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
+                Some(&Element::value_defined_cost_for_serialized_value),
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization
                     let old_element = Element::deserialize(old_value.as_slice())
@@ -1567,9 +1591,7 @@ impl GroveDb {
                 // we need to pause the batch execution
                 return Ok(Some(ops_by_level_paths)).wrap_with_cost(cost);
             }
-            if current_level > 0 {
-                current_level -= 1;
-            }
+            current_level = current_level.saturating_sub(1);
         }
         Ok(None).wrap_with_cost(cost)
     }
@@ -1778,13 +1800,16 @@ impl GroveDb {
                 );
                 let is_sum_tree = element.is_sum_tree();
                 if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                        .map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                        .add_cost(cost)
+                    Merk::open_layered_with_root_key(
+                        storage,
+                        root_key,
+                        is_sum_tree,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                    )
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                    .add_cost(cost)
                 } else {
                     Err(Error::CorruptedPath(
                         "cannot open a subtree as parent exists but is not a tree",
@@ -1792,14 +1817,16 @@ impl GroveDb {
                     .wrap_with_cost(OperationCost::default())
                 }
             }
+        } else if new_merk {
+            Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
         } else {
-            if new_merk {
-                Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
-            } else {
-                Merk::open_base(storage, false)
-                    .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-                    .add_cost(cost)
-            }
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+            .add_cost(cost)
         }
     }
 
@@ -1834,11 +1861,16 @@ impl GroveDb {
             );
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                    .map_err(|_| {
-                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
-                    })
-                    .add_cost(local_cost)
+                Merk::open_layered_with_root_key(
+                    storage,
+                    root_key,
+                    is_sum_tree,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                )
+                .map_err(|_| {
+                    Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                })
+                .add_cost(local_cost)
             } else {
                 Err(Error::CorruptedData(
                     "cannot open a subtree as parent exists but is not a tree".to_owned(),
@@ -1846,9 +1878,13 @@ impl GroveDb {
                 .wrap_with_cost(local_cost)
             }
         } else {
-            Merk::open_base(storage, false)
-                .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                .add_cost(local_cost)
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+            .add_cost(local_cost)
         }
     }
 

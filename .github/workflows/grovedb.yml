@@ -27,6 +27,8 @@ jobs:
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - run: cargo test --workspace --all-features
 
@@ -52,6 +54,8 @@ jobs:
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - uses: actions-rs/clippy-check@v1
         with:
@@ -78,6 +82,8 @@ jobs:
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - run: exit `cargo +nightly fmt --check | wc -l`
 
@@ -100,6 +106,8 @@ jobs:
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
 
       - run: cargo check
 

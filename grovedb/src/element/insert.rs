@@ -92,6 +92,7 @@ impl Element {
                 Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
+            Some(&Element::value_defined_cost_for_serialized_value),
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -287,6 +288,7 @@ impl Element {
                 Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
+            Some(&Element::value_defined_cost_for_serialized_value),
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -356,6 +358,7 @@ impl Element {
                 Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
+            Some(&Element::value_defined_cost_for_serialized_value),
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }

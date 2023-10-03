@@ -30,9 +30,14 @@
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
+use grovedb_merk::{
+    proofs,
+    test_utils::{make_batch_rand, make_batch_seq, make_del_batch_rand, TempMerk},
+    tree::kv::ValueDefinedCostType,
+    Merk,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
-use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk};
 use rand::prelude::*;
 
 /// 1 million gets in 2k batches
@@ -46,11 +51,12 @@ pub fn get(c: &mut Criterion) {
     let mut batches = vec![];
     for i in 0..num_batches {
         let batch = make_batch_rand(batch_size, i);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -72,7 +78,9 @@ pub fn get(c: &mut Criterion) {
             let key_index = (i / num_batches) as usize;
 
             let key = &batches[batch_index][key_index].0;
-            merk.get(key, true).unwrap().expect("get failed");
+            merk.get(key, true, None::<fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .unwrap()
+                .expect("get failed");
 
             i = (i + 1) % initial_size;
         })
@@ -98,11 +106,12 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
                 batch,
                 &[],
                 None,
                 &|_k, _v| Ok(0),
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -137,11 +146,12 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
                 batch,
                 &[],
                 None,
                 &|_k, _v| Ok(0),
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -169,11 +179,12 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_seq(((i * batch_size) as u64)..((i + 1) * batch_size) as u64);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -193,11 +204,12 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
                 batch,
                 &[],
                 None,
                 &|_k, _v| Ok(0),
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -225,11 +237,12 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -249,11 +262,12 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
                 batch,
                 &[],
                 None,
                 &|_k, _v| Ok(0),
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -283,11 +297,12 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         let delete_batch = make_del_batch_rand(batch_size as u64, i as u64);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -311,11 +326,12 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
 
         // Merk tree is kept with 1m elements before each bench iteration for more or
         // less same inputs.
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             insert_batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -328,11 +344,12 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
         .expect("apply failed");
 
         b.iter_with_large_drop(|| {
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
                 delete_batch,
                 &[],
                 None,
                 &|_k, _v| Ok(0),
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -361,11 +378,12 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -378,7 +396,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
         .expect("apply failed");
         let mut prove_keys = Vec::with_capacity(batch_size);
         for (key, _) in batch.iter() {
-            prove_keys.push(merk::proofs::query::query_item::QueryItem::Key(key.clone()));
+            prove_keys.push(proofs::query::query_item::QueryItem::Key(key.clone()));
         }
         prove_keys_per_batch.push(prove_keys);
         batches.push(batch);
@@ -409,11 +427,12 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -434,7 +453,7 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
 
             let (ops, _) =
                 merk.walk(|walker| walker.unwrap().create_trunk_proof().unwrap().unwrap());
-            encode_proof_into(ops.iter(), &mut bytes);
+            proofs::encode_into(ops.iter(), &mut bytes);
         });
     });
 }
@@ -450,11 +469,12 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -489,11 +509,12 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
             &batch,
             &[],
             None,
             &|_k, _v| Ok(0),
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -530,11 +551,12 @@ pub fn restore_500_1(c: &mut Criterion) {
     let mut merk = TempMerk::new();
 
     let batch = make_batch_rand(merk_size as u64, 0_u64);
-    merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+    merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
         &batch,
         &[],
         None,
         &|_k, _v| Ok(0),
+        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
         &mut |_costs, _old_value, _value| Ok((false, None)),
         &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
@@ -560,7 +582,13 @@ pub fn restore_500_1(c: &mut Criterion) {
                     .0
                     .get_immediate_storage_context(SubtreePath::empty(), &tx)
                     .unwrap();
-                let m = Merk::open_standalone(ctx, false).unwrap().unwrap();
+                let m = Merk::open_standalone(
+                    ctx,
+                    false,
+                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                )
+                .unwrap()
+                .unwrap();
                 let mut restorer = Merk::restore(m, root_hash);
 
                 for chunk in data.1 {

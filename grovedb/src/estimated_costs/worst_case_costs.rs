@@ -42,7 +42,7 @@ use grovedb_merk::{
             MERK_BIGGEST_VALUE_SIZE,
         },
     },
-    tree::Tree,
+    tree::TreeNode,
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
@@ -67,7 +67,7 @@ impl GroveDb {
         match path.last() {
             None => {}
             Some(key) => {
-                cost.storage_loaded_bytes += Tree::worst_case_encoded_tree_size(
+                cost.storage_loaded_bytes += TreeNode::worst_case_encoded_tree_size(
                     key.max_length() as u32,
                     HASH_LENGTH as u32,
                     is_sum_tree,
@@ -333,7 +333,7 @@ impl GroveDb {
         max_element_size: u32,
         in_parent_tree_using_sums: bool,
     ) {
-        let value_size = Tree::worst_case_encoded_tree_size(
+        let value_size = TreeNode::worst_case_encoded_tree_size(
             key.max_length() as u32,
             max_element_size,
             in_parent_tree_using_sums,
@@ -392,7 +392,7 @@ impl GroveDb {
         max_references_sizes: Vec<u32>,
     ) {
         // todo: verify
-        let value_size: u32 = Tree::worst_case_encoded_tree_size(
+        let value_size: u32 = TreeNode::worst_case_encoded_tree_size(
             key.max_length() as u32,
             max_element_size,
             in_parent_tree_using_sums,
@@ -411,6 +411,7 @@ mod test {
     use grovedb_merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
         test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
+        tree::kv::ValueDefinedCostType,
     };
     use grovedb_storage::{
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
@@ -451,7 +452,11 @@ mod test {
         // 2. Left link exists
         // 3. Right link exists
         // Based on merk's avl rotation algorithm node is key 8 satisfies this
-        let node_result = merk.get(&8_u64.to_be_bytes(), true);
+        let node_result = merk.get(
+            &8_u64.to_be_bytes(),
+            true,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        );
 
         // By tweaking the max element size, we can adapt the worst case function to
         // this scenario. make_batch_seq creates values that are 60 bytes in size
