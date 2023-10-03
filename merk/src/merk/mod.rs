@@ -28,10 +28,10 @@
 
 //! Merk
 
-pub mod chunks;
+pub mod chunks2;
 pub(crate) mod defaults;
 pub mod options;
-pub mod restore;
+pub mod restore2;
 
 use std::{
     cell::Cell,
@@ -59,7 +59,7 @@ use crate::{
     },
     proofs::{
         chunk::{
-            chunk::{LEFT, RIGHT},
+            chunk2::{LEFT, RIGHT},
             util::traversal_instruction_as_string,
         },
         encode_into,

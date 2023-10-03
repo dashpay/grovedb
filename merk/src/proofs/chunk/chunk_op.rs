@@ -126,7 +126,7 @@ mod test {
 
     use crate::proofs::{
         chunk::{
-            chunk::{LEFT, RIGHT},
+            chunk2::{LEFT, RIGHT},
             chunk_op::ChunkOp,
         },
         Node, Op,

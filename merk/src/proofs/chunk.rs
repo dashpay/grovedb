@@ -53,7 +53,7 @@ use crate::{
 
 mod binary_range;
 #[cfg(feature = "full")]
-pub mod chunk;
+pub mod chunk2;
 pub mod chunk_op;
 pub mod error;
 #[cfg(feature = "full")]

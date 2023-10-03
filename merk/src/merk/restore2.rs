@@ -38,7 +38,7 @@ use crate::{
     merk::MerkSource,
     proofs::{
         chunk::{
-            chunk::{LEFT, RIGHT},
+            chunk2::{LEFT, RIGHT},
             chunk_op::ChunkOp,
             error::{ChunkError, ChunkError::InternalError},
             util::{
@@ -475,10 +475,10 @@ mod tests {
     use super::*;
     use crate::{
         execute_proof,
-        merk::chunks::ChunkProducer,
+        merk::chunks2::ChunkProducer,
         proofs::{
             chunk::{
-                chunk::tests::traverse_get_node_hash, chunk_op::ChunkOp::Chunk,
+                chunk2::tests::traverse_get_node_hash, chunk_op::ChunkOp::Chunk,
                 error::ChunkError::InvalidChunkProof,
             },
             Query,
