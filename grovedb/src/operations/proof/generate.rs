@@ -47,8 +47,8 @@ use grovedb_storage::StorageContext;
 use crate::{
     element::helpers::raw_decode,
     operations::proof::util::{
-        reduce_limit_and_offset_by, write_slice_of_slice_to_slice, write_slice_to_vec,
-        write_to_vec, ProofTokenType, EMPTY_TREE_HASH,
+        increase_limit_by, reduce_limit_and_offset_by, write_slice_of_slice_to_slice,
+        write_slice_to_vec, write_to_vec, ProofTokenType, EMPTY_TREE_HASH,
     },
     reference_path::path_from_reference_path_type,
     versioning::{prepend_version_to_bytes, PROOF_VERSION},
@@ -215,6 +215,7 @@ impl GroveDb {
         }
 
         let mut is_leaf_tree = true;
+        let mut leaf_element_count = 0;
 
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
@@ -232,6 +233,7 @@ impl GroveDb {
                         // this element should be added to the result set
                         // hence we have to update the limit and offset value
                         reduce_limit_and_offset_by(current_limit, current_offset, 1);
+                        leaf_element_count += 1;
                         continue;
                     }
 
@@ -411,6 +413,7 @@ impl GroveDb {
         if is_leaf_tree {
             // if no useful subtree, then we care about the result set of this subtree.
             // apply the sized query
+            increase_limit_by(current_limit, leaf_element_count);
             let limit_offset = cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(

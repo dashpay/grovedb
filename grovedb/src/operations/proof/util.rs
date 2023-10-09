@@ -333,6 +333,12 @@ pub fn reduce_limit_and_offset_by(
     skip_limit
 }
 
+pub fn increase_limit_by(limit: &mut Option<u16>, n: u16) {
+    if let Some(limit_value) = *limit {
+        *limit = Some(limit_value + n);
+    }
+}
+
 /// Proved path-key-values
 pub type ProvedPathKeyValues = Vec<ProvedPathKeyValue>;
 
