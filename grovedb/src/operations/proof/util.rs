@@ -333,9 +333,17 @@ pub fn reduce_limit_and_offset_by(
     skip_limit
 }
 
-pub fn increase_limit_by(limit: &mut Option<u16>, n: u16) {
+pub fn increase_limit_and_offset_by(
+    limit: &mut Option<u16>,
+    offset: &mut Option<u16>,
+    limit_inc: u16,
+    offset_inc: u16,
+) {
+    if let Some(offset_value) = *offset {
+        *offset = Some(offset_value + offset_inc);
+    }
     if let Some(limit_value) = *limit {
-        *limit = Some(limit_value + n);
+        *limit = Some(limit_value + limit_inc);
     }
 }
 
