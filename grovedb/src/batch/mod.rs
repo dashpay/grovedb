@@ -175,7 +175,7 @@ impl PartialOrd for Op {
 impl Ord for Op {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            // deal with relationship between delete ops
+            // deal with the relationship between delete ops
             (Op::DeleteTree, Op::DeleteSumTree) | (Op::DeleteSumTree, Op::DeleteTree) => {
                 Ordering::Equal
             }
@@ -190,7 +190,7 @@ impl Ord for Op {
             (Op::DeleteSumTree, _) => Ordering::Less,
             (Op::DeleteTree, _) => Ordering::Less,
 
-            // all insert operations are considered equal
+            // all other operations are considered equal
             _ => Ordering::Equal,
         }
     }
