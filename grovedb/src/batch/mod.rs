@@ -172,12 +172,12 @@ impl Op {
             Op::DeleteTree => 0,
             Op::DeleteSumTree => 1,
             Op::Delete => 2,
-            Op::InsertTreeWithRootHash {..} => 3,
-            Op::ReplaceTreeRootKey {..} => 4,
-            Op::RefreshReference {..} => 5,
-            Op::Replace {..} => 6,
-            Op::Patch {..} => 7,
-            Op::Insert {..} => 8
+            Op::InsertTreeWithRootHash { .. } => 3,
+            Op::ReplaceTreeRootKey { .. } => 4,
+            Op::RefreshReference { .. } => 5,
+            Op::Replace { .. } => 6,
+            Op::Patch { .. } => 7,
+            Op::Insert { .. } => 8,
         }
     }
 }
