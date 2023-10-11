@@ -168,19 +168,19 @@ pub enum Op {
 
 impl PartialOrd for Op {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match (self, other) {
-            (Op::Delete, Op::Insert { .. }) => Some(Ordering::Less),
-            (Op::Delete, Op::Replace { .. }) => Some(Ordering::Less),
-            (Op::Insert { .. }, Op::Delete) => Some(Ordering::Greater),
-            (Op::Replace { .. }, Op::Delete) => Some(Ordering::Greater),
-            _ => Some(Ordering::Equal),
-        }
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for Op {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).expect("all ops have order")
+        match (self, other) {
+            (Op::Delete, Op::Insert { .. }) => Ordering::Less,
+            (Op::Delete, Op::Replace { .. }) => Ordering::Less,
+            (Op::Insert { .. }, Op::Delete) => Ordering::Greater,
+            (Op::Replace { .. }, Op::Delete) => Ordering::Greater,
+            _ => Ordering::Equal,
+        }
     }
 }
 

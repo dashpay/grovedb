@@ -100,20 +100,7 @@ impl PartialEq<&[u8]> for KeyInfo {
 #[cfg(feature = "full")]
 impl PartialOrd<Self> for KeyInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.as_slice().partial_cmp(other.as_slice()) {
-            None => None,
-            Some(ord) => match ord {
-                Ordering::Less => Some(Ordering::Less),
-                Ordering::Equal => {
-                    let other_len = other.max_length();
-                    match self.max_length().partial_cmp(&other_len) {
-                        None => Some(Ordering::Equal),
-                        Some(ord) => Some(ord),
-                    }
-                }
-                Ordering::Greater => Some(Ordering::Greater),
-            },
-        }
+        Some(self.cmp(other))
     }
 }
 
