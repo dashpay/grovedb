@@ -166,6 +166,22 @@ pub enum Op {
     DeleteSumTree,
 }
 
+impl Op {
+    fn to_u8(&self) -> u8 {
+        match self {
+            Op::DeleteTree => 0,
+            Op::DeleteSumTree => 1,
+            Op::Delete => 2,
+            Op::InsertTreeWithRootHash { .. } => 3,
+            Op::ReplaceTreeRootKey { .. } => 4,
+            Op::RefreshReference { .. } => 5,
+            Op::Replace { .. } => 6,
+            Op::Patch { .. } => 7,
+            Op::Insert { .. } => 8,
+        }
+    }
+}
+
 impl PartialOrd for Op {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -174,13 +190,7 @@ impl PartialOrd for Op {
 
 impl Ord for Op {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Op::Delete, Op::Insert { .. }) => Ordering::Less,
-            (Op::Delete, Op::Replace { .. }) => Ordering::Less,
-            (Op::Insert { .. }, Op::Delete) => Ordering::Greater,
-            (Op::Replace { .. }, Op::Delete) => Ordering::Greater,
-            _ => Ordering::Equal,
-        }
+        self.to_u8().cmp(&other.to_u8())
     }
 }
 
