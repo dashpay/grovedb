@@ -583,12 +583,7 @@ impl GroveDb {
                 break;
             };
 
-            let has_item = Element::get(
-                &subtree,
-                key,
-                true,
-            )
-            .unwrap_add_cost(&mut cost);
+            let has_item = Element::get(&subtree, key, true).unwrap_add_cost(&mut cost);
 
             let mut next_key_query = Query::new();
             next_key_query.insert_key(key.to_vec());

@@ -706,9 +706,31 @@ impl ProofVerifier {
         let mut expected_child_hash = None;
         let mut last_result_set: ProvedPathKeyValues = vec![];
 
+        // we get the key of the first element in the path
+        // we verify that it is in the root
+        // if no expected_child_hash we set the root child hash
+        // then we get the result set, which should be the element at the current key
+        // we deserialize that element, and extra it's child hash, the child hash is in
+        // the proof (whatever that means)  child_hash = Hash(value, root_hash)
+
         for key in path_slices {
             let (proof_token_type, merk_proof, _) = proof_reader.read_proof()?;
-            if proof_token_type != ProofTokenType::Merk {
+            if proof_token_type == ProofTokenType::EmptyTree {
+                let combined_hash = combine_hash(
+                    value_hash_fn(last_result_set[0].value.as_slice()).value(),
+                    &[0; 32],
+                )
+                .unwrap();
+                if Some(combined_hash) != expected_child_hash {
+                    return Err(Error::InvalidProof(
+                        "proof invalid: could not verify empty subtree while generating absent \
+                         path proof",
+                    ));
+                } else {
+                    last_result_set = vec![];
+                    break;
+                }
+            } else if proof_token_type != ProofTokenType::Merk {
                 return Err(Error::InvalidProof("expected a merk proof for absent path"));
             }
 
