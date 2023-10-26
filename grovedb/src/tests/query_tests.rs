@@ -34,7 +34,6 @@ use tempfile::TempDir;
 
 use crate::{
     batch::GroveDbOp,
-    operations::proof::util::EMPTY_TREE_HASH,
     query_result_type::{PathKeyOptionalElementTrio, QueryResultType},
     reference_path::ReferencePathType,
     tests::{
