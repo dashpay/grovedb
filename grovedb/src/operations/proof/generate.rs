@@ -510,10 +510,22 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
 
-        let mut proof_result = subtree
-            .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
-            .unwrap()
-            .expect("should generate proof");
+        // if the subtree is empty, return the EmptyTree proof op
+        if subtree.root_hash().unwrap() == EMPTY_TREE_HASH {
+            cost_return_on_error_no_add!(
+                &cost,
+                write_to_vec(proofs, &[ProofTokenType::EmptyTree.into()])
+            );
+            return Ok(limit_offset).wrap_with_cost(cost);
+        }
+
+        let mut proof_result = cost_return_on_error_no_add!(
+            &cost,
+            subtree
+                .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
+                .unwrap()
+                .map_err(|_e| Error::InternalError("failed to generate proof"))
+        );
 
         cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
 
@@ -570,16 +582,11 @@ impl GroveDb {
                 .open_non_transactional_merk_at_path(current_path.as_slice().into(), None)
                 .unwrap_add_cost(&mut cost);
 
-            if subtree.is_err() {
+            let Ok(subtree) = subtree else {
                 break;
-            }
+            };
 
-            let has_item = Element::get(
-                subtree.as_ref().expect("confirmed not error above"),
-                key,
-                true,
-            )
-            .unwrap_add_cost(&mut cost);
+            let has_item = Element::get(&subtree, key, true).unwrap_add_cost(&mut cost);
 
             let mut next_key_query = Query::new();
             next_key_query.insert_key(key.to_vec());
@@ -587,7 +594,7 @@ impl GroveDb {
                 &mut cost,
                 self.generate_and_store_merk_proof(
                     &current_path.as_slice().into(),
-                    &subtree.expect("confirmed not error above"),
+                    &subtree,
                     &next_key_query,
                     (None, None),
                     ProofTokenType::Merk,

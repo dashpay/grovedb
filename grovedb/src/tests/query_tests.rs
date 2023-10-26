@@ -2658,3 +2658,26 @@ fn test_query_b_depends_on_query_a() {
     assert_eq!(age_result[0].2, Some(Element::new_item(vec![12])));
     assert_eq!(age_result[1].2, Some(Element::new_item(vec![46])));
 }
+
+#[test]
+fn test_prove_absent_path_with_intermediate_emtpy_tree() {
+    //         root
+    // test_leaf (empty)
+    let mut grovedb = make_test_grovedb();
+
+    // prove the absence of key "book" in ["test_leaf", "invalid"]
+    let mut query = Query::new();
+    query.insert_key(b"book".to_vec());
+    let mut path_query =
+        PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"invalid".to_vec()], query);
+
+    let proof = grovedb
+        .prove_query(&path_query)
+        .unwrap()
+        .expect("should generate proofs");
+
+    let (root_hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should verify proof");
+    assert_eq!(result_set.len(), 0);
+    assert_eq!(root_hash, grovedb.root_hash(None).unwrap().unwrap());
+}

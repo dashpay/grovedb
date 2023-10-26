@@ -708,7 +708,25 @@ impl ProofVerifier {
 
         for key in path_slices {
             let (proof_token_type, merk_proof, _) = proof_reader.read_proof()?;
-            if proof_token_type != ProofTokenType::Merk {
+            if proof_token_type == ProofTokenType::EmptyTree {
+                // when we encounter the empty tree op, we need to ensure
+                // that the expected tree hash is the combination of the
+                // Element_value_hash and the empty root hash [0; 32]
+                let combined_hash = combine_hash(
+                    value_hash_fn(last_result_set[0].value.as_slice()).value(),
+                    &[0; 32],
+                )
+                .unwrap();
+                if Some(combined_hash) != expected_child_hash {
+                    return Err(Error::InvalidProof(
+                        "proof invalid: could not verify empty subtree while generating absent \
+                         path proof",
+                    ));
+                } else {
+                    last_result_set = vec![];
+                    break;
+                }
+            } else if proof_token_type != ProofTokenType::Merk {
                 return Err(Error::InvalidProof("expected a merk proof for absent path"));
             }
 
