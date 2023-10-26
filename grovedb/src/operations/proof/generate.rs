@@ -521,7 +521,7 @@ impl GroveDb {
             subtree
                 .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
                 .unwrap()
-                .map_err(|e| Error::InternalError("failed to generate proof"))
+                .map_err(|_e| Error::InternalError("failed to generate proof"))
         );
 
         cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
