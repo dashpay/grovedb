@@ -510,10 +510,13 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
 
-        let mut proof_result = subtree
-            .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
-            .unwrap()
-            .expect("should generate proof");
+        let mut proof_result = cost_return_on_error_no_add!(
+            &cost,
+            subtree
+                .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
+                .unwrap()
+                .map_err(|e| Error::InternalError("failed to generate proof"))
+        );
 
         cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
 
