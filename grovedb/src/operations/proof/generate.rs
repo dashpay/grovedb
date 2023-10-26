@@ -573,12 +573,12 @@ impl GroveDb {
                 .open_non_transactional_merk_at_path(current_path.as_slice().into(), None)
                 .unwrap_add_cost(&mut cost);
 
-            if subtree.is_err() {
+            let Ok(subtree) = subtree else {
                 break;
-            }
+            };
 
             let has_item = Element::get(
-                subtree.as_ref().expect("confirmed not error above"),
+                &subtree,
                 key,
                 true,
             )
@@ -590,7 +590,7 @@ impl GroveDb {
                 &mut cost,
                 self.generate_and_store_merk_proof(
                     &current_path.as_slice().into(),
-                    &subtree.expect("confirmed not error above"),
+                    &subtree,
                     &next_key_query,
                     (None, None),
                     ProofTokenType::Merk,

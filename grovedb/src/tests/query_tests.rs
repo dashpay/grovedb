@@ -2672,5 +2672,5 @@ fn test_prove_absent_path_with_intermediate_emtpy_tree() {
         PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"invalid".to_vec()], query);
 
     let proof = grovedb.prove_query(&pathquery).unwrap();
-    dbg!(proof);
+    assert_eq!(proof.is_err(), false);
 }
