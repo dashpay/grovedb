@@ -510,6 +510,12 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
 
+        // if the subtree is empty, return the EmptyTree proof op
+        if subtree.root_hash().unwrap() == EMPTY_TREE_HASH {
+            write_to_vec(proofs, &[ProofTokenType::EmptyTree.into()]);
+            return Ok(limit_offset).wrap_with_cost(cost);
+        }
+
         let mut proof_result = cost_return_on_error_no_add!(
             &cost,
             subtree

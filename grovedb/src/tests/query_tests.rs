@@ -42,6 +42,7 @@ use crate::{
     },
     Element, GroveDb, PathQuery, SizedQuery,
 };
+use crate::operations::proof::util::EMPTY_TREE_HASH;
 
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
@@ -2668,9 +2669,12 @@ fn test_prove_absent_path_with_intermediate_emtpy_tree() {
     // prove the absence of key "book" in ["test_leaf", "invalid"]
     let mut query = Query::new();
     query.insert_key(b"book".to_vec());
-    let mut pathquery =
+    let mut path_query =
         PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"invalid".to_vec()], query);
 
-    let proof = grovedb.prove_query(&pathquery).unwrap();
-    assert_eq!(proof.is_err(), false);
+    let proof = grovedb.prove_query(&path_query).unwrap().expect("should generate proofs");
+
+    let (root_hash, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query).expect("should verify proof");
+    assert_eq!(result_set.len(), 0);
+    assert_eq!(root_hash, EMPTY_TREE_HASH);
 }
