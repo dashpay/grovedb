@@ -380,27 +380,9 @@ impl fmt::Debug for GroveDbOp {
         self.key.visualize(key_drawer).unwrap();
 
         let op_dbg = match &self.op {
-            Op::Insert { element } => match element {
-                Element::Item(..) => "Insert Item".to_string(),
-                Element::Reference(..) => "Insert Ref".to_string(),
-                Element::Tree(..) => "Insert Tree".to_string(),
-                Element::SumTree(..) => "Insert Sum Tree".to_string(),
-                Element::SumItem(..) => "Insert Sum Item".to_string(),
-            },
-            Op::Replace { element } => match element {
-                Element::Item(..) => "Replace Item".to_string(),
-                Element::Reference(..) => "Replace Ref".to_string(),
-                Element::Tree(..) => "Replace Tree".to_string(),
-                Element::SumTree(..) => "Replace Sum Tree".to_string(),
-                Element::SumItem(..) => "Replace Sum Item".to_string(),
-            },
-            Op::Patch { element, .. } => match element {
-                Element::Item(..) => "Patch Item".to_string(),
-                Element::Reference(..) => "Patch Ref".to_string(),
-                Element::Tree(..) => "Patch Tree".to_string(),
-                Element::SumTree(..) => "Patch Sum Tree".to_string(),
-                Element::SumItem(..) => "Patch Sum Item".to_string(),
-            },
+            Op::Insert { element } => format!("Insert {:?}", element),
+            Op::Replace { element } => format!("Replace {:?}", element),
+            Op::Patch { element, .. } => format!("Patch {:?}", element),
             Op::RefreshReference {
                 reference_path_type,
                 max_reference_hop,

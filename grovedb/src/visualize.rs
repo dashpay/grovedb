@@ -44,12 +44,24 @@ use crate::{
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
-            Element::Item(value, _) => {
+            Element::Item(value, flags) => {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
+
+                if let Some(f) = flags {
+                    if f.len() > 0 {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
-            Element::SumItem(value, _) => {
+            Element::SumItem(value, flags) => {
                 drawer.write(format!("sum_item: {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if f.len() > 0 {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
@@ -64,13 +76,26 @@ impl Visualize for Element {
                 // }
                 // drawer.write(b"]")?;
             }
-            Element::Tree(root_key, _) => {
+            Element::Tree(root_key, flags) => {
                 drawer.write(b"tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
+
+                if let Some(f) = flags {
+                    if f.len() > 0 {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
-            Element::SumTree(root_key, ..) => {
+            Element::SumTree(root_key, value, flags) => {
                 drawer.write(b"sum_tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!(" {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if f.len() > 0 {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
         }
         Ok(drawer)

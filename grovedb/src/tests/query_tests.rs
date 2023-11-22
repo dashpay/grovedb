@@ -2663,12 +2663,12 @@ fn test_query_b_depends_on_query_a() {
 fn test_prove_absent_path_with_intermediate_emtpy_tree() {
     //         root
     // test_leaf (empty)
-    let mut grovedb = make_test_grovedb();
+    let grovedb = make_test_grovedb();
 
     // prove the absence of key "book" in ["test_leaf", "invalid"]
     let mut query = Query::new();
     query.insert_key(b"book".to_vec());
-    let mut path_query =
+    let path_query =
         PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"invalid".to_vec()], query);
 
     let proof = grovedb
