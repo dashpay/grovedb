@@ -2668,8 +2668,7 @@ fn test_prove_absent_path_with_intermediate_emtpy_tree() {
     // prove the absence of key "book" in ["test_leaf", "invalid"]
     let mut query = Query::new();
     query.insert_key(b"book".to_vec());
-    let path_query =
-        PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"invalid".to_vec()], query);
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"invalid".to_vec()], query);
 
     let proof = grovedb
         .prove_query(&path_query)
