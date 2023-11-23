@@ -49,7 +49,7 @@ impl Visualize for Element {
                 drawer = value.visualize(drawer)?;
 
                 if let Some(f) = flags {
-                    if f.len() > 0 {
+                    if !f.is_empty() {
                         drawer = f.visualize(drawer)?;
                     }
                 }
@@ -58,7 +58,7 @@ impl Visualize for Element {
                 drawer.write(format!("sum_item: {value}").as_bytes())?;
 
                 if let Some(f) = flags {
-                    if f.len() > 0 {
+                    if !f.is_empty() {
                         drawer = f.visualize(drawer)?;
                     }
                 }
@@ -81,7 +81,7 @@ impl Visualize for Element {
                 drawer = root_key.as_deref().visualize(drawer)?;
 
                 if let Some(f) = flags {
-                    if f.len() > 0 {
+                    if !f.is_empty() {
                         drawer = f.visualize(drawer)?;
                     }
                 }
@@ -92,7 +92,7 @@ impl Visualize for Element {
                 drawer.write(format!(" {value}").as_bytes())?;
 
                 if let Some(f) = flags {
-                    if f.len() > 0 {
+                    if !f.is_empty() {
                         drawer = f.visualize(drawer)?;
                     }
                 }
