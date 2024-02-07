@@ -9,12 +9,12 @@ use crate::{
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
 
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Open empty tree
-    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
+    pub fn open_empty(storage: C, merk_type: MerkType, is_sum_tree: bool) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -26,7 +26,7 @@ where
 
     /// Open standalone tree
     pub fn open_standalone(
-        storage: S,
+        storage: C,
         is_sum_tree: bool,
         value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Self, Error> {
@@ -43,7 +43,7 @@ where
 
     /// Open base tree
     pub fn open_base(
-        storage: S,
+        storage: C,
         is_sum_tree: bool,
         value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Self, Error> {
@@ -60,7 +60,7 @@ where
 
     /// Open layered tree with root key
     pub fn open_layered_with_root_key(
-        storage: S,
+        storage: C,
         root_key: Option<Vec<u8>>,
         is_sum_tree: bool,
         value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,

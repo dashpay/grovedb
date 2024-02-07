@@ -28,6 +28,7 @@
 
 //! Storage for GroveDB
 
+use rocksdb::WriteBatchWithTransaction;
 use std::{
     cell::RefCell,
     collections::{btree_map::IntoValues, BTreeMap},
@@ -35,8 +36,8 @@ use std::{
 };
 
 use grovedb_costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
-    CostResult, OperationCost,
+    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost,
+    ChildrenSizesWithIsSumTree, CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
 use grovedb_visualize::visualize_to_vec;
@@ -46,34 +47,41 @@ use crate::{worst_case_costs::WorstKeyLength, Error};
 /// Top-level storage_cost abstraction.
 /// Should be able to hold storage_cost connection and to start transaction when
 /// needed. All query operations will be exposed using [StorageContext].
-pub trait Storage<'db> {
+pub trait Storage {
     /// Storage transaction type
-    type Transaction;
+    type Transaction<'db>;
 
     /// Storage context type for mutli-tree batch operations
-    type BatchStorageContext: StorageContext<'db>;
+    type BatchStorageContext<'db>: StorageContext<'db>
+    where
+        Self: 'db;
 
     /// Storage context type for multi-tree batch operations inside transaction
-    type BatchTransactionalStorageContext: StorageContext<'db>;
+    type BatchTransactionalStorageContext<'db>: StorageContext<'db>
+    where
+        Self: 'db;
 
     /// Storage context type for direct writes to the storage. The only use case
     /// is replication process.
-    type ImmediateStorageContext: StorageContext<'db>;
+    type ImmediateStorageContext<'db>: StorageContext<'db>
+    where
+        Self: 'db;
 
     /// Starts a new transaction
-    fn start_transaction(&'db self) -> Self::Transaction;
+    fn start_transaction<'db>(&'db self) -> Self::Transaction<'db>;
 
     /// Consumes and commits a transaction
-    fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error>;
+    fn commit_transaction<'db>(&self, transaction: Self::Transaction<'db>)
+        -> CostResult<(), Error>;
 
     /// Rollback a transaction
-    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error>;
+    fn rollback_transaction<'db>(&self, transaction: &Self::Transaction<'db>) -> Result<(), Error>;
 
     /// Consumes and applies multi-context batch.
-    fn commit_multi_context_batch(
+    fn commit_multi_context_batch<'db>(
         &self,
         batch: StorageBatch,
-        transaction: Option<&'db Self::Transaction>,
+        transaction: Option<&Self::Transaction<'db>>,
     ) -> CostResult<(), Error>;
 
     /// Forces data to be written
@@ -81,32 +89,32 @@ pub trait Storage<'db> {
 
     /// Make storage context for a subtree with path, keeping all write
     /// operations inside a `batch` if provided.
-    fn get_storage_context<'b, B>(
+    fn get_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
         batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext>
+    ) -> CostContext<Self::BatchStorageContext<'db>>
     where
         B: AsRef<[u8]> + 'b;
 
     /// Make context for a subtree on transactional data, keeping all write
     /// operations inside a `batch` if provided.
-    fn get_transactional_storage_context<'b, B>(
+    fn get_transactional_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
         batch: Option<&'db StorageBatch>,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::BatchTransactionalStorageContext>
+        transaction: &'db Self::Transaction<'db>,
+    ) -> CostContext<Self::BatchTransactionalStorageContext<'db>>
     where
         B: AsRef<[u8]> + 'b;
 
     /// Make context for a subtree on transactional data that will apply all
     /// operations straight to the storage.
-    fn get_immediate_storage_context<'b, B>(
+    fn get_immediate_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::ImmediateStorageContext>
+        transaction: &'db Self::Transaction<'db>,
+    ) -> CostContext<Self::ImmediateStorageContext<'db>>
     where
         B: AsRef<[u8]> + 'b;
 
@@ -115,6 +123,34 @@ pub trait Storage<'db> {
 
     /// Return worst case cost for storage_cost context creation.
     fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost;
+
+    /// Remove all data from the storage
+    fn wipe(&self) -> Result<(), Error>;
+
+    /// Returns the write batch, with costs and pending costs
+    /// Pending costs are costs that should only be applied after successful
+    /// write of the write batch.
+    fn build_write_batch(
+        &self,
+        storage_batch: StorageBatch,
+    ) -> CostResult<(WriteBatchWithTransaction<true>, OperationCost), Error>;
+
+    /// Continues the write batch, returning pending costs
+    /// Pending costs are costs that should only be applied after successful
+    /// write of the write batch.
+    fn continue_write_batch(
+        &self,
+        db_batch: &mut WriteBatchWithTransaction<true>,
+        storage_batch: StorageBatch,
+    ) -> CostResult<OperationCost, Error>;
+
+    /// Commits a write batch
+    fn commit_db_write_batch<'db>(
+        &self,
+        db_batch: WriteBatchWithTransaction<true>,
+        pending_costs: OperationCost,
+        transaction: Option<&Self::Transaction<'db>>,
+    ) -> CostResult<(), Error>;
 }
 
 pub use grovedb_costs::ChildrenSizes;
@@ -211,6 +247,26 @@ pub trait StorageContext<'db> {
 
     /// Get raw iterator over storage_cost
     fn raw_iter(&self) -> Self::RawIterator;
+
+    /// Clears all the data in the tree at the storage level
+    fn clear(&mut self) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let mut iter = self.raw_iter();
+        iter.seek_to_first().unwrap_add_cost(&mut cost);
+
+        while iter.valid().unwrap_add_cost(&mut cost) {
+            if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+                cost_return_on_error!(
+                    &mut cost,
+                    // todo: calculate cost
+                    self.delete(key, None)
+                );
+            }
+            iter.next().unwrap_add_cost(&mut cost);
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
 }
 
 /// Database batch (not to be confused with multi-tree operations batch).

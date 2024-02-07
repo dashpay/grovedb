@@ -68,14 +68,14 @@ pub struct Restorer<S> {
 }
 
 #[cfg(feature = "full")]
-impl<'db, S: StorageContext<'db>> Restorer<S> {
+impl<'db, C: StorageContext<'db>> Restorer<C> {
     /// Creates a new `Restorer`, which will initialize a new Merk at the given
     /// file path. The first chunk (the "trunk") will be compared against
     /// `expected_root_hash`, then each subsequent chunk will be compared
     /// against the hashes stored in the trunk, so that the restore process will
     /// never allow malicious peers to send more than a single invalid chunk.
     pub fn new(
-        merk: Merk<S>,
+        merk: Merk<C>,
         combining_value: Option<Vec<u8>>,
         expected_root_hash: CryptoHash,
     ) -> Self {
@@ -106,7 +106,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Merk instance. This method will return an error if called before
     /// processing all chunks (e.g. `restorer.remaining_chunks()` is not equal
     /// to 0).
-    pub fn finalize(mut self) -> Result<Merk<S>, Error> {
+    pub fn finalize(mut self) -> Result<Merk<C>, Error> {
         if self.remaining_chunks().unwrap_or(0) != 0 {
             return Err(Error::ChunkRestoringError(
                 "Called finalize before all chunks were processed".to_string(),
@@ -303,10 +303,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     fn rewrite_trunk_child_heights(&mut self) -> Result<(), Error> {
-        fn recurse<'s, 'db, S: StorageContext<'db>>(
-            mut node: RefWalker<MerkSource<'s, S>>,
+        fn recurse<'s, 'db, C: StorageContext<'db>>(
+            mut node: RefWalker<MerkSource<'s, C>>,
             remaining_depth: usize,
-            batch: &mut <S as StorageContext<'db>>::Batch,
+            batch: &mut <C as StorageContext<'db>>::Batch,
         ) -> Result<(u8, u8), Error> {
             if remaining_depth == 0 {
                 return Ok(node.tree().child_heights());
@@ -372,11 +372,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 }
 
 #[cfg(feature = "full")]
-impl<'db, S: StorageContext<'db>> Merk<S> {
+impl<'db, C: StorageContext<'db>> Merk<C> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
     /// by creating a RocksDB at `path`.
-    pub fn restore(merk: Merk<S>, expected_root_hash: CryptoHash) -> Restorer<S> {
+    pub fn restore(merk: Merk<C>, expected_root_hash: CryptoHash) -> Restorer<C> {
         Restorer::new(merk, None, expected_root_hash)
     }
 }

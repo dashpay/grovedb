@@ -33,6 +33,8 @@
 pub mod error;
 #[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb_storage;
+#[cfg(feature = "secondary_rocksdb_storage")]
+pub mod secondary_rocksdb_storage;
 mod storage;
 pub mod worst_case_costs;
 

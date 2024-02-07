@@ -6,11 +6,11 @@ use crate::{
     Error, Link, Merk,
 };
 
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
-    pub(in crate::merk) fn source(&self) -> MerkSource<S> {
+    pub(in crate::merk) fn source(&self) -> MerkSource<C> {
         MerkSource {
             storage: &self.storage,
             is_sum_tree: self.is_sum_tree,
@@ -33,9 +33,9 @@ impl<'s, S> Clone for MerkSource<'s, S> {
     }
 }
 
-impl<'s, 'db, S> Fetch for MerkSource<'s, S>
+impl<'s, 'db, C> Fetch for MerkSource<'s, C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     fn fetch(
         &self,

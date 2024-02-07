@@ -34,6 +34,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
+use grovedb_storage::Storage;
 
 use crate::{
     batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
@@ -82,7 +83,7 @@ impl DeleteUpTreeOptions {
 }
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
     pub fn delete_up_tree_while_empty<'b, B, P>(
@@ -90,7 +91,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<u16, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -117,7 +118,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -175,7 +176,7 @@ impl GroveDb {
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
@@ -197,7 +198,7 @@ impl GroveDb {
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &mut Vec<GroveDbOp>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error> {
         let mut cost = OperationCost::default();
 

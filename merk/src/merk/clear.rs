@@ -3,9 +3,9 @@ use grovedb_storage::{Batch, RawIterator, StorageContext};
 
 use crate::{Error, Error::StorageError, Merk};
 
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Deletes tree data
     pub fn clear(&mut self) -> CostResult<(), Error> {

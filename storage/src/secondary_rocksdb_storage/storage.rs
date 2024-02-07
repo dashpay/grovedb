@@ -32,21 +32,20 @@ use std::path::Path;
 
 use error::Error;
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval, CostContext, CostResult,
-    CostsExt, OperationCost,
+    cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval,
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
-    Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, Transaction,
+    WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
-use super::{
-    PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext,
-    PrefixedRocksDbTransactionContext,
+use crate::rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage};
+use crate::secondary_rocksdb_storage::storage_context::{
+    PrefixedSecondaryRocksDbImmediateStorageContext, PrefixedSecondaryRocksDbStorageContext,
 };
 use crate::{
     error,
@@ -89,22 +88,26 @@ lazy_static! {
 }
 
 /// Type alias for a database
-pub(crate) type Db = OptimisticTransactionDB;
+pub(crate) type Db = rocksdb::DB;
 
 /// Type alias for a transaction
 pub(crate) type Tx<'db> = Transaction<'db, Db>;
 
 /// Storage which uses RocksDB as its backend.
-pub struct RocksDbStorage {
+pub struct SecondaryRocksDbStorage {
     db: Db,
 }
 
-impl RocksDbStorage {
+impl SecondaryRocksDbStorage {
     /// Create RocksDb storage with default parameters using `path`.
-    pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db = Db::open_cf_descriptors(
+    pub fn default_secondary_rocksdb<P: AsRef<Path>>(
+        primary_path: P,
+        secondary_path: P,
+    ) -> Result<Self, Error> {
+        let db = Db::open_cf_descriptors_as_secondary(
             &DEFAULT_OPTS,
-            &path,
+            &primary_path,
+            &secondary_path,
             [
                 ColumnFamilyDescriptor::new(AUX_CF_NAME, DEFAULT_OPTS.clone()),
                 ColumnFamilyDescriptor::new(ROOTS_CF_NAME, DEFAULT_OPTS.clone()),
@@ -112,7 +115,8 @@ impl RocksDbStorage {
             ],
         )
         .map_err(RocksDBError)?;
-        Ok(RocksDbStorage { db })
+
+        Ok(Self { db })
     }
 
     fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
@@ -155,137 +159,10 @@ impl RocksDbStorage {
         path.len() + path.iter().map(|a| a.max_length() as usize).sum::<usize>()
     }
 
-    fn wipe_column_family(&self, column_family_name: &str) -> Result<(), Error> {
-        let cf_handle = self
-            .db
-            .cf_handle(column_family_name)
-            .ok_or(Error::StorageError(
-                "failed to get column family handle".to_string(),
-            ))?;
-        let mut iter = self.db.raw_iterator_cf(&cf_handle);
-        iter.seek_to_first();
-        while iter.valid() {
-            self.db.delete(iter.key().expect("should have key"))?;
-            iter.next()
-        }
-        Ok(())
-    }
-}
-
-impl Storage for RocksDbStorage {
-    type Transaction<'db> = Tx<'db> where Self: 'db;
-    type BatchStorageContext<'db> = PrefixedRocksDbStorageContext<'db>;
-    type BatchTransactionalStorageContext<'db> = PrefixedRocksDbTransactionContext<'db>;
-    type ImmediateStorageContext<'db> = PrefixedRocksDbImmediateStorageContext<'db>;
-
-    fn start_transaction<'db>(&'db self) -> Self::Transaction<'db> {
-        self.db.transaction()
-    }
-
-    fn commit_transaction<'db>(
-        &self,
-        transaction: Self::Transaction<'db>,
-    ) -> CostResult<(), Error> {
-        // All transaction costs were provided on method calls
-        transaction
-            .commit()
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
-    }
-
-    fn rollback_transaction<'db>(&self, transaction: &Self::Transaction<'db>) -> Result<(), Error> {
-        transaction.rollback().map_err(RocksDBError)
-    }
-
-    fn commit_multi_context_batch<'db>(
-        &self,
-        batch: StorageBatch,
-        transaction: Option<&Self::Transaction<'db>>,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        let (db_batch, pending_costs) =
-            cost_return_on_error!(&mut cost, self.build_write_batch(batch));
-
-        self.commit_db_write_batch(db_batch, pending_costs, transaction)
-            .add_cost(cost)
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(RocksDBError)
-    }
-
-    fn get_storage_context<'db, 'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext<'db>>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path)
-            .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix, batch))
-    }
-
-    fn get_transactional_storage_context<'db, 'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-        transaction: &'db Self::Transaction<'db>,
-    ) -> CostContext<Self::BatchTransactionalStorageContext<'db>>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path).map(|prefix| {
-            PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
-        })
-    }
-
-    fn get_immediate_storage_context<'db, 'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        transaction: &'db Self::Transaction<'db>,
-    ) -> CostContext<Self::ImmediateStorageContext<'db>>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path).map(|prefix| {
-            PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
-        })
-    }
-
-    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        Checkpoint::new(&self.db)
-            .and_then(|x| x.create_checkpoint(path))
-            .map_err(RocksDBError)
-    }
-
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
-        if path.is_empty() {
-            OperationCost::default()
-        } else {
-            let body_size = Self::worst_case_body_size(path);
-            // the block size of blake3 is 64
-            let blocks_num = blake_block_count(body_size) as u32;
-            OperationCost::with_hash_node_calls(blocks_num)
-        }
-    }
-
-    /// Destroys the OptimisticTransactionDB and drops instance
-    fn wipe(&self) -> Result<(), Error> {
-        // TODO: fix this
-        // very inefficient way of doing this, time complexity is O(n)
-        // we can do O(1)
-        self.wipe_column_family(DEFAULT_COLUMN_FAMILY_NAME)?;
-        self.wipe_column_family(ROOTS_CF_NAME)?;
-        self.wipe_column_family(AUX_CF_NAME)?;
-        self.wipe_column_family(META_CF_NAME)?;
-        Ok(())
-    }
-
     /// Returns the write batch, with costs and pending costs
     /// Pending costs are costs that should only be applied after successful
     /// write of the write batch.
-    fn build_write_batch(
+    pub fn build_write_batch(
         &self,
         storage_batch: StorageBatch,
     ) -> CostResult<(WriteBatchWithTransaction<true>, OperationCost), Error> {
@@ -297,7 +174,7 @@ impl Storage for RocksDbStorage {
     /// Continues the write batch, returning pending costs
     /// Pending costs are costs that should only be applied after successful
     /// write of the write batch.
-    fn continue_write_batch(
+    pub fn continue_write_batch(
         &self,
         db_batch: &mut WriteBatchWithTransaction<true>,
         storage_batch: StorageBatch,
@@ -512,24 +389,164 @@ impl Storage for RocksDbStorage {
     }
 
     /// Commits a write batch
+    pub fn commit_db_write_batch<'db>(
+        &self,
+        _db_batch: WriteBatchWithTransaction<true>,
+        _pending_costs: OperationCost,
+        _transaction: Option<&<Self as Storage>::Transaction<'db>>,
+    ) -> CostResult<(), Error> {
+        // todo: implement
+
+        Ok(()).wrap_with_cost(OperationCost::default())
+    }
+
+    /// Destroys the OptimisticTransactionDB and drops instance
+    pub fn wipe(&self) -> Result<(), Error> {
+        // TODO: fix this
+        // very inefficient way of doing this, time complexity is O(n)
+        // we can do O(1)
+        self.wipe_column_family(DEFAULT_COLUMN_FAMILY_NAME)?;
+        self.wipe_column_family(ROOTS_CF_NAME)?;
+        self.wipe_column_family(AUX_CF_NAME)?;
+        self.wipe_column_family(META_CF_NAME)?;
+        Ok(())
+    }
+
+    fn wipe_column_family(&self, column_family_name: &str) -> Result<(), Error> {
+        let cf_handle = self
+            .db
+            .cf_handle(column_family_name)
+            .ok_or(Error::StorageError(
+                "failed to get column family handle".to_string(),
+            ))?;
+        let mut iter = self.db.raw_iterator_cf(&cf_handle);
+        iter.seek_to_first();
+        while iter.valid() {
+            self.db.delete(iter.key().expect("should have key"))?;
+            iter.next()
+        }
+        Ok(())
+    }
+}
+
+impl Storage for SecondaryRocksDbStorage {
+    type Transaction<'db> = ();
+    type BatchStorageContext<'db> = PrefixedSecondaryRocksDbStorageContext<'db>;
+    type BatchTransactionalStorageContext<'db> = PrefixedSecondaryRocksDbStorageContext<'db>;
+    type ImmediateStorageContext<'db> = PrefixedSecondaryRocksDbImmediateStorageContext<'db>;
+
+    fn start_transaction<'db>(&'db self) -> Self::Transaction<'db> {
+        // todo: It doen't support transactions atm
+    }
+
+    fn commit_transaction<'db>(
+        &self,
+        transaction: Self::Transaction<'db>,
+    ) -> CostResult<(), Error> {
+        // todo: implement
+
+        Ok(()).wrap_with_cost(OperationCost::default())
+    }
+
+    fn rollback_transaction<'db>(&self, transaction: &Self::Transaction<'db>) -> Result<(), Error> {
+        // todo: implement
+
+        Ok(())
+    }
+
+    fn commit_multi_context_batch<'db>(
+        &self,
+        _batch: StorageBatch,
+        _transaction: Option<&Self::Transaction<'db>>,
+    ) -> CostResult<(), Error> {
+        Ok(()).wrap_with_cost(OperationCost::default())
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        self.db.flush().map_err(RocksDBError)
+    }
+
+    fn get_storage_context<'db, 'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        batch: Option<&'db StorageBatch>,
+    ) -> CostContext<Self::BatchStorageContext<'db>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedSecondaryRocksDbStorageContext::new(&self.db, prefix, batch))
+    }
+
+    fn get_transactional_storage_context<'db, 'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        batch: Option<&'db StorageBatch>,
+        _transaction: &'db Self::Transaction<'db>,
+    ) -> CostContext<Self::BatchTransactionalStorageContext<'db>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        // todo: It doen't support transactions atm
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedSecondaryRocksDbStorageContext::new(&self.db, prefix, batch))
+    }
+
+    fn get_immediate_storage_context<'db, 'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        _transaction: &'db Self::Transaction<'db>,
+    ) -> CostContext<Self::ImmediateStorageContext<'db>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedSecondaryRocksDbImmediateStorageContext::new(&self.db, prefix))
+    }
+
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
+        Checkpoint::new(&self.db)
+            .and_then(|x| x.create_checkpoint(path))
+            .map_err(RocksDBError)
+    }
+
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
+        if path.is_empty() {
+            OperationCost::default()
+        } else {
+            let body_size = Self::worst_case_body_size(path);
+            // the block size of blake3 is 64
+            let blocks_num = blake_block_count(body_size) as u32;
+            OperationCost::with_hash_node_calls(blocks_num)
+        }
+    }
+
+    fn wipe(&self) -> Result<(), Error> {
+        todo!()
+    }
+
+    fn build_write_batch(
+        &self,
+        storage_batch: StorageBatch,
+    ) -> CostResult<(WriteBatchWithTransaction<true>, OperationCost), Error> {
+        todo!()
+    }
+
+    fn continue_write_batch(
+        &self,
+        db_batch: &mut WriteBatchWithTransaction<true>,
+        storage_batch: StorageBatch,
+    ) -> CostResult<OperationCost, Error> {
+        todo!()
+    }
+
     fn commit_db_write_batch<'db>(
         &self,
         db_batch: WriteBatchWithTransaction<true>,
         pending_costs: OperationCost,
-        transaction: Option<&<Self as Storage>::Transaction<'db>>,
+        transaction: Option<&Self::Transaction<'db>>,
     ) -> CostResult<(), Error> {
-        let result = match transaction {
-            None => self.db.write(db_batch),
-            Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
-        };
-
-        if result.is_ok() {
-            result.map_err(RocksDBError).wrap_with_cost(pending_costs)
-        } else {
-            result
-                .map_err(RocksDBError)
-                .wrap_with_cost(OperationCost::default())
-        }
+        todo!()
     }
 }
 

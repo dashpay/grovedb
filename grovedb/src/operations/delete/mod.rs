@@ -124,14 +124,14 @@ impl DeleteOptions {
 }
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Delete an element at a specified subtree path and key.
     pub fn delete<'b, B, P>(
         &self,
         path: P,
         key: &[u8],
         options: Option<DeleteOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -169,7 +169,7 @@ impl GroveDb {
         &self,
         path: P,
         options: Option<ClearOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> Result<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -183,11 +183,11 @@ impl GroveDb {
     /// Warning: The costs for this operation are not yet correct, hence we
     /// should keep this private for now
     /// Returns if we successfully cleared the subtree
-    fn clear_subtree_with_costs<'b, B, P>(
-        &self,
+    fn clear_subtree_with_costs<'db, 'b, B, P>(
+        &'db self,
         path: P,
         options: Option<ClearOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -253,8 +253,10 @@ impl GroveDb {
             cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
 
             // propagate changes
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
+            let mut merk_cache: HashMap<
+                SubtreePath<B>,
+                Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>,
+            > = HashMap::default();
             merk_cache.insert(subtree_path.clone(), merk_to_clear);
             cost_return_on_error!(
                 &mut cost,
@@ -314,8 +316,10 @@ impl GroveDb {
             cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
 
             // propagate changes
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
-                HashMap::default();
+            let mut merk_cache: HashMap<
+                SubtreePath<B>,
+                Merk<<S as Storage>::BatchStorageContext<'db>>,
+            > = HashMap::default();
             merk_cache.insert(subtree_path.clone(), merk_to_clear);
             cost_return_on_error!(
                 &mut cost,
@@ -343,7 +347,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: Option<DeleteOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -395,7 +399,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -429,7 +433,7 @@ impl GroveDb {
         &self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -480,7 +484,7 @@ impl GroveDb {
         options: &DeleteOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &[GroveDbOp],
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Option<GroveDbOp>, Error> {
         let mut cost = OperationCost::default();
 
@@ -584,7 +588,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -609,12 +613,12 @@ impl GroveDb {
         }
     }
 
-    fn delete_internal_on_transaction<B: AsRef<[u8]>>(
-        &self,
+    fn delete_internal_on_transaction<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        transaction: &Transaction,
+        transaction: &Transaction<S>,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -715,7 +719,7 @@ impl GroveDb {
                 );
                 let mut merk_cache: HashMap<
                     SubtreePath<B>,
-                    Merk<PrefixedRocksDbTransactionContext>,
+                    Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>,
                 > = HashMap::default();
                 merk_cache.insert(path.clone(), merk_to_delete_tree_from);
                 cost_return_on_error!(
@@ -742,7 +746,7 @@ impl GroveDb {
                 );
                 let mut merk_cache: HashMap<
                     SubtreePath<B>,
-                    Merk<PrefixedRocksDbTransactionContext>,
+                    Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>,
                 > = HashMap::default();
                 merk_cache.insert(path.clone(), subtree_to_delete_from);
                 cost_return_on_error!(
@@ -762,8 +766,10 @@ impl GroveDb {
                     sectioned_removal,
                 )
             );
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
+            let mut merk_cache: HashMap<
+                SubtreePath<B>,
+                Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>,
+            > = HashMap::default();
             merk_cache.insert(path.clone(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,
@@ -774,7 +780,7 @@ impl GroveDb {
         Ok(true).wrap_with_cost(cost)
     }
 
-    fn delete_internal_without_transaction<B: AsRef<[u8]>>(
+    fn delete_internal_without_transaction<'db, B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
@@ -793,8 +799,10 @@ impl GroveDb {
 
         let element =
             cost_return_on_error!(&mut cost, self.get_raw(path.clone(), key.as_ref(), None));
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
-            HashMap::default();
+        let mut merk_cache: HashMap<
+            SubtreePath<B>,
+            Merk<<S as Storage>::BatchStorageContext<'db>>,
+        > = HashMap::default();
         let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
             self.open_non_transactional_merk_at_path(path.clone(), Some(batch))
@@ -887,7 +895,7 @@ impl GroveDb {
     pub(crate) fn find_subtrees<B: AsRef<[u8]>>(
         &self,
         path: &SubtreePath<B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
         let mut cost = OperationCost::default();
 

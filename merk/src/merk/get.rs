@@ -8,9 +8,9 @@ use crate::{
     Merk, TreeFeatureType,
 };
 
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {

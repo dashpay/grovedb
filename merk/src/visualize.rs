@@ -65,8 +65,8 @@ impl<'a, F> VisualizableTree<'a, F> {
     }
 }
 
-impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
-    for VisualizeableMerk<'a, S, F>
+impl<'a, 'db, C: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
+    for VisualizeableMerk<'a, C, F>
 {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         drawer.write(b"Merk root: ")?;

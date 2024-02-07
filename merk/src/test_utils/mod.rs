@@ -284,9 +284,9 @@ pub fn make_tree_seq(node_count: u64) -> TreeNode {
 pub fn empty_path_merk<'db, S>(
     storage: &'db S,
     batch: &'db StorageBatch,
-) -> Merk<<S as Storage<'db>>::BatchStorageContext>
+) -> Merk<<S as Storage>::BatchStorageContext<'db>>
 where
-    S: Storage<'db>,
+    S: Storage,
 {
     Merk::open_base(
         storage
@@ -302,9 +302,9 @@ where
 /// Shortcut to open a Merk for read only
 pub fn empty_path_merk_read_only<'db, S>(
     storage: &'db S,
-) -> Merk<<S as Storage<'db>>::BatchStorageContext>
+) -> Merk<<S as Storage>::BatchStorageContext<'db>>
 where
-    S: Storage<'db>,
+    S: Storage,
 {
     Merk::open_base(
         storage

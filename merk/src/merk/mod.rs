@@ -253,9 +253,9 @@ pub type UseTreeMutResult = CostResult<
     Error,
 >;
 
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Returns the root hash of the tree (a digest for the entire store which
     /// proofs can be checked against). If the tree is empty, returns the null
@@ -425,7 +425,7 @@ where
     }
 
     /// Walk
-    pub fn walk<'s, T>(&'s self, f: impl FnOnce(Option<RefWalker<MerkSource<'s, S>>>) -> T) -> T {
+    pub fn walk<'s, T>(&'s self, f: impl FnOnce(Option<RefWalker<MerkSource<'s, C>>>) -> T) -> T {
         let mut tree = self.tree.take();
         let maybe_walker = tree
             .as_mut()

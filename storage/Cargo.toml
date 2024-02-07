@@ -23,4 +23,5 @@ hex = "0.4.3"
 grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
 
 [features]
+secondary_rocksdb_storage = ["rocksdb_storage"]
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static", "tempfile", "blake3", "integer-encoding"]

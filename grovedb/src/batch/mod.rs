@@ -686,7 +686,7 @@ trait TreeCache<G, SR> {
     fn get_batch_run_mode(&self) -> BatchRunMode;
 
     /// We will also be returning an op mode, this is to be used in propagation
-    fn execute_ops_on_path(
+    fn execute_ops_on_path<S: Storage>(
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
@@ -699,10 +699,10 @@ trait TreeCache<G, SR> {
     fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error>;
 }
 
-impl<'db, S, F> TreeCacheMerkByPath<S, F>
+impl<'db, C, F> TreeCacheMerkByPath<C, F>
 where
-    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    S: StorageContext<'db>,
+    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<C>, Error>,
+    C: StorageContext<'db>,
 {
     /// Processes a reference, determining whether it can be retrieved from a
     /// batch operation.
@@ -963,7 +963,7 @@ where
     }
 }
 
-impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
+impl<'db, C, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<C, F>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(
@@ -971,8 +971,8 @@ where
         u32,
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
-    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    S: StorageContext<'db>,
+    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<C>, Error>,
+    C: StorageContext<'db>,
 {
     fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1003,7 +1003,7 @@ where
             .map_err(|_| Error::InternalError("unable to set base root key"))
     }
 
-    fn execute_ops_on_path(
+    fn execute_ops_on_path<S: Storage>(
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
@@ -1250,7 +1250,7 @@ where
                 } => {
                     cost_return_on_error!(
                         &mut cost,
-                        GroveDb::update_tree_item_preserve_flag_into_batch_operations(
+                        GroveDb::<S>::update_tree_item_preserve_flag_into_batch_operations(
                             &merk,
                             key_info.get_key(),
                             root_key,
@@ -1388,7 +1388,7 @@ where
     }
 }
 
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the stop level is set in the apply options the remaining operations
     /// are returned
@@ -1426,7 +1426,7 @@ impl GroveDb {
                     // ignoring sum as root tree cannot be summed
                     let (_root_hash, calculated_root_key, _sum) = cost_return_on_error!(
                         &mut cost,
-                        merk_tree_cache.execute_ops_on_path(
+                        merk_tree_cache.execute_ops_on_path::<S>(
                             &path,
                             ops_at_path,
                             &ops_by_qualified_paths,
@@ -1454,7 +1454,7 @@ impl GroveDb {
                 } else {
                     let (root_hash, calculated_root_key, sum_value) = cost_return_on_error!(
                         &mut cost,
-                        merk_tree_cache.execute_ops_on_path(
+                        merk_tree_cache.execute_ops_on_path::<S>(
                             &path,
                             ops_at_path,
                             &ops_by_qualified_paths,
@@ -1591,7 +1591,7 @@ impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the pause height is set in the batch apply options
     /// Then return the list of leftover operations
-    fn apply_body<'db, S: StorageContext<'db>>(
+    fn apply_body<'c, C: StorageContext<'c>>(
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -1608,7 +1608,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<C>, Error>,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
@@ -1629,7 +1629,7 @@ impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the pause height is set in the batch apply options
     /// Then return the list of leftover operations
-    fn continue_partial_apply_body<'db, S: StorageContext<'db>>(
+    fn continue_partial_apply_body<'db, C: StorageContext<'db>>(
         &self,
         previous_leftover_operations: Option<OpsByLevelPath>,
         additional_ops: Vec<GroveDbOp>,
@@ -1647,7 +1647,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<C>, Error>,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
@@ -1671,7 +1671,7 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         options: Option<BatchApplyOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
@@ -1711,11 +1711,11 @@ impl GroveDb {
     }
 
     /// Applies batch on GroveDB
-    pub fn apply_batch(
-        &self,
+    pub fn apply_batch<'db>(
+        &'db self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, 'db, S>,
     ) -> CostResult<(), Error> {
         self.apply_batch_with_element_flags_update(
             ops,
@@ -1740,7 +1740,7 @@ impl GroveDb {
             &OperationCost,
             &Option<OpsByLevelPath>,
         ) -> Result<Vec<GroveDbOp>, Error>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         self.apply_partial_batch_with_element_flags_update(
             ops,
@@ -1763,9 +1763,9 @@ impl GroveDb {
         &'db self,
         storage_batch: &'db StorageBatch,
         path: SubtreePath<B>,
-        tx: &'db Transaction,
+        tx: &'db <S as Storage>::Transaction<'db>,
         new_merk: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>, Error> {
         let mut cost = OperationCost::default();
         let storage = self
             .db
@@ -1828,7 +1828,7 @@ impl GroveDb {
         storage_batch: &'a StorageBatch,
         path: SubtreePath<B>,
         new_merk: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
+    ) -> CostResult<Merk<<S as Storage>::BatchStorageContext<'a>>, Error> {
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
@@ -1881,8 +1881,8 @@ impl GroveDb {
     }
 
     /// Applies batch of operations on GroveDB
-    pub fn apply_batch_with_element_flags_update(
-        &self,
+    pub fn apply_batch_with_element_flags_update<'db, 'a>(
+        &'db self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -1898,7 +1898,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, 'a, S>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -2014,7 +2014,7 @@ impl GroveDb {
             &OperationCost,
             &Option<OpsByLevelPath>,
         ) -> Result<Vec<GroveDbOp>, Error>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 

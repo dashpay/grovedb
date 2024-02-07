@@ -33,7 +33,7 @@ use std::io::{Result, Write};
 use bincode::Options;
 use grovedb_merk::{Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
-use grovedb_storage::StorageContext;
+use grovedb_storage::{Storage, StorageContext};
 use grovedb_visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
@@ -163,12 +163,12 @@ impl Visualize for ReferencePathType {
     }
 }
 
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     fn draw_subtree<W: Write, B: AsRef<[u8]>>(
         &self,
         mut drawer: Drawer<W>,
         path: SubtreePathBuilder<'_, B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
@@ -208,7 +208,7 @@ impl GroveDb {
     fn draw_root_tree<W: Write>(
         &self,
         mut drawer: Drawer<W>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
@@ -221,7 +221,7 @@ impl GroveDb {
     fn visualize_start<W: Write>(
         &self,
         mut drawer: Drawer<W>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> Result<Drawer<W>> {
         drawer.write(b"root")?;
         drawer = self.draw_root_tree(drawer, transaction)?;
@@ -230,14 +230,14 @@ impl GroveDb {
     }
 }
 
-impl Visualize for GroveDb {
+impl<S: Storage> Visualize for GroveDb<S> {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
         self.visualize_start(drawer, None)
     }
 }
 
 #[allow(dead_code)]
-pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
+pub fn visualize_merk_stdout<'db, C: StorageContext<'db>>(merk: &Merk<C>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
         bincode::DefaultOptions::default()
             .with_varint_encoding()

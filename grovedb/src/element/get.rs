@@ -50,8 +50,8 @@ impl Element {
     #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &Merk<S>,
+    pub fn get<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        merk: &Merk<C>,
         key: K,
         allow_cache: bool,
     ) -> CostResult<Element, Error> {
@@ -69,8 +69,8 @@ impl Element {
     #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &Merk<S>,
+    pub fn get_optional<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        merk: &Merk<C>,
         key: K,
         allow_cache: bool,
     ) -> CostResult<Option<Element>, Error> {
@@ -103,8 +103,8 @@ impl Element {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     /// Errors if element doesn't exist
-    pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        storage: &S,
+    pub fn get_from_storage<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        storage: &C,
         key: K,
     ) -> CostResult<Element, Error> {
         Self::get_optional_from_storage(storage, key.as_ref()).map(|result| {
@@ -121,8 +121,8 @@ impl Element {
     #[cfg(feature = "full")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    pub fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        storage: &S,
+    pub fn get_optional_from_storage<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        storage: &C,
         key: K,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
@@ -205,8 +205,8 @@ impl Element {
     #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &Merk<S>,
+    pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        merk: &Merk<C>,
         path: &[&[u8]],
         key: K,
         allow_cache: bool,
@@ -225,8 +225,8 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get an element's value hash from Merk under a key
-    pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &Merk<S>,
+    pub fn get_value_hash<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        merk: &Merk<C>,
         key: K,
         allow_cache: bool,
     ) -> CostResult<Option<Hash>, Error> {

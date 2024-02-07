@@ -42,8 +42,8 @@ use crate::{Element, Error};
 impl Element {
     #[cfg(feature = "full")]
     /// Delete an element from Merk under a key
-    pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &mut Merk<S>,
+    pub fn delete<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        merk: &mut Merk<C>,
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
@@ -72,8 +72,8 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Delete an element from Merk under a key
-    pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &mut Merk<S>,
+    pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        merk: &mut Merk<C>,
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,

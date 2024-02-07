@@ -52,9 +52,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub fn insert<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
@@ -136,9 +136,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_if_not_exists<'db, S: StorageContext<'db>>(
+    pub fn insert_if_not_exists<'db, C: StorageContext<'db>>(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: &[u8],
         options: Option<MerkOptions>,
     ) -> CostResult<bool, Error> {
@@ -158,11 +158,11 @@ impl Element {
     /// doesn't exist yet. Returns CostResult.
     pub fn insert_if_not_exists_into_batch_operations<
         'db,
-        S: StorageContext<'db>,
+        C: StorageContext<'db>,
         K: AsRef<[u8]>,
     >(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
@@ -191,9 +191,9 @@ impl Element {
     /// will be committed on the transaction commit.
     /// The bool represents if we indeed inserted.
     /// If the value changed we return the old element.
-    pub fn insert_if_changed_value<'db, S: StorageContext<'db>>(
+    pub fn insert_if_changed_value<'db, C: StorageContext<'db>>(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: &[u8],
         options: Option<MerkOptions>,
     ) -> CostResult<(bool, Option<Element>), Error> {
@@ -221,11 +221,11 @@ impl Element {
     /// If the value changed we return the old element.
     pub fn insert_if_changed_value_into_batch_operations<
         'db,
-        S: StorageContext<'db>,
+        C: StorageContext<'db>,
         K: AsRef<[u8]>,
     >(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
@@ -256,9 +256,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub fn insert_reference<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: K,
         referenced_value: Hash,
         options: Option<MerkOptions>,
@@ -322,9 +322,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub fn insert_subtree<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: K,
         subtree_root_hash: Hash,
         options: Option<MerkOptions>,

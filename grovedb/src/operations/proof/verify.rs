@@ -39,6 +39,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash as value_hash_fn},
     CryptoHash,
 };
+use grovedb_storage::Storage;
 
 use crate::{
     operations::proof::util::{
@@ -63,7 +64,7 @@ pub type ProvedKeyValues = Vec<ProvedKeyValue>;
 type EncounteredAbsence = bool;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Verify proof given a path query
     /// Returns the root hash + deserialized elements
     pub fn verify_query(
@@ -98,9 +99,9 @@ impl GroveDb {
     ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
         if query.len() > 1 {
             let query = PathQuery::merge(query)?;
-            GroveDb::verify_query_raw(proof, &query)
+            GroveDb::<S>::verify_query_raw(proof, &query)
         } else {
-            GroveDb::verify_query_raw(proof, query[0])
+            GroveDb::<S>::verify_query_raw(proof, query[0])
         }
     }
 

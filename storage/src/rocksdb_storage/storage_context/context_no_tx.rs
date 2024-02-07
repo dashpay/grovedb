@@ -30,8 +30,8 @@
 
 use error::Error;
 use grovedb_costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
-    CostsExt, OperationCost,
+    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost,
+    ChildrenSizesWithIsSumTree, CostResult, CostsExt, OperationCost,
 };
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
@@ -40,7 +40,7 @@ use crate::{
     error,
     error::Error::RocksDBError,
     rocksdb_storage::storage::{Db, SubtreePrefix, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    StorageBatch, StorageContext,
+    RawIterator, StorageBatch, StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used

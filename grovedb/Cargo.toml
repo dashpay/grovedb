@@ -47,6 +47,7 @@ full = [
     "bincode",
     "serde/derive",
     "grovedb-storage/rocksdb_storage",
+    "grovedb-storage/secondary_rocksdb_storage",
     "grovedb-visualize",
     "hex",
     "itertools",

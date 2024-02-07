@@ -42,6 +42,7 @@ use grovedb_costs::cost_return_on_error_no_add;
 #[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
+use grovedb_storage::Storage;
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 
@@ -57,7 +58,7 @@ use crate::{
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Get an element from the backing store
     /// Merk Caching is on by default
     /// use get_caching_optional if no caching is desired
@@ -65,7 +66,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Element, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -81,7 +82,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
@@ -109,7 +110,7 @@ impl GroveDb {
         &self,
         path: SubtreePath<B>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
@@ -165,7 +166,7 @@ impl GroveDb {
         &self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Element, Error> {
         self.get_raw_caching_optional(path, key, true, transaction)
     }
@@ -176,7 +177,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Element, Error> {
         if let Some(transaction) = transaction {
             self.get_raw_on_transaction_caching_optional(path, key, allow_cache, transaction)
@@ -192,7 +193,7 @@ impl GroveDb {
         &self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Option<Element>, Error> {
         self.get_raw_optional_caching_optional(path, key, true, transaction)
     }
@@ -203,7 +204,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Option<Element>, Error> {
         if let Some(transaction) = transaction {
             self.get_raw_optional_on_transaction_caching_optional(
@@ -223,7 +224,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: &Transaction,
+        transaction: &Transaction<S>,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
@@ -247,7 +248,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         allow_cache: bool,
-        transaction: &Transaction,
+        transaction: &Transaction<S>,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let merk_result = self
@@ -336,7 +337,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -351,7 +352,7 @@ impl GroveDb {
     fn check_subtree_exists<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
         error_fn: impl FnOnce() -> Error,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -387,7 +388,7 @@ impl GroveDb {
     pub(crate) fn check_subtree_exists_path_not_found<'b, B>(
         &self,
         path: SubtreePath<'b, B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -407,7 +408,7 @@ impl GroveDb {
     pub fn check_subtree_exists_invalid_path<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         self.check_subtree_exists(path, transaction, || {
             Error::InvalidPath("subtree doesn't exist".to_owned())

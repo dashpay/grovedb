@@ -47,31 +47,31 @@ use crate::{Element, Error, GroveDb, Hash, Transaction};
 
 const OPS_PER_CHUNK: usize = 128;
 
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Creates a chunk producer to replicate GroveDb.
-    pub fn chunks(&self) -> SubtreeChunkProducer {
+    pub fn chunks(&self) -> SubtreeChunkProducer<S> {
         SubtreeChunkProducer::new(self)
     }
 }
 
 /// Subtree chunks producer.
-pub struct SubtreeChunkProducer<'db> {
-    grove_db: &'db GroveDb,
-    cache: Option<SubtreeChunkProducerCache<'db>>,
+pub struct SubtreeChunkProducer<'db, S: Storage> {
+    grove_db: &'db GroveDb<S>,
+    cache: Option<SubtreeChunkProducerCache<'db, S>>,
 }
 
-struct SubtreeChunkProducerCache<'db> {
+struct SubtreeChunkProducerCache<'db, S: Storage + 'db> {
     current_merk_path: Vec<Vec<u8>>,
-    current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
+    current_merk: Merk<<S as Storage>::BatchStorageContext<'db>>,
     // This needed to be an `Option` because it requires a reference on Merk but it's within the
     // same struct and during struct init a referenced Merk would be moved inside a struct,
     // using `Option` this init happens in two steps.
     current_chunk_producer:
-        Option<grovedb_merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
+        Option<grovedb_merk::ChunkProducer<'db, <S as Storage>::BatchStorageContext<'db>>>,
 }
 
-impl<'db> SubtreeChunkProducer<'db> {
-    fn new(storage: &'db GroveDb) -> Self {
+impl<'db, S: Storage> SubtreeChunkProducer<'db, S> {
+    fn new(storage: &'db GroveDb<S>) -> Self {
         SubtreeChunkProducer {
             grove_db: storage,
             cache: None,
@@ -139,19 +139,18 @@ impl<'db> SubtreeChunkProducer<'db> {
     }
 }
 
-// TODO: make generic over storage_cost context
-type MerkRestorer<'db> = grovedb_merk::Restorer<PrefixedRocksDbImmediateStorageContext<'db>>;
+type MerkRestorer<'db, S: Storage> = grovedb_merk::Restorer<S::ImmediateStorageContext<'db>>;
 
 type Path = Vec<Vec<u8>>;
 
 /// Structure to drive GroveDb restore process.
-pub struct Restorer<'db> {
-    current_merk_restorer: Option<MerkRestorer<'db>>,
+pub struct Restorer<'db, S: Storage> {
+    current_merk_restorer: Option<MerkRestorer<'db, S>>,
     current_merk_chunk_index: usize,
     current_merk_path: Path,
     queue: VecDeque<(Path, Vec<u8>, Hash, TreeFeatureType)>,
-    grove_db: &'db GroveDb,
-    tx: &'db Transaction<'db>,
+    grove_db: &'db GroveDb<S>,
+    tx: &'db Transaction<'db, S>,
 }
 
 /// Indicates what next piece of information `Restorer` expects or wraps a
@@ -165,16 +164,16 @@ pub enum RestorerResponse {
 #[derive(Debug)]
 pub struct RestorerError(String);
 
-impl<'db> Restorer<'db> {
+impl<'db, S: Storage> Restorer<'db, S> {
     /// Create a GroveDb restorer using a backing storage_cost and root hash.
     pub fn new(
-        grove_db: &'db GroveDb,
+        grove_db: &'db GroveDb<S>,
         root_hash: Hash,
-        tx: &'db Transaction<'db>,
+        tx: &'db Transaction<'db, S>,
     ) -> Result<Self, RestorerError> {
         Ok(Restorer {
             tx,
-            current_merk_restorer: Some(MerkRestorer::new(
+            current_merk_restorer: Some(MerkRestorer::<S>::new(
                 Merk::open_base(
                     grove_db
                         .db
@@ -270,7 +269,7 @@ impl<'db> Restorer<'db> {
                     .grove_db
                     .open_merk_for_replication(next_path.as_slice().into(), self.tx)
                     .map_err(|e| RestorerError(e.to_string()))?;
-                self.current_merk_restorer = Some(MerkRestorer::new(
+                self.current_merk_restorer = Some(MerkRestorer::<S>::new(
                     merk,
                     Some(combining_value),
                     expected_hash,
@@ -301,8 +300,8 @@ impl<'db> Restorer<'db> {
 /// Because `Restorer` builds GroveDb replica breadth-first way from top to
 /// bottom it makes sense to send a subtree's siblings next instead of its own
 /// subtrees.
-pub struct SiblingsChunkProducer<'db> {
-    chunk_producer: SubtreeChunkProducer<'db>,
+pub struct SiblingsChunkProducer<'db, S: Storage> {
+    chunk_producer: SubtreeChunkProducer<'db, S>,
 }
 
 #[derive(Debug)]
@@ -310,9 +309,9 @@ pub struct GroveChunk {
     subtree_chunks: Vec<(usize, Vec<Op>)>,
 }
 
-impl<'db> SiblingsChunkProducer<'db> {
+impl<'db, S: Storage> SiblingsChunkProducer<'db, S> {
     /// New
-    pub fn new(chunk_producer: SubtreeChunkProducer<'db>) -> Self {
+    pub fn new(chunk_producer: SubtreeChunkProducer<'db, S>) -> Self {
         SiblingsChunkProducer { chunk_producer }
     }
 
@@ -424,14 +423,14 @@ impl<'db> SiblingsChunkProducer<'db> {
 /// `Restorer` wrapper that applies multiple chunks at once and eventually
 /// returns less requests. It is named by analogy with IO types that do less
 /// syscalls.
-pub struct BufferedRestorer<'db> {
-    restorer: Restorer<'db>,
+pub struct BufferedRestorer<'db, S: Storage> {
+    restorer: Restorer<'db, S>,
 }
 
-impl<'db> BufferedRestorer<'db> {
+impl<'db, S: Storage> BufferedRestorer<'db, S> {
     /// New
-    pub fn new(restorer: Restorer<'db>) -> Self {
-        BufferedRestorer { restorer }
+    pub fn new(restorer: Restorer<'db, S>) -> Self {
+        Self { restorer }
     }
 
     /// Process next chunk and receive instruction on what to do next.
@@ -465,7 +464,7 @@ mod test {
         tests::{common::EMPTY_PATH, make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
     };
 
-    fn replicate(original_db: &GroveDb) -> TempDir {
+    fn replicate<S>(original_db: &GroveDb<S>) -> TempDir {
         let replica_tempdir = TempDir::new().unwrap();
 
         {
@@ -500,7 +499,7 @@ mod test {
         replica_tempdir
     }
 
-    fn replicate_bigger_messages(original_db: &GroveDb) -> TempDir {
+    fn replicate_bigger_messages<S>(original_db: &GroveDb<S>) -> TempDir {
         let replica_tempdir = TempDir::new().unwrap();
 
         {
@@ -541,14 +540,14 @@ mod test {
         replica_tempdir
     }
 
-    fn test_replication_internal<'a, I, R, F>(
+    fn test_replication_internal<'a, I, R, F, S>(
         original_db: &TempGroveDb,
         to_compare: I,
         replicate_fn: F,
     ) where
         R: AsRef<[u8]> + 'a,
         I: Iterator<Item = &'a [R]>,
-        F: Fn(&GroveDb) -> TempDir,
+        F: Fn(&GroveDb<S>) -> TempDir,
     {
         let expected_root_hash = original_db.root_hash(None).unwrap().unwrap();
 

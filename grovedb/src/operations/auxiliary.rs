@@ -41,14 +41,14 @@ use grovedb_storage::{Storage, StorageBatch};
 use crate::{util::meta_storage_context_optional_tx, Error, GroveDb, TransactionArg};
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Put op for aux storage
     pub fn put_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let batch = StorageBatch::new();
@@ -75,7 +75,7 @@ impl GroveDb {
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let batch = StorageBatch::new();
@@ -101,7 +101,7 @@ impl GroveDb {
     pub fn get_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
 

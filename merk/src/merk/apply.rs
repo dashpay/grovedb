@@ -17,9 +17,9 @@ use crate::{
     Error, Merk, MerkBatch, MerkOptions,
 };
 
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Applies a batch of operations (puts and deletes) to the tree.
     ///
@@ -274,12 +274,12 @@ where
     /// ).unwrap().expect("");
     /// }
     /// ```
-    pub fn apply_unchecked<KB, KA, C, V, U, R>(
+    pub fn apply_unchecked<KB, KA, OC, V, U, R>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_specialized_cost: &C,
+        old_specialized_cost: &OC,
         value_defined_cost_fn: Option<&V>,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
@@ -287,7 +287,7 @@ where
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
-        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        OC: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
         U: FnMut(
             &StorageCost,

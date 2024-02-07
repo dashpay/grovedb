@@ -39,6 +39,7 @@ use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
 use grovedb_path::SubtreePath;
+use grovedb_storage::Storage;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
@@ -61,12 +62,13 @@ use crate::{Element, SizedQuery};
 
 #[cfg(feature = "full")]
 /// Path query push arguments
-pub struct PathQueryPushArgs<'db, 'ctx, 'a>
+pub struct PathQueryPushArgs<'db, 'ctx, 'a, S>
 where
     'db: 'ctx,
+    S: Storage,
 {
-    pub storage: &'db RocksDbStorage,
-    pub transaction: TransactionArg<'db, 'ctx>,
+    pub storage: &'db S,
+    pub transaction: TransactionArg<'db, 'ctx, S>,
     pub key: Option<&'a [u8]>,
     pub element: Element,
     pub path: &'a [&'a [u8]],
@@ -84,12 +86,12 @@ where
 impl Element {
     #[cfg(feature = "full")]
     /// Returns a vector of result elements based on given query
-    pub fn get_query(
-        storage: &RocksDbStorage,
+    pub fn get_query<S: Storage>(
+        storage: &S,
         merk_path: &[&[u8]],
         query: &Query,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<QueryResultElements, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         Element::get_sized_query(
@@ -105,11 +107,11 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get values of result elements coming from given query
-    pub fn get_query_values(
-        storage: &RocksDbStorage,
+    pub fn get_query_values<S: Storage>(
+        storage: &S,
         merk_path: &[&[u8]],
         query: &Query,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Vec<Element>, Error> {
         Element::get_query(
             storage,
@@ -135,15 +137,15 @@ impl Element {
     #[cfg(feature = "full")]
     /// Returns a vector of result elements and the number of skipped items
     /// based on given query
-    pub fn get_query_apply_function(
-        storage: &RocksDbStorage,
+    pub fn get_query_apply_function<S: Storage>(
+        storage: &S,
         path: &[&[u8]],
         sized_query: &SizedQuery,
         allow_get_raw: bool,
         allow_cache: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
-        add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
+        transaction: TransactionArg<S>,
+        add_element_function: fn(PathQueryPushArgs<S>) -> CostResult<(), Error>,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         let mut cost = OperationCost::default();
 
@@ -212,12 +214,12 @@ impl Element {
     #[cfg(feature = "full")]
     /// Returns a vector of elements excluding trees, and the number of skipped
     /// elements
-    pub fn get_path_query(
-        storage: &RocksDbStorage,
+    pub fn get_path_query<S: Storage>(
+        storage: &S,
         path_query: &PathQuery,
         allow_cache: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         let path_slices = path_query
             .path
@@ -239,12 +241,12 @@ impl Element {
     #[cfg(feature = "full")]
     /// Returns a vector of elements including trees, and the number of skipped
     /// elements
-    pub fn get_raw_path_query(
-        storage: &RocksDbStorage,
+    pub fn get_raw_path_query<S: Storage>(
+        storage: &S,
         path_query: &PathQuery,
         allow_cache: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         let path_slices = path_query
             .path
@@ -265,13 +267,13 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Returns a vector of elements, and the number of skipped elements
-    pub fn get_sized_query(
-        storage: &RocksDbStorage,
+    pub fn get_sized_query<S: Storage>(
+        storage: &S,
         path: &[&[u8]],
         sized_query: &SizedQuery,
         allow_cache: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         Element::get_query_apply_function(
             storage,
@@ -287,7 +289,7 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Push arguments to path query
-    fn path_query_push(args: PathQueryPushArgs) -> CostResult<(), Error> {
+    fn path_query_push<S: Storage>(args: PathQueryPushArgs<S>) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let PathQueryPushArgs {
@@ -532,19 +534,19 @@ impl Element {
 
     #[cfg(feature = "full")]
     // TODO: refactor
-    fn query_item(
-        storage: &RocksDbStorage,
+    fn query_item<S: Storage>(
+        storage: &S,
         item: &QueryItem,
         results: &mut Vec<QueryResultElement>,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
         allow_get_raw: bool,
         allow_cache: bool,
         result_type: QueryResultType,
-        add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
+        add_element_function: fn(PathQueryPushArgs<S>) -> CostResult<(), Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -652,7 +654,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
+    fn basic_push<S: Storage>(args: PathQueryPushArgs<S>) -> Result<(), Error> {
         let PathQueryPushArgs {
             path,
             key,

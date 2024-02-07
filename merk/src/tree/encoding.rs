@@ -60,13 +60,13 @@ impl TreeNode {
     }
 
     /// Get value from storage given key.
-    pub(crate) fn get<'db, S, K>(
-        storage: &S,
+    pub(crate) fn get<'db, C, K>(
+        storage: &C,
         key: K,
         value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
     ) -> CostResult<Option<Self>, Error>
     where
-        S: StorageContext<'db>,
+        C: StorageContext<'db>,
         K: AsRef<[u8]>,
     {
         let mut cost = OperationCost::default();

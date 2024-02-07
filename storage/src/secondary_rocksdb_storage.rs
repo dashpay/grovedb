@@ -26,25 +26,9 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Implementation of prefixed storage context.
+//! GroveDB storage layer implemented over RocksDB backend.
 
-pub mod batch;
-mod context_immediate;
-mod context_no_tx;
-mod context_tx;
-mod raw_iterator;
+mod storage;
+mod storage_context;
 
-pub use batch::PrefixedRocksDbBatch;
-pub use context_immediate::PrefixedRocksDbImmediateStorageContext;
-pub use context_no_tx::PrefixedRocksDbStorageContext;
-pub use context_tx::PrefixedRocksDbTransactionContext;
-pub use raw_iterator::PrefixedRocksDbRawIterator;
-
-use super::storage::SubtreePrefix;
-
-/// Make prefixed key
-pub fn make_prefixed_key<K: AsRef<[u8]>>(prefix: &SubtreePrefix, key: K) -> Vec<u8> {
-    let mut prefix_vec = prefix.to_vec();
-    prefix_vec.extend_from_slice(key.as_ref());
-    prefix_vec
-}
+pub use storage::SecondaryRocksDbStorage;

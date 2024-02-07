@@ -31,17 +31,18 @@
 #[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
+use grovedb_storage::Storage;
 
 #[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Check if it's an empty tree
     pub fn is_empty_tree<'b, B, P>(
         &self,
         path: P,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,

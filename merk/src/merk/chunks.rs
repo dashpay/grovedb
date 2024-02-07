@@ -46,21 +46,21 @@ use crate::{
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
 /// random order, or iterated in order for slightly better performance.
-pub struct ChunkProducer<'db, S: StorageContext<'db>> {
+pub struct ChunkProducer<'db, C: StorageContext<'db>> {
     trunk: Vec<Op>,
     chunk_boundaries: Vec<Vec<u8>>,
-    raw_iter: S::RawIterator,
+    raw_iter: C::RawIterator,
     index: usize,
 }
 
 #[cfg(feature = "full")]
-impl<'db, S> ChunkProducer<'db, S>
+impl<'db, C> ChunkProducer<'db, C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance. In the
     /// constructor, the first chunk (the "trunk") will be created.
-    pub fn new(merk: &Merk<S>) -> Result<Self, Error> {
+    pub fn new(merk: &Merk<C>) -> Result<Self, Error> {
         let (trunk, has_more) = merk
             .walk(|maybe_walker| match maybe_walker {
                 Some(mut walker) => walker.create_trunk_proof(),
@@ -151,12 +151,12 @@ where
 }
 
 #[cfg(feature = "full")]
-impl<'db, S> IntoIterator for ChunkProducer<'db, S>
+impl<'db, C> IntoIterator for ChunkProducer<'db, C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
-    type IntoIter = ChunkIter<'db, S>;
-    type Item = <ChunkIter<'db, S> as Iterator>::Item;
+    type IntoIter = ChunkIter<'db, C>;
+    type Item = <ChunkIter<'db, C> as Iterator>::Item;
 
     fn into_iter(self) -> Self::IntoIter {
         ChunkIter(self)
@@ -167,14 +167,14 @@ where
 /// A `ChunkIter` iterates through all the chunks for the underlying `Merk`
 /// instance in order (the first chunk is the "trunk" chunk). Yields `None`
 /// after all chunks have been yielded.
-pub struct ChunkIter<'db, S>(ChunkProducer<'db, S>)
+pub struct ChunkIter<'db, C>(ChunkProducer<'db, C>)
 where
-    S: StorageContext<'db>;
+    C: StorageContext<'db>;
 
 #[cfg(feature = "full")]
-impl<'db, S> Iterator for ChunkIter<'db, S>
+impl<'db, C> Iterator for ChunkIter<'db, C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     type Item = Result<Vec<Op>, Error>;
 
@@ -192,13 +192,13 @@ where
 }
 
 #[cfg(feature = "full")]
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&self) -> Result<ChunkProducer<'db, S>, Error> {
+    pub fn chunks(&self) -> Result<ChunkProducer<'db, C>, Error> {
         ChunkProducer::new(self)
     }
 }

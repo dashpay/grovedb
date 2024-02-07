@@ -87,7 +87,7 @@ impl InsertOptions {
 }
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Insert a GroveDB element given a path to the subtree and the key to
     /// insert at
     pub fn insert<'b, B, P>(
@@ -96,7 +96,7 @@ impl GroveDb {
         key: &[u8],
         element: Element,
         options: Option<InsertOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -137,13 +137,15 @@ impl GroveDb {
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
+        transaction: &'db Transaction<S>,
         batch: &StorageBatch,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
+        let mut merk_cache: HashMap<
+            SubtreePath<'b, B>,
+            Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>,
+        > = HashMap::default();
 
         let merk = cost_return_on_error!(
             &mut cost,
@@ -165,7 +167,7 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn insert_without_transaction<'b, B: AsRef<[u8]>>(
+    fn insert_without_transaction<'db, 'b, B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<'b, B>,
         key: &[u8],
@@ -175,8 +177,10 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>> =
-            HashMap::default();
+        let mut merk_cache: HashMap<
+            SubtreePath<'b, B>,
+            Merk<<S as Storage>::BatchStorageContext<'db>>,
+        > = HashMap::default();
 
         let merk = cost_return_on_error!(
             &mut cost,
@@ -203,9 +207,9 @@ impl GroveDb {
         key: &[u8],
         element: Element,
         options: InsertOptions,
-        transaction: &'db Transaction,
+        transaction: &'db Transaction<S>,
         batch: &'db StorageBatch,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+    ) -> CostResult<Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>, Error> {
         let mut cost = OperationCost::default();
 
         let mut subtree_to_insert_into = cost_return_on_error!(
@@ -346,7 +350,7 @@ impl GroveDb {
         element: Element,
         options: InsertOptions,
         batch: &'db StorageBatch,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
+    ) -> CostResult<Merk<<S as Storage>::BatchStorageContext<'db>>, Error> {
         let mut cost = OperationCost::default();
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
@@ -476,7 +480,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         element: Element,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -505,7 +509,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         element: Element,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(bool, Option<Element>), Error>
     where
         B: AsRef<[u8]> + 'b,

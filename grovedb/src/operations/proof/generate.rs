@@ -42,7 +42,7 @@ use grovedb_merk::{
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::StorageContext;
+use grovedb_storage::{Storage, StorageContext};
 
 use crate::{
     element::helpers::raw_decode,
@@ -57,7 +57,7 @@ use crate::{
 
 type LimitOffset = (Option<u16>, Option<u16>);
 
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Prove one or more path queries.
     /// If we more than one path query, we merge into a single path query before
     /// proving.
@@ -485,10 +485,10 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_and_store_merk_proof<'a, S, B>(
+    fn generate_and_store_merk_proof<'a, C, B>(
         &self,
         path: &SubtreePath<B>,
-        subtree: &'a Merk<S>,
+        subtree: &'a Merk<C>,
         query: &Query,
         limit_offset: LimitOffset,
         proof_token_type: ProofTokenType,
@@ -497,7 +497,7 @@ impl GroveDb {
         key: &[u8],
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
     where
-        S: StorageContext<'a> + 'a,
+        C: StorageContext<'a> + 'a,
         B: AsRef<[u8]>,
     {
         if proof_token_type != ProofTokenType::Merk && proof_token_type != ProofTokenType::SizedMerk

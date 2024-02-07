@@ -43,9 +43,9 @@ impl Element {
     #[cfg(feature = "full")]
     /// Helper function that returns whether an element at the key for the
     /// element already exists.
-    pub fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub fn element_at_key_already_exists<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
         &self,
-        merk: &mut Merk<S>,
+        merk: &mut Merk<C>,
         key: K,
     ) -> CostResult<bool, Error> {
         merk.exists(

@@ -203,14 +203,11 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
-#[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
-use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
-    StorageBatch,
-};
+use grovedb_storage::secondary_rocksdb_storage::SecondaryRocksDbStorage;
+#[cfg(feature = "full")]
+use grovedb_storage::StorageBatch;
 #[cfg(feature = "full")]
 use grovedb_storage::{Storage, StorageContext};
 #[cfg(feature = "full")]
@@ -232,25 +229,53 @@ use crate::Error::MerkError;
 type Hash = [u8; 32];
 
 /// GroveDb
-pub struct GroveDb {
+pub struct GroveDb<S: Storage> {
     #[cfg(feature = "full")]
-    db: RocksDbStorage,
+    db: S,
 }
 
 /// Transaction
 #[cfg(feature = "full")]
-pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
+pub type Transaction<'db, S> = <S as Storage>::Transaction<'db>;
 /// TransactionArg
 #[cfg(feature = "full")]
-pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
+pub type TransactionArg<'db, 'a, S> = Option<&'a Transaction<'db, S>>;
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl GroveDb<RocksDbStorage> {
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         Ok(GroveDb { db })
     }
+}
+
+#[cfg(feature = "full")]
+impl GroveDb<SecondaryRocksDbStorage> {
+    /// Opens a given path
+    pub fn open<P: AsRef<Path>>(primary_path: P, secondary_path: P) -> Result<Self, Error> {
+        let db = SecondaryRocksDbStorage::default_secondary_rocksdb(primary_path, secondary_path)?;
+        Ok(GroveDb { db })
+    }
+}
+
+#[cfg(feature = "full")]
+impl<S: Storage> GroveDb<S> {
+    // TODO: Better if you don't need to specify generic. Figure out how to make these methods work
+    // /// Opens a primary db instance with a given path
+    // pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+    //     let db = RocksDbStorage::default_rocksdb_with_path(path)?;
+    //     Ok(GroveDb { db })
+    // }
+    //
+    // /// Opens a secondary instance with given primary and secondary paths
+    // pub fn open_secondary<P: AsRef<Path>>(
+    //     primary_path: P,
+    //     secondary_path: P,
+    // ) -> Result<Self, Error> {
+    //     let db = SecondaryRocksDbStorage::default_secondary_rocksdb(primary_path, secondary_path)?;
+    //     Ok(GroveDb { db })
+    // }
 
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb
     pub fn wipe(&self) -> Result<(), Error> {
@@ -262,9 +287,9 @@ impl GroveDb {
     fn open_transactional_merk_at_path<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        tx: &'db Transaction,
+        tx: &'db Transaction<S>,
         batch: Option<&'db StorageBatch>,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+    ) -> CostResult<Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -324,8 +349,8 @@ impl GroveDb {
     fn open_merk_for_replication<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        tx: &'db Transaction,
-    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'db>>, Error>
+        tx: &'db Transaction<S>,
+    ) -> Result<Merk<<S as Storage>::ImmediateStorageContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -383,7 +408,7 @@ impl GroveDb {
         &'db self,
         path: SubtreePath<'b, B>,
         batch: Option<&'db StorageBatch>,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
+    ) -> CostResult<Merk<<S as Storage>::BatchStorageContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -446,7 +471,7 @@ impl GroveDb {
 
     /// Returns root key of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_key(&self, transaction: TransactionArg) -> CostResult<Vec<u8>, Error> {
+    pub fn root_key(&self, transaction: TransactionArg<S>) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost {
             ..Default::default()
         };
@@ -459,7 +484,7 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<Hash, Error> {
+    pub fn root_hash(&self, transaction: TransactionArg<S>) -> CostResult<Hash, Error> {
         let mut cost = OperationCost {
             ..Default::default()
         };
@@ -472,12 +497,15 @@ impl GroveDb {
 
     /// Method to propagate updated subtree key changes one level up inside a
     /// transaction
-    fn propagate_changes_with_batch_transaction<'b, B: AsRef<[u8]>>(
-        &self,
+    fn propagate_changes_with_batch_transaction<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
         storage_batch: &StorageBatch,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+        mut merk_cache: HashMap<
+            SubtreePath<'b, B>,
+            Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>,
+        >,
         path: &SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &Transaction<S>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -522,11 +550,14 @@ impl GroveDb {
 
     /// Method to propagate updated subtree key changes one level up inside a
     /// transaction
-    fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
-        &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+    fn propagate_changes_with_transaction<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        mut merk_cache: HashMap<
+            SubtreePath<'b, B>,
+            Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>,
+        >,
         path: SubtreePath<'b, B>,
-        transaction: &Transaction,
+        transaction: &Transaction<S>,
         batch: &StorageBatch,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -543,7 +574,7 @@ impl GroveDb {
         let mut current_path = path.clone();
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            let mut parent_tree: Merk<<S as Storage>::BatchTransactionalStorageContext<'db>> = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(parent_path.clone(), transaction, Some(batch))
             );
@@ -568,9 +599,9 @@ impl GroveDb {
     }
 
     /// Method to propagate updated subtree key changes one level up
-    fn propagate_changes_without_transaction<'b, B: AsRef<[u8]>>(
-        &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>>,
+    fn propagate_changes_without_transaction<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<<S as Storage>::BatchStorageContext<'db>>>,
         path: SubtreePath<'b, B>,
         batch: &StorageBatch,
     ) -> CostResult<(), Error> {
@@ -588,7 +619,7 @@ impl GroveDb {
         let mut current_path: SubtreePath<B> = path;
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            let mut parent_tree: Merk<<S as Storage>::BatchStorageContext<'db>> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(parent_path.clone(), Some(batch))
             );
@@ -613,8 +644,8 @@ impl GroveDb {
     }
 
     /// Updates a tree item and preserves flags. Returns CostResult.
-    pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        parent_tree: &mut Merk<S>,
+    pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        parent_tree: &mut Merk<C>,
         key: K,
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
@@ -647,9 +678,9 @@ impl GroveDb {
     pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
         'db,
         K: AsRef<[u8]>,
-        S: StorageContext<'db>,
+        C: StorageContext<'db>,
     >(
-        parent_tree: &Merk<S>,
+        parent_tree: &Merk<C>,
         key: K,
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
@@ -700,8 +731,8 @@ impl GroveDb {
     }
 
     /// Get element from subtree. Return CostResult.
-    fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        subtree: &Merk<S>,
+    fn get_element_from_subtree<'db, K: AsRef<[u8]>, C: StorageContext<'db>>(
+        subtree: &Merk<C>,
         key: K,
     ) -> CostResult<Element, Error> {
         subtree
@@ -799,20 +830,20 @@ impl GroveDb {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn start_transaction(&self) -> Transaction {
+    pub fn start_transaction(&self) -> Transaction<S> {
         self.db.start_transaction()
     }
 
     /// Commits previously started db transaction. For more details on the
     /// transaction usage, please check [`GroveDb::start_transaction`]
-    pub fn commit_transaction(&self, transaction: Transaction) -> CostResult<(), Error> {
+    pub fn commit_transaction(&self, transaction: Transaction<S>) -> CostResult<(), Error> {
         self.db.commit_transaction(transaction).map_err(Into::into)
     }
 
     /// Rollbacks previously started db transaction to initial state.
     /// For more details on the transaction usage, please check
     /// [`GroveDb::start_transaction`]
-    pub fn rollback_transaction(&self, transaction: &Transaction) -> Result<(), Error> {
+    pub fn rollback_transaction(&self, transaction: &Transaction<S>) -> Result<(), Error> {
         Ok(self.db.rollback_transaction(transaction)?)
     }
 
@@ -843,7 +874,7 @@ impl GroveDb {
     /// correctly.
     pub fn verify_grovedb(
         &self,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         if let Some(transaction) = transaction {
             let root_merk = self
@@ -865,9 +896,9 @@ impl GroveDb {
 
     /// Verifies that the root hash of the given merk and all submerks match
     /// those of the merk and submerks at the given path. Returns any issues.
-    fn verify_merk_and_submerks<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn verify_merk_and_submerks<'db, B: AsRef<[u8]>, C: StorageContext<'db>>(
         &'db self,
-        merk: Merk<S>,
+        merk: Merk<C>,
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
@@ -934,12 +965,12 @@ impl GroveDb {
         Ok(issues)
     }
 
-    fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, C: StorageContext<'db>>(
         &'db self,
-        merk: Merk<S>,
+        merk: Merk<C>,
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
-        transaction: &Transaction,
+        transaction: &Transaction<S>,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();

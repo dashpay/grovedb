@@ -9,9 +9,9 @@ use crate::{
     Error, Merk,
 };
 
-impl<'db, S> Merk<S>
+impl<'db, C> Merk<C>
 where
-    S: StorageContext<'db>,
+    C: StorageContext<'db>,
 {
     /// Creates a Merkle proof for the list of queried keys. For each key in the
     /// query, if the key is found in the store then the value will be proven to

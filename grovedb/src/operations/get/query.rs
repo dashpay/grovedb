@@ -33,6 +33,7 @@ use grovedb_costs::cost_return_on_error_default;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use grovedb_storage::Storage;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
@@ -45,13 +46,13 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Encoded query for multiple path queries
     pub fn query_encoded_many(
         &self,
         path_queries: &[&PathQuery],
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Vec<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
 
@@ -110,7 +111,7 @@ impl GroveDb {
         path_queries: &[&PathQuery],
         allow_cache: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<QueryResultElements, Error>
 where {
         let mut cost = OperationCost::default();
@@ -128,7 +129,7 @@ where {
         &self,
         path_query: &PathQuery,
         is_verbose: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
             Err(Error::NotSupported(
@@ -147,7 +148,7 @@ where {
         element: Element,
         allow_cache: bool,
         cost: &mut OperationCost,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> Result<Element, Error> {
         match element {
             Element::Reference(reference_path, ..) => {
@@ -190,7 +191,7 @@ where {
         path_query: &PathQuery,
         allow_cache: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         let mut cost = OperationCost::default();
 
@@ -218,7 +219,7 @@ where {
         &self,
         path_query: &PathQuery,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(Vec<Vec<u8>>, u16), Error> {
         let mut cost = OperationCost::default();
 
@@ -288,7 +289,7 @@ where {
         &self,
         path_query: &PathQuery,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(Vec<i64>, u16), Error> {
         let mut cost = OperationCost::default();
 
@@ -361,7 +362,7 @@ where {
         path_query: &PathQuery,
         allow_cache: bool,
         result_type: QueryResultType,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         Element::get_raw_path_query(&self.db, path_query, allow_cache, result_type, transaction)
     }
@@ -372,7 +373,7 @@ where {
         &self,
         path_query: &PathQuery,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
             Error::NotSupported("limits must be set in query_keys_optional",)
@@ -415,7 +416,7 @@ where {
         &self,
         path_query: &PathQuery,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: TransactionArg<S>,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
             Error::NotSupported("limits must be set in query_raw_keys_optional",)
