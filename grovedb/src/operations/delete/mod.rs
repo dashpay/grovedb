@@ -183,11 +183,11 @@ impl<S: Storage> GroveDb<S> {
     /// Warning: The costs for this operation are not yet correct, hence we
     /// should keep this private for now
     /// Returns if we successfully cleared the subtree
-    fn clear_subtree_with_costs<'db, 'b, B, P>(
+    fn clear_subtree_with_costs<'db, 'b, 't, B, P>(
         &'db self,
         path: P,
         options: Option<ClearOptions>,
-        transaction: TransactionArg<S>,
+        transaction: TransactionArg<'db, 't, S>,
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,

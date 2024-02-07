@@ -1763,7 +1763,7 @@ impl<S: Storage> GroveDb<S> {
         &'db self,
         storage_batch: &'db StorageBatch,
         path: SubtreePath<B>,
-        tx: &'db <S as Storage>::Transaction<'db>,
+        tx: &'db Transaction<'db, S>,
         new_merk: bool,
     ) -> CostResult<Merk<<S as Storage>::BatchTransactionalStorageContext<'db>>, Error> {
         let mut cost = OperationCost::default();
