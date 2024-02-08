@@ -44,9 +44,9 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Worst case costs for delete operations for delete up tree while empty
-    pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
+    pub fn worst_case_delete_operations_for_delete_up_tree_while_empty(
         path: &KeyInfoPath,
         key: &KeyInfo,
         stop_path_height: Option<u16>,
@@ -116,7 +116,7 @@ impl GroveDb {
                 );
                 let op = cost_return_on_error!(
                     &mut cost,
-                    Self::worst_case_delete_operation_for_delete_internal::<S>(
+                    GroveDb::<S>::worst_case_delete_operation_for_delete_internal(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
                         is_sum_tree,
@@ -133,7 +133,7 @@ impl GroveDb {
     }
 
     /// Worst case costs for delete operation for delete internal
-    pub fn worst_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
+    pub fn worst_case_delete_operation_for_delete_internal(
         path: &KeyInfoPath,
         key: &KeyInfo,
         parent_tree_is_sum_tree: bool,
@@ -145,10 +145,10 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         if validate {
-            GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path, parent_tree_is_sum_tree);
+            GroveDb::<S>::add_worst_case_get_merk_at_path(&mut cost, path, parent_tree_is_sum_tree);
         }
         if check_if_tree {
-            GroveDb::add_worst_case_get_raw_cost::<S>(
+            GroveDb::<S>::add_worst_case_get_raw_cost(
                 &mut cost,
                 path,
                 key,

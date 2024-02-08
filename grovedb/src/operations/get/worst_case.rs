@@ -32,6 +32,7 @@
 use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::Storage;
 
 #[cfg(feature = "full")]
 use crate::{
@@ -40,7 +41,7 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Worst case cost for has raw
     pub fn worst_case_for_has_raw(
         path: &KeyInfoPath,
@@ -49,7 +50,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_worst_case_has_raw_cost(
             &mut cost,
             path,
             key,
@@ -67,7 +68,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_worst_case_get_raw_cost(
             &mut cost,
             path,
             key,
@@ -86,7 +87,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_worst_case_get_cost(
             &mut cost,
             path,
             key,

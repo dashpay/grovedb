@@ -32,6 +32,7 @@
 use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::Storage;
 
 #[cfg(feature = "full")]
 use crate::{
@@ -40,7 +41,7 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Get the Operation Cost for a has query that doesn't follow
     /// references with the following parameters
     pub fn average_case_for_has_raw(
@@ -50,7 +51,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_has_raw_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_average_case_has_raw_cost(
             &mut cost,
             path,
             key,
@@ -70,7 +71,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_has_raw_tree_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_average_case_has_raw_tree_cost(
             &mut cost,
             path,
             key,
@@ -90,7 +91,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_get_raw_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_average_case_get_raw_cost(
             &mut cost,
             path,
             key,
@@ -109,7 +110,7 @@ impl GroveDb {
         estimated_references_sizes: Vec<u32>,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_get_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_average_case_get_cost(
             &mut cost,
             path,
             key,
@@ -129,7 +130,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_average_case_get_raw_tree_cost::<RocksDbStorage>(
+        GroveDb::<S>::add_average_case_get_raw_tree_cost(
             &mut cost,
             path,
             key,

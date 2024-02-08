@@ -56,9 +56,9 @@ use crate::{
 
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
 
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Add worst case for getting a merk tree
-    pub fn add_worst_case_get_merk_at_path<'db, S: Storage<'db>>(
+    pub fn add_worst_case_get_merk_at_path(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         is_sum_tree: bool,
@@ -74,7 +74,7 @@ impl GroveDb {
                 );
             }
         }
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += <S as Storage>::get_storage_context_cost(path.as_vec());
     }
 
     /// Add worst case for insertion into merk
@@ -326,7 +326,7 @@ impl GroveDb {
     }
 
     /// Add worst case cost for "has raw" into merk
-    pub fn add_worst_case_has_raw_cost<'db, S: Storage<'db>>(
+    pub fn add_worst_case_has_raw_cost(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -340,11 +340,11 @@ impl GroveDb {
         );
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += <S as Storage>::get_storage_context_cost(path.as_vec());
     }
 
     /// Add worst case cost for get raw tree into merk
-    pub fn add_worst_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+    pub fn add_worst_case_get_raw_tree_cost(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -366,7 +366,7 @@ impl GroveDb {
     }
 
     /// Add worst case cost for get raw into merk
-    pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
+    pub fn add_worst_case_get_raw_cost(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -383,7 +383,7 @@ impl GroveDb {
     }
 
     /// Add worst case cost for get into merk
-    pub fn add_worst_case_get_cost<'db, S: Storage<'db>>(
+    pub fn add_worst_case_get_cost(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -399,7 +399,7 @@ impl GroveDb {
         );
         cost.seek_count += 1 + max_references_sizes.len() as u16;
         cost.storage_loaded_bytes += value_size + max_references_sizes.iter().sum::<u32>();
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += <S as Storage>::get_storage_context_cost(path.as_vec());
     }
 }
 
@@ -494,7 +494,7 @@ mod test {
         let path = KeyInfoPath::from_vec(vec![KnownKey(TEST_LEAF.to_vec())]);
         let key = KnownKey(vec![1]);
         let mut worst_case_has_raw_cost = OperationCost::default();
-        GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
+        GroveDb::add_worst_case_has_raw_cost(
             &mut worst_case_has_raw_cost,
             &path,
             &key,

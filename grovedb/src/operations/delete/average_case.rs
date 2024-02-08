@@ -49,10 +49,10 @@ use crate::{
 /// 0 represents key size, 1 represents element size
 type EstimatedKeyAndElementSize = (u32, u32);
 
-impl GroveDb {
+impl<S: Storage> GroveDb<S> {
     /// Average case delete operations for delete up tree while empty
     // todo finish this
-    pub fn average_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
+    pub fn average_case_delete_operations_for_delete_up_tree_while_empty(
         path: &KeyInfoPath,
         key: &KeyInfo,
         stop_path_height: Option<u16>,
@@ -134,7 +134,7 @@ impl GroveDb {
                 );
                 let op = cost_return_on_error!(
                     &mut cost,
-                    Self::average_case_delete_operation_for_delete_internal::<S>(
+                    GroveDb::<S>::average_case_delete_operation_for_delete_internal(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
                         is_sum_tree,
@@ -151,7 +151,7 @@ impl GroveDb {
     }
 
     /// Average case delete operation for delete internal
-    pub fn average_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
+    pub fn average_case_delete_operation_for_delete_internal(
         path: &KeyInfoPath,
         key: &KeyInfo,
         parent_tree_is_sum_tree: bool,
@@ -163,7 +163,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         if validate {
-            GroveDb::add_average_case_get_merk_at_path::<S>(
+            GroveDb::<S>::add_average_case_get_merk_at_path(
                 &mut cost,
                 path,
                 false,
@@ -171,7 +171,7 @@ impl GroveDb {
             );
         }
         if check_if_tree {
-            GroveDb::add_average_case_get_raw_cost::<S>(
+            GroveDb::<S>::add_average_case_get_raw_cost(
                 &mut cost,
                 path,
                 key,

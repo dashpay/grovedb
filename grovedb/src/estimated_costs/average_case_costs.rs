@@ -52,7 +52,7 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-impl<S> GroveDb<S> {
+impl<S: Storage> GroveDb<S> {
     /// Add average case for getting a merk tree
     pub fn add_average_case_get_merk_at_path(
         cost: &mut OperationCost,
@@ -75,7 +75,7 @@ impl<S> GroveDb<S> {
                 );
             }
         }
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += <S as Storage>::get_storage_context_cost(path.as_vec());
     }
 
     /// Add average case for insertion into merk
@@ -366,7 +366,7 @@ impl<S> GroveDb<S> {
         );
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += <S as Storage>::get_storage_context_cost(path.as_vec());
     }
 
     /// Adds the average case of checking to see if a tree exists
@@ -450,7 +450,7 @@ impl<S> GroveDb<S> {
         );
         cost.seek_count += 1 + estimated_references_sizes.len() as u16;
         cost.storage_loaded_bytes += value_size + estimated_references_sizes.iter().sum::<u32>();
-        *cost += S::get_storage_context_cost(path.as_vec());
+        *cost += <S as Storage>::get_storage_context_cost(path.as_vec());
     }
 }
 

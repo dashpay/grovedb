@@ -45,6 +45,7 @@ use grovedb_merk::estimated_costs::worst_case_costs::{
 use grovedb_merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::Storage;
 #[cfg(feature = "full")]
 use itertools::Itertools;
 
@@ -75,21 +76,25 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::worst_case_merk_replace_tree(
-                key,
-                sum.is_some(),
-                is_in_parent_sum_tree,
-                worst_case_layer_element_estimates,
-                propagate,
-            ),
-            Op::InsertTreeWithRootHash { flags, sum, .. } => GroveDb::worst_case_merk_insert_tree(
-                key,
-                flags,
-                sum.is_some(),
-                is_in_parent_sum_tree,
-                propagate_if_input(),
-            ),
-            Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
+            Op::ReplaceTreeRootKey { sum, .. } => {
+                GroveDb::<RocksDbStorage>::worst_case_merk_replace_tree(
+                    key,
+                    sum.is_some(),
+                    is_in_parent_sum_tree,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                )
+            }
+            Op::InsertTreeWithRootHash { flags, sum, .. } => {
+                GroveDb::<RocksDbStorage>::worst_case_merk_insert_tree(
+                    key,
+                    flags,
+                    sum.is_some(),
+                    is_in_parent_sum_tree,
+                    propagate_if_input(),
+                )
+            }
+            Op::Insert { element } => GroveDb::<RocksDbStorage>::worst_case_merk_insert_element(
                 key,
                 element,
                 is_in_parent_sum_tree,
@@ -100,7 +105,7 @@ impl Op {
                 max_reference_hop,
                 flags,
                 ..
-            } => GroveDb::worst_case_merk_replace_element(
+            } => GroveDb::<RocksDbStorage>::worst_case_merk_replace_element(
                 key,
                 &Element::Reference(
                     reference_path_type.clone(),
@@ -110,7 +115,7 @@ impl Op {
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
-            Op::Replace { element } => GroveDb::worst_case_merk_replace_element(
+            Op::Replace { element } => GroveDb::<RocksDbStorage>::worst_case_merk_replace_element(
                 key,
                 element,
                 is_in_parent_sum_tree,
@@ -119,24 +124,24 @@ impl Op {
             Op::Patch {
                 element,
                 change_in_bytes: _,
-            } => GroveDb::worst_case_merk_replace_element(
+            } => GroveDb::<RocksDbStorage>::worst_case_merk_replace_element(
                 key,
                 element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
-            Op::Delete => GroveDb::worst_case_merk_delete_element(
+            Op::Delete => GroveDb::<RocksDbStorage>::worst_case_merk_delete_element(
                 key,
                 worst_case_layer_element_estimates,
                 propagate,
             ),
-            Op::DeleteTree => GroveDb::worst_case_merk_delete_tree(
+            Op::DeleteTree => GroveDb::<RocksDbStorage>::worst_case_merk_delete_tree(
                 key,
                 false,
                 worst_case_layer_element_estimates,
                 propagate,
             ),
-            Op::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
+            Op::DeleteSumTree => GroveDb::<RocksDbStorage>::worst_case_merk_delete_tree(
                 key,
                 true,
                 worst_case_layer_element_estimates,
@@ -192,7 +197,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         BatchRunMode::WorstCase(self.paths.clone())
     }
 
-    fn execute_ops_on_path(
+    fn execute_ops_on_path<S: Storage>(
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
@@ -215,7 +220,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
 
         // Then we have to get the tree
         if self.cached_merks.get(path).is_none() {
-            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path, false);
+            GroveDb::<S>::add_worst_case_get_merk_at_path(&mut cost, path, false);
             self.cached_merks.insert(path.clone());
         }
 
@@ -240,7 +245,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         if let Some(_estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
             if self.cached_merks.get(&base_path).is_none() {
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::<RocksDbStorage>::add_worst_case_get_merk_at_path(
                     &mut cost, &base_path, false,
                 );
                 self.cached_merks.insert(base_path);

@@ -46,6 +46,7 @@ use grovedb_merk::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::Storage;
 #[cfg(feature = "full")]
 use itertools::Itertools;
 
@@ -79,14 +80,16 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::average_case_merk_replace_tree(
-                key,
-                layer_element_estimates,
-                sum.is_some(),
-                propagate,
-            ),
+            Op::ReplaceTreeRootKey { sum, .. } => {
+                GroveDb::<RocksDbStorage>::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    sum.is_some(),
+                    propagate,
+                )
+            }
             Op::InsertTreeWithRootHash { flags, sum, .. } => {
-                GroveDb::average_case_merk_insert_tree(
+                GroveDb::<RocksDbStorage>::average_case_merk_insert_tree(
                     key,
                     flags,
                     sum.is_some(),
@@ -94,7 +97,7 @@ impl Op {
                     propagate_if_input(),
                 )
             }
-            Op::Insert { element } => GroveDb::average_case_merk_insert_element(
+            Op::Insert { element } => GroveDb::<RocksDbStorage>::average_case_merk_insert_element(
                 key,
                 element,
                 in_tree_using_sums,
@@ -105,7 +108,7 @@ impl Op {
                 max_reference_hop,
                 flags,
                 ..
-            } => GroveDb::average_case_merk_replace_element(
+            } => GroveDb::<RocksDbStorage>::average_case_merk_replace_element(
                 key,
                 &Element::Reference(
                     reference_path_type.clone(),
@@ -115,32 +118,36 @@ impl Op {
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
-            Op::Replace { element } => GroveDb::average_case_merk_replace_element(
-                key,
-                element,
-                in_tree_using_sums,
-                propagate_if_input(),
-            ),
+            Op::Replace { element } => {
+                GroveDb::<RocksDbStorage>::average_case_merk_replace_element(
+                    key,
+                    element,
+                    in_tree_using_sums,
+                    propagate_if_input(),
+                )
+            }
             Op::Patch {
                 element,
                 change_in_bytes,
-            } => GroveDb::average_case_merk_patch_element(
+            } => GroveDb::<RocksDbStorage>::average_case_merk_patch_element(
                 key,
                 element,
                 *change_in_bytes,
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
-            Op::Delete => {
-                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
-            }
-            Op::DeleteTree => GroveDb::average_case_merk_delete_tree(
+            Op::Delete => GroveDb::<RocksDbStorage>::average_case_merk_delete_element(
+                key,
+                layer_element_estimates,
+                propagate,
+            ),
+            Op::DeleteTree => GroveDb::<RocksDbStorage>::average_case_merk_delete_tree(
                 key,
                 false,
                 layer_element_estimates,
                 propagate,
             ),
-            Op::DeleteSumTree => GroveDb::average_case_merk_delete_tree(
+            Op::DeleteSumTree => GroveDb::<RocksDbStorage>::average_case_merk_delete_tree(
                 key,
                 true,
                 layer_element_estimates,
@@ -196,7 +203,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         BatchRunMode::AverageCase(self.paths.clone())
     }
 
-    fn execute_ops_on_path(
+    fn execute_ops_on_path<S: Storage>(
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
@@ -244,7 +251,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     ))
                 })
             );
-            GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+            GroveDb::<S>::add_average_case_get_merk_at_path(
                 &mut cost,
                 path,
                 layer_should_be_empty,
@@ -275,7 +282,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         if let Some(estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
             if self.cached_merks.get(&base_path).is_none() {
-                GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::<RocksDbStorage>::add_average_case_get_merk_at_path(
                     &mut cost,
                     &base_path,
                     estimated_layer_info
