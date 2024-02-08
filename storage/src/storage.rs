@@ -54,18 +54,19 @@ pub trait Storage {
     type Transaction<'db>;
 
     /// Storage context type for mutli-tree batch operations
-    type BatchStorageContext<'db>: StorageContext<'db>
+    type BatchStorageContext<'db, 'b>: StorageContext<'db, 'b>
     where
         Self: 'db;
 
     /// Storage context type for multi-tree batch operations inside transaction
-    type BatchTransactionalStorageContext<'db>: StorageContext<'db>
+    type BatchTransactionalStorageContext<'db, 'b>: StorageContext<'db, 'b>
     where
-        Self: 'db;
+        Self: 'db,
+        'db: 'b;
 
     /// Storage context type for direct writes to the storage. The only use case
     /// is replication process.
-    type ImmediateStorageContext<'db>: StorageContext<'db>
+    type ImmediateStorageContext<'db, 'b>: StorageContext<'db, 'b>
     where
         Self: 'db;
 
@@ -94,8 +95,8 @@ pub trait Storage {
     fn get_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext<'db>>
+        batch: Option<&'b StorageBatch>,
+    ) -> CostContext<Self::BatchStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b;
 
@@ -104,9 +105,9 @@ pub trait Storage {
     fn get_transactional_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
+        batch: Option<&'b StorageBatch>,
         transaction: &'db Self::Transaction<'db>,
-    ) -> CostContext<Self::BatchTransactionalStorageContext<'db>>
+    ) -> CostContext<Self::BatchTransactionalStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b;
 
@@ -116,7 +117,7 @@ pub trait Storage {
         &'db self,
         path: SubtreePath<'b, B>,
         transaction: &'db Self::Transaction<'db>,
-    ) -> CostContext<Self::ImmediateStorageContext<'db>>
+    ) -> CostContext<Self::ImmediateStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b;
 
@@ -163,7 +164,7 @@ pub use grovedb_costs::ChildrenSizes;
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
-pub trait StorageContext<'db> {
+pub trait StorageContext<'db, 'b> {
     /// Storage batch type
     type Batch: Batch;
 

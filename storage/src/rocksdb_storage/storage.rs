@@ -173,10 +173,10 @@ impl RocksDbStorage {
 }
 
 impl Storage for RocksDbStorage {
-    type Transaction<'db> = Tx<'db> where Self: 'db;
-    type BatchStorageContext<'db> = PrefixedRocksDbStorageContext<'db>;
-    type BatchTransactionalStorageContext<'db> = PrefixedRocksDbTransactionContext<'db>;
-    type ImmediateStorageContext<'db> = PrefixedRocksDbImmediateStorageContext<'db>;
+    type Transaction<'db> = Tx<'db>;
+    type BatchStorageContext<'db, 'b> = PrefixedRocksDbStorageContext<'db, 'b>;
+    type BatchTransactionalStorageContext<'db, 'b> = PrefixedRocksDbTransactionContext<'db, 'b> where 'db: 'b;
+    type ImmediateStorageContext<'db, 'b> = PrefixedRocksDbImmediateStorageContext<'db>;
 
     fn start_transaction<'db>(&'db self) -> Self::Transaction<'db> {
         self.db.transaction()
@@ -217,8 +217,8 @@ impl Storage for RocksDbStorage {
     fn get_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext<'db>>
+        batch: Option<&'b StorageBatch>,
+    ) -> CostContext<Self::BatchStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -229,9 +229,9 @@ impl Storage for RocksDbStorage {
     fn get_transactional_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
+        batch: Option<&'b StorageBatch>,
         transaction: &'db Self::Transaction<'db>,
-    ) -> CostContext<Self::BatchTransactionalStorageContext<'db>>
+    ) -> CostContext<Self::BatchTransactionalStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -244,7 +244,7 @@ impl Storage for RocksDbStorage {
         &'db self,
         path: SubtreePath<'b, B>,
         transaction: &'db Self::Transaction<'db>,
-    ) -> CostContext<Self::ImmediateStorageContext<'db>>
+    ) -> CostContext<Self::ImmediateStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b,
     {

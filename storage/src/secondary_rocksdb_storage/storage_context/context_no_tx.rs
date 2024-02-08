@@ -49,15 +49,15 @@ use crate::{
 
 /// Storage context with a prefix applied to be used in a subtree to be used
 /// outside of transaction.
-pub struct PrefixedSecondaryRocksDbStorageContext<'db> {
+pub struct PrefixedSecondaryRocksDbStorageContext<'db, 'b> {
     storage: &'db Db,
     prefix: SubtreePrefix,
-    batch: Option<&'db StorageBatch>,
+    batch: Option<&'b StorageBatch>,
 }
 
-impl<'db> PrefixedSecondaryRocksDbStorageContext<'db> {
+impl<'db, 'b> PrefixedSecondaryRocksDbStorageContext<'db, 'b> {
     /// Create a new prefixed storage_cost context instance
-    pub fn new(storage: &'db Db, prefix: SubtreePrefix, batch: Option<&'db StorageBatch>) -> Self {
+    pub fn new(storage: &'db Db, prefix: SubtreePrefix, batch: Option<&'b StorageBatch>) -> Self {
         Self {
             storage,
             prefix,
@@ -66,7 +66,7 @@ impl<'db> PrefixedSecondaryRocksDbStorageContext<'db> {
     }
 }
 
-impl<'db> PrefixedSecondaryRocksDbStorageContext<'db> {
+impl<'db, 'b> PrefixedSecondaryRocksDbStorageContext<'db, 'b> {
     /// Get auxiliary data column family
     fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
@@ -89,7 +89,7 @@ impl<'db> PrefixedSecondaryRocksDbStorageContext<'db> {
     }
 }
 
-impl<'db> StorageContext<'db> for PrefixedSecondaryRocksDbStorageContext<'db> {
+impl<'db, 'b> StorageContext<'db, 'b> for PrefixedSecondaryRocksDbStorageContext<'db, 'b> {
     type Batch = PrefixedMultiContextBatchPart;
     type RawIterator = PrefixedSecondaryRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Db>>;
 

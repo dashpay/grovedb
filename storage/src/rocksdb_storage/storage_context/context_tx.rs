@@ -45,20 +45,20 @@ use crate::{
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
-pub struct PrefixedRocksDbTransactionContext<'db> {
+pub struct PrefixedRocksDbTransactionContext<'db, 'b> {
     storage: &'db Db,
-    transaction: &'db Tx<'db>,
+    transaction: &'b Tx<'db>,
     prefix: SubtreePrefix,
-    batch: Option<&'db StorageBatch>,
+    batch: Option<&'b StorageBatch>,
 }
 
-impl<'db> PrefixedRocksDbTransactionContext<'db> {
+impl<'db, 'b> PrefixedRocksDbTransactionContext<'db, 'b> {
     /// Create a new prefixed transaction context instance
     pub fn new(
         storage: &'db Db,
-        transaction: &'db Tx<'db>,
+        transaction: &'b Tx<'db>,
         prefix: SubtreePrefix,
-        batch: Option<&'db StorageBatch>,
+        batch: Option<&'b StorageBatch>,
     ) -> Self {
         PrefixedRocksDbTransactionContext {
             storage,
@@ -69,7 +69,7 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
     }
 }
 
-impl<'db> PrefixedRocksDbTransactionContext<'db> {
+impl<'db, 'b> PrefixedRocksDbTransactionContext<'db, 'b> {
     /// Get auxiliary data column family
     fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
@@ -92,7 +92,7 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
     }
 }
 
-impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
+impl<'db, 'b> StorageContext<'db, 'b> for PrefixedRocksDbTransactionContext<'db, 'b> {
     type Batch = PrefixedMultiContextBatchPart;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 

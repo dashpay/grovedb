@@ -83,7 +83,7 @@ impl<'db> PrefixedSecondaryRocksDbImmediateStorageContext<'db> {
     }
 }
 
-impl<'db> StorageContext<'db> for PrefixedSecondaryRocksDbImmediateStorageContext<'db> {
+impl<'db, 'b> StorageContext<'db, 'b> for PrefixedSecondaryRocksDbImmediateStorageContext<'db> {
     type Batch = PrefixedRocksDbBatch<'db>;
     // type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
     type RawIterator = PrefixedSecondaryRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Db>>;

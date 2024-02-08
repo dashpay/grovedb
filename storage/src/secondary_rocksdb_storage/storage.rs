@@ -431,9 +431,10 @@ impl SecondaryRocksDbStorage {
 
 impl Storage for SecondaryRocksDbStorage {
     type Transaction<'db> = ();
-    type BatchStorageContext<'db> = PrefixedSecondaryRocksDbStorageContext<'db>;
-    type BatchTransactionalStorageContext<'db> = PrefixedSecondaryRocksDbStorageContext<'db>;
-    type ImmediateStorageContext<'db> = PrefixedSecondaryRocksDbImmediateStorageContext<'db>;
+    type BatchStorageContext<'db, 'b> = PrefixedSecondaryRocksDbStorageContext<'db, 'b>;
+    type BatchTransactionalStorageContext<'db, 'b> =
+        PrefixedSecondaryRocksDbStorageContext<'db, 'b> where 'db: 'b;
+    type ImmediateStorageContext<'db, 'b> = PrefixedSecondaryRocksDbImmediateStorageContext<'db>;
 
     fn start_transaction<'db>(&'db self) -> Self::Transaction<'db> {
         // todo: It doen't support transactions atm
@@ -469,8 +470,8 @@ impl Storage for SecondaryRocksDbStorage {
     fn get_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext<'db>>
+        batch: Option<&'b StorageBatch>,
+    ) -> CostContext<Self::BatchStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -481,9 +482,9 @@ impl Storage for SecondaryRocksDbStorage {
     fn get_transactional_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
+        batch: Option<&'b StorageBatch>,
         _transaction: &Self::Transaction<'db>,
-    ) -> CostContext<Self::BatchTransactionalStorageContext<'db>>
+    ) -> CostContext<Self::BatchTransactionalStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -496,7 +497,7 @@ impl Storage for SecondaryRocksDbStorage {
         &'db self,
         path: SubtreePath<'b, B>,
         _transaction: &Self::Transaction<'db>,
-    ) -> CostContext<Self::ImmediateStorageContext<'db>>
+    ) -> CostContext<Self::ImmediateStorageContext<'db, 'b>>
     where
         B: AsRef<[u8]> + 'b,
     {
