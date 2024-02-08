@@ -28,7 +28,8 @@
 
 //! Useful utilities for testing.
 
-use std::{cell::Cell, ops::Deref};
+use std::cell::RefCell;
+use std::ops::Deref;
 
 use tempfile::TempDir;
 
@@ -36,7 +37,7 @@ use super::*;
 
 /// RocksDb storage with self-cleanup
 pub struct TempStorage {
-    dir: Cell<TempDir>,
+    dir: RefCell<TempDir>,
     storage: RocksDbStorage,
 }
 
@@ -44,12 +45,22 @@ impl TempStorage {
     /// Create new `TempStorage`
     pub fn new() -> Self {
         let dir = TempDir::new().expect("cannot create tempir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(dir.path())
             .expect("cannot open rocksdb storage");
         TempStorage {
-            dir: Cell::new(dir),
+            dir: RefCell::new(dir),
             storage,
         }
+    }
+
+    /// Create secondary storage
+    pub fn secondary(&self) -> RocksDbStorage {
+        let dir = TempDir::new().expect("cannot create tempir");
+
+        let primary_dir = self.dir.borrow();
+
+        RocksDbStorage::default_secondary_rocksdb(primary_dir.path(), dir.path())
+            .expect("cannot open rocksdb storage")
     }
 
     /// Simulate storage crash

@@ -48,6 +48,7 @@ use super::{
     PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext,
     PrefixedRocksDbTransactionContext,
 };
+use crate::Error::StorageError;
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
@@ -88,21 +89,33 @@ lazy_static! {
     };
 }
 
-/// Type alias for a database
-pub(crate) type Db = OptimisticTransactionDB;
+/// Non-transactional database that supports secondary instance
+pub(crate) type NonTransactionalDb = rocksdb::DB;
 
 /// Type alias for a transaction
-pub(crate) type Tx<'db> = Transaction<'db, Db>;
+pub(crate) type Tx<'db> = Transaction<'db, OptimisticTransactionDB>;
 
 /// Storage which uses RocksDB as its backend.
-pub struct RocksDbStorage {
-    db: OptimisticTransactionDB,
+pub enum RocksDbStorage {
+    /// Primary storage
+    Primary(OptimisticTransactionDB),
+    /// Secondary storage
+    Secondary(NonTransactionalDb),
+}
+
+macro_rules! call_with_db {
+    ($self:ident, $db:ident, $code:block) => {
+        match $self {
+            RocksDbStorage::Primary($db) => $code,
+            RocksDbStorage::Secondary($db) => $code,
+        }
+    };
 }
 
 impl RocksDbStorage {
     /// Create RocksDb storage with default parameters using `path`.
-    pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db = Db::open_cf_descriptors(
+    pub fn default_primary_rocksdb<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let db = OptimisticTransactionDB::open_cf_descriptors(
             &DEFAULT_OPTS,
             &path,
             [
@@ -112,7 +125,39 @@ impl RocksDbStorage {
             ],
         )
         .map_err(RocksDBError)?;
-        Ok(RocksDbStorage { db })
+
+        Ok(Self::Primary(db))
+    }
+
+    /// Create RocksDb storage with default parameters using `path`.
+    pub fn default_secondary_rocksdb<P: AsRef<Path>>(
+        primary_path: P,
+        secondary_path: P,
+    ) -> Result<Self, Error> {
+        let db = NonTransactionalDb::open_cf_descriptors_as_secondary(
+            &DEFAULT_OPTS,
+            &primary_path,
+            &secondary_path,
+            [
+                ColumnFamilyDescriptor::new(AUX_CF_NAME, DEFAULT_OPTS.clone()),
+                ColumnFamilyDescriptor::new(ROOTS_CF_NAME, DEFAULT_OPTS.clone()),
+                ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
+            ],
+        )
+        .map_err(RocksDBError)?;
+
+        Ok(Self::Secondary(db))
+    }
+
+    /// Replicate recent changes from primary database
+    /// Available only for a secondary storage
+    pub fn try_to_catch_up_from_primary(&self) -> Result<(), Error> {
+        match self {
+            RocksDbStorage::Primary(_) => {
+                Err(StorageError("primary storage doesn't catchup".to_string()))
+            }
+            RocksDbStorage::Secondary(db) => db.try_catch_up_with_primary().map_err(RocksDBError),
+        }
     }
 
     fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
@@ -207,7 +252,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_aux(&self.db), &key, &value);
+                    db_batch.put_cf(self.cf_aux(), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -226,7 +271,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_roots(&self.db), &key, &value);
+                    db_batch.put_cf(self.cf_roots(), &key, &value);
                     cost.seek_count += 1;
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
@@ -248,7 +293,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_meta(&self.db), &key, &value);
+                    db_batch.put_cf(self.cf_meta(), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -276,7 +321,7 @@ impl RocksDbStorage {
                         // lets get the values
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db.get(&key).map_err(RocksDBError)
+                            call_with_db!(self, db, { db.get(&key).map_err(RocksDBError) })
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -292,7 +337,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteAux { key, cost_info } => {
-                    db_batch.delete_cf(cf_aux(&self.db), &key);
+                    db_batch.delete_cf(self.cf_aux(), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -303,7 +348,9 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
+                            call_with_db!(self, db, {
+                                db.get_cf(self.cf_aux(), &key).map_err(RocksDBError)
+                            })
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -320,7 +367,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteRoot { key, cost_info } => {
-                    db_batch.delete_cf(cf_roots(&self.db), &key);
+                    db_batch.delete_cf(self.cf_roots(), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -331,9 +378,9 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db
-                                .get_cf(cf_roots(&self.db), &key)
-                                .map_err(RocksDBError)
+                            call_with_db!(self, db, {
+                                db.get_cf(self.cf_roots(), &key).map_err(RocksDBError)
+                            })
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -350,7 +397,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteMeta { key, cost_info } => {
-                    db_batch.delete_cf(cf_meta(&self.db), &key);
+                    db_batch.delete_cf(self.cf_meta(), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -361,9 +408,9 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db
-                                .get_cf(cf_meta(&self.db), &key)
-                                .map_err(RocksDBError)
+                            call_with_db!(self, db, {
+                                db.get_cf(self.cf_meta(), &key).map_err(RocksDBError)
+                            })
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -391,17 +438,24 @@ impl RocksDbStorage {
         pending_costs: OperationCost,
         transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
     ) -> CostResult<(), Error> {
-        let result = match transaction {
-            None => self.db.write(db_batch),
-            Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
-        };
+        match self {
+            RocksDbStorage::Primary(db) => {
+                let result = match transaction {
+                    None => db.write(db_batch),
+                    Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
+                };
 
-        if result.is_ok() {
-            result.map_err(RocksDBError).wrap_with_cost(pending_costs)
-        } else {
-            result
-                .map_err(RocksDBError)
-                .wrap_with_cost(OperationCost::default())
+                if result.is_ok() {
+                    result.map_err(RocksDBError).wrap_with_cost(pending_costs)
+                } else {
+                    result
+                        .map_err(RocksDBError)
+                        .wrap_with_cost(OperationCost::default())
+                }
+            }
+            RocksDbStorage::Secondary(_) => {
+                unimplemented!("secondary storage does not support WriteBatchWithTransaction<true>")
+            }
         }
     }
 
@@ -418,30 +472,58 @@ impl RocksDbStorage {
     }
 
     fn wipe_column_family(&self, column_family_name: &str) -> Result<(), Error> {
-        let cf_handle = self
-            .db
-            .cf_handle(column_family_name)
-            .ok_or(Error::StorageError(
+        call_with_db!(self, db, {
+            let cf_handle = db.cf_handle(column_family_name).ok_or(Error::StorageError(
                 "failed to get column family handle".to_string(),
             ))?;
-        let mut iter = self.db.raw_iterator_cf(&cf_handle);
-        iter.seek_to_first();
-        while iter.valid() {
-            self.db.delete(iter.key().expect("should have key"))?;
-            iter.next()
-        }
-        Ok(())
+            let mut iter = db.raw_iterator_cf(&cf_handle);
+            iter.seek_to_first();
+            while iter.valid() {
+                db.delete(iter.key().expect("should have key"))?;
+                iter.next()
+            }
+            Ok(())
+        })
+    }
+
+    /// Get auxiliary data column family
+    fn cf_aux(&self) -> &ColumnFamily {
+        call_with_db!(self, db, {
+            db.cf_handle(AUX_CF_NAME)
+                .expect("meta column family must exist")
+        })
+    }
+
+    /// Get trees roots data column family
+    fn cf_roots(&self) -> &ColumnFamily {
+        call_with_db!(self, db, {
+            db.cf_handle(ROOTS_CF_NAME)
+                .expect("meta column family must exist")
+        })
+    }
+
+    /// Get metadata column family
+    fn cf_meta(&self) -> &ColumnFamily {
+        call_with_db!(self, db, {
+            db.cf_handle(META_CF_NAME)
+                .expect("meta column family must exist")
+        })
     }
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
+    type Transaction = Tx<'db>;
     type BatchStorageContext = PrefixedRocksDbStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
     type ImmediateStorageContext = PrefixedRocksDbImmediateStorageContext<'db>;
-    type Transaction = Tx<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
-        self.db.transaction()
+        match self {
+            RocksDbStorage::Primary(db) => db.transaction(),
+            RocksDbStorage::Secondary(_) => {
+                unimplemented!("secondary storage does not support transactions")
+            }
+        }
     }
 
     fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
@@ -454,49 +536,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
         transaction.rollback().map_err(RocksDBError)
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map_err(RocksDBError)
-    }
-
-    fn get_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path)
-            .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix, batch))
-    }
-
-    fn get_transactional_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::BatchTransactionalStorageContext>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path).map(|prefix| {
-            PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
-        })
-    }
-
-    fn get_immediate_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::ImmediateStorageContext>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path).map(|prefix| {
-            PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
-        })
     }
 
     fn commit_multi_context_batch(
@@ -512,6 +551,73 @@ impl<'db> Storage<'db> for RocksDbStorage {
             .add_cost(cost)
     }
 
+    fn flush(&self) -> Result<(), Error> {
+        call_with_db!(self, db, { db.flush() }).map_err(RocksDBError)
+    }
+
+    fn get_storage_context<'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        batch: Option<&'db StorageBatch>,
+    ) -> CostContext<Self::BatchStorageContext>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        Self::build_prefix(path).map(|prefix| match self {
+            RocksDbStorage::Primary(db) => {
+                PrefixedRocksDbStorageContext::new_primary(db, prefix, batch)
+            }
+            RocksDbStorage::Secondary(db) => {
+                PrefixedRocksDbStorageContext::new_secondary(db, prefix, batch)
+            }
+        })
+    }
+
+    fn get_transactional_storage_context<'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        batch: Option<&'db StorageBatch>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::BatchTransactionalStorageContext>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        Self::build_prefix(path).map(|prefix| match self {
+            RocksDbStorage::Primary(db) => {
+                PrefixedRocksDbTransactionContext::new_primary(db, transaction, prefix, batch)
+            }
+            RocksDbStorage::Secondary(db) => {
+                PrefixedRocksDbTransactionContext::new_secondary(db, prefix, batch)
+            }
+        })
+    }
+
+    fn get_immediate_storage_context<'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        Self::build_prefix(path).map(|prefix| match self {
+            RocksDbStorage::Primary(db) => {
+                PrefixedRocksDbImmediateStorageContext::new_primary(db, transaction, prefix)
+            }
+            RocksDbStorage::Secondary(db) => {
+                PrefixedRocksDbImmediateStorageContext::new_secondary(db, prefix)
+            }
+        })
+    }
+
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
+        call_with_db!(self, db, {
+            Checkpoint::new(db)
+                .and_then(|x| x.create_checkpoint(path))
+                .map_err(RocksDBError)
+        })
+    }
+
     fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
         if path.is_empty() {
             OperationCost::default()
@@ -522,33 +628,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
             OperationCost::with_hash_node_calls(blocks_num)
         }
     }
-
-    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        Checkpoint::new(&self.db)
-            .and_then(|x| x.create_checkpoint(path))
-            .map_err(RocksDBError)
-    }
-}
-
-/// Get auxiliary data column family
-fn cf_aux(storage: &Db) -> &ColumnFamily {
-    storage
-        .cf_handle(AUX_CF_NAME)
-        .expect("aux column family must exist")
-}
-
-/// Get trees roots data column family
-fn cf_roots(storage: &Db) -> &ColumnFamily {
-    storage
-        .cf_handle(ROOTS_CF_NAME)
-        .expect("roots column family must exist")
-}
-
-/// Get metadata column family
-fn cf_meta(storage: &Db) -> &ColumnFamily {
-    storage
-        .cf_handle(META_CF_NAME)
-        .expect("meta column family must exist")
 }
 
 #[cfg(test)]

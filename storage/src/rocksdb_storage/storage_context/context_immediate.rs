@@ -33,61 +33,118 @@ use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
     CostsExt,
 };
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
+use rocksdb::{ColumnFamily, OptimisticTransactionDB, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
+use crate::rocksdb_storage::storage::NonTransactionalDb;
 use crate::{
     error,
     error::Error::RocksDBError,
-    rocksdb_storage::storage::{Db, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    rocksdb_storage::storage::{SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
-pub struct PrefixedRocksDbImmediateStorageContext<'db> {
-    storage: &'db Db,
+pub enum PrefixedRocksDbImmediateStorageContext<'db> {
+    /// Primary storage context
+    Primary(PrefixedPrimaryRocksDbImmediateStorageContext<'db>),
+    /// Secondary storage context
+    Secondary(PrefixedSecondaryRocksDbImmediateStorageContext<'db>),
+}
+
+pub struct PrefixedPrimaryRocksDbImmediateStorageContext<'db> {
+    storage: &'db OptimisticTransactionDB,
     transaction: &'db Tx<'db>,
     prefix: SubtreePrefix,
 }
 
+pub struct PrefixedSecondaryRocksDbImmediateStorageContext<'db> {
+    storage: &'db NonTransactionalDb,
+    prefix: SubtreePrefix,
+}
+
+macro_rules! call_with_storage_and_prefix {
+    ($self:ident, $storage:ident, $prefix:ident, $code:block) => {
+        match $self {
+            PrefixedRocksDbImmediateStorageContext::Primary(context) => {
+                let $storage = context.storage;
+                let $prefix = &context.prefix;
+                $code
+            }
+            PrefixedRocksDbImmediateStorageContext::Secondary(context) => {
+                let $storage = context.storage;
+                let $prefix = &context.prefix;
+                $code
+            }
+        }
+    };
+}
+
+macro_rules! call_with_storage_or_transaction_and_prefix {
+    ($self:ident, $storage:ident, $prefix:ident, $code:block) => {
+        match $self {
+            PrefixedRocksDbImmediateStorageContext::Primary(context) => {
+                let $storage = context.transaction;
+                let $prefix = &context.prefix;
+                $code
+            }
+            PrefixedRocksDbImmediateStorageContext::Secondary(context) => {
+                let $storage = context.storage;
+                let $prefix = &context.prefix;
+                $code
+            }
+        }
+    };
+}
+
 impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
     /// Create a new prefixed transaction context instance
-    pub fn new(storage: &'db Db, transaction: &'db Tx<'db>, prefix: SubtreePrefix) -> Self {
-        PrefixedRocksDbImmediateStorageContext {
+    pub fn new_primary(
+        storage: &'db OptimisticTransactionDB,
+        transaction: &'db Tx<'db>,
+        prefix: SubtreePrefix,
+    ) -> Self {
+        let context = PrefixedPrimaryRocksDbImmediateStorageContext {
             storage,
             transaction,
             prefix,
-        }
+        };
+
+        Self::Primary(context)
+    }
+
+    /// Create a new prefixed context instance
+    pub fn new_secondary(storage: &'db NonTransactionalDb, prefix: SubtreePrefix) -> Self {
+        let context = PrefixedSecondaryRocksDbImmediateStorageContext { storage, prefix };
+
+        Self::Secondary(context)
     }
 }
 
 impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
     /// Get auxiliary data column family
     fn cf_aux(&self) -> &'db ColumnFamily {
-        self.storage
-            .cf_handle(AUX_CF_NAME)
+        call_with_storage_and_prefix!(self, storage, _prefix, { storage.cf_handle(AUX_CF_NAME) })
             .expect("aux column family must exist")
     }
 
     /// Get trees roots data column family
     fn cf_roots(&self) -> &'db ColumnFamily {
-        self.storage
-            .cf_handle(ROOTS_CF_NAME)
+        call_with_storage_and_prefix!(self, storage, _prefix, { storage.cf_handle(ROOTS_CF_NAME) })
             .expect("roots column family must exist")
     }
 
     /// Get metadata column family
     fn cf_meta(&self) -> &'db ColumnFamily {
-        self.storage
-            .cf_handle(META_CF_NAME)
+        call_with_storage_and_prefix!(self, storage, _prefix, { storage.cf_handle(META_CF_NAME) })
             .expect("meta column family must exist")
     }
 }
 
 impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     type Batch = PrefixedRocksDbBatch<'db>;
-    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
+    type RawIterator = PrefixedRocksDbRawIterator<'db, Tx<'db>, NonTransactionalDb>;
 
     fn put<K: AsRef<[u8]>>(
         &self,
@@ -96,10 +153,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _children_sizes: ChildrenSizesWithIsSumTree,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .put(make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.put(make_prefixed_key(prefix, &key), value)
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn put_aux<K: AsRef<[u8]>>(
@@ -108,10 +166,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         value: &[u8],
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .put_cf(self.cf_aux(), make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.put_cf(self.cf_aux(), make_prefixed_key(prefix, &key), value)
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn put_root<K: AsRef<[u8]>>(
@@ -120,14 +179,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         value: &[u8],
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .put_cf(
-                self.cf_roots(),
-                make_prefixed_key(&self.prefix, &key),
-                value,
-            )
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.put_cf(self.cf_roots(), make_prefixed_key(prefix, &key), value)
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn put_meta<K: AsRef<[u8]>>(
@@ -136,10 +192,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         value: &[u8],
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .put_cf(self.cf_meta(), make_prefixed_key(&self.prefix, &key), value)
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.put_cf(self.cf_meta(), make_prefixed_key(prefix, &key), value)
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn delete<K: AsRef<[u8]>>(
@@ -147,10 +204,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         key: K,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .delete(make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.delete(make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn delete_aux<K: AsRef<[u8]>>(
@@ -158,10 +216,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         key: K,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .delete_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.delete_cf(self.cf_aux(), make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn delete_root<K: AsRef<[u8]>>(
@@ -169,10 +228,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         key: K,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .delete_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.delete_cf(self.cf_roots(), make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn delete_meta<K: AsRef<[u8]>>(
@@ -180,61 +240,78 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         key: K,
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        self.transaction
-            .delete_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.delete_cf(self.cf_meta(), make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.transaction
-            .get(make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.get(make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.transaction
-            .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.get_cf(self.cf_aux(), make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.transaction
-            .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.get_cf(self.cf_roots(), make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
-        self.transaction
-            .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        call_with_storage_or_transaction_and_prefix!(self, storage, prefix, {
+            storage.get_cf(self.cf_meta(), make_prefixed_key(prefix, key))
+        })
+        .map_err(RocksDBError)
+        .wrap_with_cost(Default::default())
     }
 
     fn new_batch(&self) -> Self::Batch {
-        PrefixedRocksDbBatch {
-            prefix: self.prefix,
-            batch: WriteBatchWithTransaction::<true>::default(),
-            cf_aux: self.cf_aux(),
-            cf_roots: self.cf_roots(),
-            cost_acc: Default::default(),
-        }
+        call_with_storage_and_prefix!(self, _storage, prefix, {
+            PrefixedRocksDbBatch {
+                prefix: *prefix,
+                batch: WriteBatchWithTransaction::<true>::default(),
+                cf_aux: self.cf_aux(),
+                cf_roots: self.cf_roots(),
+                cost_acc: Default::default(),
+            }
+        })
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
-        self.transaction
-            .rebuild_from_writebatch(&batch.batch)
-            .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+        match self {
+            PrefixedRocksDbImmediateStorageContext::Primary(db) => db
+                .transaction
+                .rebuild_from_writebatch(&batch.batch)
+                .map_err(RocksDBError)
+                .wrap_with_cost(Default::default()),
+            PrefixedRocksDbImmediateStorageContext::Secondary(_) => {
+                unimplemented!("commit_batch is not supported for secondary storage")
+            }
+        }
     }
 
     fn raw_iter(&self) -> Self::RawIterator {
-        PrefixedRocksDbRawIterator {
-            prefix: self.prefix,
-            raw_iterator: self.transaction.raw_iterator(),
+        match self {
+            PrefixedRocksDbImmediateStorageContext::Primary(context) => {
+                Self::RawIterator::new_primary(context.prefix, context.transaction.raw_iterator())
+            }
+            PrefixedRocksDbImmediateStorageContext::Secondary(context) => {
+                Self::RawIterator::new_secondary(context.prefix, context.storage.raw_iterator())
+            }
         }
     }
 }
