@@ -102,14 +102,14 @@ pub trait Storage {
 
     /// Make context for a subtree on transactional data, keeping all write
     /// operations inside a `batch` if provided.
-    fn get_transactional_storage_context<'db, 'b, B>(
+    fn get_transactional_storage_context<'db, 'b, 'p, B>(
         &'db self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<'p, B>,
         batch: Option<&'b StorageBatch>,
-        transaction: &'db Self::Transaction<'db>,
+        transaction: &Self::Transaction<'db>,
     ) -> CostContext<Self::BatchTransactionalStorageContext<'db, 'b>>
     where
-        B: AsRef<[u8]> + 'b;
+        B: AsRef<[u8]> + 'p;
 
     /// Make context for a subtree on transactional data that will apply all
     /// operations straight to the storage.

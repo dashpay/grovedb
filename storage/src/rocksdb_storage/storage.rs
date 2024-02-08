@@ -226,14 +226,14 @@ impl Storage for RocksDbStorage {
             .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix, batch))
     }
 
-    fn get_transactional_storage_context<'db, 'b, B>(
+    fn get_transactional_storage_context<'db, 'b, 'p, B>(
         &'db self,
-        path: SubtreePath<'b, B>,
+        path: SubtreePath<'p, B>,
         batch: Option<&'b StorageBatch>,
-        transaction: &'db Self::Transaction<'db>,
+        transaction: &Self::Transaction<'db>,
     ) -> CostContext<Self::BatchTransactionalStorageContext<'db, 'b>>
     where
-        B: AsRef<[u8]> + 'b,
+        B: AsRef<[u8]> + 'p,
     {
         Self::build_prefix(path).map(|prefix| {
             PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
