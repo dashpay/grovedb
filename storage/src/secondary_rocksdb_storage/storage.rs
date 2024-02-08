@@ -482,7 +482,7 @@ impl Storage for SecondaryRocksDbStorage {
         &'db self,
         path: SubtreePath<'b, B>,
         batch: Option<&'db StorageBatch>,
-        _transaction: &'db Self::Transaction<'db>,
+        _transaction: &Self::Transaction<'db>,
     ) -> CostContext<Self::BatchTransactionalStorageContext<'db>>
     where
         B: AsRef<[u8]> + 'b,
@@ -495,7 +495,7 @@ impl Storage for SecondaryRocksDbStorage {
     fn get_immediate_storage_context<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        _transaction: &'db Self::Transaction<'db>,
+        _transaction: &Self::Transaction<'db>,
     ) -> CostContext<Self::ImmediateStorageContext<'db>>
     where
         B: AsRef<[u8]> + 'b,

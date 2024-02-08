@@ -1591,7 +1591,7 @@ impl<S: Storage> GroveDb<S> {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the pause height is set in the batch apply options
     /// Then return the list of leftover operations
-    fn apply_body<'c, C: StorageContext<'c>>(
+    fn apply_body<'db, C: StorageContext<'db>>(
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
@@ -1711,11 +1711,11 @@ impl<S: Storage> GroveDb<S> {
     }
 
     /// Applies batch on GroveDB
-    pub fn apply_batch<'db>(
-        &'db self,
+    pub fn apply_batch(
+        &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        transaction: TransactionArg<'db, 'db, S>,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         self.apply_batch_with_element_flags_update(
             ops,
@@ -1881,8 +1881,8 @@ impl<S: Storage> GroveDb<S> {
     }
 
     /// Applies batch of operations on GroveDB
-    pub fn apply_batch_with_element_flags_update<'db, 'a>(
-        &'db self,
+    pub fn apply_batch_with_element_flags_update(
+        &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
@@ -1898,7 +1898,7 @@ impl<S: Storage> GroveDb<S> {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        transaction: TransactionArg<'db, 'a, S>,
+        transaction: TransactionArg<S>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 

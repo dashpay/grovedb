@@ -28,6 +28,8 @@
 
 //! Storage for GroveDB
 
+// TODO: We shouldn't use it here
+#[cfg(any(feature = "rocksdb_storage", feature = "secondary_rocksdb_storage"))]
 use rocksdb::WriteBatchWithTransaction;
 use std::{
     cell::RefCell,
@@ -127,6 +129,7 @@ pub trait Storage {
     /// Remove all data from the storage
     fn wipe(&self) -> Result<(), Error>;
 
+    #[cfg(any(feature = "rocksdb_storage", feature = "secondary_rocksdb_storage"))]
     /// Returns the write batch, with costs and pending costs
     /// Pending costs are costs that should only be applied after successful
     /// write of the write batch.
@@ -135,6 +138,7 @@ pub trait Storage {
         storage_batch: StorageBatch,
     ) -> CostResult<(WriteBatchWithTransaction<true>, OperationCost), Error>;
 
+    #[cfg(any(feature = "rocksdb_storage", feature = "secondary_rocksdb_storage"))]
     /// Continues the write batch, returning pending costs
     /// Pending costs are costs that should only be applied after successful
     /// write of the write batch.
@@ -144,6 +148,7 @@ pub trait Storage {
         storage_batch: StorageBatch,
     ) -> CostResult<OperationCost, Error>;
 
+    #[cfg(any(feature = "rocksdb_storage", feature = "secondary_rocksdb_storage"))]
     /// Commits a write batch
     fn commit_db_write_batch<'db>(
         &self,
