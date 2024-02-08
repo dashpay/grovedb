@@ -48,12 +48,12 @@ use super::{
     PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext,
     PrefixedRocksDbTransactionContext,
 };
-use crate::Error::StorageError;
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
     storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
+    Error::StorageError,
     Storage, StorageBatch,
 };
 
@@ -512,10 +512,10 @@ impl RocksDbStorage {
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
-    type Transaction = Tx<'db>;
     type BatchStorageContext = PrefixedRocksDbStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
     type ImmediateStorageContext = PrefixedRocksDbImmediateStorageContext<'db>;
+    type Transaction = Tx<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
         match self {

@@ -28,8 +28,7 @@
 
 //! Useful utilities for testing.
 
-use std::cell::RefCell;
-use std::ops::Deref;
+use std::{cell::RefCell, ops::Deref};
 
 use tempfile::TempDir;
 
