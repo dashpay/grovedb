@@ -52,9 +52,9 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-impl GroveDb {
+impl<S> GroveDb<S> {
     /// Add average case for getting a merk tree
-    pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_merk_at_path(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         merk_should_be_empty: bool,
@@ -352,7 +352,7 @@ impl GroveDb {
     }
 
     /// Adds the average case of checking to see if a raw value exists
-    pub fn add_average_case_has_raw_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_has_raw_cost(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -370,7 +370,7 @@ impl GroveDb {
     }
 
     /// Adds the average case of checking to see if a tree exists
-    pub fn add_average_case_has_raw_tree_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_has_raw_tree_cost(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -383,7 +383,7 @@ impl GroveDb {
         } else {
             TREE_COST_SIZE + estimated_flags_size
         };
-        Self::add_average_case_has_raw_cost::<S>(
+        Self::add_average_case_has_raw_cost(
             cost,
             path,
             key,
@@ -393,7 +393,7 @@ impl GroveDb {
     }
 
     /// Add average case to get raw cost into merk
-    pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_raw_cost(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -410,7 +410,7 @@ impl GroveDb {
     }
 
     /// adds the average cost of getting a tree
-    pub fn add_average_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_raw_tree_cost(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -434,7 +434,7 @@ impl GroveDb {
 
     /// adds the average cost of getting an element knowing there can be
     /// intermediate references
-    pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_cost(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -558,7 +558,7 @@ mod test {
         let path = KeyInfoPath::from_vec(vec![KnownKey(TEST_LEAF.to_vec())]);
         let key = KnownKey(vec![1]);
         let mut average_case_has_raw_cost = OperationCost::default();
-        GroveDb::add_average_case_has_raw_cost::<RocksDbStorage>(
+        GroveDb::add_average_case_has_raw_cost(
             &mut average_case_has_raw_cost,
             &path,
             &key,
