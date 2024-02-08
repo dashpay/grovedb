@@ -534,6 +534,7 @@ mod tests {
             .query_raw(
                 &merged_path_query,
                 true,
+                true,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None,
             )
@@ -825,6 +826,7 @@ mod tests {
         let (result_set_merged, _) = temp_db
             .query_raw(
                 &merged_path_query,
+                true,
                 true,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None,
