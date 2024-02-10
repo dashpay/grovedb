@@ -30,7 +30,7 @@
 
 use std::path::Path;
 
-use error::Error;
+use crate::error::Error;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval, CostContext, CostResult,
@@ -49,11 +49,8 @@ use super::{
     PrefixedRocksDbTransactionContext,
 };
 use crate::{
-    error,
-    error::Error::{CostError, RocksDBError},
     storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
-    Error::StorageError,
     Storage, StorageBatch,
 };
 
@@ -124,7 +121,7 @@ impl RocksDbStorage {
                 ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
             ],
         )
-        .map_err(RocksDBError)?;
+        .map_err(Error::RocksDBError)?;
 
         Ok(Self::Primary(db))
     }
@@ -148,7 +145,7 @@ impl RocksDbStorage {
                 ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
             ],
         )
-        .map_err(RocksDBError)?;
+        .map_err(Error::RocksDBError)?;
 
         Ok(Self::Secondary(db))
     }
@@ -158,9 +155,9 @@ impl RocksDbStorage {
     pub fn try_to_catch_up_from_primary(&self) -> Result<(), Error> {
         match self {
             RocksDbStorage::Primary(_) => {
-                Err(StorageError("primary storage doesn't catchup".to_string()))
+                Err(Error::StorageError("primary storage doesn't catchup".to_string()))
             }
-            RocksDbStorage::Secondary(db) => db.try_catch_up_with_primary().map_err(RocksDBError),
+            RocksDbStorage::Secondary(db) => db.try_catch_up_with_primary().map_err(Error::RocksDBError),
         }
     }
 
@@ -248,7 +245,7 @@ impl RocksDbStorage {
                                 children_sizes,
                                 cost_info
                             )
-                            .map_err(CostError)
+                            .map_err(Error::CostError)
                     );
                 }
                 AbstractBatchOperation::PutAux {
@@ -267,7 +264,7 @@ impl RocksDbStorage {
                                 None,
                                 cost_info
                             )
-                            .map_err(CostError)
+                            .map_err(Error::CostError)
                     );
                 }
                 AbstractBatchOperation::PutRoot {
@@ -288,7 +285,7 @@ impl RocksDbStorage {
                                     None,
                                     cost_info
                                 )
-                                .map_err(CostError)
+                                .map_err(Error::CostError)
                         );
                     }
                 }
@@ -308,7 +305,7 @@ impl RocksDbStorage {
                                 None,
                                 cost_info
                             )
-                            .map_err(CostError)
+                            .map_err(Error::CostError)
                     );
                 }
                 AbstractBatchOperation::Delete { key, cost_info } => {
@@ -325,7 +322,7 @@ impl RocksDbStorage {
                         // lets get the values
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            call_with_db!(self, db, { db.get(&key).map_err(RocksDBError) })
+                            call_with_db!(self, db, { db.get(&key).map_err(Error::RocksDBError) })
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -353,7 +350,7 @@ impl RocksDbStorage {
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
                             call_with_db!(self, db, {
-                                db.get_cf(self.cf_aux(), &key).map_err(RocksDBError)
+                                db.get_cf(self.cf_aux(), &key).map_err(Error::RocksDBError)
                             })
                         )
                         .map(|x| x.len() as u32)
@@ -383,7 +380,7 @@ impl RocksDbStorage {
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
                             call_with_db!(self, db, {
-                                db.get_cf(self.cf_roots(), &key).map_err(RocksDBError)
+                                db.get_cf(self.cf_roots(), &key).map_err(Error::RocksDBError)
                             })
                         )
                         .map(|x| x.len() as u32)
@@ -413,7 +410,7 @@ impl RocksDbStorage {
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
                             call_with_db!(self, db, {
-                                db.get_cf(self.cf_meta(), &key).map_err(RocksDBError)
+                                db.get_cf(self.cf_meta(), &key).map_err(Error::RocksDBError)
                             })
                         )
                         .map(|x| x.len() as u32)
@@ -450,10 +447,10 @@ impl RocksDbStorage {
                 };
 
                 if result.is_ok() {
-                    result.map_err(RocksDBError).wrap_with_cost(pending_costs)
+                    result.map_err(Error::RocksDBError).wrap_with_cost(pending_costs)
                 } else {
                     result
-                        .map_err(RocksDBError)
+                        .map_err(Error::RocksDBError)
                         .wrap_with_cost(OperationCost::default())
                 }
             }
@@ -516,10 +513,10 @@ impl RocksDbStorage {
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
+    type Transaction = Tx<'db>;
     type BatchStorageContext = PrefixedRocksDbStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
     type ImmediateStorageContext = PrefixedRocksDbImmediateStorageContext<'db>;
-    type Transaction = Tx<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
         match self {
@@ -534,12 +531,12 @@ impl<'db> Storage<'db> for RocksDbStorage {
         // All transaction costs were provided on method calls
         transaction
             .commit()
-            .map_err(RocksDBError)
+            .map_err(Error::RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
-        transaction.rollback().map_err(RocksDBError)
+        transaction.rollback().map_err(Error::RocksDBError)
     }
 
     fn commit_multi_context_batch(
@@ -556,7 +553,14 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        call_with_db!(self, db, { db.flush() }).map_err(RocksDBError)
+        if let RocksDbStorage::Primary(db) = self {
+            return db.flush().map_err(Error::RocksDBError)
+        }
+
+        // Flush is not implemented for secondary storage but still can be called by
+        // GroveDB, so we just do nothing in this case
+
+        Ok(())
     }
 
     fn get_storage_context<'b, B>(
@@ -618,7 +622,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         call_with_db!(self, db, {
             Checkpoint::new(db)
                 .and_then(|x| x.create_checkpoint(path))
-                .map_err(RocksDBError)
+                .map_err(Error::RocksDBError)
         })
     }
 
