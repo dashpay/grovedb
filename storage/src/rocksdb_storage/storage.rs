@@ -134,6 +134,10 @@ impl RocksDbStorage {
         primary_path: P,
         secondary_path: P,
     ) -> Result<Self, Error> {
+        // Limitation for secondary indices https://github.com/facebook/rocksdb/wiki/Read-only-and-Secondary-instances
+        let mut opts = DEFAULT_OPTS.clone();
+        opts.set_max_open_files(-1);
+
         let db = NonTransactionalDb::open_cf_descriptors_as_secondary(
             &DEFAULT_OPTS,
             &primary_path,
