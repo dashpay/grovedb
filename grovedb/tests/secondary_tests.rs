@@ -2,7 +2,7 @@ use grovedb::GroveDb;
 use tempfile::TempDir;
 
 #[test]
-fn test_some_functionality() {
+fn test_replicating_aux_data_to_secondary_database() {
     let primary_dir = TempDir::new().expect("should create temp dir");
 
     let primary_grovedb = GroveDb::open(primary_dir.path()).expect("should open grovedb");
