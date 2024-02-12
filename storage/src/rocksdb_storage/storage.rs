@@ -110,7 +110,7 @@ macro_rules! call_with_db {
 }
 
 impl RocksDbStorage {
-    /// Create RocksDb storage with default parameters using `path`.
+    /// Create RocksDb primary storage with default parameters using `path`.
     pub fn default_primary_rocksdb<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = OptimisticTransactionDB::open_cf_descriptors(
             &DEFAULT_OPTS,
@@ -126,7 +126,7 @@ impl RocksDbStorage {
         Ok(Self::Primary(db))
     }
 
-    /// Create RocksDb storage with default parameters using `path`.
+    /// Create RocksDb secondary storage with default parameters using primary and secondary db paths.
     pub fn default_secondary_rocksdb<P: AsRef<Path>>(
         primary_path: P,
         secondary_path: P,

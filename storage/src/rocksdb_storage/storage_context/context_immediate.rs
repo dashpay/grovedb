@@ -45,8 +45,8 @@ use crate::{
     StorageContext,
 };
 
-/// Storage context with a prefix applied to be used in a subtree to be used in
-/// transaction.
+/// Primary and secondary storage context with a prefix applied to be used in a
+/// subtree to be used in transaction.
 pub enum PrefixedRocksDbImmediateStorageContext<'db> {
     /// Primary storage context
     Primary(PrefixedPrimaryRocksDbImmediateStorageContext<'db>),
@@ -54,12 +54,16 @@ pub enum PrefixedRocksDbImmediateStorageContext<'db> {
     Secondary(PrefixedSecondaryRocksDbImmediateStorageContext<'db>),
 }
 
+/// Transactional storage context with a prefix applied to be used in a
+/// subtree to be used in transaction.
 pub struct PrefixedPrimaryRocksDbImmediateStorageContext<'db> {
     storage: &'db OptimisticTransactionDB,
     transaction: &'db Tx<'db>,
     prefix: SubtreePrefix,
 }
 
+/// Non-transactional storage context with a prefix applied to be used in a
+/// subtree to be used in transaction.
 pub struct PrefixedSecondaryRocksDbImmediateStorageContext<'db> {
     storage: &'db NonTransactionalDb,
     prefix: SubtreePrefix,

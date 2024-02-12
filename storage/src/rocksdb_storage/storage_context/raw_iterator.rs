@@ -38,25 +38,17 @@ use crate::{rocksdb_storage::storage::SubtreePrefix, RawIterator};
 const MAX_PREFIXED_KEY_LENGTH: u32 = 256 + 32;
 
 /// Raw iterator over prefixed storage_cost.
-pub struct PrefixedPrimaryRocksDbRawIterator<'db, D: DBAccess> {
+pub struct PrefixedInnerRocksDbRawIterator<'db, D: DBAccess> {
     pub(super) prefix: SubtreePrefix,
     pub(super) raw_iterator: DBRawIteratorWithThreadMode<'db, D>,
 }
 
-// TODO: Why not just use the same structure?
-
-/// Raw iterator over prefixed storage_cost.
-pub struct PrefixedSecondaryRocksDbRawIterator<'db, D: DBAccess> {
-    pub(super) prefix: SubtreePrefix,
-    pub(super) raw_iterator: DBRawIteratorWithThreadMode<'db, D>,
-}
-
-/// Raw iterator over prefixed storage_cost.
+/// Primary and Secondary raw iterator over prefixed storage_cost.
 pub enum PrefixedRocksDbRawIterator<'db, PD: DBAccess, SD: DBAccess> {
     /// Primary iterator
-    Primary(PrefixedPrimaryRocksDbRawIterator<'db, PD>),
+    Primary(PrefixedInnerRocksDbRawIterator<'db, PD>),
     /// Secondary iterator
-    Secondary(PrefixedSecondaryRocksDbRawIterator<'db, SD>),
+    Secondary(PrefixedInnerRocksDbRawIterator<'db, SD>),
 }
 
 macro_rules! call_with_mut_raw_interator_and_prefix {
@@ -103,7 +95,7 @@ impl<'db, PD: DBAccess, SD: DBAccess> PrefixedRocksDbRawIterator<'db, PD, SD> {
         prefix: SubtreePrefix,
         raw_iterator: DBRawIteratorWithThreadMode<'db, PD>,
     ) -> Self {
-        PrefixedRocksDbRawIterator::Primary(PrefixedPrimaryRocksDbRawIterator {
+        PrefixedRocksDbRawIterator::Primary(PrefixedInnerRocksDbRawIterator {
             prefix,
             raw_iterator,
         })
@@ -114,7 +106,7 @@ impl<'db, PD: DBAccess, SD: DBAccess> PrefixedRocksDbRawIterator<'db, PD, SD> {
         prefix: SubtreePrefix,
         raw_iterator: DBRawIteratorWithThreadMode<'db, SD>,
     ) -> Self {
-        PrefixedRocksDbRawIterator::Secondary(PrefixedSecondaryRocksDbRawIterator {
+        PrefixedRocksDbRawIterator::Secondary(PrefixedInnerRocksDbRawIterator {
             prefix,
             raw_iterator,
         })
