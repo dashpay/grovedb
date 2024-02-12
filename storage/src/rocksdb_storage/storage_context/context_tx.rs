@@ -57,7 +57,7 @@ pub struct PrefixedPrimaryRocksDbTransactionContext<'db> {
     batch: Option<&'db StorageBatch>,
 }
 
-/// Prefixed rocks db transaction context
+/// Prefixed rocks db primary and secondary transaction context
 pub enum PrefixedRocksDbTransactionContext<'db> {
     /// Primary storage context
     Primary(PrefixedPrimaryRocksDbTransactionContext<'db>),
@@ -108,7 +108,7 @@ macro_rules! call_with_storage_or_transaction_prefix_and_batch {
 }
 
 impl<'db> PrefixedRocksDbTransactionContext<'db> {
-    /// Create a new prefixed context instance
+    /// Create a new primary prefixed context instance
     pub fn new_primary(
         storage: &'db OptimisticTransactionDB,
         transaction: &'db Tx<'db>,
@@ -125,7 +125,7 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
         Self::Primary(context)
     }
 
-    /// Create a new prefixed context instance
+    /// Create a new secondary prefixed context instance
     pub fn new_secondary(
         storage: &'db NonTransactionalDb,
         prefix: SubtreePrefix,

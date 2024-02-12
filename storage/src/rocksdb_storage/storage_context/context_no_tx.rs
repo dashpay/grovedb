@@ -53,9 +53,7 @@ pub struct PrefixedPrimaryRocksDbStorageContext<'db> {
     batch: Option<&'db StorageBatch>,
 }
 
-// TODO: We can just use generic for storage instead of the second struct
-
-/// Storage context with a prefix applied to be used in a subtree to be used
+/// Non-transactional storage context with a prefix applied to be used in a subtree to be used
 /// outside of transaction.
 pub struct PrefixedSecondaryRocksDbStorageContext<'db> {
     pub(in crate::rocksdb_storage) storage: &'db NonTransactionalDb,
@@ -63,7 +61,7 @@ pub struct PrefixedSecondaryRocksDbStorageContext<'db> {
     pub(in crate::rocksdb_storage) batch: Option<&'db StorageBatch>,
 }
 
-/// Storage context with a prefix applied to be used in a subtree to be used
+/// Primary and secondary storage contexts with a prefix applied to be used in a subtree to be used
 /// outside of transaction.
 pub enum PrefixedRocksDbStorageContext<'db> {
     /// Primary storage context
@@ -92,7 +90,7 @@ macro_rules! call_with_storage_prefix_and_batch {
 }
 
 impl<'db> PrefixedRocksDbStorageContext<'db> {
-    /// Create a new prefixed context instance
+    /// Create a new primary prefixed context instance
     pub fn new_primary(
         storage: &'db OptimisticTransactionDB,
         prefix: SubtreePrefix,
@@ -107,7 +105,7 @@ impl<'db> PrefixedRocksDbStorageContext<'db> {
         Self::Primary(context)
     }
 
-    /// Create a new prefixed context instance
+    /// Create a new secondary prefixed context instance
     pub fn new_secondary(
         storage: &'db NonTransactionalDb,
         prefix: SubtreePrefix,
