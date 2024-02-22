@@ -28,12 +28,16 @@
 
 //! Storage context implementation with a transaction.
 
+use std::sync::Arc;
+
 use error::Error;
 use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
     CostsExt,
 };
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
+use rocksdb::{
+    BoundColumnFamily, ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction,
+};
 
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
@@ -64,21 +68,21 @@ impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
 
 impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
     /// Get auxiliary data column family
-    fn cf_aux(&self) -> &'db ColumnFamily {
+    fn cf_aux(&self) -> Arc<BoundColumnFamily<'db>> {
         self.storage
             .cf_handle(AUX_CF_NAME)
             .expect("aux column family must exist")
     }
 
     /// Get trees roots data column family
-    fn cf_roots(&self) -> &'db ColumnFamily {
+    fn cf_roots(&self) -> Arc<BoundColumnFamily<'db>> {
         self.storage
             .cf_handle(ROOTS_CF_NAME)
             .expect("roots column family must exist")
     }
 
     /// Get metadata column family
-    fn cf_meta(&self) -> &'db ColumnFamily {
+    fn cf_meta(&self) -> Arc<BoundColumnFamily<'db>> {
         self.storage
             .cf_handle(META_CF_NAME)
             .expect("meta column family must exist")
@@ -109,7 +113,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         self.transaction
-            .put_cf(self.cf_aux(), make_prefixed_key(&self.prefix, &key), value)
+            .put_cf(&self.cf_aux(), make_prefixed_key(&self.prefix, &key), value)
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
@@ -122,7 +126,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .put_cf(
-                self.cf_roots(),
+                &self.cf_roots(),
                 make_prefixed_key(&self.prefix, &key),
                 value,
             )
@@ -137,7 +141,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         self.transaction
-            .put_cf(self.cf_meta(), make_prefixed_key(&self.prefix, &key), value)
+            .put_cf(
+                &self.cf_meta(),
+                make_prefixed_key(&self.prefix, &key),
+                value,
+            )
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
@@ -159,7 +167,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         self.transaction
-            .delete_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
+            .delete_cf(&self.cf_aux(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
@@ -170,7 +178,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         self.transaction
-            .delete_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
+            .delete_cf(&self.cf_roots(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
@@ -181,7 +189,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         _cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         self.transaction
-            .delete_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
+            .delete_cf(&self.cf_meta(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
@@ -195,21 +203,21 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
+            .get_cf(&self.cf_aux(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
+            .get_cf(&self.cf_roots(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
-            .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
+            .get_cf(&self.cf_meta(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
             .wrap_with_cost(Default::default())
     }
