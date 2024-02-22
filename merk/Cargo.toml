@@ -29,7 +29,7 @@ version = "0.4.3"
 optional = true
 
 [dependencies.colored]
-version = "1.9.3"
+version = "2.0.4"
 optional = true
 
 [dependencies.num_cpus]
@@ -53,11 +53,6 @@ version = "0.8.5"
 features = ["small_rng"]
 optional = true
 
-[dependencies.jemallocator]
-version = "0.5.0"
-features = ["disable_initial_exec_tls"]
-optional = true
-
 [features]
 default = ["full"]
 full = ["rand",
@@ -68,7 +63,6 @@ full = ["rand",
         "byteorder",
         "ed",
         "blake3",
-        "jemallocator",
         "grovedb-storage",
         "grovedb-storage/rocksdb_storage"
 ]
