@@ -541,7 +541,7 @@ fn test_element_with_flags() {
         SizedQuery::new(query, None, None),
     );
     let (flagged_ref_no_follow, _) = db
-        .query_raw(&path_query, true, QueryKeyElementPairResultType, None)
+        .query_raw(&path_query, true, true, QueryKeyElementPairResultType, None)
         .unwrap()
         .expect("should get successfully");
 
@@ -2621,6 +2621,7 @@ fn test_get_full_query() {
     assert_eq!(
         db.query_many_raw(
             &[&path_query1, &path_query2],
+            true,
             true,
             QueryKeyElementPairResultType,
             None

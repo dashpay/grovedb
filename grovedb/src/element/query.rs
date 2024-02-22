@@ -60,6 +60,20 @@ use crate::{
 use crate::{Element, SizedQuery};
 
 #[cfg(feature = "full")]
+#[derive(Copy, Clone, Debug)]
+pub struct QueryOptions {
+    pub allow_get_raw: bool,
+    pub allow_cache: bool,
+    /// Should we decrease the limit of elements found when we have no
+    /// subelements in the subquery? This should generally be set to true,
+    /// as having it false could mean very expensive queries. The queries
+    /// would be expensive because we could go through many many trees where the
+    /// sub elements have no matches, hence the limit would not decrease and
+    /// hence we would continue on the increasingly expensive query.
+    pub decrease_limit_on_range_with_no_sub_elements: bool,
+}
+
+#[cfg(feature = "full")]
 /// Path query push arguments
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
@@ -73,8 +87,7 @@ where
     pub subquery_path: Option<Path>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
-    pub allow_get_raw: bool,
-    pub allow_cache: bool,
+    pub query_options: QueryOptions,
     pub result_type: QueryResultType,
     pub results: &'a mut Vec<QueryResultElement>,
     pub limit: &'a mut Option<u16>,
@@ -96,6 +109,7 @@ impl Element {
             storage,
             merk_path,
             &sized_query,
+            true,
             true,
             result_type,
             transaction,
@@ -139,8 +153,7 @@ impl Element {
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        allow_get_raw: bool,
-        allow_cache: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
         add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
@@ -166,8 +179,7 @@ impl Element {
                         transaction,
                         &mut limit,
                         &mut offset,
-                        allow_get_raw,
-                        allow_cache,
+                        query_options,
                         result_type,
                         add_element_function,
                     )
@@ -189,8 +201,7 @@ impl Element {
                         transaction,
                         &mut limit,
                         &mut offset,
-                        allow_get_raw,
-                        allow_cache,
+                        query_options,
                         result_type,
                         add_element_function,
                     )
@@ -216,6 +227,7 @@ impl Element {
         storage: &RocksDbStorage,
         path_query: &PathQuery,
         allow_cache: bool,
+        decrease_limit_on_range_with_no_sub_elements: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -228,8 +240,11 @@ impl Element {
             storage,
             path_slices.as_slice(),
             &path_query.query,
-            false,
-            allow_cache,
+            QueryOptions {
+                allow_get_raw: false,
+                allow_cache,
+                decrease_limit_on_range_with_no_sub_elements,
+            },
             result_type,
             transaction,
             Element::path_query_push,
@@ -243,6 +258,7 @@ impl Element {
         storage: &RocksDbStorage,
         path_query: &PathQuery,
         allow_cache: bool,
+        decrease_limit_on_range_with_no_sub_elements: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -255,8 +271,11 @@ impl Element {
             storage,
             path_slices.as_slice(),
             &path_query.query,
-            true,
-            allow_cache,
+            QueryOptions {
+                allow_get_raw: true,
+                allow_cache,
+                decrease_limit_on_range_with_no_sub_elements,
+            },
             result_type,
             transaction,
             Element::path_query_push,
@@ -270,6 +289,7 @@ impl Element {
         path: &[&[u8]],
         sized_query: &SizedQuery,
         allow_cache: bool,
+        decrease_limit_on_range_with_no_sub_elements: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -277,8 +297,11 @@ impl Element {
             storage,
             path,
             sized_query,
-            false,
-            allow_cache,
+            QueryOptions {
+                allow_get_raw: false,
+                allow_cache,
+                decrease_limit_on_range_with_no_sub_elements,
+            },
             result_type,
             transaction,
             Element::path_query_push,
@@ -299,13 +322,17 @@ impl Element {
             subquery_path,
             subquery,
             left_to_right,
-            allow_get_raw,
-            allow_cache,
+            query_options,
             result_type,
             results,
             limit,
             offset,
         } = args;
+        let QueryOptions {
+            allow_get_raw,
+            allow_cache,
+            decrease_limit_on_range_with_no_sub_elements,
+        } = query_options;
         if element.is_tree() {
             let mut path_vec = path.to_vec();
             let key = cost_return_on_error_no_add!(
@@ -331,13 +358,19 @@ impl Element {
                         storage,
                         &inner_path_query,
                         allow_cache,
+                        decrease_limit_on_range_with_no_sub_elements,
                         result_type,
                         transaction
                     )
                 );
 
                 if let Some(limit) = limit {
-                    *limit = limit.saturating_sub(sub_elements.len() as u16);
+                    if sub_elements.is_empty() && decrease_limit_on_range_with_no_sub_elements {
+                        // we should decrease by 1 in this case
+                        *limit = limit.saturating_sub(1);
+                    } else {
+                        *limit = limit.saturating_sub(sub_elements.len() as u16);
+                    }
                 }
                 if let Some(offset) = offset {
                     *offset = offset.saturating_sub(skipped);
@@ -455,8 +488,7 @@ impl Element {
                         subquery_path,
                         subquery,
                         left_to_right,
-                        allow_get_raw,
-                        allow_cache,
+                        query_options,
                         result_type,
                         results,
                         limit,
@@ -483,8 +515,7 @@ impl Element {
                     subquery_path,
                     subquery,
                     left_to_right,
-                    allow_get_raw,
-                    allow_cache,
+                    query_options,
                     result_type,
                     results,
                     limit,
@@ -530,6 +561,12 @@ impl Element {
         (subquery_path, subquery)
     }
 
+    /// `decrease_limit_on_range_with_no_sub_elements` should generally be set
+    /// to true, as having it false could mean very expensive queries.
+    /// The queries would be expensive because we could go through many many
+    /// trees where the sub elements have no matches, hence the limit would
+    /// not decrease and hence we would continue on the increasingly
+    /// expensive query.
     #[cfg(feature = "full")]
     // TODO: refactor
     fn query_item(
@@ -541,8 +578,7 @@ impl Element {
         transaction: TransactionArg,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
-        allow_get_raw: bool,
-        allow_cache: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
     ) -> CostResult<(), Error> {
@@ -560,7 +596,10 @@ impl Element {
                     None,
                     transaction,
                     subtree,
-                    { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }
+                    {
+                        Element::get(&subtree, key, query_options.allow_cache)
+                            .unwrap_add_cost(&mut cost)
+                    }
                 );
                 match element_res {
                     Ok(element) => {
@@ -575,8 +614,7 @@ impl Element {
                             subquery_path,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
-                            allow_get_raw,
-                            allow_cache,
+                            query_options,
                             result_type,
                             results,
                             limit,
@@ -630,8 +668,7 @@ impl Element {
                             subquery_path,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
-                            allow_get_raw,
-                            allow_cache,
+                            query_options,
                             result_type,
                             results,
                             limit,
@@ -939,6 +976,7 @@ mod tests {
             &[TEST_LEAF],
             &ascending_query,
             true,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -972,6 +1010,7 @@ mod tests {
             storage,
             &[TEST_LEAF],
             &backwards_query,
+            true,
             true,
             QueryKeyElementPairResultType,
             None,
@@ -1062,6 +1101,7 @@ mod tests {
                 &[TEST_LEAF],
                 &ascending_query,
                 true,
+                true,
                 QueryKeyElementPairResultType,
                 None,
             )
@@ -1078,6 +1118,7 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
+                true,
                 true,
                 QueryKeyElementPairResultType,
                 None,
@@ -1098,6 +1139,7 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
+                true,
                 true,
                 QueryKeyElementPairResultType,
                 None,
@@ -1161,6 +1203,7 @@ mod tests {
             &[TEST_LEAF],
             &backwards_query,
             true,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1187,6 +1230,7 @@ mod tests {
             &[TEST_LEAF],
             &backwards_query,
             true,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1207,6 +1251,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_query,
+            true,
             true,
             QueryKeyElementPairResultType,
             None,
@@ -1229,6 +1274,7 @@ mod tests {
             &[TEST_LEAF],
             &limit_query,
             true,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1248,6 +1294,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_query,
+            true,
             true,
             QueryKeyElementPairResultType,
             None,
@@ -1274,6 +1321,7 @@ mod tests {
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             true,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1297,6 +1345,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_full_query,
+            true,
             true,
             QueryKeyElementPairResultType,
             None,
@@ -1323,6 +1372,7 @@ mod tests {
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             true,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1347,6 +1397,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_backwards_query,
+            true,
             true,
             QueryKeyElementPairResultType,
             None,
