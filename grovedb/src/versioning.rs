@@ -52,7 +52,7 @@ mod tests {
         assert_eq!(new_data, [244, 3, 1, 2, 3]);
 
         // show that read_version doesn't consume
-        assert_eq!(read_proof_version(&mut new_data.as_slice()).unwrap(), 500);
+        assert_eq!(read_proof_version(new_data.as_slice()).unwrap(), 500);
         assert_eq!(new_data, [244, 3, 1, 2, 3]);
 
         // show that we consume the version number and return the remaining vector

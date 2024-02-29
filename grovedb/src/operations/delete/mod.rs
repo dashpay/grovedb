@@ -1029,10 +1029,7 @@ mod tests {
             db.get([TEST_LEAF].as_ref(), b"key1", None).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"key4", None).unwrap(),
-            Ok(_)
-        ));
+        assert!(db.get([TEST_LEAF].as_ref(), b"key4", None).unwrap().is_ok());
     }
 
     #[test]
@@ -1397,10 +1394,7 @@ mod tests {
             db.get([TEST_LEAF].as_ref(), b"key1", None).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"key4", None).unwrap(),
-            Ok(_)
-        ));
+        assert!(db.get([TEST_LEAF].as_ref(), b"key4", None).unwrap().is_ok());
     }
 
     #[test]

@@ -38,7 +38,7 @@ extern crate core;
 mod merk;
 
 #[cfg(feature = "full")]
-pub use crate::merk::{chunks::ChunkProducer, options::MerkOptions, restore::Restorer};
+pub use crate::merk::{chunks::ChunkProducer, options::MerkOptions};
 
 /// Provides a container type that allows temporarily taking ownership of a
 /// value.

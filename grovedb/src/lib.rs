@@ -159,8 +159,6 @@ mod query;
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
-#[cfg(feature = "full")]
-mod replication;
 #[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
@@ -217,8 +215,6 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-#[cfg(feature = "full")]
-pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
