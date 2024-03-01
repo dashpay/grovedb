@@ -739,7 +739,7 @@ mod test {
     #[test]
     fn reopen_check_root_hash() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(
             storage
@@ -763,7 +763,7 @@ mod test {
     #[test]
     fn test_get_node_cost() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(
             storage
@@ -807,7 +807,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
 
         let original_nodes = {
-            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
             let batch = StorageBatch::new();
             let mut merk = Merk::open_base(
@@ -846,7 +846,7 @@ mod test {
             nodes
         };
 
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
             storage
@@ -883,7 +883,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
 
         let original_nodes = {
-            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
             let batch = StorageBatch::new();
             let mut merk = Merk::open_base(
@@ -918,7 +918,7 @@ mod test {
             collect(&mut merk.storage.raw_iter(), &mut nodes);
             nodes
         };
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
             storage
@@ -939,7 +939,7 @@ mod test {
     #[test]
     fn update_node() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let batch = StorageBatch::new();
         let mut merk = Merk::open_base(

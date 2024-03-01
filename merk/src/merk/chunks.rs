@@ -268,7 +268,7 @@ mod tests {
     fn chunks_from_reopen() {
         let tmp_dir = TempDir::new().expect("cannot create tempdir");
         let original_chunks = {
-            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
             let batch = StorageBatch::new();
             let mut merk = Merk::open_base(
@@ -307,7 +307,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .into_iter()
         };
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let merk = Merk::open_base(
             storage

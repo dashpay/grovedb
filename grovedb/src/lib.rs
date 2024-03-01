@@ -246,10 +246,27 @@ pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    /// Opens a given path
+    /// Opens a primary storage with a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db = RocksDbStorage::default_rocksdb_with_path(path)?;
+        let db = RocksDbStorage::default_primary_rocksdb(path)?;
         Ok(GroveDb { db })
+    }
+
+    /// Open a secondary storage with given paths
+    pub fn open_secondary<P: AsRef<Path>>(
+        primary_path: P,
+        secondary_storage: P,
+    ) -> Result<Self, Error> {
+        let db = RocksDbStorage::default_secondary_rocksdb(primary_path, secondary_storage)?;
+        Ok(GroveDb { db })
+    }
+
+    /// Replicate recent changes from primary database
+    /// Available only for a secondary storage
+    pub fn try_to_catch_up_from_primary(&self) -> Result<(), Error> {
+        self.db.try_to_catch_up_from_primary()?;
+
+        Ok(())
     }
 
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb

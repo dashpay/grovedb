@@ -92,7 +92,7 @@ mod test {
     #[test]
     fn test_reopen_root_hash() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"];
 

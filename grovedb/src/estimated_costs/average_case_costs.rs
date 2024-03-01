@@ -478,7 +478,7 @@ mod test {
     fn test_get_merk_node_average_case() {
         // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_primary_rocksdb(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let batch = StorageBatch::new();
 
