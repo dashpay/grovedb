@@ -552,14 +552,12 @@ impl GroveDbOp {
     }
 
     /// Verify consistency of operations
-    pub fn verify_consistency_of_operations(ops: &Vec<GroveDbOp>) -> GroveDbOpConsistencyResults {
-        let ops_len = ops.len();
+    pub fn verify_consistency_of_operations(ops: &[GroveDbOp]) -> GroveDbOpConsistencyResults {
         // operations should not have any duplicates
         let mut repeated_ops = vec![];
-        for (i, op) in ops.iter().enumerate() {
-            if i == ops_len {
-                continue;
-            } // Don't do last one
+        let mut same_path_key_ops = vec![];
+        // Exclude the last item
+        for (i, op) in ops.iter().take(ops.len() - 1).enumerate() {
             let count = ops
                 .split_at(i + 1)
                 .1
@@ -567,80 +565,74 @@ impl GroveDbOp {
                 .filter(|&current_op| current_op == op)
                 .count() as u16;
             if count > 1 {
-                repeated_ops.push((op.clone(), count));
+                repeated_ops.push((op, count));
             }
-        }
 
-        let mut same_path_key_ops = vec![];
-
-        // No double insert or delete of same key in same path
-        for (i, op) in ops.iter().enumerate() {
-            if i == ops_len {
-                continue;
-            } // Don't do last one
+            // No double insert or delete of same key in same path
             let mut doubled_ops = ops
                 .split_at(i + 1)
                 .1
                 .iter()
                 .filter_map(|current_op| {
                     if current_op.path == op.path && current_op.key == op.key {
-                        Some(current_op.op.clone())
+                        Some(&current_op.op)
                     } else {
                         None
                     }
                 })
-                .collect::<Vec<Op>>();
+                .collect::<Vec<&Op>>();
             if !doubled_ops.is_empty() {
-                doubled_ops.push(op.op.clone());
-                same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
+                doubled_ops.push(&op.op);
+                same_path_key_ops.push((&op.path, &op.key, doubled_ops));
             }
         }
 
         let inserts = ops
             .iter()
             .filter_map(|current_op| match current_op.op {
-                Op::Insert { .. } | Op::Replace { .. } => Some(current_op.clone()),
+                Op::Insert { .. } | Op::Replace { .. } => Some(current_op),
                 _ => None,
             })
-            .collect::<Vec<GroveDbOp>>();
+            .collect::<Vec<&GroveDbOp>>();
 
         let deletes = ops
             .iter()
             .filter_map(|current_op| {
                 if let Op::Delete = current_op.op {
-                    Some(current_op.clone())
+                    Some(current_op)
                 } else {
                     None
                 }
             })
-            .collect::<Vec<GroveDbOp>>();
+            .collect::<Vec<&GroveDbOp>>();
 
-        let mut insert_ops_below_deleted_ops = vec![];
-
-        // No inserts under a deleted path
-        for deleted_op in deletes.iter() {
-            let mut deleted_qualified_path = deleted_op.path.clone();
-            deleted_qualified_path.push(deleted_op.key.clone());
-            let inserts_with_deleted_ops_above = inserts
-                .iter()
-                .filter_map(|inserted_op| {
-                    if deleted_op.path.len() < inserted_op.path.len()
-                        && deleted_qualified_path
-                            .iterator()
-                            .zip(inserted_op.path.iterator())
-                            .all(|(a, b)| a == b)
-                    {
-                        Some(inserted_op.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<GroveDbOp>>();
-            if !inserts_with_deleted_ops_above.is_empty() {
-                insert_ops_below_deleted_ops
-                    .push((deleted_op.clone(), inserts_with_deleted_ops_above));
-            }
-        }
+        let insert_ops_below_deleted_ops = deletes
+            .iter()
+            .filter_map(|&deleted_op| {
+                let mut deleted_qualified_path = deleted_op.path.clone();
+                deleted_qualified_path.push(deleted_op.key.clone());
+                let inserts_with_deleted_ops_above = inserts
+                    .iter()
+                    .filter_map(|&inserted_op| {
+                        if deleted_op.path.len() < inserted_op.path.len()
+                            && deleted_qualified_path
+                                .iterator()
+                                .zip(inserted_op.path.iterator())
+                                .all(|(a, b)| a == b)
+                        {
+                            Some(inserted_op)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<&GroveDbOp>>();
+                if !inserts_with_deleted_ops_above.is_empty() {
+                    Some((deleted_op, inserts_with_deleted_ops_above))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<(&GroveDbOp, Vec<&GroveDbOp>)>>();
 
         GroveDbOpConsistencyResults {
             repeated_ops,
@@ -652,14 +644,16 @@ impl GroveDbOp {
 
 /// Results of a consistency check on an operation batch
 #[derive(Debug)]
-pub struct GroveDbOpConsistencyResults {
-    repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
-    same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<Op>)>,
-    insert_ops_below_deleted_ops: Vec<(GroveDbOp, Vec<GroveDbOp>)>, /* the deleted op first,
-                                                                     * then inserts under */
+pub struct GroveDbOpConsistencyResults<'a> {
+    repeated_ops: Vec<(&'a GroveDbOp, u16)>, // the u16 is count
+    same_path_key_ops: Vec<(&'a KeyInfoPath, &'a KeyInfo, Vec<&'a Op>)>,
+    insert_ops_below_deleted_ops: Vec<(&'a GroveDbOp, Vec<&'a GroveDbOp>)>, /* the deleted op
+                                                                             * first,
+                                                                             * then inserts
+                                                                             * under */
 }
 
-impl GroveDbOpConsistencyResults {
+impl GroveDbOpConsistencyResults<'_> {
     /// Check if results are empty
     pub fn is_empty(&self) -> bool {
         self.repeated_ops.is_empty()
