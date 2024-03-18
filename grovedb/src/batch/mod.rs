@@ -589,19 +589,19 @@ impl GroveDbOp {
 
         let inserts = ops
             .iter()
-            .filter_map(|current_op| match current_op.op {
-                Op::Insert { .. } | Op::Replace { .. } => Some(current_op),
-                _ => None,
+            .filter(|current_op| match current_op.op {
+                Op::Insert { .. } | Op::Replace { .. } => true,
+                _ => false,
             })
             .collect::<Vec<&GroveDbOp>>();
 
         let deletes = ops
             .iter()
-            .filter_map(|current_op| {
+            .filter(|current_op| {
                 if let Op::Delete = current_op.op {
-                    Some(current_op)
+                    true
                 } else {
-                    None
+                    false
                 }
             })
             .collect::<Vec<&GroveDbOp>>();
