@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package grovedbg;
+
+service GroveDbg {
+  rpc DbEvents(StartStream) returns (stream DbMessage) {}
+
+  rpc FetchNode(FetchRequest) returns (NodeUpdate) {}
+}
+
+message StartStream {}
+
+message FetchRequest {
+  repeated bytes path = 1;
+  bytes key = 2;
+}
+ 
+message DbMessage {
+  oneof message {
+    KeepAlive keep_alive = 1;
+    NodeUpdate node_update = 2;
+  }
+}
+
+message KeepAlive {}
+
+message NodeUpdate {
+  optional bytes left_child = 1;
+  optional bytes right_child = 2;
+  repeated bytes path = 3;
+  bytes key = 4;
+  optional Element element = 5;
+}
+
+message Element {
+  oneof element {
+    Item item = 1;
+    Subtree subtree = 2;
+    AbsolutePathReference absolute_path_reference = 3;
+    UpstreamRootHeightReference upstream_root_height_reference = 4;
+    UpstreamFromElementHeightReference upstream_from_element_height_reference = 5;
+    CousinReference cousin_reference = 6;
+    RemovedCousinReference removed_cousin_reference = 7;
+    SiblingReference sibling_reference = 8;
+  }
+}
+
+message Item {
+  bytes value = 1;
+}
+
+message Subtree {
+  optional bytes root_key = 1;
+}
+
+message AbsolutePathReference {
+  repeated bytes path = 1;
+}
+
+message UpstreamRootHeightReference {
+  int32 n_keep = 1;
+  repeated bytes path_append = 2;
+}
+
+message UpstreamFromElementHeightReference {
+  int32 n_remove = 1;
+  repeated bytes path_append = 2;
+}
+
+message CousinReference {
+  bytes swap_parent = 1;
+}
+
+message RemovedCousinReference {
+  repeated bytes swap_parent = 1;
+}
+
+message SiblingReference {
+  bytes sibling_key = 1;
+}

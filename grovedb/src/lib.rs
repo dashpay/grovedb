@@ -141,10 +141,9 @@
 //! [Tutorial](https://www.grovedb.org/tutorials.html)
 
 #[cfg(feature = "full")]
-extern crate core;
-
-#[cfg(feature = "full")]
 pub mod batch;
+#[cfg(feature = "grovedbg")]
+pub mod debugger;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod element;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -171,6 +170,8 @@ mod visualize;
 
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
+#[cfg(feature = "grovedbg")]
+use std::sync::Arc;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
@@ -251,6 +252,13 @@ impl GroveDb {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         Ok(GroveDb { db })
     }
+
+    // #[cfg(feature = "grovedbg")]
+    // /// Opens GroveDB with a debugger support
+    // pub fn open_with_debugger<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, Error> {
+    //     let db = Arc::new(GroveDb::open(path)?);
+    //     Ok(db)
+    // }
 
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb
     pub fn wipe(&self) -> Result<(), Error> {

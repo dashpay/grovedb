@@ -234,7 +234,7 @@ where
     }
 
     /// Generic way to get a node's field
-    fn get_node_direct_fn<T, F>(
+    pub(crate) fn get_node_direct_fn<T, F>(
         &self,
         key: &[u8],
         f: F,
