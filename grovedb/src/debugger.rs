@@ -1,23 +1,22 @@
 //! GroveDB debugging support module.
 
-use std::sync::Arc;
+use std::sync::Weak;
 
 use grovedb_merk::debugger::NodeDbg;
+pub use grovedbg_grpc::grove_dbg_server::GroveDbgServer;
 use grovedbg_grpc::{
     grove_dbg_server::GroveDbg, tonic, DbMessage, FetchRequest, NodeUpdate, StartStream,
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-pub use grovedbg_grpc::grove_dbg_server::GroveDbgServer;
-
-use crate::{GroveDb, reference_path::ReferencePathType};
+use crate::{reference_path::ReferencePathType, GroveDb};
 
 pub struct GroveDbgService {
-    grovedb: Arc<GroveDb>,
+    grovedb: Weak<GroveDb>,
 }
 
 impl GroveDbgService {
-    pub fn new(grovedb: Arc<GroveDb>) -> Self {
+    pub fn new(grovedb: Weak<GroveDb>) -> Self {
         GroveDbgService { grovedb }
     }
 }
@@ -39,8 +38,9 @@ impl GroveDbg for GroveDbgService {
     ) -> Result<tonic::Response<NodeUpdate>, tonic::Status> {
         let FetchRequest { path, key } = request.into_inner();
 
-        let merk = self
-            .grovedb
+        let db = self.grovedb.upgrade().expect("GroveDB is closed");
+
+        let merk = db
             .open_non_transactional_merk_at_path(path.as_slice().into(), None)
             .unwrap()
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
@@ -83,20 +83,32 @@ impl GroveDbg for GroveDbgService {
                             grovedbg_grpc::AbsolutePathReference { path },
                         )),
                     }
+                }
+                crate::Element::Reference(
+                    ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
+                    ..,
+                ) => grovedbg_grpc::Element {
+                    element: Some(
+                        grovedbg_grpc::element::Element::UpstreamRootHeightReference(
+                            grovedbg_grpc::UpstreamRootHeightReference {
+                                n_keep: n_keep.into(),
+                                path_append,
+                            },
+                        ),
+                    ),
                 },
-                crate::Element::Reference(ReferencePathType::UpstreamRootHeightReference(n_keep, path_append), ..) => {
-                    grovedbg_grpc::Element {
-                        element: Some(grovedbg_grpc::element::Element::UpstreamRootHeightReference(
-                            grovedbg_grpc::UpstreamRootHeightReference { n_keep: n_keep.into(), path_append },
-                        )),
-                    }
-                },
-                crate::Element::Reference(ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append), ..) => {
-                    grovedbg_grpc::Element {
-                        element: Some(grovedbg_grpc::element::Element::UpstreamFromElementHeightReference(
-                            grovedbg_grpc::UpstreamFromElementHeightReference { n_remove: n_remove.into(), path_append },
-                        )),
-                    }
+                crate::Element::Reference(
+                    ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
+                    ..,
+                ) => grovedbg_grpc::Element {
+                    element: Some(
+                        grovedbg_grpc::element::Element::UpstreamFromElementHeightReference(
+                            grovedbg_grpc::UpstreamFromElementHeightReference {
+                                n_remove: n_remove.into(),
+                                path_append,
+                            },
+                        ),
+                    ),
                 },
                 crate::Element::Reference(ReferencePathType::CousinReference(swap_parent), ..) => {
                     grovedbg_grpc::Element {
@@ -104,13 +116,14 @@ impl GroveDbg for GroveDbgService {
                             grovedbg_grpc::CousinReference { swap_parent },
                         )),
                     }
-                },
-                crate::Element::Reference(ReferencePathType::RemovedCousinReference(swap_parent), ..) => {
-                    grovedbg_grpc::Element {
-                        element: Some(grovedbg_grpc::element::Element::RemovedCousinReference(
-                            grovedbg_grpc::RemovedCousinReference { swap_parent },
-                        )),
-                    }
+                }
+                crate::Element::Reference(
+                    ReferencePathType::RemovedCousinReference(swap_parent),
+                    ..,
+                ) => grovedbg_grpc::Element {
+                    element: Some(grovedbg_grpc::element::Element::RemovedCousinReference(
+                        grovedbg_grpc::RemovedCousinReference { swap_parent },
+                    )),
                 },
                 crate::Element::Reference(ReferencePathType::SiblingReference(sibling_key), ..) => {
                     grovedbg_grpc::Element {
@@ -118,7 +131,7 @@ impl GroveDbg for GroveDbgService {
                             grovedbg_grpc::SiblingReference { sibling_key },
                         )),
                     }
-                },
+                }
                 _ => todo!(),
             };
 

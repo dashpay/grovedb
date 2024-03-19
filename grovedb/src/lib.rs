@@ -168,10 +168,10 @@ mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
 
-#[cfg(feature = "full")]
-use std::{collections::HashMap, option::Option::None, path::Path};
 #[cfg(feature = "grovedbg")]
 use std::sync::Arc;
+#[cfg(feature = "full")]
+use std::{collections::HashMap, option::Option::None, path::Path};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
@@ -255,8 +255,8 @@ impl GroveDb {
 
     // #[cfg(feature = "grovedbg")]
     // /// Opens GroveDB with a debugger support
-    // pub fn open_with_debugger<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, Error> {
-    //     let db = Arc::new(GroveDb::open(path)?);
+    // pub fn open_with_debugger<P: AsRef<Path>>(path: P) -> Result<Arc<Self>,
+    // Error> {     let db = Arc::new(GroveDb::open(path)?);
     //     Ok(db)
     // }
 
