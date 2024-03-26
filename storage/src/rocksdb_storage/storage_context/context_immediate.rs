@@ -33,7 +33,7 @@ use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
     CostsExt,
 };
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, ReadOptions, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
@@ -232,9 +232,12 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     }
 
     fn raw_iter(&self) -> Self::RawIterator {
+        let mut opts = ReadOptions::default();
+        opts.set_async_io(true);
+
         PrefixedRocksDbRawIterator {
             prefix: self.prefix,
-            raw_iterator: self.transaction.raw_iterator(),
+            raw_iterator: self.transaction.raw_iterator_opt(opts),
         }
     }
 }
