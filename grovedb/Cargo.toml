@@ -47,7 +47,7 @@ full = [
     "bincode",
     "serde/derive",
     "grovedb-storage/rocksdb_storage",
-    "grovedb-visualize",
+    "visualize",
     "hex",
     "itertools",
     "integer-encoding",
@@ -55,6 +55,9 @@ full = [
     "nohash-hasher",
     "indexmap",
     "intmap"
+]
+visualize = [
+    "grovedb-visualize",
 ]
 verify = [
     "grovedb-merk/verify",

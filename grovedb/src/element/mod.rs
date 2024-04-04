@@ -94,6 +94,7 @@ pub type SumValue = i64;
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, Option<ElementFlags>),
@@ -109,7 +110,7 @@ pub enum Element {
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "visualize"))]
 impl fmt::Debug for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
