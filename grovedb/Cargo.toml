@@ -15,7 +15,7 @@ documentation = "https://docs.rs/grovedb"
 grovedb-merk = { version = "1.0.0-rc.2", path = "../merk", optional = true, default-features = false }
 thiserror = { version = "1.0.58", optional = true }
 tempfile = { version = "3.10.1", optional = true }
-bincode = { version = "2.0.0-rc.3", optional = true }
+bincode = { version = "2.0.0-rc.3" }
 grovedb-storage = { version = "1.0.0-rc.2", path = "../storage", optional = true }
 grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize", optional = true }
 hex = { version = "0.4.3", optional = true }
@@ -43,7 +43,6 @@ full = [
     "grovedb-merk/full",
     "thiserror",
     "tempfile",
-    "bincode",
     "grovedb-storage/rocksdb_storage",
     "visualize",
     "hex",
