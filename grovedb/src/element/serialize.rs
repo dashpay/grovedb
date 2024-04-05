@@ -29,8 +29,7 @@
 //! Serialize
 //! Implements serialization functions in Element
 
-#[cfg(any(feature = "full", feature = "verify"))]
-use bincode::Options;
+use bincode::config;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};
@@ -39,31 +38,26 @@ impl Element {
     #[cfg(feature = "full")]
     /// Serializes self. Returns vector of u8s.
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
-        bincode::DefaultOptions::default()
-            .with_varint_encoding()
-            .reject_trailing_bytes()
-            .serialize(self)
-            .map_err(|_| Error::CorruptedData(String::from("unable to serialize element")))
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        bincode::encode_to_vec(self, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to serialize element {}", e)))
     }
 
     #[cfg(feature = "full")]
     /// Serializes self. Returns usize.
-    pub fn serialized_size(&self) -> usize {
-        bincode::DefaultOptions::default()
-            .with_varint_encoding()
-            .reject_trailing_bytes()
-            .serialized_size(self)
-            .unwrap() as usize // this should not be able to error
+    pub fn serialized_size(&self) -> Result<usize, Error> {
+        self.serialize().map(|serialized| serialized.len())
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Deserializes given bytes and sets as self
     pub fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
-        bincode::DefaultOptions::default()
-            .with_varint_encoding()
-            .reject_trailing_bytes()
-            .deserialize(bytes)
-            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+        let config = config::standard().with_big_endian().with_no_limit();
+        Ok(bincode::decode_from_slice(bytes, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to deserialize element {}", e)))?
+            .0)
     }
 }
 
@@ -80,20 +74,20 @@ mod tests {
         let empty_tree = Element::empty_tree();
         let serialized = empty_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 3);
-        assert_eq!(serialized.len(), empty_tree.serialized_size());
+        assert_eq!(serialized.len(), empty_tree.serialized_size().unwrap());
         // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "020000");
 
         let empty_tree = Element::new_tree_with_flags(None, Some(vec![5]));
         let serialized = empty_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 5);
-        assert_eq!(serialized.len(), empty_tree.serialized_size());
+        assert_eq!(serialized.len(), empty_tree.serialized_size().unwrap());
         assert_eq!(hex::encode(serialized), "0200010105");
 
         let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 6);
-        assert_eq!(serialized.len(), item.serialized_size());
+        assert_eq!(serialized.len(), item.serialized_size().unwrap());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
 
@@ -102,7 +96,7 @@ mod tests {
         let item = Element::new_sum_item(5);
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 3);
-        assert_eq!(serialized.len(), item.serialized_size());
+        assert_eq!(serialized.len(), item.serialized_size().unwrap());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "030a00");
 
@@ -112,7 +106,7 @@ mod tests {
         );
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 8);
-        assert_eq!(serialized.len(), item.serialized_size());
+        assert_eq!(serialized.len(), item.serialized_size().unwrap());
         assert_eq!(hex::encode(serialized), "0003abcdef010101");
 
         let reference = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
@@ -122,7 +116,7 @@ mod tests {
         ]));
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 12);
-        assert_eq!(serialized.len(), reference.serialized_size());
+        assert_eq!(serialized.len(), reference.serialized_size().unwrap());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
         assert_eq!(hex::encode(serialized), "010003010002abcd01050000");
@@ -137,7 +131,7 @@ mod tests {
         );
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 16);
-        assert_eq!(serialized.len(), reference.serialized_size());
+        assert_eq!(serialized.len(), reference.serialized_size().unwrap());
         assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
     }
 }

@@ -29,7 +29,7 @@
 //! Worst case costs
 //! Implements worst case cost functions in GroveDb
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
@@ -195,7 +195,7 @@ impl GroveDb {
             _ => add_cost_case_merk_insert(
                 &mut cost,
                 key_len,
-                value.serialized_size() as u32,
+                cost_return_on_error_no_add!(&cost, value.serialized_size()) as u32,
                 in_parent_tree_using_sums,
             ),
         };
@@ -253,7 +253,7 @@ impl GroveDb {
             _ => add_cost_case_merk_replace(
                 &mut cost,
                 key_len,
-                value.serialized_size() as u32,
+                cost_return_on_error_no_add!(&cost, value.serialized_size()) as u32,
                 in_parent_tree_using_sums,
             ),
         };
@@ -284,7 +284,8 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 // Items need to be always the same serialized size for this to work
-                let sum_item_cost_size = value.serialized_size() as u32;
+                let sum_item_cost_size =
+                    cost_return_on_error_no_add!(&cost, value.serialized_size()) as u32;
                 let value_len = sum_item_cost_size + flags_len;
                 add_cost_case_merk_patch(
                     &mut cost,
@@ -498,7 +499,7 @@ mod test {
             &mut worst_case_has_raw_cost,
             &path,
             &key,
-            elem.serialized_size() as u32,
+            elem.serialized_size().expect("expected size") as u32,
             false,
         );
 
