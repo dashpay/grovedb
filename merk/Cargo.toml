@@ -14,8 +14,8 @@ documentation = "https://docs.rs/grovedb-merk"
 thiserror = "1.0.37"
 grovedb-storage = { version = "1.0.0-rc.2", path = "../storage", optional = true }
 failure = "0.1.8"
-integer-encoding = "3.0.4"
-indexmap = "1.9.2"
+integer-encoding = "4.0.0"
+indexmap = "2.2.6"
 grovedb-costs = { version = "1.0.0-rc.2", path = "../costs" }
 grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize" }
 grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
@@ -73,7 +73,7 @@ verify = [
 
 [dev-dependencies]
 tempfile = "3.3.0"
-criterion = "0.4.0"
+criterion = "0.5.1"
 
 [[bench]]
 name = "merk"

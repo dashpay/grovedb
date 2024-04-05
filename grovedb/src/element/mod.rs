@@ -49,14 +49,13 @@ mod serialize;
 #[cfg(feature = "full")]
 use core::fmt;
 
+use bincode::{Decode, Encode};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
 use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
 #[cfg(feature = "full")]
 use grovedb_visualize::visualize_to_vec;
-#[cfg(any(feature = "full", feature = "verify"))]
-use serde::{Deserialize, Serialize};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
@@ -93,7 +92,7 @@ pub type SumValue = i64;
 ///
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
 #[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
 pub enum Element {
     /// An ordinary value

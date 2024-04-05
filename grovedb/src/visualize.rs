@@ -30,7 +30,10 @@
 
 use std::io::{Result, Write};
 
-use bincode::Options;
+use bincode::{
+    config,
+    config::{BigEndian, Configuration},
+};
 use grovedb_merk::{Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
 use grovedb_storage::StorageContext;
@@ -239,11 +242,10 @@ impl Visualize for GroveDb {
 #[allow(dead_code)]
 pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
-        bincode::DefaultOptions::default()
-            .with_varint_encoding()
-            .reject_trailing_bytes()
-            .deserialize::<Element>(bytes)
+        let config = config::standard().with_big_endian().with_no_limit();
+        bincode::decode_from_slice::<Element, Configuration<BigEndian>>(bytes, config)
             .expect("unable to deserialize Element")
+            .0
     }));
 }
 
