@@ -31,19 +31,19 @@
 #[cfg(feature = "full")]
 use std::fmt;
 
+use bincode::{Decode, Encode};
 #[cfg(feature = "full")]
 use grovedb_visualize::visualize_to_vec;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-#[cfg(any(feature = "full", feature = "verify"))]
-use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "full")]
 use crate::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]
+#[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
 /// Reference path variants
-#[derive(Hash, Eq, PartialEq, Serialize, Deserialize, Clone)]
+#[derive(Hash, Eq, PartialEq, Encode, Decode, Clone)]
 pub enum ReferencePathType {
     /// Holds the absolute path to the element the reference points to
     AbsolutePathReference(Vec<Vec<u8>>),

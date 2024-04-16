@@ -208,7 +208,7 @@ impl GroveDb {
             _ => add_cost_case_merk_insert(
                 &mut cost,
                 key_len,
-                value.serialized_size() as u32,
+                cost_return_on_error_no_add!(&cost, value.serialized_size()) as u32,
                 in_tree_using_sums,
             ),
         };
@@ -259,7 +259,7 @@ impl GroveDb {
                 let sum_item_cost_size = if value.is_sum_item() {
                     SUM_ITEM_COST_SIZE
                 } else {
-                    value.serialized_size() as u32
+                    cost_return_on_error_no_add!(&cost, value.serialized_size()) as u32
                 };
                 let value_len = sum_item_cost_size + flags_len;
                 add_cost_case_merk_replace_same_size(
@@ -272,7 +272,7 @@ impl GroveDb {
             _ => add_cost_case_merk_replace_same_size(
                 &mut cost,
                 key_len,
-                value.serialized_size() as u32,
+                cost_return_on_error_no_add!(&cost, value.serialized_size()) as u32,
                 in_tree_using_sums,
             ),
         };
@@ -303,7 +303,8 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 // Items need to be always the same serialized size for this to work
-                let item_cost_size = value.serialized_size() as u32;
+                let item_cost_size =
+                    cost_return_on_error_no_add!(&cost, value.serialized_size()) as u32;
                 let value_len = item_cost_size + flags_len;
                 add_cost_case_merk_patch(
                     &mut cost,
@@ -562,7 +563,7 @@ mod test {
             &mut average_case_has_raw_cost,
             &path,
             &key,
-            elem.serialized_size() as u32,
+            elem.serialized_size().expect("expected size") as u32,
             false,
         );
 
