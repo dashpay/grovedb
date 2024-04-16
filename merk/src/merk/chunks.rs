@@ -106,7 +106,7 @@ where
     S: StorageContext<'db>,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance
-    pub(crate) fn new(merk: &'db Merk<S>) -> Result<Self, Error> {
+    pub fn new(merk: &'db Merk<S>) -> Result<Self, Error> {
         let tree_height = merk
             .height()
             .ok_or(Error::ChunkingError(ChunkError::EmptyTree(

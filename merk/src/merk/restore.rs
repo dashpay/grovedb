@@ -30,6 +30,7 @@
 //! receiving chunk proofs.
 
 use std::collections::BTreeMap;
+use grovedb_costs::cost_return_on_error;
 
 use grovedb_storage::{Batch, StorageContext};
 
@@ -51,6 +52,8 @@ use crate::{
     Error::{CostsError, StorageError},
     Link, Merk,
 };
+use crate::merk::committer::MerkCommitter;
+use crate::tree::{combine_hash, NoopCommit};
 
 /// Restorer handles verification of chunks and replication of Merk trees.
 /// Chunks can be processed randomly as long as their parent has been processed
@@ -58,6 +61,7 @@ use crate::{
 pub struct Restorer<S> {
     merk: Merk<S>,
     chunk_id_to_root_hash: BTreeMap<String, CryptoHash>,
+    parent_key_value_hash: Option<CryptoHash>,
     // this is used to keep track of parents whose links need to be rewritten
     parent_keys: BTreeMap<String, Vec<u8>>,
 }
@@ -65,13 +69,13 @@ pub struct Restorer<S> {
 impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Initializes a new chunk restorer with the expected root hash for the
     /// first chunk
-    pub fn new(merk: Merk<S>, expected_root_hash: CryptoHash) -> Self {
+    pub fn new(merk: Merk<S>, expected_root_hash: CryptoHash, parent_key_value_hash: Option<CryptoHash>) -> Self {
         let mut chunk_id_to_root_hash = BTreeMap::new();
         chunk_id_to_root_hash.insert(traversal_instruction_as_string(&vec![]), expected_root_hash);
-
         Self {
             merk,
             chunk_id_to_root_hash,
+            parent_key_value_hash,
             parent_keys: BTreeMap::new(),
         }
     }
@@ -89,7 +93,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .get(&chunk_id)
             .ok_or(Error::ChunkRestoringError(ChunkError::UnexpectedChunk))?;
 
-        let chunk_tree = Self::verify_chunk(chunk, expected_root_hash)?;
+        let mut parent_key_value_hash: Option<CryptoHash> = None;
+        if (chunk_id.len() == 0) {
+            parent_key_value_hash = self.parent_key_value_hash.clone();
+        }
+        let chunk_tree = Self::verify_chunk(chunk, expected_root_hash, &parent_key_value_hash)?;
 
         let mut root_traversal_instruction = string_as_traversal_instruction(&chunk_id)?;
 
@@ -144,7 +152,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
     /// Verifies the structure of a chunk and ensures the chunk matches the
     /// expected root hash
-    fn verify_chunk(chunk: Vec<Op>, expected_root_hash: &CryptoHash) -> Result<ProofTree, Error> {
+    fn verify_chunk(chunk: Vec<Op>, expected_root_hash: &CryptoHash, parent_key_value_hash_opt: &Option<CryptoHash>) -> Result<ProofTree, Error> {
         let chunk_len = chunk.len();
         let mut kv_count = 0;
         let mut hash_count = 0;
@@ -171,11 +179,23 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         debug_assert_eq!(chunk_len, ((kv_count + hash_count) * 2) - 1);
 
         // chunk structure verified, next verify root hash
-        if &tree.hash().unwrap() != expected_root_hash {
-            return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
-                "chunk doesn't match expected root hash",
-            )));
-        }
+        let parent_key_value_hash = match parent_key_value_hash_opt {
+            Some(val_hash) => {
+                let combined_hash = combine_hash(&val_hash, &tree.hash().unwrap()).unwrap();
+                if &combined_hash != expected_root_hash {
+                    return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                        "chunk doesn't match expected root hash",
+                    )));
+                }
+            },
+            None => {
+                if &tree.hash().unwrap() != expected_root_hash {
+                    return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
+                        "chunk doesn't match expected root hash",
+                    )));
+                }
+            }
+        };
 
         Ok(tree)
     }
@@ -361,7 +381,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Rebuild restoration state from partial storage state
     fn attempt_state_recovery(&mut self) -> Result<(), Error> {
         // TODO: think about the return type some more
-        let (bad_link_map, parent_keys) = self.merk.verify();
+        let (bad_link_map, parent_keys) = self.merk.verify(false);
         if !bad_link_map.is_empty() {
             self.chunk_id_to_root_hash = bad_link_map;
             self.parent_keys = parent_keys;
@@ -393,7 +413,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
         }
 
-        if !self.merk.verify().0.is_empty() {
+        if !self.merk.verify(self.merk.is_sum_tree).0.is_empty() {
             return Err(Error::ChunkRestoringError(ChunkError::InternalError(
                 "restored tree invalid",
             )));
@@ -498,6 +518,7 @@ mod tests {
         Error::ChunkRestoringError,
         Merk, PanicSource,
     };
+    use crate::test_utils::{make_batch_seq_with_same_value, make_batch_seq_with_value};
 
     #[test]
     fn test_chunk_verification_non_avl_tree() {

@@ -57,24 +57,16 @@ use grovedb_costs::{
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use source::MerkSource;
 
-use crate::{
-    error::Error,
-    merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
-    proofs::{
-        chunk::{
-            chunk::{LEFT, RIGHT},
-            util::traversal_instruction_as_string,
-        },
-        query::query_item::QueryItem,
-        Query,
+use crate::{error::Error, merk::{defaults::ROOT_KEY_KEY, options::MerkOptions}, proofs::{
+    chunk::{
+        chunk::{LEFT, RIGHT},
+        util::traversal_instruction_as_string,
     },
-    tree::{
-        kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
-    },
-    Error::{CostsError, EdError, StorageError},
-    Link,
-    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
-};
+    query::query_item::QueryItem,
+    Query,
+}, tree::{
+    kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
+}, Error::{CostsError, EdError, StorageError}, Link, MerkType::{BaseMerk, LayeredMerk, StandaloneMerk}, BatchEntry};
 
 /// Key update types
 pub struct KeyUpdates {
@@ -553,7 +545,7 @@ where
     /// hash values are computed correctly, heights are accurate and links
     /// consistent with backing store.
     // TODO: define the return types
-    pub fn verify(&self) -> (BTreeMap<String, CryptoHash>, BTreeMap<String, Vec<u8>>) {
+    pub fn verify(&self, skip_sum_checks: bool) -> (BTreeMap<String, CryptoHash>, BTreeMap<String, Vec<u8>>) {
         let tree = self.tree.take();
 
         let mut bad_link_map: BTreeMap<String, CryptoHash> = BTreeMap::new();
@@ -567,6 +559,7 @@ where
             &mut root_traversal_instruction,
             &mut bad_link_map,
             &mut parent_keys,
+            skip_sum_checks,
         );
         self.tree.set(tree);
 
@@ -579,6 +572,7 @@ where
         traversal_instruction: &mut Vec<bool>,
         bad_link_map: &mut BTreeMap<String, CryptoHash>,
         parent_keys: &mut BTreeMap<String, Vec<u8>>,
+        skip_sum_checks: bool,
     ) {
         if let Some(link) = tree.link(LEFT) {
             traversal_instruction.push(LEFT);
@@ -588,6 +582,7 @@ where
                 traversal_instruction,
                 bad_link_map,
                 parent_keys,
+                skip_sum_checks
             );
             traversal_instruction.pop();
         }
@@ -600,6 +595,7 @@ where
                 traversal_instruction,
                 bad_link_map,
                 parent_keys,
+                skip_sum_checks
             );
             traversal_instruction.pop();
         }
@@ -612,6 +608,7 @@ where
         traversal_instruction: &mut Vec<bool>,
         bad_link_map: &mut BTreeMap<String, CryptoHash>,
         parent_keys: &mut BTreeMap<String, Vec<u8>>,
+        skip_sum_checks: bool,
     ) {
         let (hash, key, sum) = match link {
             Link::Reference { hash, key, sum, .. } => {
@@ -659,15 +656,18 @@ where
             return;
         }
 
-        if node.sum().unwrap() != sum {
-            bad_link_map.insert(instruction_id.clone(), hash);
-            parent_keys.insert(instruction_id, parent_key.to_vec());
-            return;
+        // Need to skip this when restoring a sum tree
+        if !skip_sum_checks {
+            if node.sum().unwrap() != sum {
+                bad_link_map.insert(instruction_id.clone(), hash);
+                parent_keys.insert(instruction_id, parent_key.to_vec());
+                return;
+            }
         }
 
         // TODO: check child heights
         // all checks passed, recurse
-        self.verify_tree(&node, traversal_instruction, bad_link_map, parent_keys);
+        self.verify_tree(&node, traversal_instruction, bad_link_map, parent_keys, skip_sum_checks);
     }
 }
 
