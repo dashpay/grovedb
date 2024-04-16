@@ -42,6 +42,8 @@ message Element {
     CousinReference cousin_reference = 6;
     RemovedCousinReference removed_cousin_reference = 7;
     SiblingReference sibling_reference = 8;
+    SumItem sum_item = 9;
+    Sumtree sumtree = 10;
   }
 }
 
@@ -51,6 +53,15 @@ message Item {
 
 message Subtree {
   optional bytes root_key = 1;
+}
+
+message SumItem {
+  int64 value = 1;
+}
+
+message Sumtree {
+  optional bytes root_key = 1;
+  int64 sum = 2;
 }
 
 message AbsolutePathReference {

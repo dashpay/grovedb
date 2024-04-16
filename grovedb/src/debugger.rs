@@ -70,13 +70,11 @@ impl GroveDbg for GroveDbgService {
                         value: bytes,
                     })),
                 },
-                crate::Element::Tree(root_key, ..) | crate::Element::SumTree(root_key, ..) => {
-                    grovedbg_grpc::Element {
-                        element: Some(grovedbg_grpc::element::Element::Subtree(
-                            grovedbg_grpc::Subtree { root_key },
-                        )),
-                    }
-                }
+                crate::Element::Tree(root_key, ..) => grovedbg_grpc::Element {
+                    element: Some(grovedbg_grpc::element::Element::Subtree(
+                        grovedbg_grpc::Subtree { root_key },
+                    )),
+                },
                 crate::Element::Reference(ReferencePathType::AbsolutePathReference(path), ..) => {
                     grovedbg_grpc::Element {
                         element: Some(grovedbg_grpc::element::Element::AbsolutePathReference(
@@ -132,7 +130,16 @@ impl GroveDbg for GroveDbgService {
                         )),
                     }
                 }
-                _ => todo!(),
+                crate::Element::SumItem(sum, _) => grovedbg_grpc::Element {
+                    element: Some(grovedbg_grpc::element::Element::SumItem(
+                        grovedbg_grpc::SumItem { value: sum },
+                    )),
+                },
+                crate::Element::SumTree(root_key, sum, _) => grovedbg_grpc::Element {
+                    element: Some(grovedbg_grpc::element::Element::Sumtree(
+                        grovedbg_grpc::Sumtree { root_key, sum },
+                    )),
+                },
             };
 
             Ok(tonic::Response::new(NodeUpdate {
