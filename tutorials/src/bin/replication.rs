@@ -64,7 +64,7 @@ fn populate_db(grovedb_path: String) -> GroveDb {
     db
 }
 
-fn create_empty_db(grovedb_path: String) -> GroveDb  {
+fn create_empty_db(grovedb_path: String) -> GroveDb   {
     let db = GroveDb::open(grovedb_path).unwrap();
     db
 }
@@ -78,7 +78,7 @@ fn main() {
     let db_checkpoint_0 = GroveDb::open(path_checkpoint).expect("cannot open grovedb from checkpoint");
 
     let path_copy = generate_random_path("../tutorial-storage/", "/db_copy", 24);
-    let db_copy = create_empty_db(path_copy.clone());
+    let mut db_copy = create_empty_db(path_copy.clone());
 
     println!("\n######### root_hashes:");
     let root_hash_0 = db_0.root_hash(None).unwrap().unwrap();
@@ -88,20 +88,16 @@ fn main() {
     let root_hash_copy = db_copy.root_hash(None).unwrap().unwrap();
     println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
-    let mut snapshot_checkpoint_0 = db_checkpoint_0.s_create_db_snapshot(true).unwrap();
-    let mut rng = thread_rng(); // Create a random number generator
-    snapshot_checkpoint_0.data.shuffle(&mut rng);      // Shuffle the vector in place
-
-    println!("\n######## list of available chunks_ids");
-    println!("{:?}", snapshot_checkpoint_0);
-
-    println!("\n######## fetching chunks...");
-    for (global_chunk_id, chunk_data) in snapshot_checkpoint_0.data.iter_mut() {
-        *chunk_data = db_checkpoint_0.s_fetch_chunk(global_chunk_id.to_string()).unwrap();
-    }
-
     println!("\n######### db_checkpoint_0 -> db_copy state sync");
-    db_copy.s_reconstruct_db(snapshot_checkpoint_0).expect("should be able to reconstruct db");
+    db_copy.s_sync_db_demo(&db_checkpoint_0).unwrap();
+
+    println!("\n######### root_hashes:");
+    let root_hash_0 = db_0.root_hash(None).unwrap().unwrap();
+    println!("root_hash_0: {:?}", hex::encode(root_hash_0));
+    let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None).unwrap().unwrap();
+    println!("root_hash_checkpoint_0: {:?}", hex::encode(root_hash_checkpoint_0));
+    let root_hash_copy = db_copy.root_hash(None).unwrap().unwrap();
+    println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
     let query_path = &[MAIN_ΚΕΥ, KEY_INT_0];
     let query_key = (20487u32).to_be_bytes().to_vec();
