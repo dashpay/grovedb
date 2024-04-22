@@ -233,9 +233,8 @@ use crate::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 use crate::Error::MerkError;
-
-use std::rc::Rc;
-use std::cell::RefCell;
+use blake3;
+use bitvec::prelude::*;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -252,7 +251,7 @@ pub struct GroveDb {
 }
 
 pub struct s_subtrees_metadata {
-    pub data: BTreeMap<String, (Vec<Vec<u8>>, CryptoHash, CryptoHash)>
+    pub data: BTreeMap<String, (Vec<Vec<u8>>, CryptoHash, Option<CryptoHash>)>
 }
 
 impl s_subtrees_metadata {
@@ -268,9 +267,34 @@ impl fmt::Debug for s_subtrees_metadata {
         for (prefix, metadata) in self.data.iter() {
             let metadata_path = &metadata.0;
             let metadata_path_str = s_util_path_to_string(&metadata_path);
+            write!(f, " prefix:{:?} -> path:{:?}\n", prefix, metadata_path_str);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
+
+pub struct w_subtree_metadata {
+    pub data: BTreeMap<SubtreePrefix, (Vec<Vec<u8>>, CryptoHash, CryptoHash, bool)>
+}
+
+impl w_subtree_metadata {
+    pub fn new() -> w_subtree_metadata {
+        w_subtree_metadata {
+            data: BTreeMap::new(),
+        }
+    }
+}
+
+impl fmt::Debug for w_subtree_metadata {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (prefix, metadata) in self.data.iter() {
+            let metadata_path = &metadata.0;
+            let metadata_path_str = s_util_path_to_string(&metadata_path);
             let metadata_hash_0 = &metadata.1;
             let metadata_hash_1 = &metadata.2;
-            write!(f, " prefix:{:?} -> path:{:?} ({:?}:{:?})\n", prefix, metadata_path_str, hex::encode(metadata_hash_0), hex::encode(metadata_hash_1));
+            write!(f, " prefix:{:?} -> path:{:?} ({:?}:{:?})\n", hex::encode(prefix), metadata_path_str, hex::encode(metadata_hash_0), hex::encode(metadata_hash_1));
         }
         Ok(())
     }
@@ -1050,11 +1074,55 @@ impl GroveDb {
         Ok(issues)
     }
 
-    fn s_get_subtrees_metadata<B: AsRef<[u8]>>(
+    pub fn w_fetch_chunk(
+        &self,
+        global_chunk_id: Vec<u8>
+    ) -> Result<Vec<Op>, Error> {
+        let CHUNK_PREFIX_LENGTH: usize = 32;
+        if (global_chunk_id.len() < CHUNK_PREFIX_LENGTH) {
+            return Err(Error::CorruptedData(
+                "expected global chunk id of at least 32 length".to_string(),
+            ));
+        }
+
+        let (chunk_prefix, chunk_id) = global_chunk_id.split_at(32);
+
+        let mut array = [0u8; 32];  // Initialize an array of the correct size with default values
+        array.copy_from_slice(chunk_prefix);  // Copy data from the slice into the array
+        let chunk_prefix_key: SubtreePrefix = array;
+
+        let subtrees_metadata = self.w_get_subtrees_metadata(&SubtreePath::empty()).unwrap();
+
+        match subtrees_metadata.data.get(&chunk_prefix_key) {
+            Some(path_data) => {
+                let subtree = &path_data.0;
+                let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
+                let path: &[&[u8]] = &subtree_path;
+
+                let continue_storage_batch = StorageBatch::new();
+                let merk = self.open_batch_merk_at_path(&continue_storage_batch, path.into(), false).value?;
+
+                if (merk.is_empty_tree().unwrap()) {
+                    return Ok(vec![]);
+                }
+
+                let mut chunk_producer = ChunkProducer::new(&merk).unwrap();
+                let (chunk, _) = chunk_producer.chunk(String::from_utf8(chunk_id.to_vec()).unwrap().as_str()).unwrap();
+                Ok(chunk)
+            },
+            None => {
+                return Err(Error::CorruptedData(
+                    "Prefix not found".to_string(),
+                ));
+            }
+        }
+    }
+
+    fn w_get_subtrees_metadata<B: AsRef<[u8]>>(
         &self,
         path: &SubtreePath<B>,
-    ) -> Result<s_subtrees_metadata, Error> {
-        let mut subtrees_metadata = crate::s_subtrees_metadata::new();
+    ) -> Result<w_subtree_metadata, Error> {
+        let mut subtrees_metadata = crate::w_subtree_metadata::new();
 
         let subtrees_root = self.find_subtrees(&SubtreePath::empty(), None).unwrap().unwrap();
         for subtree in subtrees_root.into_iter() {
@@ -1063,6 +1131,7 @@ impl GroveDb {
             let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
 
             let current_path = SubtreePath::from(path);
+            let is_root_prefix = current_path.is_root();
 
             let parent_path_opt = current_path.derive_parent();
             if (parent_path_opt.is_some()) {
@@ -1081,83 +1150,48 @@ impl GroveDb {
                     .expect("value hash should be some");
 
                 let actual_value_hash =  value_hash(&elem_value).unwrap();
-                subtrees_metadata.data.insert(hex::encode(prefix), (current_path.to_vec(), actual_value_hash, elem_value_hash));
+                subtrees_metadata.data.insert(prefix, (current_path.to_vec(), actual_value_hash, elem_value_hash, false));
             }
             else {
-                subtrees_metadata.data.insert(hex::encode(prefix), (current_path.to_vec(), CryptoHash::default(), CryptoHash::default()));
+                subtrees_metadata.data.insert(prefix, (current_path.to_vec(), CryptoHash::default(), CryptoHash::default(), is_root_prefix));
             }
         }
         Ok(subtrees_metadata)
     }
 
-    pub fn s_fetch_chunk(
-        &self,
-        global_chunk_id: String
-    ) -> Result<Vec<Op>, Error> {
-        let CHUNK_PREFIX_LENGTH: usize = 64;
-        if (global_chunk_id.len() < CHUNK_PREFIX_LENGTH) {
-            return Err(Error::CorruptedData(
-                "expected global chunk id of at least 64 length".to_string(),
-            ));
-        }
-
-        let chunk_prefix = global_chunk_id.chars().take(CHUNK_PREFIX_LENGTH).collect::<String>();
-        let chunk_id = global_chunk_id.chars().skip(CHUNK_PREFIX_LENGTH).collect::<String>();
-
-        let subtrees_metadata = self.s_get_subtrees_metadata(&SubtreePath::empty()).unwrap();
-
-        match subtrees_metadata.data.get(&chunk_prefix) {
-            Some(path_data) => {
-                let subtree = &path_data.0;
-                let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
-                let path: &[&[u8]] = &subtree_path;
-
-                let continue_storage_batch = StorageBatch::new();
-                let merk = self.open_batch_merk_at_path(&continue_storage_batch, path.into(), false).value?;
-
-                if (merk.is_empty_tree().unwrap()) {
-                    return Ok(vec![]);
-                }
-
-                let mut chunk_producer = ChunkProducer::new(&merk).unwrap();
-                let (chunk, _) = chunk_producer.chunk(chunk_id.as_str()).unwrap();
-                Ok(chunk)
-            },
-            None => {
-                return Err(Error::CorruptedData(
-                    "Prefix not found".to_string(),
-                ));
-            }
-        }
-    }
-
-    pub fn s_sync_db_demo(
+    pub fn w_sync_db_demo(
         &mut self,
         source_db: &GroveDb,
     ) -> Result<(), Error> {
 
         // Start always by root
         let app_hash = source_db.root_hash(None).value.unwrap();
-        let root_global_chunk_id = hex::encode(vec![0u8; 32]);
+        let root_global_chunk_id = vec![0u8; 32];
+        let (root_prefix, _) = w_util_split_global_chunk_id(&root_global_chunk_id)?;
 
-        let root_chunk = source_db.s_fetch_chunk(root_global_chunk_id.to_string())?;
-        let (root_chunk_prefix, _) = s_util_split_global_chunk_id(&root_global_chunk_id)?;
+        let root_chunk = source_db.w_fetch_chunk(root_global_chunk_id.clone())?;
 
-        let mut pending_chunks :BTreeMap<String, Vec<Op>> = BTreeMap::new();
-        let mut processed_prefixes :BTreeSet<String> = BTreeSet::new();
+        let mut pending_chunks :BTreeMap<Vec<u8>, Vec<Op>> = BTreeMap::new();
+        let mut processed_prefixes :BTreeSet<SubtreePrefix> = BTreeSet::new();
+        let mut subtrees_metadata = crate::w_subtree_metadata::new();
+        let mut current_subtree_opt :Option<(SubtreePrefix, Vec<Vec<u8>>, CryptoHash, CryptoHash, bool)> = None;
+
+
+        //current_subtree_opt = (SubtreePrefix::default())
         {
             let tx = self.start_transaction();
             let merk = self.open_merk_for_replication(SubtreePath::empty(), &tx).unwrap();
             let mut restorer = Restorer::new(merk, app_hash, None);
             let next_chunk_ids = restorer.process_chunk("".to_string(), root_chunk).expect("should process chunk successfully");
             for next_chunk_id in next_chunk_ids {
-                let next_global_chunk_id = hex::encode(root_chunk_prefix.to_string()) + &next_chunk_id;
+                let mut next_global_chunk_id = root_prefix.to_vec();
+                next_global_chunk_id.extend(next_chunk_id.as_bytes().to_vec());
                 pending_chunks.insert(next_global_chunk_id, vec![]);
             }
 
             while (!pending_chunks.is_empty()) {
                 for (global_chunk_id, chunk_data) in pending_chunks.iter_mut() {
-                    match source_db.s_fetch_chunk(global_chunk_id.to_string()) {
+                    match source_db.w_fetch_chunk(global_chunk_id.to_vec()) {
                         Ok(chunk) => {
                             *chunk_data = chunk;
                         }
@@ -1168,15 +1202,16 @@ impl GroveDb {
                 }
 
                 // Collect the keys to avoid borrowing issues during removal
-                let keys: Vec<String> = pending_chunks.keys().cloned().collect();
+                let keys: Vec<Vec<u8>> = pending_chunks.keys().cloned().collect();
 
                 // Iterate over the collected keys and remove each entry from the map
                 for key in keys {
                     if let Some(chunk) = pending_chunks.remove(&key) {
-                        let (_, chunk_id) = s_util_split_global_chunk_id(&key)?;
+                        let (_, chunk_id) = w_util_split_global_chunk_id(&key)?;
                         let next_chunk_ids = restorer.process_chunk(chunk_id, chunk).expect("should process chunk successfully");
                         for next_chunk_id in next_chunk_ids {
-                            let next_global_chunk_id = hex::encode(root_chunk_prefix.to_string()) + &next_chunk_id;
+                            let mut next_global_chunk_id = root_prefix.to_vec();
+                            next_global_chunk_id.extend(next_chunk_id.as_bytes().to_vec());
                             pending_chunks.insert(next_global_chunk_id, vec![]);
                         }
                     }
@@ -1186,26 +1221,25 @@ impl GroveDb {
             restorer.finalize().expect("should finalize");
             self.commit_transaction(tx);
         }
-        processed_prefixes.insert(root_chunk_prefix.to_string());
 
-        let mut subtrees_metadata = self.s_get_subtrees_metadata(&SubtreePath::empty()).unwrap();
+        processed_prefixes.insert(root_prefix);
+        subtrees_metadata = self.w_get_subtrees_metadata(&SubtreePath::empty()).unwrap();
 
-        let mut current_subtree_opt :Option<(String, Vec<Vec<u8>>, CryptoHash, CryptoHash)> = None;
         for (prefix, prefix_metadata) in &subtrees_metadata.data {
             if !processed_prefixes.contains(prefix) {
-                current_subtree_opt = Some((prefix.to_string(), prefix_metadata.0.to_vec(), prefix_metadata.1, prefix_metadata.2));
+                current_subtree_opt = Some((*prefix, prefix_metadata.0.to_vec(), prefix_metadata.1, prefix_metadata.2, prefix_metadata.3));
                 break;
             }
         }
 
         while current_subtree_opt.is_some() {
-            if let Some(current_subtree) = current_subtree_opt {
+            if let Some(ref current_subtree) = current_subtree_opt {
                 let current_prefix = &current_subtree.0;
                 let current_path = &current_subtree.1;
                 let s_actual_value_hash = &current_subtree.2;
                 let s_elem_value_hash = &current_subtree.3;
 
-                println!("    about to process prefix:{:?} {:?})", current_prefix, s_util_path_to_string(&current_path));
+                println!("    about to process prefix:{:?} {:?})", hex::encode(current_prefix), s_util_path_to_string(&current_path));
 
                 let subtree_path: Vec<&[u8]> = current_path.iter().map(|vec| vec.as_slice()).collect();
                 let path: &[&[u8]] = &subtree_path;
@@ -1214,16 +1248,17 @@ impl GroveDb {
                 let merk = self.open_merk_for_replication(path.into(), &tx).unwrap();
                 let mut restorer = Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
 
-                let subtree_root_chunk = source_db.s_fetch_chunk(current_prefix.to_string())?;
+                let subtree_root_chunk = source_db.w_fetch_chunk(current_prefix.to_vec())?;
                 if (!subtree_root_chunk.is_empty()) {
                     let next_chunk_ids = restorer.process_chunk("".to_string(), subtree_root_chunk).expect("should process chunk successfully");
                     for next_chunk_id in next_chunk_ids {
-                        let next_global_chunk_id = current_prefix.to_string() + &next_chunk_id;
+                        let mut next_global_chunk_id = current_prefix.to_vec();
+                        next_global_chunk_id.extend(next_chunk_id.as_bytes().to_vec());
                         pending_chunks.insert(next_global_chunk_id, vec![]);
                     }
                     while (!pending_chunks.is_empty()) {
                         for (global_chunk_id, chunk_data) in pending_chunks.iter_mut() {
-                            match source_db.s_fetch_chunk(global_chunk_id.to_string()) {
+                            match source_db.w_fetch_chunk(global_chunk_id.to_vec()) {
                                 Ok(chunk) => {
                                     *chunk_data = chunk;
                                 }
@@ -1234,15 +1269,16 @@ impl GroveDb {
                         }
 
                         // Collect the keys to avoid borrowing issues during removal
-                        let keys: Vec<String> = pending_chunks.keys().cloned().collect();
+                        let keys: Vec<Vec<u8>> = pending_chunks.keys().cloned().collect();
 
                         // Iterate over the collected keys and remove each entry from the map
                         for key in keys {
                             if let Some(chunk) = pending_chunks.remove(&key) {
-                                let (_, chunk_id) = s_util_split_global_chunk_id(&key)?;
+                                let (_, chunk_id) = w_util_split_global_chunk_id(&key)?;
                                 let next_chunk_ids = restorer.process_chunk(chunk_id, chunk).expect("should process chunk successfully");
                                 for next_chunk_id in next_chunk_ids {
-                                    let next_global_chunk_id = current_prefix.to_string() + &next_chunk_id;
+                                    let mut next_global_chunk_id = current_prefix.to_vec();
+                                    next_global_chunk_id.extend(next_chunk_id.as_bytes().to_vec());
                                     pending_chunks.insert(next_global_chunk_id, vec![]);
                                 }
                             }
@@ -1256,24 +1292,20 @@ impl GroveDb {
                     self.rollback_transaction(&tx);
                     println!("    subtree{:?} is empty", s_util_path_to_string(&current_path));
                 }
-                processed_prefixes.insert(current_prefix.to_string());
-                println!("    prefix:{:?} done", current_prefix);
+                processed_prefixes.insert(*current_prefix);
+                println!("    prefix:{:?} done", hex::encode(current_prefix));
             }
 
             current_subtree_opt = None;
-            subtrees_metadata = self.s_get_subtrees_metadata(&SubtreePath::empty()).unwrap();
+            subtrees_metadata = self.w_get_subtrees_metadata(&SubtreePath::empty()).unwrap();
 
             for (prefix, prefix_metadata) in &subtrees_metadata.data {
                 if !processed_prefixes.contains(prefix) {
-                    current_subtree_opt = Some((prefix.to_string(), prefix_metadata.0.to_vec(), prefix_metadata.1, prefix_metadata.2));
+                    current_subtree_opt = Some((*prefix, prefix_metadata.0.to_vec(), prefix_metadata.1, prefix_metadata.2, prefix_metadata.3));
                     break;
                 }
             }
         }
-
-        subtrees_metadata = self.s_get_subtrees_metadata(&SubtreePath::empty()).unwrap();
-        println!("now containing:{:?}", subtrees_metadata);
-        println!("processed prefixes:{:?}", processed_prefixes);
 
         let incorrect_hashes = self.verify_grovedb(None)?;
         if (incorrect_hashes.len() > 0) {
@@ -1284,6 +1316,7 @@ impl GroveDb {
 
         Ok(())
     }
+
 }
 
 pub fn s_util_path_to_string(
@@ -1297,19 +1330,65 @@ pub fn s_util_path_to_string(
     subtree_path_str
 }
 
-pub fn s_util_split_global_chunk_id(
-    global_chunk_id: &String,
-) -> Result<(String, String), Error> {
-    let CHUNK_PREFIX_LENGTH: usize = 64;
-
+pub fn w_util_split_global_chunk_id(
+    global_chunk_id: &Vec<u8>,
+) -> Result<(SubtreePrefix, String), Error> {
+    let CHUNK_PREFIX_LENGTH: usize = 32;
     if (global_chunk_id.len() < CHUNK_PREFIX_LENGTH) {
         return Err(Error::CorruptedData(
-            "expected global chunk id of at least 64 length".to_string(),
+            "expected global chunk id of at least 32 length".to_string(),
         ));
     }
 
-    let chunk_prefix = global_chunk_id.chars().take(CHUNK_PREFIX_LENGTH).collect::<String>();
-    let chunk_id = global_chunk_id.chars().skip(CHUNK_PREFIX_LENGTH).collect::<String>();
-
-    Ok((chunk_prefix, chunk_id))
+    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(32);
+    let mut array = [0u8; 32];  // Initialize an array of the correct size with default values
+    array.copy_from_slice(chunk_prefix);  // Copy data from the slice into the array
+    let chunk_prefix_key: SubtreePrefix = array;
+    let str_chunk_id = String::from_utf8(chunk_id.to_vec());
+    match str_chunk_id {
+        Ok(s) => Ok((chunk_prefix_key, s)),
+        Err(e) =>  return Err(Error::CorruptedData(
+            "unable to convert to string".to_string(),
+        )),
+    }
 }
+
+/*
+pub fn w_util_string_to_compacted_vec_u8(
+    string: &String,
+) -> Result<Vec<u8>, Error> {
+    let mut bb = BitVec::new();
+    let bits = w_util_string_chunk_id_to_bitset(string)?;
+
+    Ok(bits.as_raw_slice().to_vec())
+}
+
+pub fn w_util_string_chunk_id_to_bitset(
+    chunk_id: &String,
+) -> Result<BitVec, Error> {
+    let mut bits = BitVec::new();
+    for ch in chunk_id.chars() {
+        match ch {
+            '1' => bits.push(true),
+            '0' => bits.push(false),
+            _ => return Err(Error::CorruptedData("Invalid character in input string".to_string())), // Return an error instead of panicking
+        }
+    }
+    Ok(bits)
+}
+
+pub fn w_util_bitset_to_chunk_id(bits: &BitVec) -> String {
+    bits.iter().map(|bit| if *bit { '1' } else { '0' }).collect()
+}
+
+/// Converts a BitVec to Vec<u8>
+fn bitvec_to_vec_u8(bitvec: &BitVec<u8, Msb0>) -> Vec<u8> {
+    bitvec.as_raw_slice().to_vec()
+}
+
+/// Converts Vec<u8> to BitVec
+fn vec_u8_to_bitvec(vec: &Vec<u8>) -> BitVec<u8, Msb0> {
+    BitVec::from_vec(vec.clone())
+}
+
+ */

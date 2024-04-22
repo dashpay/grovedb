@@ -89,7 +89,7 @@ fn main() {
     println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
     println!("\n######### db_checkpoint_0 -> db_copy state sync");
-    db_copy.s_sync_db_demo(&db_checkpoint_0).unwrap();
+    db_copy.w_sync_db_demo(&db_checkpoint_0).unwrap();
 
     println!("\n######### root_hashes:");
     let root_hash_0 = db_0.root_hash(None).unwrap().unwrap();
