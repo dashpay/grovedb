@@ -165,13 +165,13 @@ impl GroveDb {
     {
         // must have a limit
         let max_results = query.query.limit.ok_or(Error::NotSupported(
-            "limits must be set in verify_query_with_absence_proof",
+            "limits must be set in verify_query_with_absence_proof".to_string(),
         ))? as usize;
 
         // must have no offset
         if query.query.offset.is_some() {
             return Err(Error::NotSupported(
-                "offsets are not supported for verify_query_with_absence_proof",
+                "offsets are not supported for verify_query_with_absence_proof".to_string(),
             ));
         }
 

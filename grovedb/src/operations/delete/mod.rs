@@ -569,7 +569,7 @@ impl GroveDb {
                     )))
                 } else {
                     Err(Error::NotSupported(
-                        "deletion operation for non empty tree not currently supported",
+                        "deletion operation for non empty tree not currently supported".to_string(),
                     ))
                 };
                 result.wrap_with_cost(cost)

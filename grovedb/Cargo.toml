@@ -13,7 +13,7 @@ documentation = "https://docs.rs/grovedb"
 
 [dependencies]
 grovedb-merk = { version = "1.0.0-rc.2", path = "../merk", optional = true, default-features = false }
-thiserror = { version = "1.0.58", optional = true }
+thiserror = { version = "1.0.59", optional = true }
 tempfile = { version = "3.10.1", optional = true }
 bincode = { version = "2.0.0-rc.3" }
 grovedb-storage = { version = "1.0.0-rc.2", path = "../storage", optional = true }

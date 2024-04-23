@@ -141,7 +141,7 @@ where {
     ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
             Err(Error::NotSupported(
-                "transactions are not currently supported",
+                "transactions are not currently supported".to_string(),
             ))
             .wrap_with_cost(Default::default())
         } else if is_verbose {
@@ -404,11 +404,11 @@ where {
         transaction: TransactionArg,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
-            Error::NotSupported("limits must be set in query_keys_optional",)
+            Error::NotSupported("limits must be set in query_keys_optional".to_string())
         )) as usize;
         if path_query.query.offset.is_some() {
             return Err(Error::NotSupported(
-                "offsets are not supported in query_raw_keys_optional",
+                "offsets are not supported in query_raw_keys_optional".to_string(),
             ))
             .wrap_with_cost(OperationCost::default());
         }
@@ -449,11 +449,11 @@ where {
         transaction: TransactionArg,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
-            Error::NotSupported("limits must be set in query_raw_keys_optional",)
+            Error::NotSupported("limits must be set in query_raw_keys_optional".to_string())
         )) as usize;
         if path_query.query.offset.is_some() {
             return Err(Error::NotSupported(
-                "offsets are not supported in query_raw_keys_optional",
+                "offsets are not supported in query_raw_keys_optional".to_string(),
             ))
             .wrap_with_cost(OperationCost::default());
         }

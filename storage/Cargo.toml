@@ -17,7 +17,7 @@ integer-encoding = { version = "4.0.0", optional = true }
 grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize" }
 strum = { version = "0.26.2", features = ["derive"] }
 grovedb-costs = { version = "1.0.0-rc.2", path = "../costs" }
-thiserror = "1.0.37"
+thiserror = "1.0.59"
 rocksdb = { version = "0.22.0", optional = true }
 hex = "0.4.3"
 grovedb-path = { version = "1.0.0-rc.2", path = "../path" }

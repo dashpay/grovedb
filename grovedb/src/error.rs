@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! GroveDB Errors
 
 /// GroveDB Errors
@@ -139,15 +111,15 @@ pub enum Error {
     // Client allowed errors
     #[error("just in time element flags client error: {0}")]
     /// Just in time element flags client error
-    JustInTimeElementFlagsClientError(&'static str),
+    JustInTimeElementFlagsClientError(String),
 
     #[error("split removal bytes client error: {0}")]
     /// Split removal bytes client error
-    SplitRemovalBytesClientError(&'static str),
+    SplitRemovalBytesClientError(String),
 
     #[error("client returned non client error: {0}")]
     /// Client returned non client error
-    ClientReturnedNonClientError(&'static str),
+    ClientReturnedNonClientError(String),
 
     #[error("override not allowed error: {0}")]
     /// Override not allowed
@@ -160,7 +132,7 @@ pub enum Error {
     // Support errors
     #[error("not supported: {0}")]
     /// Not supported
-    NotSupported(&'static str),
+    NotSupported(String),
 
     // Merk errors
     #[error("merk error: {0}")]
