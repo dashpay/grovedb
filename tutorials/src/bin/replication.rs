@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::Path;
-use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction};
+use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction, state_sync_info};
 use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, thread_rng};
 use rand::prelude::SliceRandom;
@@ -89,7 +89,9 @@ fn main() {
     println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
     println!("\n######### db_checkpoint_0 -> db_copy state sync");
-    db_copy.w_sync_db_demo(&db_checkpoint_0).unwrap();
+    sync_db_demo(&db_checkpoint_0, &db_copy).unwrap();
+    //db_copy.w_sync_db_demo(&db_checkpoint_0).unwrap();
+    return;
 
     println!("\n######### root_hashes:");
     let root_hash_0 = db_0.root_hash(None).unwrap().unwrap();
@@ -213,5 +215,15 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
     if verify_hash == db.root_hash(None).unwrap().unwrap() {
         println!("Query verified");
     } else { println!("Verification FAILED"); };
+}
+
+fn sync_db_demo(
+    source_db: &GroveDb,
+    target_db: &GroveDb,
+) -> Result<(), grovedb::Error> {
+    let mut state_sync_inf = state_sync_info::new();
+    let app_hash = source_db.root_hash(None).value.unwrap();
+    //target_db.w_start_snapshot_syncing(&mut state_sync_inf, app_hash);
+    Ok(())
 }
 
