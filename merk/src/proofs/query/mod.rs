@@ -175,7 +175,8 @@ impl Query {
                 // unbounded ranges can not be supported
                 if conditional_query_item.is_unbounded_range() {
                     return Err(Error::NotSupported(
-                        "terminal keys are not supported with conditional unbounded ranges",
+                        "terminal keys are not supported with conditional unbounded ranges"
+                            .to_string(),
                     ));
                 }
                 let conditional_keys = conditional_query_item.keys()?;
@@ -237,7 +238,7 @@ impl Query {
         for item in self.items.iter() {
             if item.is_unbounded_range() {
                 return Err(Error::NotSupported(
-                    "terminal keys are not supported with unbounded ranges",
+                    "terminal keys are not supported with unbounded ranges".to_string(),
                 ));
             }
             let keys = item.keys()?;

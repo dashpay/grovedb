@@ -87,7 +87,7 @@ pub enum Error {
 
     /// Not supported error
     #[error("not supported error {0}")]
-    NotSupported(&'static str),
+    NotSupported(String),
 
     /// Request amount exceeded error
     #[error("request amount exceeded error {0}")]
