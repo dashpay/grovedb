@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::Path;
-use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction, state_sync_info};
+use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction, StateSyncInfo};
 use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, thread_rng};
 use rand::prelude::SliceRandom;
@@ -78,7 +78,7 @@ fn main() {
     let db_checkpoint_0 = GroveDb::open(path_checkpoint).expect("cannot open grovedb from checkpoint");
 
     let path_copy = generate_random_path("../tutorial-storage/", "/db_copy", 24);
-    let mut db_copy = create_empty_db(path_copy.clone());
+    let db_copy = create_empty_db(path_copy.clone());
 
     println!("\n######### root_hashes:");
     let root_hash_0 = db_0.root_hash(None).unwrap().unwrap();
@@ -89,7 +89,8 @@ fn main() {
     println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
     println!("\n######### db_checkpoint_0 -> db_copy state sync");
-    sync_db_demo(&db_checkpoint_0, &db_copy).unwrap();
+    let mut state_info = db_copy.create_state_sync_info();
+    sync_db_demo(&db_checkpoint_0, &db_copy, &mut state_info).unwrap();
     //db_copy.w_sync_db_demo(&db_checkpoint_0).unwrap();
     return;
 
@@ -219,11 +220,11 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
 
 fn sync_db_demo(
     source_db: &GroveDb,
-    target_db: &GroveDb,
+    target_db: & GroveDb,
+    state_sync_info: &mut StateSyncInfo,
 ) -> Result<(), grovedb::Error> {
-    let mut state_sync_inf = state_sync_info::new();
     let app_hash = source_db.root_hash(None).value.unwrap();
-    //target_db.w_start_snapshot_syncing(&mut state_sync_inf, app_hash);
+    target_db.w_start_snapshot_syncing(state_sync_info, app_hash).expect("TODO: panic message");
     Ok(())
 }
 

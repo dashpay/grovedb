@@ -247,7 +247,7 @@ pub struct GroveDb {
     version: i32
 }
 
-pub struct state_sync_info<'db/*, S*/> {
+pub struct StateSyncInfo<'db/*, S*/> {
     restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
     tx: Option<Transaction<'db>>,
     pending_chunks :BTreeSet<Vec<u8>>,
@@ -256,20 +256,77 @@ pub struct state_sync_info<'db/*, S*/> {
     version: i32,
 }
 
-impl/*<S>*/ state_sync_info<'_/*, S*/> {
-    pub fn new() -> state_sync_info<'static/*, S*/> {
+impl/*<S>*/ StateSyncInfo<'_/*, S*/> {
+    /*
+    pub fn new<'a>() -> StateSyncInfo<'a/*, S*/> {
         let pending_chunks = BTreeSet::new();
         let processed_prefixes = BTreeSet::new();
-        state_sync_info {
+        StateSyncInfo {
             restorer: None,
             tx: None,
-            pending_chunks: pending_chunks,
-            processed_prefixes: processed_prefixes,
+            pending_chunks,
+            processed_prefixes,
             //current_subtree_opt: None,
             current_prefix: None,
             version: 1
         }
     }
+
+     */
+/*
+    pub fn start_syncing(
+        &self,
+        source_db: &GroveDb,
+        target_db: &GroveDb,
+    ) -> Result<(), Error> {
+        let app_hash = source_db.root_hash(None).value.unwrap();
+        target_db.w_start_snapshot_syncing(&mut self, app_hash).expect("TODO: panic message");
+        Ok(())
+    }
+
+ */
+    /*
+    pub fn w_start_snapshot_syncing<'db>(
+        &'db mut self,
+        grovedb: &'db GroveDb,
+        app_hash: CryptoHash,
+    ) -> Result<Vec<Vec<u8>>, Error>{
+        let mut res = vec![];
+
+        match (&mut self.restorer, &self.tx, &self.current_prefix) {
+            (None, None, None) => {
+                if self.pending_chunks.is_empty() && self.processed_prefixes.is_empty() {
+                    let root_prefix = [0u8; 32];
+                    self.tx = Some(grovedb.start_transaction());
+                    if let Some(ref_tx) = self.tx.as_ref() {
+                        let merk = grovedb.open_merk_for_replication(SubtreePath::empty(), ref_tx).unwrap();
+                        let restorer = Restorer::new(merk, app_hash, None);
+                        self.restorer = Some(restorer);
+                        self.current_prefix = Some(root_prefix);
+                        self.pending_chunks.insert(root_prefix.to_vec());
+
+                        res.push(root_prefix.to_vec());
+                    }
+                    else {
+                        return Err(Error::InternalError(
+                            "Unable to start a tx",
+                        ));
+                    }
+                } else {
+                    return Err(Error::InternalError(
+                        "Invalid internal state sync info",
+                    ));
+                }
+            },
+            _ => {
+                return Err(Error::InternalError(
+                    "GroveDB has already started a snapshot syncing",
+                ));
+            }
+        }
+
+        Ok(res)
+    }*/
 }
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
@@ -308,6 +365,21 @@ pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    pub fn create_state_sync_info(
+        &self,
+    ) -> StateSyncInfo {
+        let pending_chunks = BTreeSet::new();
+        let processed_prefixes = BTreeSet::new();
+        StateSyncInfo {
+            restorer: None,
+            tx: None,
+            pending_chunks,
+            processed_prefixes,
+            //current_subtree_opt: None,
+            current_prefix: None,
+            version: 1
+        }
+    }
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
 
@@ -387,7 +459,7 @@ impl GroveDb {
     fn open_merk_for_replication<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        tx: &'db Transaction,
+        tx: &'b Transaction<'db>,
     ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -1316,13 +1388,20 @@ impl GroveDb {
 
     // pub fn w_start_snapshot_syncing<'db: 'a, 'a/*, S: StorageContext<'db>*/>(
     //     &'a self,
-    //     state_sync_info: &'db mut state_sync_info<'a/*, S*/>,
+    //     StateSyncInfo: &'db mut StateSyncInfo<'a/*, S*/>,
     //     app_hash: CryptoHash,
     // )
 
-    pub fn w_start_snapshot_syncing<'db: 'a, 'a/*, S: StorageContext<'db>*/>(
-        &'a self,
-        state_sync_info: &'db mut state_sync_info<'a/*, S*/>,
+    // pub fn w_start_snapshot_syncing<'db: 'a, 'a/*, S: StorageContext<'db>*/>(
+    //     &'a self,
+    //     StateSyncInfo: &'db mut StateSyncInfo<'a/*, S*/>,
+    //     app_hash: CryptoHash,
+    // )
+
+    pub fn w_start_snapshot_syncing<'db>(
+        &'db self,
+        //state_sync_info: &'db mut StateSyncInfo<'db>,
+        mut state_sync_info: StateSyncInfo<'db>,
         app_hash: CryptoHash,
     ) -> Result<Vec<Vec<u8>>, Error>{
         let mut res = vec![];
@@ -1364,7 +1443,7 @@ impl GroveDb {
 
     pub fn w_apply_chunk<'db: 'a, 'a/*, S: StorageContext<'db>*/>(
         &'a self,
-        state_sync_info: &'db mut state_sync_info<'a/*, S*/>,
+        state_sync_info: &'db mut StateSyncInfo<'a/*, S*/>,
         chunk: (Vec<u8>, Vec<Op>)
     ) -> Result<Vec<Vec<u8>>, Error>{
         let mut res = vec![];

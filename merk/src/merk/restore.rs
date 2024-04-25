@@ -121,7 +121,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     /// Process multi chunks (space optimized chunk proofs that can contain
-    /// multiple singluar chunks)
+    /// multiple singular chunks)
     pub fn process_multi_chunk(&mut self, multi_chunk: Vec<ChunkOp>) -> Result<Vec<String>, Error> {
         let mut expect_chunk_id = true;
         let mut chunk_ids = vec![];
