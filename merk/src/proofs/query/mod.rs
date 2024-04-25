@@ -183,7 +183,8 @@ impl Query {
                 for key in conditional_keys.into_iter() {
                     if current_len > max_results {
                         return Err(Error::RequestAmountExceeded(format!(
-                            "terminal keys limit exceeded for conditional subqueries, set max is {max_results}, current length is {current_len}",
+                            "terminal keys limit exceeded for conditional subqueries, set max is \
+                             {max_results}, current length is {current_len}",
                         )));
                     }
                     already_added_keys.insert(key.clone());
@@ -203,7 +204,9 @@ impl Query {
                         } else {
                             if current_len == max_results {
                                 return Err(Error::RequestAmountExceeded(format!(
-                                    "terminal keys limit exceeded when subquery path but no subquery, set max is {max_results}, current length is {current_len}",
+                                    "terminal keys limit exceeded when subquery path but no \
+                                     subquery, set max is {max_results}, current length is \
+                                     {current_len}",
                                 )));
                             }
                             // a subquery path but no subquery
@@ -249,7 +252,8 @@ impl Query {
                 }
                 if current_len > max_results {
                     return Err(Error::RequestAmountExceeded(format!(
-                        "terminal keys limit exceeded for items, set max is {max_results}, current len is {current_len}",
+                        "terminal keys limit exceeded for items, set max is {max_results}, \
+                         current len is {current_len}",
                     )));
                 }
                 let mut path = current_path.clone();
@@ -268,7 +272,8 @@ impl Query {
                     } else {
                         if current_len == max_results {
                             return Err(Error::RequestAmountExceeded(format!(
-                                "terminal keys limit exceeded when subquery path but no subquery, set max is {max_results}, current len is {current_len}",
+                                "terminal keys limit exceeded when subquery path but no subquery, \
+                                 set max is {max_results}, current len is {current_len}",
                             )));
                         }
                         // a subquery path but no subquery
@@ -299,7 +304,8 @@ impl Query {
                 } else {
                     if current_len == max_results {
                         return Err(Error::RequestAmountExceeded(format!(
-                            "terminal keys limit exceeded without subquery or subquery path, set max is {max_results}, current len is {current_len}",
+                            "terminal keys limit exceeded without subquery or subquery path, set \
+                             max is {max_results}, current len is {current_len}",
                         )));
                     }
                     result.push((path, key));
