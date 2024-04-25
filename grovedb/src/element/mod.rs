@@ -45,6 +45,8 @@ mod insert;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod query;
 #[cfg(any(feature = "full", feature = "verify"))]
+pub use query::QueryOptions;
+#[cfg(any(feature = "full", feature = "verify"))]
 mod serialize;
 #[cfg(feature = "full")]
 use core::fmt;

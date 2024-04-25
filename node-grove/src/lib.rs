@@ -664,6 +664,7 @@ impl GroveDbWrapper {
                     &path_query,
                     allows_cache,
                     true,
+                    true,
                     using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;

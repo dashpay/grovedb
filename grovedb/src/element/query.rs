@@ -71,6 +71,18 @@ pub struct QueryOptions {
     /// sub elements have no matches, hence the limit would not decrease and
     /// hence we would continue on the increasingly expensive query.
     pub decrease_limit_on_range_with_no_sub_elements: bool,
+    pub error_if_intermediate_path_tree_not_present: bool,
+}
+
+impl Default for QueryOptions {
+    fn default() -> Self {
+        QueryOptions {
+            allow_get_raw: false,
+            allow_cache: true,
+            decrease_limit_on_range_with_no_sub_elements: true,
+            error_if_intermediate_path_tree_not_present: true,
+        }
+    }
 }
 
 #[cfg(feature = "full")]
@@ -101,6 +113,7 @@ impl Element {
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
         query: &Query,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<QueryResultElements, Error> {
@@ -109,8 +122,7 @@ impl Element {
             storage,
             merk_path,
             &sized_query,
-            true,
-            true,
+            query_options,
             result_type,
             transaction,
         )
@@ -123,12 +135,14 @@ impl Element {
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
         query: &Query,
+        query_options: QueryOptions,
         transaction: TransactionArg,
     ) -> CostResult<Vec<Element>, Error> {
         Element::get_query(
             storage,
             merk_path,
             query,
+            query_options,
             QueryElementResultType,
             transaction,
         )
@@ -226,8 +240,7 @@ impl Element {
     pub fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
-        allow_cache: bool,
-        decrease_limit_on_range_with_no_sub_elements: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -240,42 +253,7 @@ impl Element {
             storage,
             path_slices.as_slice(),
             &path_query.query,
-            QueryOptions {
-                allow_get_raw: false,
-                allow_cache,
-                decrease_limit_on_range_with_no_sub_elements,
-            },
-            result_type,
-            transaction,
-            Element::path_query_push,
-        )
-    }
-
-    #[cfg(feature = "full")]
-    /// Returns a vector of elements including trees, and the number of skipped
-    /// elements
-    pub fn get_raw_path_query(
-        storage: &RocksDbStorage,
-        path_query: &PathQuery,
-        allow_cache: bool,
-        decrease_limit_on_range_with_no_sub_elements: bool,
-        result_type: QueryResultType,
-        transaction: TransactionArg,
-    ) -> CostResult<(QueryResultElements, u16), Error> {
-        let path_slices = path_query
-            .path
-            .iter()
-            .map(|x| x.as_slice())
-            .collect::<Vec<_>>();
-        Element::get_query_apply_function(
-            storage,
-            path_slices.as_slice(),
-            &path_query.query,
-            QueryOptions {
-                allow_get_raw: true,
-                allow_cache,
-                decrease_limit_on_range_with_no_sub_elements,
-            },
+            query_options,
             result_type,
             transaction,
             Element::path_query_push,
@@ -288,8 +266,7 @@ impl Element {
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        allow_cache: bool,
-        decrease_limit_on_range_with_no_sub_elements: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -297,11 +274,7 @@ impl Element {
             storage,
             path,
             sized_query,
-            QueryOptions {
-                allow_get_raw: false,
-                allow_cache,
-                decrease_limit_on_range_with_no_sub_elements,
-            },
+            query_options,
             result_type,
             transaction,
             Element::path_query_push,
@@ -332,6 +305,7 @@ impl Element {
             allow_get_raw,
             allow_cache,
             decrease_limit_on_range_with_no_sub_elements,
+            ..
         } = query_options;
         if element.is_tree() {
             let mut path_vec = path.to_vec();
@@ -357,8 +331,7 @@ impl Element {
                     Element::get_path_query(
                         storage,
                         &inner_path_query,
-                        allow_cache,
-                        decrease_limit_on_range_with_no_sub_elements,
+                        query_options,
                         result_type,
                         transaction
                     )
@@ -605,7 +578,7 @@ impl Element {
                     Ok(element) => {
                         let (subquery_path, subquery) =
                             Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                        add_element_function(PathQueryPushArgs {
+                        match add_element_function(PathQueryPushArgs {
                             storage,
                             transaction,
                             key: Some(key.as_slice()),
@@ -621,10 +594,31 @@ impl Element {
                             offset,
                         })
                         .unwrap_add_cost(&mut cost)
+                        {
+                            Ok(_) => Ok(()),
+                            Err(e) => {
+                                if !query_options.error_if_intermediate_path_tree_not_present {
+                                    match e {
+                                        Error::PathParentLayerNotFound(_) => Ok(()),
+                                        _ => Err(e),
+                                    }
+                                } else {
+                                    Err(e)
+                                }
+                            }
+                        }
                     }
-                    Err(Error::PathKeyNotFound(_))
-                    | Err(Error::PathParentLayerNotFound(_)) => Ok(()),
-                    Err(e) => Err(e),
+                    Err(Error::PathKeyNotFound(_)) => Ok(()),
+                    Err(e) => {
+                        if !query_options.error_if_intermediate_path_tree_not_present {
+                            match e {
+                                Error::PathParentLayerNotFound(_) => Ok(()),
+                                _ => Err(e),
+                            }
+                        } else {
+                            Err(e)
+                        }
+                    }
                 }
             } else {
                 Err(Error::InternalError(
@@ -658,24 +652,36 @@ impl Element {
                         .expect("key should exist");
                     let (subquery_path, subquery) =
                         Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                    cost_return_on_error!(
-                        &mut cost,
-                        add_element_function(PathQueryPushArgs {
-                            storage,
-                            transaction,
-                            key: Some(key),
-                            element,
-                            path,
-                            subquery_path,
-                            subquery,
-                            left_to_right: sized_query.query.left_to_right,
-                            query_options,
-                            result_type,
-                            results,
-                            limit,
-                            offset,
-                        })
-                    );
+                    let result_with_cost = add_element_function(PathQueryPushArgs {
+                        storage,
+                        transaction,
+                        key: Some(key),
+                        element,
+                        path,
+                        subquery_path,
+                        subquery,
+                        left_to_right: sized_query.query.left_to_right,
+                        query_options,
+                        result_type,
+                        results,
+                        limit,
+                        offset,
+                    });
+                    let result = result_with_cost.unwrap_add_cost(&mut cost);
+                    match result {
+                        Ok(x) => x,
+                        Err(e) => {
+                            if !query_options.error_if_intermediate_path_tree_not_present {
+                                match e {
+                                    Error::PathKeyNotFound(_)
+                                    | Error::PathParentLayerNotFound(_) => (),
+                                    _ => return Err(e).wrap_with_cost(cost),
+                                }
+                            } else {
+                                return Err(e).wrap_with_cost(cost);
+                            }
+                        }
+                    }
                     if sized_query.query.left_to_right {
                         iter.next().unwrap_add_cost(&mut cost);
                     } else {
@@ -751,7 +757,7 @@ mod tests {
     use grovedb_storage::{Storage, StorageBatch};
 
     use crate::{
-        element::*,
+        element::{query::QueryOptions, *},
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
             QueryResultType::{QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType},
@@ -807,7 +813,7 @@ mod tests {
         query.insert_key(b"a".to_vec());
 
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -821,7 +827,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -836,7 +842,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -852,7 +858,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -913,6 +919,7 @@ mod tests {
                 &db.db,
                 &[TEST_LEAF],
                 &query,
+                QueryOptions::default(),
                 QueryPathKeyElementTrioResultType,
                 None
             )
@@ -976,8 +983,7 @@ mod tests {
             storage,
             &[TEST_LEAF],
             &ascending_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1011,8 +1017,7 @@ mod tests {
             storage,
             &[TEST_LEAF],
             &backwards_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1101,8 +1106,7 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &ascending_query,
-                true,
-                true,
+                QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
             )
@@ -1119,8 +1123,7 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
-                true,
-                true,
+                QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
             )
@@ -1140,8 +1143,7 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
-                true,
-                true,
+                QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
             )
@@ -1203,8 +1205,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1230,8 +1231,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1252,8 +1252,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1274,8 +1273,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1295,8 +1293,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1321,8 +1318,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1346,8 +1342,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_full_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1372,8 +1367,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
@@ -1398,8 +1392,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_backwards_query,
-            true,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
         )
