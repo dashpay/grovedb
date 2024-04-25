@@ -70,36 +70,42 @@ fn create_empty_db(grovedb_path: String) -> GroveDb   {
 }
 
 fn main() {
-    let path_0 = generate_random_path("../tutorial-storage/", "/db_0", 24);
-    let db_0 = populate_db(path_0.clone());
-    let checkpoint_dir = path_0 + "/checkpoint";
-    let path_checkpoint = Path::new(checkpoint_dir.as_str());
-    db_0.create_checkpoint(&path_checkpoint).expect("cannot create checkpoint");
-    let db_checkpoint_0 = GroveDb::open(path_checkpoint).expect("cannot open grovedb from checkpoint");
+    let path_source = generate_random_path("../tutorial-storage/", "/db_0", 24);
+    let db_source = populate_db(path_source.clone());
 
-    let path_copy = generate_random_path("../tutorial-storage/", "/db_copy", 24);
-    let db_copy = create_empty_db(path_copy.clone());
+    let checkpoint_dir = path_source + "/checkpoint";
+    let path_checkpoint = Path::new(checkpoint_dir.as_str());
+
+    db_source.create_checkpoint(&path_checkpoint).expect("cannot create checkpoint");
+    let db_checkpoint_0 = GroveDb::open(path_checkpoint).expect("cannot open groveDB from checkpoint");
+
+    let path_destination = generate_random_path("../tutorial-storage/", "/db_copy", 24);
+    let db_destination = create_empty_db(path_destination.clone());
 
     println!("\n######### root_hashes:");
-    let root_hash_0 = db_0.root_hash(None).unwrap().unwrap();
+    let root_hash_0 = db_source.root_hash(None).unwrap().unwrap();
     println!("root_hash_0: {:?}", hex::encode(root_hash_0));
     let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None).unwrap().unwrap();
     println!("root_hash_checkpoint_0: {:?}", hex::encode(root_hash_checkpoint_0));
-    let root_hash_copy = db_copy.root_hash(None).unwrap().unwrap();
+    let root_hash_copy = db_destination.root_hash(None).unwrap().unwrap();
     println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
     println!("\n######### db_checkpoint_0 -> db_copy state sync");
-    let mut state_info = db_copy.create_state_sync_info();
-    sync_db_demo(&db_checkpoint_0, &db_copy, &mut state_info).unwrap();
+    let state_info = db_destination.create_state_sync_info();
+
+    let transaction = db_destination.start_transaction();
+    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &transaction).unwrap();
     //db_copy.w_sync_db_demo(&db_checkpoint_0).unwrap();
-    return;
+
+    db_destination.commit_transaction(transaction).unwrap().expect("expected to commit transaction");
+
 
     println!("\n######### root_hashes:");
-    let root_hash_0 = db_0.root_hash(None).unwrap().unwrap();
+    let root_hash_0 = db_source.root_hash(None).unwrap().unwrap();
     println!("root_hash_0: {:?}", hex::encode(root_hash_0));
     let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None).unwrap().unwrap();
     println!("root_hash_checkpoint_0: {:?}", hex::encode(root_hash_checkpoint_0));
-    let root_hash_copy = db_copy.root_hash(None).unwrap().unwrap();
+    let root_hash_copy = db_destination.root_hash(None).unwrap().unwrap();
     println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
     let query_path = &[MAIN_ΚΕΥ, KEY_INT_0];
@@ -107,7 +113,7 @@ fn main() {
     println!("\n######## Query on db_checkpoint_0:");
     query_db(&db_checkpoint_0, query_path, query_key.clone());
     println!("\n######## Query on db_copy:");
-    query_db(&db_copy, query_path, query_key.clone());
+    query_db(&db_destination, query_path, query_key.clone());
 
     return;
 
@@ -220,11 +226,24 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
 
 fn sync_db_demo(
     source_db: &GroveDb,
-    target_db: & GroveDb,
-    state_sync_info: &mut StateSyncInfo,
+    target_db: &GroveDb,
+    state_sync_info: StateSyncInfo,
+    tx: &Transaction,
 ) -> Result<(), grovedb::Error> {
     let app_hash = source_db.root_hash(None).value.unwrap();
-    target_db.w_start_snapshot_syncing(state_sync_info, app_hash).expect("TODO: panic message");
+    let (chunk_ids, mut state_sync_info) = target_db.w_start_snapshot_syncing(state_sync_info, app_hash, tx)?;
+
+    let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
+
+    chunk_queue.extend(chunk_ids);
+
+    while let Some(chunk_id) = chunk_queue.pop_front() {
+        let ops = source_db.w_fetch_chunk(chunk_id.as_slice())?;
+        let (more_chunks, new_state_sync_info) = target_db.w_apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), tx)?;
+        state_sync_info = new_state_sync_info;
+        chunk_queue.extend(more_chunks);
+    }
+
     Ok(())
 }
 

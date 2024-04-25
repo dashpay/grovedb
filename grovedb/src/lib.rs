@@ -249,7 +249,6 @@ pub struct GroveDb {
 
 pub struct StateSyncInfo<'db/*, S*/> {
     restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
-    tx: Option<Transaction<'db>>,
     pending_chunks :BTreeSet<Vec<u8>>,
     processed_prefixes :BTreeSet<SubtreePrefix>,
     current_prefix: Option<SubtreePrefix>,
@@ -372,7 +371,6 @@ impl GroveDb {
         let processed_prefixes = BTreeSet::new();
         StateSyncInfo {
             restorer: None,
-            tx: None,
             pending_chunks,
             processed_prefixes,
             //current_subtree_opt: None,
@@ -459,7 +457,7 @@ impl GroveDb {
     fn open_merk_for_replication<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        tx: &'b Transaction<'db>,
+        tx: &'db Transaction,
     ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -1146,7 +1144,7 @@ impl GroveDb {
 
     pub fn w_fetch_chunk(
         &self,
-        global_chunk_id: Vec<u8>
+        global_chunk_id: &[u8]
     ) -> Result<Vec<Op>, Error> {
         let CHUNK_PREFIX_LENGTH: usize = 32;
         if (global_chunk_id.len() < CHUNK_PREFIX_LENGTH) {
@@ -1239,7 +1237,7 @@ impl GroveDb {
         let root_global_chunk_id = vec![0u8; 32];
         let (root_prefix, _) = w_util_split_global_chunk_id(&root_global_chunk_id)?;
 
-        let root_chunk = source_db.w_fetch_chunk(root_global_chunk_id.clone())?;
+        let root_chunk = source_db.w_fetch_chunk(root_global_chunk_id.as_slice())?;
 
         let mut pending_chunks :BTreeMap<Vec<u8>, Vec<Op>> = BTreeMap::new();
         let mut processed_prefixes :BTreeSet<SubtreePrefix> = BTreeSet::new();
@@ -1260,7 +1258,7 @@ impl GroveDb {
 
             while (!pending_chunks.is_empty()) {
                 for (global_chunk_id, chunk_data) in pending_chunks.iter_mut() {
-                    match source_db.w_fetch_chunk(global_chunk_id.to_vec()) {
+                    match source_db.w_fetch_chunk(global_chunk_id.as_slice()) {
                         Ok(chunk) => {
                             *chunk_data = chunk;
                         }
@@ -1317,7 +1315,7 @@ impl GroveDb {
                 let merk = self.open_merk_for_replication(path.into(), &tx).unwrap();
                 let mut restorer = Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
 
-                let subtree_root_chunk = source_db.w_fetch_chunk(current_prefix.to_vec())?;
+                let subtree_root_chunk = source_db.w_fetch_chunk(current_prefix.as_slice())?;
                 if (!subtree_root_chunk.is_empty()) {
                     let next_chunk_ids = restorer.process_chunk("".to_string(), subtree_root_chunk).expect("should process chunk successfully");
                     for next_chunk_id in next_chunk_ids {
@@ -1327,7 +1325,7 @@ impl GroveDb {
                     }
                     while (!pending_chunks.is_empty()) {
                         for (global_chunk_id, chunk_data) in pending_chunks.iter_mut() {
-                            match source_db.w_fetch_chunk(global_chunk_id.to_vec()) {
+                            match source_db.w_fetch_chunk(global_chunk_id.as_slice()) {
                                 Ok(chunk) => {
                                     *chunk_data = chunk;
                                 }
@@ -1400,31 +1398,23 @@ impl GroveDb {
 
     pub fn w_start_snapshot_syncing<'db>(
         &'db self,
-        //state_sync_info: &'db mut StateSyncInfo<'db>,
         mut state_sync_info: StateSyncInfo<'db>,
         app_hash: CryptoHash,
-    ) -> Result<Vec<Vec<u8>>, Error>{
+        tx: &'db Transaction,
+    ) -> Result<(Vec<Vec<u8>>, StateSyncInfo), Error>{
         let mut res = vec![];
 
-        match (&mut state_sync_info.restorer, &state_sync_info.tx, &state_sync_info.current_prefix) {
-            (None, None, None) => {
+        match (&mut state_sync_info.restorer, &state_sync_info.current_prefix) {
+            (None, None) => {
                 if state_sync_info.pending_chunks.is_empty() && state_sync_info.processed_prefixes.is_empty() {
                     let root_prefix = [0u8; 32];
-                    state_sync_info.tx = Some(self.start_transaction());
-                    if let Some(ref_tx) = state_sync_info.tx.as_ref() {
-                        let merk = self.open_merk_for_replication(SubtreePath::empty(), ref_tx).unwrap();
-                        let restorer = Restorer::new(merk, app_hash, None);
-                        state_sync_info.restorer = Some(restorer);
-                        state_sync_info.current_prefix = Some(root_prefix);
-                        state_sync_info.pending_chunks.insert(root_prefix.to_vec());
+                    let merk = self.open_merk_for_replication(SubtreePath::empty(), tx).unwrap();
+                    let restorer = Restorer::new(merk, app_hash, None);
+                    state_sync_info.restorer = Some(restorer);
+                    state_sync_info.current_prefix = Some(root_prefix);
+                    state_sync_info.pending_chunks.insert(root_prefix.to_vec());
 
-                        res.push(root_prefix.to_vec());
-                    }
-                    else {
-                        return Err(Error::InternalError(
-                            "Unable to start a tx",
-                        ));
-                    }
+                    res.push(root_prefix.to_vec());
                 } else {
                     return Err(Error::InternalError(
                         "Invalid internal state sync info",
@@ -1438,32 +1428,33 @@ impl GroveDb {
             }
         }
 
-        Ok(res)
+        Ok((res, state_sync_info))
     }
 
-    pub fn w_apply_chunk<'db: 'a, 'a/*, S: StorageContext<'db>*/>(
-        &'a self,
-        state_sync_info: &'db mut StateSyncInfo<'a/*, S*/>,
-        chunk: (Vec<u8>, Vec<Op>)
-    ) -> Result<Vec<Vec<u8>>, Error>{
+    pub fn w_apply_chunk<'db>(
+        &'db self,
+        mut state_sync_info: StateSyncInfo<'db>,
+        chunk: (&[u8], Vec<Op>),
+        tx: &'db Transaction,
+    ) -> Result<(Vec<Vec<u8>>, StateSyncInfo), Error>{
         let mut res = vec![];
 
         let (global_chunk_id, chunk_data) = chunk;
         let (chunk_prefix, chunk_id) = w_util_split_global_chunk_id(&global_chunk_id)?;
 
-        match (&mut state_sync_info.restorer, &state_sync_info.tx, &state_sync_info.current_prefix) {
-            (Some(restorer), Some(tx), Some(ref current_prefix)) => {
+        match (&mut state_sync_info.restorer, &state_sync_info.current_prefix) {
+            (Some(restorer), Some(ref current_prefix)) => {
                 if (*current_prefix != chunk_prefix) {
                     return Err(Error::InternalError(
                         "Invalid incoming prefix",
                     ));
                 }
-                if (!state_sync_info.pending_chunks.contains(&global_chunk_id)) {
+                if (!state_sync_info.pending_chunks.contains(global_chunk_id)) {
                     return Err(Error::InternalError(
                         "Incoming global_chunk_id not expected",
                     ));
                 }
-                state_sync_info.pending_chunks.remove(&global_chunk_id);
+                state_sync_info.pending_chunks.remove(global_chunk_id);
                 match restorer.process_chunk(chunk_id.to_string(), chunk_data) {
                     Ok(next_chunk_ids) => {
                         for next_chunk_id in next_chunk_ids {
@@ -1488,42 +1479,31 @@ impl GroveDb {
         }
 
         if (res.is_empty()) {
-            match (state_sync_info.restorer.take(), state_sync_info.tx.take(), state_sync_info.current_prefix.take()) {
-                (Some(restorer), Some(tx), Some(current_prefix)) => {
+            match (state_sync_info.restorer.take(), state_sync_info.current_prefix.take()) {
+                (Some(restorer), Some(current_prefix)) => {
                     //make sure that pending_chunks is empty
                     if (!restorer.finalize().is_ok()) {
                         return Err(Error::InternalError(
                             "Unable to finalize merk",
                         ));
                     }
-                    self.commit_transaction(tx);
                     state_sync_info.processed_prefixes.insert(current_prefix);
                     let subtrees_metadata = crate::w_subtree_metadata::new();
                     for (prefix, prefix_metadata) in &subtrees_metadata.data {
                         if !state_sync_info.processed_prefixes.contains(prefix) {
-                            let current_path = &prefix_metadata.0;
-                            let s_actual_value_hash = &prefix_metadata.1;
-                            let s_elem_value_hash = &prefix_metadata.2;
+                            let (current_path, s_actual_value_hash, s_elem_value_hash, _) = &prefix_metadata;
 
                             let subtree_path: Vec<&[u8]> = current_path.iter().map(|vec| vec.as_slice()).collect();
                             let path: &[&[u8]] = &subtree_path;
 
-                            state_sync_info.tx = Some(self.start_transaction());
-                            if let Some(ref_val) = state_sync_info.tx.as_ref() {
-                                let merk = self.open_merk_for_replication(path.into(), ref_val).unwrap();
-                                let restorer = Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
-                                state_sync_info.restorer = Some(restorer);
-                                state_sync_info.current_prefix = Some(*prefix);
+                            let merk = self.open_merk_for_replication(path.into(), tx).unwrap();
+                            let restorer = Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
+                            state_sync_info.restorer = Some(restorer);
+                            state_sync_info.current_prefix = Some(*prefix);
 
-                                let mut root_chunk_prefix = prefix.to_vec();
-                                state_sync_info.pending_chunks.insert(root_chunk_prefix.clone());
-                                res.push(root_chunk_prefix);
-                            }
-                            else {
-                                return Err(Error::InternalError(
-                                    "Unable to start a tx",
-                                ));
-                            }
+                            let mut root_chunk_prefix = prefix.to_vec();
+                            state_sync_info.pending_chunks.insert(root_chunk_prefix.clone());
+                            res.push(root_chunk_prefix);
                             break;
                         }
                     }
@@ -1536,7 +1516,7 @@ impl GroveDb {
             }
         }
 
-        Ok(res)
+        Ok((res, state_sync_info))
     }
 }
 
@@ -1552,7 +1532,7 @@ pub fn s_util_path_to_string(
 }
 
 pub fn w_util_split_global_chunk_id(
-    global_chunk_id: &Vec<u8>,
+    global_chunk_id: &[u8],
 ) -> Result<(SubtreePrefix, String), Error> {
     let CHUNK_PREFIX_LENGTH: usize = 32;
     if (global_chunk_id.len() < CHUNK_PREFIX_LENGTH) {
