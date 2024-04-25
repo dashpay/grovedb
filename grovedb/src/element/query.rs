@@ -622,7 +622,8 @@ impl Element {
                         })
                         .unwrap_add_cost(&mut cost)
                     }
-                    Err(Error::PathKeyNotFound(_)) => Ok(()),
+                    Err(Error::PathKeyNotFound(_))
+                    | Err(Error::PathParentLayerNotFound(_)) => Ok(()),
                     Err(e) => Err(e),
                 }
             } else {
