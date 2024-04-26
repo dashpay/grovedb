@@ -198,7 +198,7 @@ impl Query {
                             path.extend(subquery_path.iter().cloned());
                             // recurse onto the lower level
                             let added_here =
-                                subquery.terminal_keys(path, max_results - current_len, result)?;
+                                subquery.terminal_keys(path, max_results, result)?;
                             added += added_here;
                             current_len += added_here;
                         } else {
@@ -266,7 +266,7 @@ impl Query {
                         path.extend(subquery_path.iter().cloned());
                         // recurse onto the lower level
                         let added_here =
-                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                            subquery.terminal_keys(path, max_results, result)?;
                         added += added_here;
                         current_len += added_here;
                     } else {
@@ -298,7 +298,7 @@ impl Query {
                     path.push(key);
                     // recurse onto the lower level
                     let added_here =
-                        subquery.terminal_keys(path, max_results - current_len, result)?;
+                        subquery.terminal_keys(path, max_results, result)?;
                     added += added_here;
                     current_len += added_here;
                 } else {
