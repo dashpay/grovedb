@@ -183,7 +183,8 @@ impl Query {
                 for key in conditional_keys.into_iter() {
                     if current_len > max_results {
                         return Err(Error::RequestAmountExceeded(format!(
-                            "terminal keys limit exceeded, set max is {max_results}",
+                            "terminal keys limit exceeded for conditional subqueries, set max is \
+                             {max_results}, current length is {current_len}",
                         )));
                     }
                     already_added_keys.insert(key.clone());
@@ -196,14 +197,15 @@ impl Query {
                             // push the subquery path to the path
                             path.extend(subquery_path.iter().cloned());
                             // recurse onto the lower level
-                            let added_here =
-                                subquery.terminal_keys(path, max_results - current_len, result)?;
+                            let added_here = subquery.terminal_keys(path, max_results, result)?;
                             added += added_here;
                             current_len += added_here;
                         } else {
                             if current_len == max_results {
                                 return Err(Error::RequestAmountExceeded(format!(
-                                    "terminal keys limit exceeded, set max is {max_results}",
+                                    "terminal keys limit exceeded when subquery path but no \
+                                     subquery, set max is {max_results}, current length is \
+                                     {current_len}",
                                 )));
                             }
                             // a subquery path but no subquery
@@ -249,7 +251,8 @@ impl Query {
                 }
                 if current_len > max_results {
                     return Err(Error::RequestAmountExceeded(format!(
-                        "terminal keys limit exceeded, set max is {max_results}",
+                        "terminal keys limit exceeded for items, set max is {max_results}, \
+                         current len is {current_len}",
                     )));
                 }
                 let mut path = current_path.clone();
@@ -261,14 +264,14 @@ impl Query {
                         // push the subquery path to the path
                         path.extend(subquery_path.iter().cloned());
                         // recurse onto the lower level
-                        let added_here =
-                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                        let added_here = subquery.terminal_keys(path, max_results, result)?;
                         added += added_here;
                         current_len += added_here;
                     } else {
                         if current_len == max_results {
                             return Err(Error::RequestAmountExceeded(format!(
-                                "terminal keys limit exceeded, set max is {max_results}",
+                                "terminal keys limit exceeded when subquery path but no subquery, \
+                                 set max is {max_results}, current len is {current_len}",
                             )));
                         }
                         // a subquery path but no subquery
@@ -292,14 +295,14 @@ impl Query {
                     // push the key to the path
                     path.push(key);
                     // recurse onto the lower level
-                    let added_here =
-                        subquery.terminal_keys(path, max_results - current_len, result)?;
+                    let added_here = subquery.terminal_keys(path, max_results, result)?;
                     added += added_here;
                     current_len += added_here;
                 } else {
                     if current_len == max_results {
                         return Err(Error::RequestAmountExceeded(format!(
-                            "terminal keys limit exceeded, set max is {max_results}",
+                            "terminal keys limit exceeded without subquery or subquery path, set \
+                             max is {max_results}, current len is {current_len}",
                         )));
                     }
                     result.push((path, key));
