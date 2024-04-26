@@ -240,17 +240,26 @@ pub struct GroveDb {
     version: i32
 }
 
+// Struct governing state sync
 pub struct StateSyncInfo<'db> {
+    // Current Chunk restorer
     restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
+    // Set of processed prefixes (Path digests)
     processed_prefixes :BTreeSet<SubtreePrefix>,
+    // Current processed prefix (Path digest)
     current_prefix: Option<SubtreePrefix>,
+    // Set of global chunk ids requested to be fetched and pending for processing. For the description of global chunk id check fetch_chunk().
     pending_chunks :BTreeSet<Vec<u8>>,
+    // Number of processed chunks in current prefix (Path digest)
     num_processed_chunks: usize,
 }
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
+// Struct containing information about current subtrees found in GroveDB
 pub struct SubtreesMetadata {
+    // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent Subtree elem_value_hash)
+    // Note: Parent Subtree actual_value_hash, Parent Subtree elem_value_hash are needed when verifying the new constructed subtree after wards.
     pub data: BTreeMap<SubtreePrefix, (Vec<Vec<u8>>, CryptoHash, CryptoHash)>
 }
 
@@ -266,7 +275,7 @@ impl fmt::Debug for SubtreesMetadata {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (prefix, metadata) in self.data.iter() {
             let metadata_path = &metadata.0;
-            let metadata_path_str = s_util_path_to_string(&metadata_path);
+            let metadata_path_str = util_path_to_string(&metadata_path);
             write!(f, " prefix:{:?} -> path:{:?}\n", hex::encode(prefix), metadata_path_str);
         }
         Ok(())
@@ -1060,6 +1069,56 @@ impl GroveDb {
         Ok(issues)
     }
 
+    // Returns the discovered subtrees found recursively along with their associated metadata
+    // Params:
+    // tx: Transaction. Function returns the data by opening merks at given tx.
+    // TODO: Add a SubTreePath as param and start searching from that path instead of root (as it is now)
+    pub fn get_subtrees_metadata<'db>(
+        &'db self,
+        tx: &'db Transaction,
+    ) -> Result<SubtreesMetadata, Error> {
+        let mut subtrees_metadata = crate::SubtreesMetadata::new();
+
+        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), Some(tx)).value?;
+        for subtree in subtrees_root.into_iter() {
+            let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
+            let path: &[&[u8]] = &subtree_path;
+            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+
+            let current_path = SubtreePath::from(path);
+
+            let parent_path_opt = current_path.derive_parent();
+            if (parent_path_opt.is_some()) {
+                let parent_path = parent_path_opt.unwrap().0;
+                let parent_merk = self.open_transactional_merk_at_path(parent_path, tx, None).value?;
+                let parent_key = subtree.last().unwrap();
+                let (elem_value, elem_value_hash) = parent_merk
+                    .get_value_and_value_hash(
+                        parent_key,
+                        true,
+                        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    ).value.expect("should get value hash").expect("value hash should be some");
+
+                let actual_value_hash =  value_hash(&elem_value).unwrap();
+                subtrees_metadata.data.insert(prefix, (current_path.to_vec(), actual_value_hash, elem_value_hash));
+            }
+            else {
+                subtrees_metadata.data.insert(prefix, (current_path.to_vec(), CryptoHash::default(), CryptoHash::default()));
+            }
+        }
+        Ok(subtrees_metadata)
+    }
+
+    // Fetch a chunk by global chunk id (should be called by ABCI when LoadSnapshotChunk method is called)
+    // Params:
+    // global_chunk_id: Global chunk id in the following format: [SUBTREE_PREFIX:CHUNK_ID]
+    // SUBTREE_PREFIX: 32 bytes (mandatory) (All zeros = Root subtree)
+    // CHUNK_ID: 0.. bytes (optional) Traversal instructions to the root of the given chunk.
+    // Traversal instructions are "1" for left, and "0" for right.
+    // TODO: Compact CHUNK_ID into bitset for size optimization as a subtree can be big hence traversal instructions for the deepest chunks
+    // tx: Transaction. Function returns the data by opening merks at given tx.
+    // TODO: Make this tx optional: None -> Use latest data
+    // Returns the Chunk proof operators for the requested chunk
     pub fn fetch_chunk<'db>(
         &'db self,
         global_chunk_id: &[u8],
@@ -1078,8 +1137,7 @@ impl GroveDb {
         array.copy_from_slice(chunk_prefix);
         let chunk_prefix_key: SubtreePrefix = array;
 
-        let tx = self.start_transaction();
-        let subtrees_metadata = self.get_subtrees_metadata(&SubtreePath::empty(), &tx)?;
+        let subtrees_metadata = self.get_subtrees_metadata(&tx)?;
 
         match subtrees_metadata.data.get(&chunk_prefix_key) {
             Some(path_data) => {
@@ -1124,43 +1182,12 @@ impl GroveDb {
         }
     }
 
-    pub fn get_subtrees_metadata<'db, B: AsRef<[u8]>>(
-        &'db self,
-        path: &SubtreePath<B>,
-        tx: &'db Transaction,
-    ) -> Result<SubtreesMetadata, Error> {
-        let mut subtrees_metadata = crate::SubtreesMetadata::new();
-
-        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), Some(tx)).value?;
-        for subtree in subtrees_root.into_iter() {
-            let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
-            let path: &[&[u8]] = &subtree_path;
-            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
-
-            let current_path = SubtreePath::from(path);
-
-            let parent_path_opt = current_path.derive_parent();
-            if (parent_path_opt.is_some()) {
-                let parent_path = parent_path_opt.unwrap().0;
-                let parent_merk = self.open_transactional_merk_at_path(parent_path, tx, None).value?;
-                let parent_key = subtree.last().unwrap();
-                let (elem_value, elem_value_hash) = parent_merk
-                    .get_value_and_value_hash(
-                        parent_key,
-                        true,
-                        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
-                    ).value.expect("should get value hash").expect("value hash should be some");
-
-                let actual_value_hash =  value_hash(&elem_value).unwrap();
-                subtrees_metadata.data.insert(prefix, (current_path.to_vec(), actual_value_hash, elem_value_hash));
-            }
-            else {
-                subtrees_metadata.data.insert(prefix, (current_path.to_vec(), CryptoHash::default(), CryptoHash::default()));
-            }
-        }
-        Ok(subtrees_metadata)
-    }
-
+    // Starts a state sync process (should be called by ABCI when OfferSnapshot method is called)
+    // Params:
+    // state_sync_info: Consumed StateSyncInfo
+    // app_hash: Snapshot's AppHash
+    // tx: Transaction for the state sync
+    // Returns the first set of global chunk ids that can be fetched from sources (+ the StateSyncInfo transferring ownership back to the caller)
     pub fn start_snapshot_syncing<'db>(
         &'db self,
         mut state_sync_info: StateSyncInfo<'db>,
@@ -1196,6 +1223,12 @@ impl GroveDb {
         Ok((res, state_sync_info))
     }
 
+    // Apply a chunk (should be called by ABCI when ApplySnapshotChunk method is called)
+    // Params:
+    // state_sync_info: Consumed StateSyncInfo
+    // chunk: (Global chunk id, Chunk proof operators)
+    // tx: Transaction for the state sync
+    // Returns the next set of global chunk ids that can be fetched from sources (+ the StateSyncInfo transferring ownership back to the caller)
     pub fn apply_chunk<'db>(
         &'db self,
         mut state_sync_info: StateSyncInfo<'db>,
@@ -1261,10 +1294,10 @@ impl GroveDb {
                     }
                     state_sync_info.processed_prefixes.insert(current_prefix);
 
-                    let subtrees_metadata = self.get_subtrees_metadata(&SubtreePath::empty(), tx)?;
+                    let subtrees_metadata = self.get_subtrees_metadata(tx)?;
                     if let Some(value) = subtrees_metadata.data.get(&current_prefix) {
                         let v_path = &value.0;
-                        println!("    path:{:?} done", s_util_path_to_string(&value.0));
+                        println!("    path:{:?} done", util_path_to_string(&value.0));
                     }
 
                     for (prefix, prefix_metadata) in &subtrees_metadata.data {
@@ -1299,7 +1332,8 @@ impl GroveDb {
     }
 }
 
-pub fn s_util_path_to_string(
+// Converts a path into a human-readable string (for debuting)
+pub fn util_path_to_string(
     path: &Vec<Vec<u8>>,
 ) -> Vec<String> {
     let mut subtree_path_str: Vec<String> = vec![];
@@ -1310,17 +1344,18 @@ pub fn s_util_path_to_string(
     subtree_path_str
 }
 
+// Splits the given global chunk id into [SUBTREE_PREFIX:CHUNK_ID]
 pub fn util_split_global_chunk_id(
     global_chunk_id: &[u8],
 ) -> Result<(SubtreePrefix, String), Error> {
     let CHUNK_PREFIX_LENGTH: usize = 32;
-    if (global_chunk_id.len() < CHUNK_PREFIX_LENGTH) {
+    if global_chunk_id.len() < CHUNK_PREFIX_LENGTH {
         return Err(Error::CorruptedData(
             "expected global chunk id of at least 32 length".to_string(),
         ));
     }
 
-    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(32);
+    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(CHUNK_PREFIX_LENGTH);
     let mut array = [0u8; 32];
     array.copy_from_slice(chunk_prefix);
     let chunk_prefix_key: SubtreePrefix = array;

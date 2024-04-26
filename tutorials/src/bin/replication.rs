@@ -79,7 +79,7 @@ fn main() {
 
     println!("\n######### source_subtree_metadata");
     let source_tx = db_source.start_transaction();
-    let subtrees_metadata = db_source.get_subtrees_metadata(&SubtreePath::empty(), &source_tx).unwrap();
+    let subtrees_metadata = db_source.get_subtrees_metadata(&source_tx).unwrap();
     println!("{:?}", subtrees_metadata);
 
     println!("\n######### db_checkpoint_0 -> db_copy state sync");
