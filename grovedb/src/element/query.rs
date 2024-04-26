@@ -59,7 +59,7 @@ use crate::{
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, SizedQuery};
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, Debug)]
 pub struct QueryOptions {
     pub allow_get_raw: bool,
@@ -74,7 +74,7 @@ pub struct QueryOptions {
     pub error_if_intermediate_path_tree_not_present: bool,
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Default for QueryOptions {
     fn default() -> Self {
         QueryOptions {

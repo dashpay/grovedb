@@ -44,7 +44,7 @@ pub(crate) mod helpers;
 mod insert;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod query;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use query::QueryOptions;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod serialize;
