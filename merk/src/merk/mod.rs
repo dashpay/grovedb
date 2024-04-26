@@ -57,16 +57,25 @@ use grovedb_costs::{
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use source::MerkSource;
 
-use crate::{error::Error, merk::{defaults::ROOT_KEY_KEY, options::MerkOptions}, proofs::{
-    chunk::{
-        chunk::{LEFT, RIGHT},
-        util::traversal_instruction_as_string,
+use crate::{
+    error::Error,
+    merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
+    proofs::{
+        chunk::{
+            chunk::{LEFT, RIGHT},
+            util::traversal_instruction_as_string,
+        },
+        query::query_item::QueryItem,
+        Query,
     },
-    query::query_item::QueryItem,
-    Query,
-}, tree::{
-    kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
-}, Error::{CostsError, EdError, StorageError}, Link, MerkType::{BaseMerk, LayeredMerk, StandaloneMerk}, BatchEntry};
+    tree::{
+        kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
+    },
+    BatchEntry,
+    Error::{CostsError, EdError, StorageError},
+    Link,
+    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
+};
 
 /// Key update types
 pub struct KeyUpdates {
@@ -545,7 +554,10 @@ where
     /// hash values are computed correctly, heights are accurate and links
     /// consistent with backing store.
     // TODO: define the return types
-    pub fn verify(&self, skip_sum_checks: bool) -> (BTreeMap<String, CryptoHash>, BTreeMap<String, Vec<u8>>) {
+    pub fn verify(
+        &self,
+        skip_sum_checks: bool,
+    ) -> (BTreeMap<String, CryptoHash>, BTreeMap<String, Vec<u8>>) {
         let tree = self.tree.take();
 
         let mut bad_link_map: BTreeMap<String, CryptoHash> = BTreeMap::new();
@@ -582,7 +594,7 @@ where
                 traversal_instruction,
                 bad_link_map,
                 parent_keys,
-                skip_sum_checks
+                skip_sum_checks,
             );
             traversal_instruction.pop();
         }
@@ -595,7 +607,7 @@ where
                 traversal_instruction,
                 bad_link_map,
                 parent_keys,
-                skip_sum_checks
+                skip_sum_checks,
             );
             traversal_instruction.pop();
         }
@@ -667,7 +679,13 @@ where
 
         // TODO: check child heights
         // all checks passed, recurse
-        self.verify_tree(&node, traversal_instruction, bad_link_map, parent_keys, skip_sum_checks);
+        self.verify_tree(
+            &node,
+            traversal_instruction,
+            bad_link_map,
+            parent_keys,
+            skip_sum_checks,
+        );
     }
 }
 

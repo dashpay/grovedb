@@ -29,11 +29,13 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
-use std::collections::BTreeMap;
 use grovedb_costs::cost_return_on_error;
+use std::collections::BTreeMap;
 
 use grovedb_storage::{Batch, StorageContext};
 
+use crate::merk::committer::MerkCommitter;
+use crate::tree::{combine_hash, NoopCommit};
 use crate::{
     merk,
     merk::MerkSource,
@@ -52,8 +54,6 @@ use crate::{
     Error::{CostsError, StorageError},
     Link, Merk,
 };
-use crate::merk::committer::MerkCommitter;
-use crate::tree::{combine_hash, NoopCommit};
 
 /// Restorer handles verification of chunks and replication of Merk trees.
 /// Chunks can be processed randomly as long as their parent has been processed
@@ -69,7 +69,11 @@ pub struct Restorer<S> {
 impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Initializes a new chunk restorer with the expected root hash for the
     /// first chunk
-    pub fn new(merk: Merk<S>, expected_root_hash: CryptoHash, parent_key_value_hash: Option<CryptoHash>) -> Self {
+    pub fn new(
+        merk: Merk<S>,
+        expected_root_hash: CryptoHash,
+        parent_key_value_hash: Option<CryptoHash>,
+    ) -> Self {
         let mut chunk_id_to_root_hash = BTreeMap::new();
         chunk_id_to_root_hash.insert(traversal_instruction_as_string(&vec![]), expected_root_hash);
         Self {
@@ -152,7 +156,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
     /// Verifies the structure of a chunk and ensures the chunk matches the
     /// expected root hash
-    fn verify_chunk(chunk: Vec<Op>, expected_root_hash: &CryptoHash, parent_key_value_hash_opt: &Option<CryptoHash>) -> Result<ProofTree, Error> {
+    fn verify_chunk(
+        chunk: Vec<Op>,
+        expected_root_hash: &CryptoHash,
+        parent_key_value_hash_opt: &Option<CryptoHash>,
+    ) -> Result<ProofTree, Error> {
         let chunk_len = chunk.len();
         let mut kv_count = 0;
         let mut hash_count = 0;
@@ -187,7 +195,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         "chunk doesn't match expected root hash",
                     )));
                 }
-            },
+            }
             None => {
                 if &tree.hash().unwrap() != expected_root_hash {
                     return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
@@ -509,6 +517,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::test_utils::{make_batch_seq_with_same_value, make_batch_seq_with_value};
     use crate::{
         merk::chunks::ChunkProducer,
         proofs::chunk::{
@@ -518,7 +527,6 @@ mod tests {
         Error::ChunkRestoringError,
         Merk, PanicSource,
     };
-    use crate::test_utils::{make_batch_seq_with_same_value, make_batch_seq_with_value};
 
     #[test]
     fn test_chunk_verification_non_avl_tree() {
