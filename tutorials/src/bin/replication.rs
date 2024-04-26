@@ -1,23 +1,10 @@
 use std::collections::VecDeque;
-use std::ops::Range;
 use std::path::Path;
 use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction, StateSyncInfo};
 use grovedb::reference_path::ReferencePathType;
-use rand::{distributions::Alphanumeric, Rng, thread_rng};
-use rand::prelude::SliceRandom;
+use rand::{distributions::Alphanumeric, Rng, };
 use grovedb::element::SumValue;
-use grovedb::query_result_type::QueryResultType;
-use grovedb_merk::{BatchEntry, ChunkProducer, CryptoHash, Error, Op};
-use grovedb_merk::Error::{EdError, StorageError};
-use grovedb_merk::proofs::chunk::error::ChunkError;
-use grovedb_merk::Restorer;
-use grovedb_merk::tree::kv::ValueDefinedCostType;
-use grovedb_merk::tree::{RefWalker, TreeNode};
-use grovedb_merk::TreeFeatureType::BasicMerkNode;
-use grovedb_path::{SubtreePath, SubtreePathBuilder};
-use grovedb_storage::{StorageBatch, StorageContext};
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbStorageContext;
-use grovedb_visualize::Visualize;
+use grovedb_path::{SubtreePath};
 
 const MAIN_ΚΕΥ: &[u8] = b"key_main";
 const MAIN_ΚΕΥ_EMPTY: &[u8] = b"key_main_empty";
@@ -90,15 +77,26 @@ fn main() {
     let root_hash_copy = db_destination.root_hash(None).unwrap().unwrap();
     println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
 
+    println!("\n######### source_subtree_metadata");
+    let source_tx = db_source.start_transaction();
+    let subtrees_metadata = db_source.get_subtrees_metadata(&SubtreePath::empty(), &source_tx).unwrap();
+    println!("{:?}", subtrees_metadata);
+
     println!("\n######### db_checkpoint_0 -> db_copy state sync");
     let state_info = db_destination.create_state_sync_info();
+    let source_tx = db_source.start_transaction();
+    let target_tx = db_destination.start_transaction();
+    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &source_tx, &target_tx).unwrap();
+    db_destination.commit_transaction(target_tx).unwrap().expect("expected to commit transaction");
 
-    let transaction = db_destination.start_transaction();
-    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &transaction).unwrap();
-    //db_copy.w_sync_db_demo(&db_checkpoint_0).unwrap();
-
-    db_destination.commit_transaction(transaction).unwrap().expect("expected to commit transaction");
-
+    println!("\n######### verify db_copy");
+    let incorrect_hashes = db_destination.verify_grovedb(None).unwrap();
+    if incorrect_hashes.len() > 0 {
+        println!("DB verification failed!");
+    }
+    else {
+        println!("DB verification success");
+    }
 
     println!("\n######### root_hashes:");
     let root_hash_0 = db_source.root_hash(None).unwrap().unwrap();
@@ -211,13 +209,12 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
         .unwrap()
         .expect("expected successful get_path_query");
     for e in elements.into_iter() {
-        //let be_num = u32::from_be_bytes(e.try_into().expect("Slice with incorrect length"));
         println!(">> {:?}", e);
     }
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     // Get hash from query proof and print to terminal along with GroveDB root hash.
-    let (verify_hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    let (verify_hash, _) = GroveDb::verify_query(&proof, &path_query).unwrap();
     println!("verify_hash: {:?}", hex::encode(verify_hash));
     if verify_hash == db.root_hash(None).unwrap().unwrap() {
         println!("Query verified");
@@ -228,18 +225,19 @@ fn sync_db_demo(
     source_db: &GroveDb,
     target_db: &GroveDb,
     state_sync_info: StateSyncInfo,
-    tx: &Transaction,
+    source_tx: &Transaction,
+    target_tx: &Transaction,
 ) -> Result<(), grovedb::Error> {
     let app_hash = source_db.root_hash(None).value.unwrap();
-    let (chunk_ids, mut state_sync_info) = target_db.w_start_snapshot_syncing(state_sync_info, app_hash, tx)?;
+    let (chunk_ids, mut state_sync_info) = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
     chunk_queue.extend(chunk_ids);
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
-        let ops = source_db.w_fetch_chunk(chunk_id.as_slice())?;
-        let (more_chunks, new_state_sync_info) = target_db.w_apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), tx)?;
+        let ops = source_db.fetch_chunk(chunk_id.as_slice(), source_tx)?;
+        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), target_tx)?;
         state_sync_info = new_state_sync_info;
         chunk_queue.extend(more_chunks);
     }
