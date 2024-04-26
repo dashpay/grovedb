@@ -29,16 +29,14 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
-use grovedb_costs::cost_return_on_error;
 use std::collections::BTreeMap;
 
+use grovedb_costs::cost_return_on_error;
 use grovedb_storage::{Batch, StorageContext};
 
-use crate::merk::committer::MerkCommitter;
-use crate::tree::{combine_hash, NoopCommit};
 use crate::{
     merk,
-    merk::MerkSource,
+    merk::{committer::MerkCommitter, MerkSource},
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
@@ -49,7 +47,7 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
+    tree::{combine_hash, kv::ValueDefinedCostType, NoopCommit, RefWalker, TreeNode},
     CryptoHash, Error,
     Error::{CostsError, StorageError},
     Link, Merk,
@@ -517,13 +515,14 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_utils::{make_batch_seq_with_same_value, make_batch_seq_with_value};
     use crate::{
         merk::chunks::ChunkProducer,
         proofs::chunk::{
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
-        test_utils::{make_batch_seq, TempMerk},
+        test_utils::{
+            make_batch_seq, make_batch_seq_with_same_value, make_batch_seq_with_value, TempMerk,
+        },
         Error::ChunkRestoringError,
         Merk, PanicSource,
     };

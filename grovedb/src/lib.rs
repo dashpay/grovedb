@@ -171,6 +171,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "full")]
 use std::{collections::HashMap, fmt, option::Option::None, path::Path};
 
+use blake3;
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -191,7 +192,6 @@ pub use grovedb_merk::estimated_costs::{
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
-use grovedb_merk::proofs::Op;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
 #[cfg(feature = "full")]
@@ -202,7 +202,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-use grovedb_merk::{ChunkProducer, Restorer};
+use grovedb_merk::{proofs::Op, ChunkProducer, Restorer};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
@@ -227,7 +227,6 @@ use crate::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 use crate::Error::MerkError;
-use blake3;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -248,7 +247,8 @@ pub struct StateSyncInfo<'db> {
     processed_prefixes: BTreeSet<SubtreePrefix>,
     // Current processed prefix (Path digest)
     current_prefix: Option<SubtreePrefix>,
-    // Set of global chunk ids requested to be fetched and pending for processing. For the description of global chunk id check fetch_chunk().
+    // Set of global chunk ids requested to be fetched and pending for processing. For the
+    // description of global chunk id check fetch_chunk().
     pending_chunks: BTreeSet<Vec<u8>>,
     // Number of processed chunks in current prefix (Path digest)
     num_processed_chunks: usize,
@@ -258,8 +258,9 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 // Struct containing information about current subtrees found in GroveDB
 pub struct SubtreesMetadata {
-    // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent Subtree elem_value_hash)
-    // Note: Parent Subtree actual_value_hash, Parent Subtree elem_value_hash are needed when verifying the new constructed subtree after wards.
+    // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent
+    // Subtree elem_value_hash) Note: Parent Subtree actual_value_hash, Parent Subtree
+    // elem_value_hash are needed when verifying the new constructed subtree after wards.
     pub data: BTreeMap<SubtreePrefix, (Vec<Vec<u8>>, CryptoHash, CryptoHash)>,
 }
 
@@ -307,6 +308,7 @@ impl GroveDb {
             num_processed_chunks: 0,
         }
     }
+
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
@@ -1070,10 +1072,11 @@ impl GroveDb {
         Ok(issues)
     }
 
-    // Returns the discovered subtrees found recursively along with their associated metadata
-    // Params:
+    // Returns the discovered subtrees found recursively along with their associated
+    // metadata Params:
     // tx: Transaction. Function returns the data by opening merks at given tx.
-    // TODO: Add a SubTreePath as param and start searching from that path instead of root (as it is now)
+    // TODO: Add a SubTreePath as param and start searching from that path instead
+    // of root (as it is now)
     pub fn get_subtrees_metadata<'db>(
         &'db self,
         tx: &'db Transaction,
@@ -1124,13 +1127,14 @@ impl GroveDb {
         Ok(subtrees_metadata)
     }
 
-    // Fetch a chunk by global chunk id (should be called by ABCI when LoadSnapshotChunk method is called)
-    // Params:
-    // global_chunk_id: Global chunk id in the following format: [SUBTREE_PREFIX:CHUNK_ID]
-    // SUBTREE_PREFIX: 32 bytes (mandatory) (All zeros = Root subtree)
-    // CHUNK_ID: 0.. bytes (optional) Traversal instructions to the root of the given chunk.
-    // Traversal instructions are "1" for left, and "0" for right.
-    // TODO: Compact CHUNK_ID into bitset for size optimization as a subtree can be big hence traversal instructions for the deepest chunks
+    // Fetch a chunk by global chunk id (should be called by ABCI when
+    // LoadSnapshotChunk method is called) Params:
+    // global_chunk_id: Global chunk id in the following format:
+    // [SUBTREE_PREFIX:CHUNK_ID] SUBTREE_PREFIX: 32 bytes (mandatory) (All zeros
+    // = Root subtree) CHUNK_ID: 0.. bytes (optional) Traversal instructions to
+    // the root of the given chunk. Traversal instructions are "1" for left, and
+    // "0" for right. TODO: Compact CHUNK_ID into bitset for size optimization
+    // as a subtree can be big hence traversal instructions for the deepest chunks
     // tx: Transaction. Function returns the data by opening merks at given tx.
     // TODO: Make this tx optional: None -> Use latest data
     // Returns the Chunk proof operators for the requested chunk
@@ -1195,12 +1199,13 @@ impl GroveDb {
         }
     }
 
-    // Starts a state sync process (should be called by ABCI when OfferSnapshot method is called)
-    // Params:
+    // Starts a state sync process (should be called by ABCI when OfferSnapshot
+    // method is called) Params:
     // state_sync_info: Consumed StateSyncInfo
     // app_hash: Snapshot's AppHash
     // tx: Transaction for the state sync
-    // Returns the first set of global chunk ids that can be fetched from sources (+ the StateSyncInfo transferring ownership back to the caller)
+    // Returns the first set of global chunk ids that can be fetched from sources (+
+    // the StateSyncInfo transferring ownership back to the caller)
     pub fn start_snapshot_syncing<'db>(
         &'db self,
         mut state_sync_info: StateSyncInfo<'db>,
@@ -1241,12 +1246,13 @@ impl GroveDb {
         Ok((res, state_sync_info))
     }
 
-    // Apply a chunk (should be called by ABCI when ApplySnapshotChunk method is called)
-    // Params:
+    // Apply a chunk (should be called by ABCI when ApplySnapshotChunk method is
+    // called) Params:
     // state_sync_info: Consumed StateSyncInfo
     // chunk: (Global chunk id, Chunk proof operators)
     // tx: Transaction for the state sync
-    // Returns the next set of global chunk ids that can be fetched from sources (+ the StateSyncInfo transferring ownership back to the caller)
+    // Returns the next set of global chunk ids that can be fetched from sources (+
+    // the StateSyncInfo transferring ownership back to the caller)
     pub fn apply_chunk<'db>(
         &'db self,
         mut state_sync_info: StateSyncInfo<'db>,
