@@ -107,6 +107,18 @@ pub fn util_split_global_chunk_id(
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    pub fn create_state_sync_info(&self) -> StateSyncInfo {
+        let pending_chunks = BTreeSet::new();
+        let processed_prefixes = BTreeSet::new();
+        StateSyncInfo {
+            restorer: None,
+            processed_prefixes,
+            current_prefix: None,
+            pending_chunks,
+            num_processed_chunks: 0,
+        }
+    }
+
     // Returns the discovered subtrees found recursively along with their associated
     // metadata Params:
     // tx: Transaction. Function returns the data by opening merks at given tx.
@@ -116,7 +128,7 @@ impl GroveDb {
         &'db self,
         tx: &'db Transaction,
     ) -> Result<SubtreesMetadata, Error> {
-        let mut subtrees_metadata = crate::SubtreesMetadata::new();
+        let mut subtrees_metadata = crate::replication::SubtreesMetadata::new();
 
         let subtrees_root = self.find_subtrees(&SubtreePath::empty(), Some(tx)).value?;
         for subtree in subtrees_root.into_iter() {

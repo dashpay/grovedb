@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::path::Path;
-use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction, StateSyncInfo};
+use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction, replication::StateSyncInfo};
 use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, };
 use grovedb::element::SumValue;

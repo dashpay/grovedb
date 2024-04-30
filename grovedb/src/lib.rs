@@ -160,7 +160,7 @@ pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
 #[cfg(feature = "full")]
-mod replication;
+pub mod replication;
 #[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
@@ -169,7 +169,6 @@ mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
 
-use std::collections::BTreeSet;
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
@@ -200,8 +199,6 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-#[cfg(feature = "full")]
-use grovedb_merk::{proofs::Op, ChunkProducer, Restorer};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
@@ -223,10 +220,6 @@ pub use query::{PathQuery, SizedQuery};
 use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
-#[cfg(feature = "full")]
-pub use crate::replication::StateSyncInfo;
-#[cfg(feature = "full")]
-use crate::replication::SubtreesMetadata;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 use crate::Error::MerkError;
@@ -251,18 +244,6 @@ pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    pub fn create_state_sync_info(&self) -> StateSyncInfo {
-        let pending_chunks = BTreeSet::new();
-        let processed_prefixes = BTreeSet::new();
-        StateSyncInfo {
-            restorer: None,
-            processed_prefixes,
-            current_prefix: None,
-            pending_chunks,
-            num_processed_chunks: 0,
-        }
-    }
-
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
