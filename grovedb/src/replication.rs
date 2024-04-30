@@ -14,7 +14,7 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[rustfmt::skip]
 use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
 
-use crate::{replication, Error, GroveDb, Transaction};
+use crate::{replication, Error, GroveDb, Transaction, TransactionArg};
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
@@ -126,11 +126,11 @@ impl GroveDb {
     // of root (as it is now)
     pub fn get_subtrees_metadata<'db>(
         &'db self,
-        tx: &'db Transaction,
+        tx: TransactionArg,
     ) -> Result<SubtreesMetadata, Error> {
         let mut subtrees_metadata = crate::replication::SubtreesMetadata::new();
 
-        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), Some(tx)).value?;
+        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), tx).value?;
         for subtree in subtrees_root.into_iter() {
             let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
             let path: &[&[u8]] = &subtree_path;
@@ -138,37 +138,57 @@ impl GroveDb {
 
             let current_path = SubtreePath::from(path);
 
-            let parent_path_opt = current_path.derive_parent();
-            if parent_path_opt.is_some() {
-                let parent_path = parent_path_opt.unwrap().0;
-                let parent_merk = self
-                    .open_transactional_merk_at_path(parent_path, tx, None)
-                    .value?;
-                let parent_key = subtree.last().unwrap();
-                let (elem_value, elem_value_hash) = parent_merk
-                    .get_value_and_value_hash(
-                        parent_key,
-                        true,
-                        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
-                    )
-                    .value
-                    .expect("should get value hash")
-                    .expect("value hash should be some");
-
-                let actual_value_hash = value_hash(&elem_value).unwrap();
-                subtrees_metadata.data.insert(
-                    prefix,
-                    (current_path.to_vec(), actual_value_hash, elem_value_hash),
-                );
-            } else {
-                subtrees_metadata.data.insert(
-                    prefix,
-                    (
-                        current_path.to_vec(),
-                        CryptoHash::default(),
-                        CryptoHash::default(),
-                    ),
-                );
+            match (current_path.derive_parent(), subtree.last()) {
+                (Some((parent_path, _)), Some(parent_key)) => match tx {
+                    None => {
+                        let parent_merk = self
+                            .open_non_transactional_merk_at_path(parent_path, None)
+                            .value?;
+                        if let Ok((Some((elem_value, elem_value_hash)))) = parent_merk
+                            .get_value_and_value_hash(
+                                parent_key,
+                                true,
+                                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                            )
+                            .value
+                        {
+                            let actual_value_hash = value_hash(&elem_value).unwrap();
+                            subtrees_metadata.data.insert(
+                                prefix,
+                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
+                            );
+                        }
+                    }
+                    Some(t) => {
+                        let parent_merk = self
+                            .open_transactional_merk_at_path(parent_path, t, None)
+                            .value?;
+                        if let Ok((Some((elem_value, elem_value_hash)))) = parent_merk
+                            .get_value_and_value_hash(
+                                parent_key,
+                                true,
+                                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                            )
+                            .value
+                        {
+                            let actual_value_hash = value_hash(&elem_value).unwrap();
+                            subtrees_metadata.data.insert(
+                                prefix,
+                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
+                            );
+                        }
+                    }
+                },
+                _ => {
+                    subtrees_metadata.data.insert(
+                        prefix,
+                        (
+                            current_path.to_vec(),
+                            CryptoHash::default(),
+                            CryptoHash::default(),
+                        ),
+                    );
+                }
             }
         }
         Ok(subtrees_metadata)
@@ -203,7 +223,7 @@ impl GroveDb {
         array.copy_from_slice(chunk_prefix);
         let chunk_prefix_key: crate::SubtreePrefix = array;
 
-        let subtrees_metadata = self.get_subtrees_metadata(tx)?;
+        let subtrees_metadata = self.get_subtrees_metadata(Some(tx))?;
 
         match subtrees_metadata.data.get(&chunk_prefix_key) {
             Some(path_data) => {
@@ -358,7 +378,7 @@ impl GroveDb {
                     }
                     state_sync_info.processed_prefixes.insert(current_prefix);
 
-                    let subtrees_metadata = self.get_subtrees_metadata(tx)?;
+                    let subtrees_metadata = self.get_subtrees_metadata(Some(tx))?;
                     if let Some(value) = subtrees_metadata.data.get(&current_prefix) {
                         println!(
                             "    path:{:?} done",
