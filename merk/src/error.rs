@@ -27,7 +27,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 //! Errors
-
+#[cfg(feature = "full")]
 use crate::proofs::chunk::error::ChunkError;
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -64,6 +64,7 @@ pub enum Error {
     CorruptedState(&'static str),
 
     /// Chunking error
+    #[cfg(feature = "full")]
     #[error("chunking error {0}")]
     ChunkingError(ChunkError),
 
@@ -73,6 +74,7 @@ pub enum Error {
     OldChunkingError(&'static str),
 
     /// Chunk restoring error
+    #[cfg(feature = "full")]
     #[error("chunk restoring error {0}")]
     ChunkRestoringError(ChunkError),
 

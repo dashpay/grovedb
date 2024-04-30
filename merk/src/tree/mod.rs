@@ -37,7 +37,7 @@ mod encoding;
 #[cfg(feature = "full")]
 mod fuzz_tests;
 #[cfg(any(feature = "full", feature = "verify"))]
-mod hash;
+pub mod hash;
 #[cfg(feature = "full")]
 mod iter;
 #[cfg(feature = "full")]

@@ -166,13 +166,13 @@ mod util;
 mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
-
-use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "full")]
-use std::{collections::HashMap, fmt, option::Option::None, path::Path};
+mod replication;
 
-#[cfg(any(feature = "full", feature = "verify"))]
-use element::helpers;
+use std::collections::BTreeSet;
+#[cfg(feature = "full")]
+use std::{collections::HashMap, option::Option::None, path::Path};
+
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use element::Element;
 #[cfg(feature = "full")]
@@ -197,10 +197,11 @@ use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use grovedb_merk::{
     self,
-    tree::{combine_hash, value_hash},
-    BatchEntry, CryptoHash, KVIterator, Merk,
+    BatchEntry,
+    CryptoHash, KVIterator, Merk, tree::{combine_hash, value_hash},
 };
-use grovedb_merk::{proofs::Op, ChunkProducer, Restorer};
+#[cfg(feature = "full")]
+use grovedb_merk::{ChunkProducer, proofs::Op, Restorer};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
@@ -221,10 +222,14 @@ pub use query::{PathQuery, SizedQuery};
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
 #[cfg(feature = "full")]
-use crate::helpers::raw_decode;
+use crate::element::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 use crate::Error::MerkError;
+#[cfg(feature = "full")]
+pub use crate::replication::StateSyncInfo;
+#[cfg(feature = "full")]
+use crate::replication::SubtreesMetadata;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -235,60 +240,7 @@ pub struct GroveDb {
     db: RocksDbStorage,
 }
 
-// Struct governing state sync
-pub struct StateSyncInfo<'db> {
-    // Current Chunk restorer
-    restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
-    // Set of processed prefixes (Path digests)
-    processed_prefixes: BTreeSet<SubtreePrefix>,
-    // Current processed prefix (Path digest)
-    current_prefix: Option<SubtreePrefix>,
-    // Set of global chunk ids requested to be fetched and pending for processing. For the
-    // description of global chunk id check fetch_chunk().
-    pending_chunks: BTreeSet<Vec<u8>>,
-    // Number of processed chunks in current prefix (Path digest)
-    num_processed_chunks: usize,
-}
-
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
-
-// Struct containing information about current subtrees found in GroveDB
-pub struct SubtreesMetadata {
-    // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent
-    // Subtree elem_value_hash) Note: Parent Subtree actual_value_hash, Parent Subtree
-    // elem_value_hash are needed when verifying the new constructed subtree after wards.
-    pub data: BTreeMap<SubtreePrefix, (Vec<Vec<u8>>, CryptoHash, CryptoHash)>,
-}
-
-impl SubtreesMetadata {
-    pub fn new() -> SubtreesMetadata {
-        SubtreesMetadata {
-            data: BTreeMap::new(),
-        }
-    }
-}
-
-impl Default for SubtreesMetadata {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Debug for SubtreesMetadata {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (prefix, metadata) in self.data.iter() {
-            let metadata_path = &metadata.0;
-            let metadata_path_str = util_path_to_string(metadata_path);
-            writeln!(
-                f,
-                " prefix:{:?} -> path:{:?}\n",
-                hex::encode(prefix),
-                metadata_path_str
-            );
-        }
-        Ok(())
-    }
-}
 
 /// Transaction
 #[cfg(feature = "full")]
@@ -1258,7 +1210,7 @@ impl GroveDb {
         let mut res = vec![];
 
         let (global_chunk_id, chunk_data) = chunk;
-        let (chunk_prefix, chunk_id) = util_split_global_chunk_id(global_chunk_id)?;
+        let (chunk_prefix, chunk_id) = replication::util_split_global_chunk_id(global_chunk_id)?;
 
         match (
             &mut state_sync_info.restorer,
@@ -1315,7 +1267,7 @@ impl GroveDb {
 
                     let subtrees_metadata = self.get_subtrees_metadata(tx)?;
                     if let Some(value) = subtrees_metadata.data.get(&current_prefix) {
-                        println!("    path:{:?} done", util_path_to_string(&value.0));
+                        println!("    path:{:?} done", replication::util_path_to_string(&value.0));
                     }
 
                     for (prefix, prefix_metadata) in &subtrees_metadata.data {
@@ -1350,39 +1302,5 @@ impl GroveDb {
         }
 
         Ok((res, state_sync_info))
-    }
-}
-
-// Converts a path into a human-readable string (for debuting)
-pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
-    let mut subtree_path_str: Vec<String> = vec![];
-    for subtree in path {
-        let string = std::str::from_utf8(subtree).unwrap();
-        subtree_path_str.push(string.parse().unwrap());
-    }
-    subtree_path_str
-}
-
-// Splits the given global chunk id into [SUBTREE_PREFIX:CHUNK_ID]
-pub fn util_split_global_chunk_id(
-    global_chunk_id: &[u8],
-) -> Result<(SubtreePrefix, String), Error> {
-    let chunk_prefix_length: usize = 32;
-    if global_chunk_id.len() < chunk_prefix_length {
-        return Err(Error::CorruptedData(
-            "expected global chunk id of at least 32 length".to_string(),
-        ));
-    }
-
-    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
-    let mut array = [0u8; 32];
-    array.copy_from_slice(chunk_prefix);
-    let chunk_prefix_key: SubtreePrefix = array;
-    let str_chunk_id = String::from_utf8(chunk_id.to_vec());
-    match str_chunk_id {
-        Ok(s) => Ok((chunk_prefix_key, s)),
-        Err(_) => Err(Error::CorruptedData(
-            "unable to convert chunk id to string".to_string(),
-        )),
     }
 }

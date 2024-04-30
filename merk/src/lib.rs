@@ -35,7 +35,7 @@ extern crate core;
 
 /// The top-level store API.
 #[cfg(feature = "full")]
-mod merk;
+pub mod merk;
 
 #[cfg(feature = "full")]
 pub use crate::merk::{chunks::ChunkProducer, options::MerkOptions, restore::Restorer};

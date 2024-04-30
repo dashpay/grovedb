@@ -43,6 +43,7 @@ use super::{Node, Op};
 use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, NULL_HASH};
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{error::Error, tree::CryptoHash};
+#[cfg(feature = "full")]
 use crate::{
     proofs::chunk::chunk::{LEFT, RIGHT},
     Link,
@@ -61,6 +62,7 @@ pub struct Child {
 }
 
 impl Child {
+    #[cfg(feature = "full")]
     pub fn as_link(&self) -> Link {
         let (key, sum) = match &self.tree.node {
             Node::KV(key, _) | Node::KVValueHash(key, ..) => (key.as_slice(), None),
