@@ -1,8 +1,12 @@
-use grovedb_merk::merk::restore::Restorer;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
+
+use grovedb_merk::{merk::restore::Restorer, tree::hash::CryptoHash};
+#[rustfmt::skip]
 use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
-use std::collections::{BTreeMap, BTreeSet};
-use grovedb_merk::tree::hash::CryptoHash;
-use std::fmt;
+
 use crate::Error;
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];

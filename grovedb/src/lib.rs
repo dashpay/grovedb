@@ -159,6 +159,8 @@ mod query;
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
+#[cfg(feature = "full")]
+mod replication;
 #[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
@@ -166,8 +168,6 @@ mod util;
 mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
-#[cfg(feature = "full")]
-mod replication;
 
 use std::collections::BTreeSet;
 #[cfg(feature = "full")]
@@ -197,11 +197,11 @@ use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use grovedb_merk::{
     self,
-    BatchEntry,
-    CryptoHash, KVIterator, Merk, tree::{combine_hash, value_hash},
+    tree::{combine_hash, value_hash},
+    BatchEntry, CryptoHash, KVIterator, Merk,
 };
 #[cfg(feature = "full")]
-use grovedb_merk::{ChunkProducer, proofs::Op, Restorer};
+use grovedb_merk::{proofs::Op, ChunkProducer, Restorer};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
@@ -219,17 +219,17 @@ use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
-#[cfg(feature = "full")]
-use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
-use crate::Error::MerkError;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use crate::error::Error;
 #[cfg(feature = "full")]
 pub use crate::replication::StateSyncInfo;
 #[cfg(feature = "full")]
 use crate::replication::SubtreesMetadata;
+#[cfg(feature = "full")]
+use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
+use crate::Error::MerkError;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -1267,7 +1267,10 @@ impl GroveDb {
 
                     let subtrees_metadata = self.get_subtrees_metadata(tx)?;
                     if let Some(value) = subtrees_metadata.data.get(&current_prefix) {
-                        println!("    path:{:?} done", replication::util_path_to_string(&value.0));
+                        println!(
+                            "    path:{:?} done",
+                            replication::util_path_to_string(&value.0)
+                        );
                     }
 
                     for (prefix, prefix_metadata) in &subtrees_metadata.data {
