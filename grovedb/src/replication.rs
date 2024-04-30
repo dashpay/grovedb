@@ -283,16 +283,14 @@ impl GroveDb {
                     && state_sync_info.processed_prefixes.is_empty()
                 {
                     let root_prefix = [0u8; 32];
-                    if let Ok(merk) = self
-                        .open_merk_for_replication(SubtreePath::empty(), tx) {
+                    if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
                         let restorer = Restorer::new(merk, app_hash, None);
                         state_sync_info.restorer = Some(restorer);
                         state_sync_info.current_prefix = Some(root_prefix);
                         state_sync_info.pending_chunks.insert(root_prefix.to_vec());
 
                         res.push(root_prefix.to_vec());
-                    }
-                    else {
+                    } else {
                         return Err(Error::InternalError("Unable to open merk for replication"));
                     }
                 } else {
@@ -398,8 +396,11 @@ impl GroveDb {
                             let path: &[&[u8]] = &subtree_path;
 
                             if let Ok(merk) = self.open_merk_for_replication(path.into(), tx) {
-                                let restorer =
-                                    Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
+                                let restorer = Restorer::new(
+                                    merk,
+                                    *s_elem_value_hash,
+                                    Some(*s_actual_value_hash),
+                                );
                                 state_sync_info.restorer = Some(restorer);
                                 state_sync_info.current_prefix = Some(*prefix);
                                 state_sync_info.num_processed_chunks = 0;
@@ -409,9 +410,10 @@ impl GroveDb {
                                     .pending_chunks
                                     .insert(root_chunk_prefix.clone());
                                 res.push(root_chunk_prefix);
-                            }
-                            else {
-                                return Err(Error::InternalError("Unable to open merk for replication"));
+                            } else {
+                                return Err(Error::InternalError(
+                                    "Unable to open merk for replication",
+                                ));
                             }
                             break;
                         }
