@@ -522,7 +522,7 @@ mod tests {
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
         test_utils::{
-            make_batch_seq, make_batch_seq_with_same_value, make_batch_seq_with_value, TempMerk,
+            make_batch_seq, TempMerk,
         },
         Error::ChunkRestoringError,
         Merk, PanicSource,
@@ -539,7 +539,8 @@ mod tests {
         ];
         assert!(Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(
             non_avl_tree_proof,
-            &[0; 32]
+            &[0; 32],
+            &None
         )
         .is_err());
     }
@@ -549,7 +550,7 @@ mod tests {
         // should not accept kv
         let invalid_chunk_proof = vec![Op::Push(Node::KV(vec![1], vec![1]))];
         let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32]);
+            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -560,7 +561,7 @@ mod tests {
         // should not accept kvhash
         let invalid_chunk_proof = vec![Op::Push(Node::KVHash([0; 32]))];
         let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32]);
+            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -571,7 +572,7 @@ mod tests {
         // should not accept kvdigest
         let invalid_chunk_proof = vec![Op::Push(Node::KVDigest(vec![0], [0; 32]))];
         let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32]);
+            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -582,7 +583,7 @@ mod tests {
         // should not accept kvvaluehash
         let invalid_chunk_proof = vec![Op::Push(Node::KVValueHash(vec![0], vec![0], [0; 32]))];
         let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32]);
+            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -593,7 +594,7 @@ mod tests {
         // should not accept kvrefvaluehash
         let invalid_chunk_proof = vec![Op::Push(Node::KVRefValueHash(vec![0], vec![0], [0; 32]))];
         let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32]);
+            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -644,7 +645,7 @@ mod tests {
         );
 
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
 
         // initial restorer state should contain just the root hash of the source merk
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
@@ -844,7 +845,7 @@ mod tests {
         // instantiate chunk producer and restorer
         let mut chunk_producer =
             ChunkProducer::new(&source_merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, source_merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, source_merk.root_hash().unwrap(), None);
 
         // perform chunk production and processing
         let mut chunk_id_opt = Some("".to_string());
@@ -913,7 +914,7 @@ mod tests {
         );
 
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
 
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
         assert_eq!(
@@ -978,7 +979,7 @@ mod tests {
         );
 
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
 
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
         assert_eq!(
@@ -1050,7 +1051,7 @@ mod tests {
         );
 
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
 
         // build multi chunk with with limit of 325
         let multi_chunk = chunk_producer
@@ -1138,7 +1139,7 @@ mod tests {
         // instantiate chunk producer and restorer
         let mut chunk_producer =
             ChunkProducer::new(&source_merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, source_merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, source_merk.root_hash().unwrap(), None);
 
         // perform chunk production and processing
         let mut chunk_id_opt = Some("".to_string());
@@ -1216,7 +1217,7 @@ mod tests {
         );
 
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
 
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
         assert_eq!(
@@ -1250,7 +1251,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap());
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
 
         // assert the state of the restorer
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
