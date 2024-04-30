@@ -203,12 +203,11 @@ impl GroveDb {
     // "0" for right. TODO: Compact CHUNK_ID into bitset for size optimization
     // as a subtree can be big hence traversal instructions for the deepest chunks
     // tx: Transaction. Function returns the data by opening merks at given tx.
-    // TODO: Make this tx optional: None -> Use latest data
     // Returns the Chunk proof operators for the requested chunk
     pub fn fetch_chunk<'db>(
         &'db self,
         global_chunk_id: &[u8],
-        tx: &'db Transaction,
+        tx: TransactionArg,
     ) -> Result<Vec<Op>, Error> {
         let chunk_prefix_length: usize = 32;
         if global_chunk_id.len() < chunk_prefix_length {
@@ -223,7 +222,7 @@ impl GroveDb {
         array.copy_from_slice(chunk_prefix);
         let chunk_prefix_key: crate::SubtreePrefix = array;
 
-        let subtrees_metadata = self.get_subtrees_metadata(Some(tx))?;
+        let subtrees_metadata = self.get_subtrees_metadata(tx)?;
 
         match subtrees_metadata.data.get(&chunk_prefix_key) {
             Some(path_data) => {
@@ -232,7 +231,7 @@ impl GroveDb {
                 let path: &[&[u8]] = &subtree_path;
 
                 let merk = self
-                    .open_transactional_merk_at_path(path.into(), tx, None)
+                    .open_non_transactional_merk_at_path(path.into(), None)
                     .value?;
 
                 if merk.is_empty_tree().unwrap() {

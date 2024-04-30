@@ -70,25 +70,24 @@ fn main() {
     let db_destination = create_empty_db(path_destination.clone());
 
     println!("\n######### root_hashes:");
-    let root_hash_0 = db_source.root_hash(None).unwrap().unwrap();
-    println!("root_hash_0: {:?}", hex::encode(root_hash_0));
+    let root_hash_source = db_source.root_hash(None).unwrap().unwrap();
+    println!("root_hash_source: {:?}", hex::encode(root_hash_source));
     let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None).unwrap().unwrap();
     println!("root_hash_checkpoint_0: {:?}", hex::encode(root_hash_checkpoint_0));
-    let root_hash_copy = db_destination.root_hash(None).unwrap().unwrap();
-    println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
+    let root_hash_destination = db_destination.root_hash(None).unwrap().unwrap();
+    println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
-    println!("\n######### source_subtree_metadata");
-    let subtrees_metadata = db_source.get_subtrees_metadata(None).unwrap();
-    println!("{:?}", subtrees_metadata);
+    println!("\n######### source_subtree_metadata of db_source");
+    let subtrees_metadata_source = db_source.get_subtrees_metadata(None).unwrap();
+    println!("{:?}", subtrees_metadata_source);
 
-    println!("\n######### db_checkpoint_0 -> db_copy state sync");
+    println!("\n######### db_checkpoint_0 -> db_destination state sync");
     let state_info = db_destination.create_state_sync_info();
-    let source_tx = db_source.start_transaction();
-    let target_tx = db_destination.start_transaction();
-    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &source_tx, &target_tx).unwrap();
-    db_destination.commit_transaction(target_tx).unwrap().expect("expected to commit transaction");
+    let tx = db_destination.start_transaction();
+    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &tx).unwrap();
+    db_destination.commit_transaction(tx).unwrap().expect("expected to commit transaction");
 
-    println!("\n######### verify db_copy");
+    println!("\n######### verify db_destination");
     let incorrect_hashes = db_destination.verify_grovedb(None).unwrap();
     if incorrect_hashes.len() > 0 {
         println!("DB verification failed!");
@@ -98,18 +97,18 @@ fn main() {
     }
 
     println!("\n######### root_hashes:");
-    let root_hash_0 = db_source.root_hash(None).unwrap().unwrap();
-    println!("root_hash_0: {:?}", hex::encode(root_hash_0));
+    let root_hash_source = db_source.root_hash(None).unwrap().unwrap();
+    println!("root_hash_source: {:?}", hex::encode(root_hash_source));
     let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None).unwrap().unwrap();
     println!("root_hash_checkpoint_0: {:?}", hex::encode(root_hash_checkpoint_0));
-    let root_hash_copy = db_destination.root_hash(None).unwrap().unwrap();
-    println!("root_hash_copy: {:?}", hex::encode(root_hash_copy));
+    let root_hash_destination = db_destination.root_hash(None).unwrap().unwrap();
+    println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
     let query_path = &[MAIN_ΚΕΥ, KEY_INT_0];
     let query_key = (20487u32).to_be_bytes().to_vec();
     println!("\n######## Query on db_checkpoint_0:");
     query_db(&db_checkpoint_0, query_path, query_key.clone());
-    println!("\n######## Query on db_copy:");
+    println!("\n######## Query on db_destination:");
     query_db(&db_destination, query_path, query_key.clone());
 
     return;
@@ -224,7 +223,6 @@ fn sync_db_demo(
     source_db: &GroveDb,
     target_db: &GroveDb,
     state_sync_info: StateSyncInfo,
-    source_tx: &Transaction,
     target_tx: &Transaction,
 ) -> Result<(), grovedb::Error> {
     let app_hash = source_db.root_hash(None).value.unwrap();
@@ -235,7 +233,7 @@ fn sync_db_demo(
     chunk_queue.extend(chunk_ids);
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
-        let ops = source_db.fetch_chunk(chunk_id.as_slice(), source_tx)?;
+        let ops = source_db.fetch_chunk(chunk_id.as_slice(), None)?;
         let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), target_tx)?;
         state_sync_info = new_state_sync_info;
         chunk_queue.extend(more_chunks);
