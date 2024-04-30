@@ -560,7 +560,7 @@ impl GroveDbOp {
     }
 
     /// Verify consistency of operations
-    pub fn verify_consistency_of_operations(ops: &Vec<GroveDbOp>) -> GroveDbOpConsistencyResults {
+    pub fn verify_consistency_of_operations(ops: &[GroveDbOp]) -> GroveDbOpConsistencyResults {
         let ops_len = ops.len();
         // operations should not have any duplicates
         let mut repeated_ops = vec![];

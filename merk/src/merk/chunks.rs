@@ -364,6 +364,10 @@ where
         number_of_chunks(self.height)
     }
 
+    pub fn is_empty(&self) -> bool {
+        number_of_chunks(self.height) == 0
+    }
+
     /// Gets the next chunk based on the `ChunkProducer`'s internal index state.
     /// This is mostly useful for letting `ChunkIter` yield the chunks in order,
     /// optimizing throughput compared to random access.
@@ -386,14 +390,6 @@ where
                         .map(|v| (chunk, v))
                 }),
         )
-    }
-
-    // TODO: test this logic out
-    fn get_chunk_encoding_length(chunk: &[Op]) -> usize {
-        // TODO: deal with error
-        chunk
-            .iter()
-            .fold(0, |sum, op| sum + op.encoding_length().unwrap())
     }
 }
 

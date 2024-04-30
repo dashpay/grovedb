@@ -171,14 +171,12 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "full")]
 use std::{collections::HashMap, fmt, option::Option::None, path::Path};
 
-use blake3;
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use element::Element;
 #[cfg(feature = "full")]
 pub use element::ElementFlags;
-use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
 #[cfg(feature = "full")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -235,8 +233,6 @@ type Hash = [u8; 32];
 pub struct GroveDb {
     #[cfg(feature = "full")]
     db: RocksDbStorage,
-
-    version: i32,
 }
 
 // Struct governing state sync
@@ -272,12 +268,18 @@ impl SubtreesMetadata {
     }
 }
 
+impl Default for SubtreesMetadata {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Debug for SubtreesMetadata {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (prefix, metadata) in self.data.iter() {
             let metadata_path = &metadata.0;
-            let metadata_path_str = util_path_to_string(&metadata_path);
-            write!(
+            let metadata_path_str = util_path_to_string(metadata_path);
+            writeln!(
                 f,
                 " prefix:{:?} -> path:{:?}\n",
                 hex::encode(prefix),
@@ -312,7 +314,7 @@ impl GroveDb {
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
-        Ok(GroveDb { db, version: 1 })
+        Ok(GroveDb { db })
     }
 
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb
@@ -1092,7 +1094,7 @@ impl GroveDb {
             let current_path = SubtreePath::from(path);
 
             let parent_path_opt = current_path.derive_parent();
-            if (parent_path_opt.is_some()) {
+            if parent_path_opt.is_some() {
                 let parent_path = parent_path_opt.unwrap().0;
                 let parent_merk = self
                     .open_transactional_merk_at_path(parent_path, tx, None)
@@ -1143,20 +1145,20 @@ impl GroveDb {
         global_chunk_id: &[u8],
         tx: &'db Transaction,
     ) -> Result<Vec<Op>, Error> {
-        let CHUNK_PREFIX_LENGTH: usize = 32;
-        if (global_chunk_id.len() < CHUNK_PREFIX_LENGTH) {
+        let chunk_prefix_length: usize = 32;
+        if global_chunk_id.len() < chunk_prefix_length {
             return Err(Error::CorruptedData(
                 "expected global chunk id of at least 32 length".to_string(),
             ));
         }
 
-        let (chunk_prefix, chunk_id) = global_chunk_id.split_at(CHUNK_PREFIX_LENGTH);
+        let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
 
         let mut array = [0u8; 32];
         array.copy_from_slice(chunk_prefix);
         let chunk_prefix_key: SubtreePrefix = array;
 
-        let subtrees_metadata = self.get_subtrees_metadata(&tx)?;
+        let subtrees_metadata = self.get_subtrees_metadata(tx)?;
 
         match subtrees_metadata.data.get(&chunk_prefix_key) {
             Some(path_data) => {
@@ -1165,14 +1167,14 @@ impl GroveDb {
                 let path: &[&[u8]] = &subtree_path;
 
                 let merk = self
-                    .open_transactional_merk_at_path(path.into(), &tx, None)
+                    .open_transactional_merk_at_path(path.into(), tx, None)
                     .value?;
 
-                if (merk.is_empty_tree().unwrap()) {
+                if merk.is_empty_tree().unwrap() {
                     return Ok(vec![]);
                 }
 
-                let mut chunk_producer_res = ChunkProducer::new(&merk);
+                let chunk_producer_res = ChunkProducer::new(&merk);
                 match chunk_producer_res {
                     Ok(mut chunk_producer) => {
                         let chunk_res = chunk_producer
@@ -1180,21 +1182,21 @@ impl GroveDb {
                         match chunk_res {
                             Ok((chunk, _)) => Ok(chunk),
                             Err(_) => {
-                                return Err(Error::CorruptedData(
+                                Err(Error::CorruptedData(
                                     "Unable to create to load chunk".to_string(),
-                                ));
+                                ))
                             }
                         }
                     }
                     Err(_) => {
-                        return Err(Error::CorruptedData(
+                        Err(Error::CorruptedData(
                             "Unable to create Chunk producer".to_string(),
-                        ));
+                        ))
                     }
                 }
             }
             None => {
-                return Err(Error::CorruptedData("Prefix not found".to_string()));
+                Err(Error::CorruptedData("Prefix not found".to_string()))
             }
         }
     }
@@ -1262,23 +1264,23 @@ impl GroveDb {
         let mut res = vec![];
 
         let (global_chunk_id, chunk_data) = chunk;
-        let (chunk_prefix, chunk_id) = util_split_global_chunk_id(&global_chunk_id)?;
+        let (chunk_prefix, chunk_id) = util_split_global_chunk_id(global_chunk_id)?;
 
         match (
             &mut state_sync_info.restorer,
             &state_sync_info.current_prefix,
         ) {
             (Some(restorer), Some(ref current_prefix)) => {
-                if (*current_prefix != chunk_prefix) {
+                if *current_prefix != chunk_prefix {
                     return Err(Error::InternalError("Invalid incoming prefix"));
                 }
-                if (!state_sync_info.pending_chunks.contains(global_chunk_id)) {
+                if !state_sync_info.pending_chunks.contains(global_chunk_id) {
                     return Err(Error::InternalError(
                         "Incoming global_chunk_id not expected",
                     ));
                 }
                 state_sync_info.pending_chunks.remove(global_chunk_id);
-                if (!chunk_data.is_empty()) {
+                if !chunk_data.is_empty() {
                     match restorer.process_chunk(chunk_id.to_string(), chunk_data) {
                         Ok(next_chunk_ids) => {
                             state_sync_info.num_processed_chunks += 1;
@@ -1302,8 +1304,8 @@ impl GroveDb {
             }
         }
 
-        if (res.is_empty()) {
-            if (!state_sync_info.pending_chunks.is_empty()) {
+        if res.is_empty() {
+            if !state_sync_info.pending_chunks.is_empty() {
                 return Ok((res, state_sync_info));
             }
             match (
@@ -1311,16 +1313,13 @@ impl GroveDb {
                 state_sync_info.current_prefix.take(),
             ) {
                 (Some(restorer), Some(current_prefix)) => {
-                    if (state_sync_info.num_processed_chunks > 0) {
-                        if (!restorer.finalize().is_ok()) {
-                            return Err(Error::InternalError("Unable to finalize merk"));
-                        }
+                    if (state_sync_info.num_processed_chunks > 0) && (restorer.finalize().is_err()) {
+                        return Err(Error::InternalError("Unable to finalize merk"));
                     }
                     state_sync_info.processed_prefixes.insert(current_prefix);
 
                     let subtrees_metadata = self.get_subtrees_metadata(tx)?;
                     if let Some(value) = subtrees_metadata.data.get(&current_prefix) {
-                        let v_path = &value.0;
                         println!("    path:{:?} done", util_path_to_string(&value.0));
                     }
 
@@ -1360,10 +1359,10 @@ impl GroveDb {
 }
 
 // Converts a path into a human-readable string (for debuting)
-pub fn util_path_to_string(path: &Vec<Vec<u8>>) -> Vec<String> {
+pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
     let mut subtree_path_str: Vec<String> = vec![];
-    for subtree in path.to_vec() {
-        let string = std::str::from_utf8(&subtree).unwrap();
+    for subtree in path {
+        let string = std::str::from_utf8(subtree).unwrap();
         subtree_path_str.push(string.parse().unwrap());
     }
     subtree_path_str
@@ -1373,14 +1372,14 @@ pub fn util_path_to_string(path: &Vec<Vec<u8>>) -> Vec<String> {
 pub fn util_split_global_chunk_id(
     global_chunk_id: &[u8],
 ) -> Result<(SubtreePrefix, String), Error> {
-    let CHUNK_PREFIX_LENGTH: usize = 32;
-    if global_chunk_id.len() < CHUNK_PREFIX_LENGTH {
+    let chunk_prefix_length: usize = 32;
+    if global_chunk_id.len() < chunk_prefix_length {
         return Err(Error::CorruptedData(
             "expected global chunk id of at least 32 length".to_string(),
         ));
     }
 
-    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(CHUNK_PREFIX_LENGTH);
+    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
     let mut array = [0u8; 32];
     array.copy_from_slice(chunk_prefix);
     let chunk_prefix_key: SubtreePrefix = array;
@@ -1388,7 +1387,7 @@ pub fn util_split_global_chunk_id(
     match str_chunk_id {
         Ok(s) => Ok((chunk_prefix_key, s)),
         Err(_) => {
-            return Err(Error::CorruptedData(
+            Err(Error::CorruptedData(
                 "unable to convert chunk id to string".to_string(),
             ))
         }

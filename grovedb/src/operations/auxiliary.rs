@@ -33,7 +33,6 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{proofs::Query, KVIterator};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;

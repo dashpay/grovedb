@@ -340,7 +340,7 @@ pub fn generate_traversal_instruction_as_string(
 /// Convert traversal instruction to byte string
 /// 1 represents left (true)
 /// 0 represents right (false)
-pub fn traversal_instruction_as_string(instruction: &Vec<bool>) -> String {
+pub fn traversal_instruction_as_string(instruction: &[bool]) -> String {
     instruction
         .iter()
         .map(|v| if *v { "1" } else { "0" })

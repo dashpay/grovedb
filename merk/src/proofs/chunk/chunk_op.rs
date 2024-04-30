@@ -45,7 +45,7 @@ impl Encode for ChunkOp {
         match self {
             Self::ChunkId(instruction) => {
                 // write the marker then the len
-                dest.write_all(&[0_u8]);
+                let _ = dest.write_all(&[0_u8]);
                 dest.write_all(instruction.len().encode_var_vec().as_slice())?;
                 let instruction_as_binary: Vec<u8> = instruction
                     .iter()
@@ -54,7 +54,7 @@ impl Encode for ChunkOp {
                 dest.write_all(&instruction_as_binary)?;
             }
             Self::Chunk(chunk) => {
-                dest.write_all(&[1_u8]);
+                let _ = dest.write_all(&[1_u8]);
                 // chunk len represents the number of ops not the total encoding len of ops
                 dest.write_all(chunk.len().encode_var_vec().as_slice())?;
                 for op in chunk {

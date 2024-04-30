@@ -31,12 +31,11 @@
 
 use std::collections::BTreeMap;
 
-use grovedb_costs::cost_return_on_error;
 use grovedb_storage::{Batch, StorageContext};
 
 use crate::{
     merk,
-    merk::{committer::MerkCommitter, MerkSource},
+    merk::{MerkSource},
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
@@ -47,7 +46,7 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{combine_hash, kv::ValueDefinedCostType, NoopCommit, RefWalker, TreeNode},
+    tree::{combine_hash, kv::ValueDefinedCostType, RefWalker, TreeNode},
     CryptoHash, Error,
     Error::{CostsError, StorageError},
     Link, Merk,
@@ -96,15 +95,15 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .ok_or(Error::ChunkRestoringError(ChunkError::UnexpectedChunk))?;
 
         let mut parent_key_value_hash: Option<CryptoHash> = None;
-        if (chunk_id.len() == 0) {
-            parent_key_value_hash = self.parent_key_value_hash.clone();
+        if chunk_id.is_empty() {
+            parent_key_value_hash = self.parent_key_value_hash;
         }
         let chunk_tree = Self::verify_chunk(chunk, expected_root_hash, &parent_key_value_hash)?;
 
         let mut root_traversal_instruction = string_as_traversal_instruction(&chunk_id)?;
 
         if root_traversal_instruction.is_empty() {
-            self.merk.set_base_root_key(Some(chunk_tree.key().to_vec()));
+            let _ = self.merk.set_base_root_key(Some(chunk_tree.key().to_vec()));
         } else {
             // every non root chunk has some associated parent with an placeholder link
             // here we update the placeholder link to represent the true data
@@ -185,9 +184,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         debug_assert_eq!(chunk_len, ((kv_count + hash_count) * 2) - 1);
 
         // chunk structure verified, next verify root hash
-        let parent_key_value_hash = match parent_key_value_hash_opt {
+        match parent_key_value_hash_opt {
             Some(val_hash) => {
-                let combined_hash = combine_hash(&val_hash, &tree.hash().unwrap()).unwrap();
+                let combined_hash = combine_hash(val_hash, &tree.hash().unwrap()).unwrap();
                 if &combined_hash != expected_root_hash {
                     return Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
                         "chunk doesn't match expected root hash",
@@ -408,14 +407,14 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         // get the latest version of the root node
-        self.merk
+        let _ = self.merk
             .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
 
         // if height values are wrong, rewrite height
         if self.verify_height().is_err() {
-            self.rewrite_heights();
+            let _ = self.rewrite_heights();
             // update the root node after height rewrite
-            self.merk
+            let _ = self.merk
                 .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
         }
 

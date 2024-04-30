@@ -71,7 +71,6 @@ use crate::{
     tree::{
         kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
     },
-    BatchEntry,
     Error::{CostsError, EdError, StorageError},
     Link,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
@@ -662,19 +661,17 @@ where
         }
 
         let node = node.unwrap();
-        if &node.hash().unwrap() != &hash {
+        if node.hash().unwrap() != hash {
             bad_link_map.insert(instruction_id.clone(), hash);
             parent_keys.insert(instruction_id, parent_key.to_vec());
             return;
         }
 
         // Need to skip this when restoring a sum tree
-        if !skip_sum_checks {
-            if node.sum().unwrap() != sum {
-                bad_link_map.insert(instruction_id.clone(), hash);
-                parent_keys.insert(instruction_id, parent_key.to_vec());
-                return;
-            }
+        if !skip_sum_checks && node.sum().unwrap() != sum {
+            bad_link_map.insert(instruction_id.clone(), hash);
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
         }
 
         // TODO: check child heights
