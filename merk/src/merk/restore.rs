@@ -35,7 +35,7 @@ use grovedb_storage::{Batch, StorageContext};
 
 use crate::{
     merk,
-    merk::{MerkSource},
+    merk::MerkSource,
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
@@ -407,14 +407,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         // get the latest version of the root node
-        let _ = self.merk
+        let _ = self
+            .merk
             .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
 
         // if height values are wrong, rewrite height
         if self.verify_height().is_err() {
             let _ = self.rewrite_heights();
             // update the root node after height rewrite
-            let _ = self.merk
+            let _ = self
+                .merk
                 .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
         }
 

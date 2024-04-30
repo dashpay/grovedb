@@ -1181,23 +1181,17 @@ impl GroveDb {
                             .chunk(String::from_utf8(chunk_id.to_vec()).unwrap().as_str());
                         match chunk_res {
                             Ok((chunk, _)) => Ok(chunk),
-                            Err(_) => {
-                                Err(Error::CorruptedData(
-                                    "Unable to create to load chunk".to_string(),
-                                ))
-                            }
+                            Err(_) => Err(Error::CorruptedData(
+                                "Unable to create to load chunk".to_string(),
+                            )),
                         }
                     }
-                    Err(_) => {
-                        Err(Error::CorruptedData(
-                            "Unable to create Chunk producer".to_string(),
-                        ))
-                    }
+                    Err(_) => Err(Error::CorruptedData(
+                        "Unable to create Chunk producer".to_string(),
+                    )),
                 }
             }
-            None => {
-                Err(Error::CorruptedData("Prefix not found".to_string()))
-            }
+            None => Err(Error::CorruptedData("Prefix not found".to_string())),
         }
     }
 
@@ -1313,7 +1307,8 @@ impl GroveDb {
                 state_sync_info.current_prefix.take(),
             ) {
                 (Some(restorer), Some(current_prefix)) => {
-                    if (state_sync_info.num_processed_chunks > 0) && (restorer.finalize().is_err()) {
+                    if (state_sync_info.num_processed_chunks > 0) && (restorer.finalize().is_err())
+                    {
                         return Err(Error::InternalError("Unable to finalize merk"));
                     }
                     state_sync_info.processed_prefixes.insert(current_prefix);
@@ -1386,10 +1381,8 @@ pub fn util_split_global_chunk_id(
     let str_chunk_id = String::from_utf8(chunk_id.to_vec());
     match str_chunk_id {
         Ok(s) => Ok((chunk_prefix_key, s)),
-        Err(_) => {
-            Err(Error::CorruptedData(
-                "unable to convert chunk id to string".to_string(),
-            ))
-        }
+        Err(_) => Err(Error::CorruptedData(
+            "unable to convert chunk id to string".to_string(),
+        )),
     }
 }
