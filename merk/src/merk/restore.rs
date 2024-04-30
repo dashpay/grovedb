@@ -521,9 +521,7 @@ mod tests {
         proofs::chunk::{
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
-        test_utils::{
-            make_batch_seq, TempMerk,
-        },
+        test_utils::{make_batch_seq, TempMerk},
         Error::ChunkRestoringError,
         Merk, PanicSource,
     };
@@ -549,8 +547,11 @@ mod tests {
     fn test_chunk_verification_only_kv_feature_and_hash() {
         // should not accept kv
         let invalid_chunk_proof = vec![Op::Push(Node::KV(vec![1], vec![1]))];
-        let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
+        let verification_result = Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(
+            invalid_chunk_proof,
+            &[0; 32],
+            &None,
+        );
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -560,8 +561,11 @@ mod tests {
 
         // should not accept kvhash
         let invalid_chunk_proof = vec![Op::Push(Node::KVHash([0; 32]))];
-        let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
+        let verification_result = Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(
+            invalid_chunk_proof,
+            &[0; 32],
+            &None,
+        );
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -571,8 +575,11 @@ mod tests {
 
         // should not accept kvdigest
         let invalid_chunk_proof = vec![Op::Push(Node::KVDigest(vec![0], [0; 32]))];
-        let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
+        let verification_result = Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(
+            invalid_chunk_proof,
+            &[0; 32],
+            &None,
+        );
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -582,8 +589,11 @@ mod tests {
 
         // should not accept kvvaluehash
         let invalid_chunk_proof = vec![Op::Push(Node::KVValueHash(vec![0], vec![0], [0; 32]))];
-        let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
+        let verification_result = Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(
+            invalid_chunk_proof,
+            &[0; 32],
+            &None,
+        );
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -593,8 +603,11 @@ mod tests {
 
         // should not accept kvrefvaluehash
         let invalid_chunk_proof = vec![Op::Push(Node::KVRefValueHash(vec![0], vec![0], [0; 32]))];
-        let verification_result =
-            Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
+        let verification_result = Restorer::<PrefixedRocksDbStorageContext>::verify_chunk(
+            invalid_chunk_proof,
+            &[0; 32],
+            &None,
+        );
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
