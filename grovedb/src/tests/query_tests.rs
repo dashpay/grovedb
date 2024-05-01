@@ -46,7 +46,7 @@ use crate::{
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF].as_ref(),
             &i_vec,
@@ -70,7 +70,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
 
         for j in 100u32..150 {
             let mut j_vec = i_vec.clone();
-            j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
+            j_vec.append(&mut j.to_be_bytes().to_vec());
             db.insert(
                 [TEST_LEAF, i_vec.as_slice(), b"\0"].as_ref(),
                 &j_vec.clone(),
@@ -87,7 +87,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
 fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 0u32..10 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF].as_ref(),
             &i_vec,
@@ -110,7 +110,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
         .expect("successful subtree insert");
 
         for j in 25u32..50 {
-            let j_vec = (j as u32).to_be_bytes().to_vec();
+            let j_vec = j.to_be_bytes().to_vec();
             db.insert(
                 [TEST_LEAF, i_vec.as_slice(), b"a"].as_ref(),
                 &j_vec,
@@ -134,7 +134,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
             .expect("successful subtree insert");
 
             for k in 100u32..110 {
-                let k_vec = (k as u32).to_be_bytes().to_vec();
+                let k_vec = k.to_be_bytes().to_vec();
                 db.insert(
                     [TEST_LEAF, i_vec.as_slice(), b"a", &j_vec, b"\0"].as_ref(),
                     &k_vec.clone(),
@@ -173,7 +173,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
     .expect("successful subtree insert");
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF, b"1"].as_ref(),
             &i_vec,
@@ -198,7 +198,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
         for j in 100u32..150 {
             let random_key = rand::thread_rng().gen::<[u8; 32]>();
             let mut j_vec = i_vec.clone();
-            j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
+            j_vec.append(&mut j.to_be_bytes().to_vec());
 
             // We should insert every item to the tree holding items
             db.insert(
@@ -231,7 +231,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
 fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF].as_ref(),
             &i_vec,
@@ -278,7 +278,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
     .expect("successful subtree insert");
 
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF, b"1"].as_ref(),
             &i_vec,
@@ -333,7 +333,7 @@ fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut 
     .expect("successful subtree insert");
     // Insert a couple of subtrees first
     for i in 100u32..200 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF, &[], b"\0"].as_ref(),
             &i_vec,

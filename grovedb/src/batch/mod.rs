@@ -552,7 +552,7 @@ impl GroveDbOp {
     }
 
     /// Verify consistency of operations
-    pub fn verify_consistency_of_operations(ops: &Vec<GroveDbOp>) -> GroveDbOpConsistencyResults {
+    pub fn verify_consistency_of_operations(ops: &[GroveDbOp]) -> GroveDbOpConsistencyResults {
         let ops_len = ops.len();
         // operations should not have any duplicates
         let mut repeated_ops = vec![];
@@ -2424,8 +2424,8 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(matches!(
-            db.apply_batch(
+        assert!(db
+            .apply_batch(
                 ops,
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: false,
@@ -2438,9 +2438,8 @@ mod tests {
                 }),
                 None
             )
-            .unwrap(),
-            Ok(_)
-        ));
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -3481,7 +3480,7 @@ mod tests {
                 elem.clone(),
             ),
         ];
-        assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Ok(_)));
+        assert!(db.apply_batch(batch, None, None).unwrap().is_ok());
         assert_eq!(
             db.get([TEST_LEAF].as_ref(), b"key1", None)
                 .unwrap()
@@ -3498,7 +3497,7 @@ mod tests {
             .unwrap()
             .expect("should generate proof");
         let verification_result = GroveDb::verify_query_raw(&proof, &path_query);
-        assert!(matches!(verification_result, Ok(_)));
+        assert!(verification_result.is_ok());
 
         // Hit reference limit when you specify max reference hop, lower than actual hop
         // count

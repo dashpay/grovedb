@@ -87,9 +87,9 @@ impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Vi
 impl<'a, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize for VisualizableTree<'a, F> {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         drawer.write(b"[key: ")?;
-        drawer = self.tree.inner.key_as_slice().visualize(drawer)?;
+        drawer = self.tree.inner.kv.key_as_ref().visualize(drawer)?;
         drawer.write(b", value: ")?;
-        drawer = (self.deserialize_fn)(self.tree.inner.value_as_slice()).visualize(drawer)?;
+        drawer = (self.deserialize_fn)(self.tree.inner.kv.value_as_slice()).visualize(drawer)?;
 
         drawer.down();
         drawer.write(b"\n")?;

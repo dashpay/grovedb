@@ -164,6 +164,7 @@ pub fn apply_to_memonly(
         })
         .unwrap()
         .expect("commit failed");
+        println!("{:?}", &tree);
         assert_tree_invariants(&tree);
         tree
     })
@@ -260,7 +261,15 @@ pub fn make_tree_rand(
 
 /// Create tree with initial fixed values and apply `node count` Put ops using
 /// sequential keys using memory only
+/// starting tree node is [0; 20]
 pub fn make_tree_seq(node_count: u64) -> TreeNode {
+    make_tree_seq_with_start_key(node_count, [0; 20].to_vec())
+}
+
+/// Create tree with initial fixed values and apply `node count` Put ops using
+/// sequential keys using memory only
+/// requires a starting key vector
+pub fn make_tree_seq_with_start_key(node_count: u64, start_key: Vec<u8>) -> TreeNode {
     let batch_size = if node_count >= 10_000 {
         assert_eq!(node_count % 10_000, 0);
         10_000
@@ -269,7 +278,8 @@ pub fn make_tree_seq(node_count: u64) -> TreeNode {
     };
 
     let value = vec![123; 60];
-    let mut tree = TreeNode::new(vec![0; 20], value, None, BasicMerkNode).unwrap();
+
+    let mut tree = TreeNode::new(start_key, value, None, BasicMerkNode).unwrap();
 
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {
@@ -279,7 +289,6 @@ pub fn make_tree_seq(node_count: u64) -> TreeNode {
 
     tree
 }
-
 /// Shortcut to open a Merk with a provided storage and batch
 pub fn empty_path_merk<'db, S>(
     storage: &'db S,

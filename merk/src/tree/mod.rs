@@ -37,7 +37,7 @@ mod encoding;
 #[cfg(feature = "full")]
 mod fuzz_tests;
 #[cfg(any(feature = "full", feature = "verify"))]
-mod hash;
+pub mod hash;
 #[cfg(feature = "full")]
 mod iter;
 #[cfg(feature = "full")]
@@ -102,7 +102,7 @@ use crate::{error::Error, Error::Overflow};
 
 #[cfg(feature = "full")]
 /// The fields of the `Tree` type, stored on the heap.
-#[derive(Clone, Encode, Decode, Debug)]
+#[derive(Clone, Encode, Decode, Debug, PartialEq)]
 pub struct TreeNodeInner {
     pub(crate) left: Option<Link>,
     pub(crate) right: Option<Link>,
@@ -141,7 +141,7 @@ impl Terminated for Box<TreeNodeInner> {}
 /// Trees' inner fields are stored on the heap so that nodes can recursively
 /// link to each other, and so we can detach nodes from their parents, then
 /// reattach without allocating or freeing heap memory.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
     pub(crate) old_value: Option<Vec<u8>>,

@@ -26,479 +26,1039 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Provides `ChunkProducer`, which creates chunk proofs for full replication of
-//! a Merk.
+use std::collections::VecDeque;
 
-#[cfg(feature = "full")]
-use grovedb_costs::CostsExt;
-#[cfg(feature = "full")]
-use grovedb_storage::{RawIterator, StorageContext};
+use ed::Encode;
+use grovedb_storage::StorageContext;
 
-#[cfg(feature = "full")]
-use super::Merk;
-#[cfg(feature = "full")]
 use crate::{
     error::Error,
-    proofs::{chunk::get_next_chunk, Node, Op},
+    proofs::{
+        chunk::{
+            chunk_op::ChunkOp,
+            error::ChunkError,
+            util::{
+                chunk_height, chunk_id_from_traversal_instruction,
+                chunk_id_from_traversal_instruction_with_recovery, generate_traversal_instruction,
+                generate_traversal_instruction_as_string, number_of_chunks,
+                string_as_traversal_instruction,
+            },
+        },
+        Node, Op,
+    },
+    Error::ChunkingError,
+    Merk,
 };
 
-#[cfg(feature = "full")]
+/// ChunkProof for replication of a single subtree
+#[derive(Debug)]
+pub struct SubtreeChunk {
+    chunk: Vec<Op>,
+    next_index: Option<usize>,
+    remaining_limit: Option<usize>,
+}
+
+impl SubtreeChunk {
+    pub fn new(chunk: Vec<Op>, next_index: Option<usize>, remaining_limit: Option<usize>) -> Self {
+        Self {
+            chunk,
+            next_index,
+            remaining_limit,
+        }
+    }
+}
+
+/// ChunkProof for the replication of multiple subtrees.
+#[derive(Debug)]
+pub struct MultiChunk {
+    pub chunk: Vec<ChunkOp>,
+    pub next_index: Option<String>,
+    pub remaining_limit: Option<usize>,
+}
+
+impl MultiChunk {
+    pub fn new(
+        chunk: Vec<ChunkOp>,
+        next_index: Option<String>,
+        remaining_limit: Option<usize>,
+    ) -> Self {
+        Self {
+            chunk,
+            next_index,
+            remaining_limit,
+        }
+    }
+}
+
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
 /// random order, or iterated in order for slightly better performance.
-pub struct ChunkProducer<'db, S: StorageContext<'db>> {
-    trunk: Vec<Op>,
-    chunk_boundaries: Vec<Vec<u8>>,
-    raw_iter: S::RawIterator,
+pub struct ChunkProducer<'db, S> {
+    /// Represents the max height of the Merk tree
+    height: usize,
+    /// Represents the index of the next chunk
     index: usize,
+    merk: &'db Merk<S>,
 }
 
-#[cfg(feature = "full")]
 impl<'db, S> ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
 {
-    /// Creates a new `ChunkProducer` for the given `Merk` instance. In the
-    /// constructor, the first chunk (the "trunk") will be created.
-    pub fn new(merk: &Merk<S>) -> Result<Self, Error> {
-        let (trunk, has_more) = merk
-            .walk(|maybe_walker| match maybe_walker {
-                Some(mut walker) => walker.create_trunk_proof(),
-                None => Ok((vec![], false)).wrap_with_cost(Default::default()),
-            })
-            .unwrap()?;
-
-        let chunk_boundaries = if has_more {
-            trunk
-                .iter()
-                .filter_map(|op| match op {
-                    Op::Push(Node::KVValueHashFeatureType(key, ..)) => Some(key.clone()),
-                    _ => None,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
-
-        let mut raw_iter = merk.storage.raw_iter();
-        raw_iter.seek_to_first().unwrap();
-
-        Ok(ChunkProducer {
-            trunk,
-            chunk_boundaries,
-            raw_iter,
-            index: 0,
+    /// Creates a new `ChunkProducer` for the given `Merk` instance
+    pub fn new(merk: &'db Merk<S>) -> Result<Self, Error> {
+        let tree_height = merk
+            .height()
+            .ok_or(Error::ChunkingError(ChunkError::EmptyTree(
+                "cannot create chunk producer for empty Merk",
+            )))?;
+        Ok(Self {
+            height: tree_height as usize,
+            index: 1,
+            merk,
         })
     }
 
     /// Gets the chunk with the given index. Errors if the index is out of
     /// bounds or the tree is empty - the number of chunks can be checked by
     /// calling `producer.len()`.
-    pub fn chunk(&mut self, index: usize) -> Result<Vec<Op>, Error> {
-        if index >= self.len() {
-            return Err(Error::ChunkingError("Chunk index out-of-bounds"));
+    pub fn chunk_with_index(
+        &mut self,
+        chunk_index: usize,
+    ) -> Result<(Vec<Op>, Option<usize>), Error> {
+        let traversal_instructions = generate_traversal_instruction(self.height, chunk_index)?;
+        self.chunk_internal(chunk_index, traversal_instructions)
+    }
+
+    /// Returns the chunk at a given chunk id.
+    pub fn chunk(&mut self, chunk_id: &str) -> Result<(Vec<Op>, Option<String>), Error> {
+        let traversal_instructions = string_as_traversal_instruction(chunk_id)?;
+        let chunk_index = chunk_id_from_traversal_instruction_with_recovery(
+            traversal_instructions.as_slice(),
+            self.height,
+        )?;
+        let (chunk, next_index) = self.chunk_internal(chunk_index, traversal_instructions)?;
+        let index_string = next_index
+            .map(|index| generate_traversal_instruction_as_string(self.height, index))
+            .transpose()?;
+        Ok((chunk, index_string))
+    }
+
+    /// Returns the chunk at the given index
+    /// Assumes index and traversal_instructions represents the same information
+    fn chunk_internal(
+        &mut self,
+        index: usize,
+        traversal_instructions: Vec<bool>,
+    ) -> Result<(Vec<Op>, Option<usize>), Error> {
+        // ensure that the chunk index is within bounds
+        let max_chunk_index = self.len();
+        if index < 1 || index > max_chunk_index {
+            return Err(ChunkingError(ChunkError::OutOfBounds(
+                "chunk index out of bounds",
+            )));
         }
 
-        self.index = index;
+        self.index = index + 1;
 
-        if index == 0 || index == 1 {
-            self.raw_iter.seek_to_first().unwrap();
+        let chunk_height = chunk_height(self.height, index).unwrap();
+
+        let chunk = self.merk.walk(|maybe_walker| match maybe_walker {
+            Some(mut walker) => {
+                walker.traverse_and_build_chunk(&traversal_instructions, chunk_height)
+            }
+            None => Err(Error::ChunkingError(ChunkError::EmptyTree(
+                "cannot create chunk producer for empty Merk",
+            ))),
+        })?;
+
+        // now we need to return the next index
+        // how do we know if we should return some or none
+        if self.index > max_chunk_index {
+            Ok((chunk, None))
         } else {
-            let preceding_key = self.chunk_boundaries.get(index - 2).unwrap();
-            self.raw_iter.seek(preceding_key).unwrap();
-            self.raw_iter.next().unwrap();
+            Ok((chunk, Some(self.index)))
+        }
+    }
+
+    /// Generate multichunk with chunk id
+    /// Multichunks accumulate as many chunks as they can until they have all
+    /// chunks or hit some optional limit
+    pub fn multi_chunk_with_limit(
+        &mut self,
+        chunk_id: &str,
+        limit: Option<usize>,
+    ) -> Result<MultiChunk, Error> {
+        // we want to convert the chunk id to the index
+        let chunk_index = string_as_traversal_instruction(chunk_id).and_then(|instruction| {
+            chunk_id_from_traversal_instruction(instruction.as_slice(), self.height)
+        })?;
+        self.multi_chunk_with_limit_and_index(chunk_index, limit)
+    }
+
+    /// Generate multichunk with chunk index
+    /// Multichunks accumulate as many chunks as they can until they have all
+    /// chunks or hit some optional limit
+    pub fn multi_chunk_with_limit_and_index(
+        &mut self,
+        index: usize,
+        limit: Option<usize>,
+    ) -> Result<MultiChunk, Error> {
+        // TODO: what happens if the vec is filled?
+        //  we need to have some kind of hardhoc limit value if none is supplied.
+        //  maybe we can just do something with the length to fix this?
+        let mut chunk = vec![];
+
+        let mut current_index = Some(index);
+        let mut current_limit = limit;
+
+        // generate as many subtree chunks as we can
+        // until we have exhausted all or hit a limit restriction
+        while current_index.is_some() {
+            let current_index_traversal_instruction = generate_traversal_instruction(
+                self.height,
+                current_index.expect("confirmed is Some"),
+            )?;
+            let chunk_id_op = ChunkOp::ChunkId(current_index_traversal_instruction);
+
+            // factor in the ChunkId encoding length in limit calculations
+            let temp_limit = if let Some(limit) = current_limit {
+                let chunk_id_op_encoding_len = chunk_id_op.encoding_length().map_err(|_e| {
+                    Error::ChunkingError(ChunkError::InternalError("cannot get encoding length"))
+                })?;
+                if limit >= chunk_id_op_encoding_len {
+                    Some(limit - chunk_id_op_encoding_len)
+                } else {
+                    Some(0)
+                }
+            } else {
+                None
+            };
+
+            let subtree_multi_chunk_result = self.subtree_multi_chunk_with_limit(
+                current_index.expect("confirmed is not None"),
+                temp_limit,
+            );
+
+            let limit_too_small_error = matches!(
+                subtree_multi_chunk_result,
+                Err(ChunkingError(ChunkError::LimitTooSmall(..)))
+            );
+
+            if limit_too_small_error {
+                if chunk.is_empty() {
+                    // no progress, return limit too small error
+                    return Err(Error::ChunkingError(ChunkError::LimitTooSmall(
+                        "limit too small for initial chunk",
+                    )));
+                } else {
+                    // made progress, send accumulated chunk
+                    break;
+                }
+            }
+
+            let subtree_multi_chunk = subtree_multi_chunk_result?;
+
+            chunk.push(chunk_id_op);
+            chunk.push(ChunkOp::Chunk(subtree_multi_chunk.chunk));
+
+            // update loop parameters
+            current_index = subtree_multi_chunk.next_index;
+            current_limit = subtree_multi_chunk.remaining_limit;
         }
 
-        self.next_chunk()
+        let index_string = current_index
+            .map(|index| generate_traversal_instruction_as_string(self.height, index))
+            .transpose()?;
+
+        Ok(MultiChunk::new(chunk, index_string, current_limit))
+    }
+
+    /// Packs as many chunks as it can from a starting chunk index, into a
+    /// vector. Stops when we have exhausted all chunks or we have reached
+    /// some limit.
+    fn subtree_multi_chunk_with_limit(
+        &mut self,
+        index: usize,
+        limit: Option<usize>,
+    ) -> Result<SubtreeChunk, Error> {
+        let max_chunk_index = number_of_chunks(self.height);
+        let mut chunk_index = index;
+
+        // we first get the chunk at the given index
+        // TODO: use the returned chunk index rather than tracking
+        let (chunk_ops, _) = self.chunk_with_index(chunk_index)?;
+        let mut chunk_byte_length = chunk_ops.encoding_length().map_err(|_e| {
+            Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
+        })?;
+        chunk_index += 1;
+
+        let mut chunk = VecDeque::from(chunk_ops);
+
+        // ensure the limit is not less than first chunk byte length
+        // if it is we can't proceed and didn't make progress so we return an error
+        if let Some(limit) = limit {
+            if chunk_byte_length > limit {
+                return Err(Error::ChunkingError(ChunkError::LimitTooSmall(
+                    "limit too small for initial chunk",
+                )));
+            }
+        }
+
+        let mut iteration_index = 0;
+        while iteration_index < chunk.len() {
+            // we only perform replacements on Hash nodes
+            if matches!(chunk[iteration_index], Op::Push(Node::Hash(..))) {
+                // TODO: use the returned chunk index rather than tracking
+                let (replacement_chunk, _) = self.chunk_with_index(chunk_index)?;
+
+                // calculate the new total
+                let new_total = replacement_chunk.encoding_length().map_err(|_e| {
+                    Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
+                })? + chunk_byte_length
+                    - chunk[iteration_index].encoding_length().map_err(|_e| {
+                        Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
+                    })?;
+
+                // verify that this chunk doesn't make use exceed the limit
+                if let Some(limit) = limit {
+                    if new_total > limit {
+                        let next_index = match chunk_index > max_chunk_index {
+                            true => None,
+                            _ => Some(chunk_index),
+                        };
+
+                        return Ok(SubtreeChunk::new(
+                            chunk.into(),
+                            next_index,
+                            Some(limit - chunk_byte_length),
+                        ));
+                    }
+                }
+
+                chunk_byte_length = new_total;
+                chunk_index += 1;
+
+                chunk.remove(iteration_index);
+                for op in replacement_chunk.into_iter().rev() {
+                    chunk.insert(iteration_index, op);
+                }
+            } else {
+                iteration_index += 1;
+            }
+        }
+
+        let remaining_limit = limit.map(|l| l - chunk_byte_length);
+        let next_index = match chunk_index > max_chunk_index {
+            true => None,
+            _ => Some(chunk_index),
+        };
+
+        Ok(SubtreeChunk::new(chunk.into(), next_index, remaining_limit))
     }
 
     /// Returns the total number of chunks for the underlying Merk tree.
-    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
-        let boundaries_len = self.chunk_boundaries.len();
-        if boundaries_len == 0 {
-            1
-        } else {
-            boundaries_len + 2
-        }
+        number_of_chunks(self.height)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        number_of_chunks(self.height) == 0
     }
 
     /// Gets the next chunk based on the `ChunkProducer`'s internal index state.
     /// This is mostly useful for letting `ChunkIter` yield the chunks in order,
     /// optimizing throughput compared to random access.
-    fn next_chunk(&mut self) -> Result<Vec<Op>, Error> {
-        if self.index == 0 {
-            if self.trunk.is_empty() {
-                return Err(Error::ChunkingError(
-                    "Attempted to fetch chunk on empty tree",
-                ));
-            }
-            self.index += 1;
-            return Ok(self.trunk.clone());
+    // TODO: this is not better than random access, as we are not keeping state
+    //  that will make this more efficient, decide if this should be fixed or not
+    fn next_chunk(&mut self) -> Option<Result<(Vec<Op>, Option<String>), Error>> {
+        let max_index = number_of_chunks(self.height);
+        if self.index > max_index {
+            return None;
         }
 
-        if self.index >= self.len() {
-            panic!("Called next_chunk after end");
-        }
-
-        let end_key = self.chunk_boundaries.get(self.index - 1);
-        let end_key_slice = end_key.as_ref().map(|k| k.as_slice());
-
-        self.index += 1;
-
-        get_next_chunk(&mut self.raw_iter, end_key_slice).unwrap()
+        // get the chunk at the given index
+        // return the next index as a string
+        Some(
+            self.chunk_with_index(self.index)
+                .and_then(|(chunk, chunk_index)| {
+                    chunk_index
+                        .map(|index| generate_traversal_instruction_as_string(self.height, index))
+                        .transpose()
+                        .map(|v| (chunk, v))
+                }),
+        )
     }
 }
 
-#[cfg(feature = "full")]
-impl<'db, S> IntoIterator for ChunkProducer<'db, S>
+/// Iterate over each chunk, returning `None` after last chunk
+impl<'db, S> Iterator for ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
 {
-    type IntoIter = ChunkIter<'db, S>;
-    type Item = <ChunkIter<'db, S> as Iterator>::Item;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ChunkIter(self)
-    }
-}
-
-#[cfg(feature = "full")]
-/// A `ChunkIter` iterates through all the chunks for the underlying `Merk`
-/// instance in order (the first chunk is the "trunk" chunk). Yields `None`
-/// after all chunks have been yielded.
-pub struct ChunkIter<'db, S>(ChunkProducer<'db, S>)
-where
-    S: StorageContext<'db>;
-
-#[cfg(feature = "full")]
-impl<'db, S> Iterator for ChunkIter<'db, S>
-where
-    S: StorageContext<'db>,
-{
-    type Item = Result<Vec<Op>, Error>;
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.0.len(), Some(self.0.len()))
-    }
+    type Item = Result<(Vec<Op>, Option<String>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.0.index >= self.0.len() {
-            None
-        } else {
-            Some(self.0.next_chunk())
-        }
+        self.next_chunk()
     }
 }
 
-#[cfg(feature = "full")]
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&self) -> Result<ChunkProducer<'db, S>, Error> {
+    pub fn chunks(&'db self) -> Result<ChunkProducer<'db, S>, Error> {
         ChunkProducer::new(self)
     }
 }
 
-#[cfg(feature = "full")]
 #[cfg(test)]
-mod tests {
-    use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
-    use tempfile::TempDir;
-
+mod test {
     use super::*;
     use crate::{
-        proofs::chunk::{verify_leaf, verify_trunk},
-        test_utils::*,
-        tree::kv::ValueDefinedCostType,
+        proofs::{
+            chunk::{
+                chunk::{
+                    tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
+                    LEFT, RIGHT,
+                },
+                util::traversal_instruction_as_string,
+            },
+            tree::execute,
+            Tree,
+        },
+        test_utils::{make_batch_seq, TempMerk},
+        tree::RefWalker,
+        PanicSource,
     };
 
-    #[test]
-    fn len_small() {
-        let mut merk = TempMerk::new();
-        let batch = make_batch_seq(1..256);
-        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
-        merk.commit();
+    #[derive(Default)]
+    struct NodeCounts {
+        hash: usize,
+        kv_hash: usize,
+        kv: usize,
+        kv_value_hash: usize,
+        kv_digest: usize,
+        kv_ref_value_hash: usize,
+        kv_value_hash_feature_type: usize,
+    }
 
-        let chunks = merk.chunks().unwrap();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks.into_iter().size_hint().0, 1);
+    impl NodeCounts {
+        fn sum(&self) -> usize {
+            self.hash
+                + self.kv_hash
+                + self.kv
+                + self.kv_value_hash
+                + self.kv_digest
+                + self.kv_ref_value_hash
+                + self.kv_value_hash_feature_type
+        }
+    }
+
+    fn count_node_types(tree: Tree) -> NodeCounts {
+        let mut counts = NodeCounts::default();
+
+        tree.visit_nodes(&mut |node| {
+            match node {
+                Node::Hash(_) => counts.hash += 1,
+                Node::KVHash(_) => counts.kv_hash += 1,
+                Node::KV(..) => counts.kv += 1,
+                Node::KVValueHash(..) => counts.kv_value_hash += 1,
+                Node::KVDigest(..) => counts.kv_digest += 1,
+                Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
+                Node::KVValueHashFeatureType(..) => counts.kv_value_hash_feature_type += 1,
+            };
+        });
+
+        counts
     }
 
     #[test]
-    fn len_big() {
+    fn test_merk_chunk_len() {
+        // Tree of height 5 - max of 31 elements, min of 16 elements
+        // 5 will be broken into 2 layers = [3, 2]
+        // exit nodes from first layer = 2^3 = 8
+        // total_chunk = 1 + 8 = 9 chunks
         let mut merk = TempMerk::new();
-        let batch = make_batch_seq(1..10_000);
-        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
-        merk.commit();
+        let batch = make_batch_seq(0..20);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(5));
+        let chunk_producer = ChunkProducer::new(&merk).unwrap();
+        assert_eq!(chunk_producer.len(), 9);
 
-        let chunks = merk.chunks().unwrap();
-        assert_eq!(chunks.len(), 129);
-        assert_eq!(chunks.into_iter().size_hint().0, 129);
+        // Tree of height 10 - max of 1023 elements, min of 512 elements
+        // 4 layers -> [3,3,2,2]
+        // chunk_count_per_layer -> [1, 8, 64, 256]
+        // total = 341 chunks
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..1000);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(10));
+        let chunk_producer = ChunkProducer::new(&merk).unwrap();
+        assert_eq!(chunk_producer.len(), 329);
     }
 
     #[test]
-    fn generate_and_verify_chunks() {
+    fn test_chunk_producer_iter() {
+        // tree with height 4
+        // full tree
+        //              7
+        //           /      \
+        //        3            11
+        //      /   \        /    \
+        //     1     5      9      13
+        //   /  \   / \    / \    /   \
+        //  0   2  4   6  8  10  12   14
+        // going to be broken into [2, 2]
+        // that's a total of 5 chunks
+
         let mut merk = TempMerk::new();
-        let batch = make_batch_seq(1..10_000);
-        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
-        merk.commit();
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
 
-        let mut chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
 
-        let chunk = chunks.next().unwrap();
-        let (trunk, height) = verify_trunk(chunk.into_iter().map(Ok)).unwrap().unwrap();
-        assert_eq!(height, 14);
-        assert_eq!(trunk.hash().unwrap(), merk.root_hash().unwrap());
+        // build iterator from first chunk producer
+        let mut chunks = merk.chunks().expect("should return producer");
 
-        assert_eq!(trunk.layer(7).count(), 128);
+        // ensure that the chunks gotten from the iterator is the same
+        // as that from the chunk producer
+        for i in 1..=5 {
+            assert_eq!(
+                chunks.next().unwrap().unwrap().0,
+                chunk_producer.chunk_with_index(i).unwrap().0
+            );
+        }
 
-        for (ops, node) in chunks.zip(trunk.layer(height / 2)) {
-            verify_leaf(ops.into_iter().map(Ok), node.hash().unwrap())
+        // returns None after max
+        assert!(chunks.next().is_none());
+    }
+
+    #[test]
+    fn test_random_chunk_access() {
+        // tree with height 4
+        // full tree
+        //              7
+        //           /      \
+        //        3            11
+        //      /   \        /    \
+        //     1     5      9      13
+        //   /  \   / \    / \    /   \
+        //  0   2  4   6  8  10  12   14
+        // going to be broken into [2, 2]
+        // that's a total of 5 chunks
+
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
+
+        let mut inner_tree = merk.tree.take().expect("has inner tree");
+        merk.tree.set(Some(inner_tree.clone()));
+
+        // TODO: should I be using panic source?
+        let mut tree_walker = RefWalker::new(&mut inner_tree, PanicSource {});
+
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+        assert_eq!(chunk_producer.len(), 5);
+
+        // assert bounds
+        assert!(chunk_producer.chunk_with_index(0).is_err());
+        assert!(chunk_producer.chunk_with_index(6).is_err());
+
+        // first chunk
+        // expected:
+        //              7
+        //           /      \
+        //        3            11
+        //      /   \        /    \
+        //   H(1)   H(5)    H(9)   H(13)
+        let (chunk, next_chunk) = chunk_producer
+            .chunk_with_index(1)
+            .expect("should generate chunk");
+        assert_eq!(chunk.len(), 13);
+        assert_eq!(next_chunk, Some(2));
+        assert_eq!(
+            chunk,
+            vec![
+                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, LEFT])),
+                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[LEFT])),
+                Op::Parent,
+                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, RIGHT])),
+                Op::Child,
+                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
+                Op::Parent,
+                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT])),
+                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Parent,
+                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT, RIGHT])),
+                Op::Child,
+                Op::Child
+            ]
+        );
+
+        // second chunk
+        // expected:
+        //         1
+        //        /  \
+        //       0    2
+        let (chunk, next_chunk) = chunk_producer
+            .chunk_with_index(2)
+            .expect("should generate chunk");
+        assert_eq!(chunk.len(), 5);
+        assert_eq!(next_chunk, Some(3));
+        assert_eq!(
+            chunk,
+            vec![
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT, LEFT, LEFT]
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT, LEFT]
+                )),
+                Op::Parent,
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT, LEFT, RIGHT]
+                )),
+                Op::Child
+            ]
+        );
+
+        // third chunk
+        // expected:
+        //         5
+        //        /  \
+        //       4    6
+        let (chunk, next_chunk) = chunk_producer
+            .chunk_with_index(3)
+            .expect("should generate chunk");
+        assert_eq!(chunk.len(), 5);
+        assert_eq!(next_chunk, Some(4));
+        assert_eq!(
+            chunk,
+            vec![
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT, LEFT]
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT]
+                )),
+                Op::Parent,
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT, RIGHT]
+                )),
+                Op::Child
+            ]
+        );
+
+        // third chunk
+        // expected:
+        //         9
+        //        /  \
+        //       8    10
+        let (chunk, next_chunk) = chunk_producer
+            .chunk_with_index(4)
+            .expect("should generate chunk");
+        assert_eq!(chunk.len(), 5);
+        assert_eq!(next_chunk, Some(5));
+        assert_eq!(
+            chunk,
+            vec![
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT, LEFT]
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT]
+                )),
+                Op::Parent,
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT, RIGHT]
+                )),
+                Op::Child
+            ]
+        );
+
+        // third chunk
+        // expected:
+        //         13
+        //        /  \
+        //       12    14
+        let (chunk, next_chunk) = chunk_producer
+            .chunk_with_index(5)
+            .expect("should generate chunk");
+        assert_eq!(chunk.len(), 5);
+        assert_eq!(next_chunk, None);
+        assert_eq!(
+            chunk,
+            vec![
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, RIGHT, LEFT]
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, RIGHT]
+                )),
+                Op::Parent,
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, RIGHT, RIGHT]
+                )),
+                Op::Child
+            ]
+        );
+    }
+
+    #[test]
+    fn test_subtree_chunk_no_limit() {
+        // tree of height 4
+        // 5 chunks
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
+
+        // generate multi chunk with no limit
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+        let chunk_result = chunk_producer
+            .subtree_multi_chunk_with_limit(1, None)
+            .expect("should generate chunk with limit");
+
+        assert_eq!(chunk_result.remaining_limit, None);
+        assert_eq!(chunk_result.next_index, None);
+
+        let tree = execute(chunk_result.chunk.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("should reconstruct tree");
+        assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+
+        // assert that all nodes are of type kv_value_hash_feature_type
+        let node_counts = count_node_types(tree);
+        assert_eq!(node_counts.hash, 0);
+        assert_eq!(node_counts.kv_hash, 0);
+        assert_eq!(node_counts.kv, 0);
+        assert_eq!(node_counts.kv_value_hash, 0);
+        assert_eq!(node_counts.kv_digest, 0);
+        assert_eq!(node_counts.kv_ref_value_hash, 0);
+        assert_eq!(node_counts.kv_value_hash_feature_type, 15);
+    }
+
+    #[test]
+    fn test_subtree_chunk_with_limit() {
+        // tree of height 4
+        // 5 chunks
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
+
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+
+        // initial chunk is of size 453, so limit of 10 is too small
+        // should return an error
+        let chunk = chunk_producer.subtree_multi_chunk_with_limit(1, Some(10));
+        assert!(chunk.is_err());
+
+        // get just the fist chunk
+        let chunk_result = chunk_producer
+            .subtree_multi_chunk_with_limit(1, Some(453))
+            .expect("should generate chunk with limit");
+        assert_eq!(chunk_result.remaining_limit, Some(0));
+        assert_eq!(chunk_result.next_index, Some(2));
+
+        let chunk = chunk_result.chunk;
+        assert_eq!(chunk.encoding_length().unwrap(), 453);
+        assert_eq!(chunk.len(), 13); // op count
+        let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("should reconstruct tree");
+        assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+
+        let node_counts = count_node_types(tree);
+        assert_eq!(node_counts.kv_value_hash_feature_type, 3);
+        assert_eq!(node_counts.hash, 4);
+        assert_eq!(node_counts.sum(), 4 + 3);
+
+        // get up to second chunk
+        let chunk_result = chunk_producer
+            .subtree_multi_chunk_with_limit(1, Some(737))
+            .expect("should generate chunk with limit");
+        assert_eq!(chunk_result.remaining_limit, Some(0));
+        assert_eq!(chunk_result.next_index, Some(3));
+
+        let chunk = chunk_result.chunk;
+        assert_eq!(chunk.encoding_length().unwrap(), 737);
+        assert_eq!(chunk.len(), 17); // op count
+        let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("should reconstruct tree");
+        assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+
+        let node_counts = count_node_types(tree);
+        assert_eq!(node_counts.kv_value_hash_feature_type, 6);
+        assert_eq!(node_counts.hash, 3);
+        assert_eq!(node_counts.sum(), 6 + 3);
+
+        // get up to third chunk
+        let chunk_result = chunk_producer
+            .subtree_multi_chunk_with_limit(1, Some(1021))
+            .expect("should generate chunk with limit");
+        assert_eq!(chunk_result.remaining_limit, Some(0));
+        assert_eq!(chunk_result.next_index, Some(4));
+
+        let chunk = chunk_result.chunk;
+        assert_eq!(chunk.encoding_length().unwrap(), 1021);
+        assert_eq!(chunk.len(), 21); // op count
+        let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("should reconstruct tree");
+        assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+
+        let node_counts = count_node_types(tree);
+        assert_eq!(node_counts.kv_value_hash_feature_type, 9);
+        assert_eq!(node_counts.hash, 2);
+        assert_eq!(node_counts.sum(), 9 + 2);
+
+        // get up to fourth chunk
+        let chunk_result = chunk_producer
+            .subtree_multi_chunk_with_limit(1, Some(1305))
+            .expect("should generate chunk with limit");
+        assert_eq!(chunk_result.remaining_limit, Some(0));
+        assert_eq!(chunk_result.next_index, Some(5));
+
+        let chunk = chunk_result.chunk;
+        assert_eq!(chunk.encoding_length().unwrap(), 1305);
+        assert_eq!(chunk.len(), 25); // op count
+        let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("should reconstruct tree");
+        assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+
+        let node_counts = count_node_types(tree);
+        assert_eq!(node_counts.kv_value_hash_feature_type, 12);
+        assert_eq!(node_counts.hash, 1);
+        assert_eq!(node_counts.sum(), 12 + 1);
+
+        // get up to fifth chunk
+        let chunk_result = chunk_producer
+            .subtree_multi_chunk_with_limit(1, Some(1589))
+            .expect("should generate chunk with limit");
+        assert_eq!(chunk_result.remaining_limit, Some(0));
+        assert_eq!(chunk_result.next_index, None);
+
+        let chunk = chunk_result.chunk;
+        assert_eq!(chunk.encoding_length().unwrap(), 1589);
+        assert_eq!(chunk.len(), 29); // op count
+        let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("should reconstruct tree");
+        assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+
+        let node_counts = count_node_types(tree);
+        assert_eq!(node_counts.kv_value_hash_feature_type, 15);
+        assert_eq!(node_counts.hash, 0);
+        assert_eq!(node_counts.sum(), 15);
+
+        // limit larger than total chunk
+        let chunk_result = chunk_producer
+            .subtree_multi_chunk_with_limit(1, Some(usize::MAX))
+            .expect("should generate chunk with limit");
+        assert_eq!(chunk_result.remaining_limit, Some(18446744073709550026));
+        assert_eq!(chunk_result.next_index, None);
+
+        let chunk = chunk_result.chunk;
+        assert_eq!(chunk.encoding_length().unwrap(), 1589);
+        assert_eq!(chunk.len(), 29); // op count
+        let tree = execute(chunk.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("should reconstruct tree");
+        assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+
+        let node_counts = count_node_types(tree);
+        assert_eq!(node_counts.kv_value_hash_feature_type, 15);
+        assert_eq!(node_counts.hash, 0);
+        assert_eq!(node_counts.sum(), 15);
+    }
+
+    #[test]
+    fn test_multi_chunk_with_no_limit_trunk() {
+        // tree of height 4
+        // 5 chunks
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
+
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+
+        // we generate the chunk starting from index 1, this has no hash nodes
+        // so no multi chunk will be generated
+        let chunk_result = chunk_producer
+            .multi_chunk_with_limit_and_index(1, None)
+            .expect("should generate chunk with limit");
+
+        assert_eq!(chunk_result.remaining_limit, None);
+        assert_eq!(chunk_result.next_index, None);
+
+        // should only contain 2 items, the starting chunk id and the entire tree
+        assert_eq!(chunk_result.chunk.len(), 2);
+
+        // assert items
+        assert_eq!(chunk_result.chunk[0], ChunkOp::ChunkId(vec![]));
+        if let ChunkOp::Chunk(chunk) = &chunk_result.chunk[1] {
+            let tree = execute(chunk.clone().into_iter().map(Ok), false, |_| Ok(()))
                 .unwrap()
-                .unwrap();
+                .expect("should reconstruct tree");
+            assert_eq!(tree.hash().unwrap(), merk.root_hash().unwrap());
+        } else {
+            panic!("expected ChunkOp::Chunk");
         }
     }
 
     #[test]
-    fn chunks_from_reopen() {
-        let tmp_dir = TempDir::new().expect("cannot create tempdir");
-        let original_chunks = {
-            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-                .expect("cannot open rocksdb storage");
-            let batch = StorageBatch::new();
-            let mut merk = Merk::open_base(
-                storage
-                    .get_storage_context(SubtreePath::empty(), Some(&batch))
-                    .unwrap(),
-                false,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    fn test_multi_chunk_with_no_limit_not_trunk() {
+        // tree of height 4
+        // 5 chunks
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
+
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+
+        // we generate the chunk starting from index 2, this has no hash nodes
+        // so no multi chunk will be generated
+        let chunk_result = chunk_producer
+            .multi_chunk_with_limit_and_index(2, None)
+            .expect("should generate chunk with limit");
+
+        assert_eq!(chunk_result.remaining_limit, None);
+        assert_eq!(chunk_result.next_index, None);
+
+        // chunk 2 - 5 will be considered separate subtrees
+        // each will have an accompanying chunk id, so 8 elements total
+        assert_eq!(chunk_result.chunk.len(), 8);
+
+        // assert the chunk id's
+        assert_eq!(chunk_result.chunk[0], ChunkOp::ChunkId(vec![LEFT, LEFT]));
+        assert_eq!(chunk_result.chunk[2], ChunkOp::ChunkId(vec![LEFT, RIGHT]));
+        assert_eq!(chunk_result.chunk[4], ChunkOp::ChunkId(vec![RIGHT, LEFT]));
+        assert_eq!(chunk_result.chunk[6], ChunkOp::ChunkId(vec![RIGHT, RIGHT]));
+
+        // assert the chunks
+        assert_eq!(
+            chunk_result.chunk[1],
+            ChunkOp::Chunk(
+                chunk_producer
+                    .chunk_with_index(2)
+                    .expect("should generate chunk")
+                    .0
             )
-            .unwrap()
-            .unwrap();
-            let merk_batch = make_batch_seq(1..10);
-            merk.apply::<_, Vec<_>>(&merk_batch, &[], None)
-                .unwrap()
-                .unwrap();
-
-            storage
-                .commit_multi_context_batch(batch, None)
-                .unwrap()
-                .expect("cannot commit batch");
-
-            let merk = Merk::open_base(
-                storage
-                    .get_storage_context(SubtreePath::empty(), None)
-                    .unwrap(),
-                false,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        );
+        assert_eq!(
+            chunk_result.chunk[3],
+            ChunkOp::Chunk(
+                chunk_producer
+                    .chunk_with_index(3)
+                    .expect("should generate chunk")
+                    .0
             )
-            .unwrap()
-            .unwrap();
-
-            merk.chunks()
-                .unwrap()
-                .into_iter()
-                .map(|x| x.unwrap())
-                .collect::<Vec<_>>()
-                .into_iter()
-        };
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
-        let merk = Merk::open_base(
-            storage
-                .get_storage_context(SubtreePath::empty(), None)
-                .unwrap(),
-            false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
-        )
-        .unwrap()
-        .unwrap();
-        let reopen_chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
-
-        for (original, checkpoint) in original_chunks.zip(reopen_chunks) {
-            assert_eq!(original.len(), checkpoint.len());
-        }
+        );
+        assert_eq!(
+            chunk_result.chunk[5],
+            ChunkOp::Chunk(
+                chunk_producer
+                    .chunk_with_index(4)
+                    .expect("should generate chunk")
+                    .0
+            )
+        );
+        assert_eq!(
+            chunk_result.chunk[7],
+            ChunkOp::Chunk(
+                chunk_producer
+                    .chunk_with_index(5)
+                    .expect("should generate chunk")
+                    .0
+            )
+        );
     }
 
-    // #[test]
-    // fn chunks_from_checkpoint() {
-    //     let mut merk = TempMerk::new();
-    //     let batch = make_batch_seq(1..10);
-    //     merk.apply(batch.as_slice(), &[]).unwrap();
-
-    //     let path: std::path::PathBuf =
-    // "generate_and_verify_chunks_from_checkpoint.db".into();     if path.
-    // exists() {         std::fs::remove_dir_all(&path).unwrap();
-    //     }
-    //     let checkpoint = merk.checkpoint(&path).unwrap();
-
-    //     let original_chunks =
-    // merk.chunks().unwrap().into_iter().map(Result::unwrap);
-    //     let checkpoint_chunks =
-    // checkpoint.chunks().unwrap().into_iter().map(Result::unwrap);
-
-    //     for (original, checkpoint) in original_chunks.zip(checkpoint_chunks) {
-    //         assert_eq!(original.len(), checkpoint.len());
-    //     }
-
-    //     std::fs::remove_dir_all(&path).unwrap();
-    // }
-
     #[test]
-    fn random_access_chunks() {
+    fn test_multi_chunk_with_limit() {
+        // tree of height 4
+        // 5 chunks
         let mut merk = TempMerk::new();
-        let batch = make_batch_seq(1..111);
-        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
-
-        let chunks = merk
-            .chunks()
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
             .unwrap()
-            .into_iter()
-            .map(|x| x.unwrap())
-            .collect::<Vec<_>>();
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(4));
 
-        let mut producer = merk.chunks().unwrap();
-        for i in 0..chunks.len() * 2 {
-            let index = i % chunks.len();
-            assert_eq!(producer.chunk(index).unwrap(), chunks[index]);
-        }
-    }
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
 
-    #[test]
-    #[should_panic(expected = "Attempted to fetch chunk on empty tree")]
-    fn test_chunk_empty() {
-        let merk = TempMerk::new();
+        // ensure that the remaining limit, next index and values given are correct
+        // if limit is smaller than first chunk, we should get an error
+        let chunk_result = chunk_producer.multi_chunk_with_limit("", Some(5));
+        assert!(matches!(
+            chunk_result,
+            Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))
+        ));
 
-        let _chunks = merk
-            .chunks()
-            .unwrap()
-            .into_iter()
-            .map(|x| x.unwrap())
-            .collect::<Vec<_>>();
-    }
+        // get chunk 2
+        // data size of chunk 2 is exactly 317
+        // chunk op encoding for chunk 2 = 321
+        // hence limit of 317 will be insufficient
+        let chunk_result = chunk_producer.multi_chunk_with_limit_and_index(2, Some(317));
+        assert!(matches!(
+            chunk_result,
+            Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))
+        ));
 
-    #[test]
-    #[should_panic(expected = "Chunk index out-of-bounds")]
-    fn test_chunk_index_oob() {
-        let mut merk = TempMerk::new();
-        let batch = make_batch_seq(1..42);
-        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
-
-        let mut producer = merk.chunks().unwrap();
-        let _chunk = producer.chunk(50000).unwrap();
-    }
-
-    // #[test]
-    // fn test_chunk_index_gt_1_access() {
-    //     let mut merk = TempMerk::new();
-    //     let batch = make_batch_seq(1..513);
-    //     merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
-
-    //     let mut producer = merk.chunks().unwrap();
-    //     println!("length: {}", producer.len());
-    //     let chunk = producer.chunk(2).unwrap();
-    //     assert_eq!(
-    //         chunk,
-    //         vec![
-    //             3, 8, 0, 0, 0, 0, 0, 0, 0, 18, 0, 60, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123,             123, 123, 123, 3, 8, 0, 0, 0, 0, 0, 0, 0, 19, 0, 60,
-    // 123, 123, 123, 123, 123, 123,             123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,             123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 16, 3, 8, 0, 0,
-    // 0, 0, 0, 0, 0, 20, 0, 60, 123, 123,             123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,             123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 17, 3, 8, 0, 0, 0, 0, 0, 0, 0,             21, 0, 60, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,             123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 16, 3, 8, 0,             0, 0, 0, 0, 0, 0, 22,
-    // 0, 60, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123,             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123,             123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123,             123, 3, 8, 0, 0,
-    // 0, 0, 0, 0, 0, 23, 0, 60, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,             123,
-    // 123, 123, 123, 16, 3, 8, 0, 0, 0, 0, 0, 0, 0, 24, 0, 60, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,             123,
-    // 123, 123, 123, 123, 123, 123, 123, 17, 17, 3, 8, 0, 0, 0, 0, 0, 0, 0, 25, 0,
-    //             60, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 16, 3, 8, 0, 0,
-    // 0, 0,             0, 0, 0, 26, 0, 60, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123,             123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123,             123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 3,             8, 0, 0, 0, 0, 0, 0, 0, 27, 0, 60, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123,             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123,             123, 123, 123, 16, 3, 8, 0, 0, 0, 0,
-    // 0, 0, 0, 28, 0, 60, 123, 123, 123, 123, 123,             123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123, 123,
-    // 123, 123, 17, 3, 8, 0, 0, 0, 0, 0, 0, 0, 29, 0, 60, 123,             123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 16, 3, 8, 0, 0, 0, 0, 0, 0,             0,
-    // 30, 0, 60, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123,             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123,             123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123,             123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 3, 8, 0, 0,
-    //             0, 0, 0, 0, 0, 31, 0, 60, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,             123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    //             123, 16, 3, 8, 0, 0, 0, 0, 0, 0, 0, 32, 0, 60, 123, 123, 123,
-    // 123, 123, 123, 123,             123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123,             123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
-    // 123,             123, 123, 123, 123, 123, 17, 17, 17
-    //         ]
-    //     );
-    // }
-
-    #[test]
-    #[should_panic(expected = "Called next_chunk after end")]
-    fn test_next_chunk_index_oob() {
-        let mut merk = TempMerk::new();
-        let batch = make_batch_seq(1..42);
-        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap().unwrap();
-
-        let mut producer = merk.chunks().unwrap();
-        let _chunk1 = producer.next_chunk();
-        let _chunk2 = producer.next_chunk();
+        // get chunk 2 and 3
+        // chunk 2 chunk op = 331
+        // chunk 3 chunk op = 321
+        // padding = 5
+        let chunk_result = chunk_producer
+            .multi_chunk_with_limit_and_index(2, Some(321 + 321 + 5))
+            .expect("should generate chunk");
+        assert_eq!(
+            chunk_result.next_index,
+            Some(traversal_instruction_as_string(
+                &generate_traversal_instruction(4, 4).unwrap()
+            ))
+        );
+        assert_eq!(chunk_result.remaining_limit, Some(5));
+        assert_eq!(chunk_result.chunk.len(), 4);
+        assert_eq!(chunk_result.chunk[0], ChunkOp::ChunkId(vec![LEFT, LEFT]));
+        assert_eq!(chunk_result.chunk[2], ChunkOp::ChunkId(vec![LEFT, RIGHT]));
     }
 }

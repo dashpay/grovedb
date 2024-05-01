@@ -29,7 +29,6 @@
 //! Merk
 
 pub mod chunks;
-
 pub(crate) mod defaults;
 
 pub mod options;
@@ -45,7 +44,7 @@ pub mod source;
 
 use std::{
     cell::Cell,
-    collections::{BTreeSet, LinkedList},
+    collections::{BTreeMap, BTreeSet, LinkedList},
     fmt,
 };
 
@@ -61,11 +60,19 @@ use source::MerkSource;
 use crate::{
     error::Error,
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
-    proofs::{query::query_item::QueryItem, Query},
+    proofs::{
+        chunk::{
+            chunk::{LEFT, RIGHT},
+            util::traversal_instruction_as_string,
+        },
+        query::query_item::QueryItem,
+        Query,
+    },
     tree::{
         kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
     },
     Error::{CostsError, EdError, StorageError},
+    Link,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
 
@@ -274,6 +281,11 @@ where
             None => Ok(None),
             Some(tree) => tree.sum(),
         })
+    }
+
+    /// Returns the height of the Merk tree
+    pub fn height(&self) -> Option<u8> {
+        self.use_tree(|tree| tree.map(|tree| tree.height()))
     }
 
     /// Returns the root non-prefixed key of the tree. If the tree is empty,
@@ -536,6 +548,142 @@ where
             Ok(()).wrap_with_cost(Default::default())
         }
     }
+
+    /// Verifies the correctness of a merk tree
+    /// hash values are computed correctly, heights are accurate and links
+    /// consistent with backing store.
+    // TODO: define the return types
+    pub fn verify(
+        &self,
+        skip_sum_checks: bool,
+    ) -> (BTreeMap<String, CryptoHash>, BTreeMap<String, Vec<u8>>) {
+        let tree = self.tree.take();
+
+        let mut bad_link_map: BTreeMap<String, CryptoHash> = BTreeMap::new();
+        let mut parent_keys: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut root_traversal_instruction = vec![];
+
+        // TODO: remove clone
+        self.verify_tree(
+            // TODO: handle unwrap
+            &tree.clone().unwrap(),
+            &mut root_traversal_instruction,
+            &mut bad_link_map,
+            &mut parent_keys,
+            skip_sum_checks,
+        );
+        self.tree.set(tree);
+
+        (bad_link_map, parent_keys)
+    }
+
+    fn verify_tree(
+        &self,
+        tree: &TreeNode,
+        traversal_instruction: &mut Vec<bool>,
+        bad_link_map: &mut BTreeMap<String, CryptoHash>,
+        parent_keys: &mut BTreeMap<String, Vec<u8>>,
+        skip_sum_checks: bool,
+    ) {
+        if let Some(link) = tree.link(LEFT) {
+            traversal_instruction.push(LEFT);
+            self.verify_link(
+                link,
+                tree.key(),
+                traversal_instruction,
+                bad_link_map,
+                parent_keys,
+                skip_sum_checks,
+            );
+            traversal_instruction.pop();
+        }
+
+        if let Some(link) = tree.link(RIGHT) {
+            traversal_instruction.push(RIGHT);
+            self.verify_link(
+                link,
+                tree.key(),
+                traversal_instruction,
+                bad_link_map,
+                parent_keys,
+                skip_sum_checks,
+            );
+            traversal_instruction.pop();
+        }
+    }
+
+    fn verify_link(
+        &self,
+        link: &Link,
+        parent_key: &[u8],
+        traversal_instruction: &mut Vec<bool>,
+        bad_link_map: &mut BTreeMap<String, CryptoHash>,
+        parent_keys: &mut BTreeMap<String, Vec<u8>>,
+        skip_sum_checks: bool,
+    ) {
+        let (hash, key, sum) = match link {
+            Link::Reference { hash, key, sum, .. } => {
+                (hash.to_owned(), key.to_owned(), sum.to_owned())
+            }
+            Link::Modified { tree, .. } => (
+                tree.hash().unwrap(),
+                tree.key().to_vec(),
+                tree.sum().unwrap(),
+            ),
+            Link::Loaded {
+                hash,
+                child_heights: _,
+                sum,
+                tree,
+            } => (hash.to_owned(), tree.key().to_vec(), sum.to_owned()),
+            _ => todo!(),
+        };
+
+        let instruction_id = traversal_instruction_as_string(traversal_instruction);
+        let node = TreeNode::get(
+            &self.storage,
+            key,
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        )
+        .unwrap();
+
+        if node.is_err() {
+            bad_link_map.insert(instruction_id.clone(), hash);
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        let node = node.unwrap();
+        if node.is_none() {
+            bad_link_map.insert(instruction_id.clone(), hash);
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        let node = node.unwrap();
+        if node.hash().unwrap() != hash {
+            bad_link_map.insert(instruction_id.clone(), hash);
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        // Need to skip this when restoring a sum tree
+        if !skip_sum_checks && node.sum().unwrap() != sum {
+            bad_link_map.insert(instruction_id.clone(), hash);
+            parent_keys.insert(instruction_id, parent_key.to_vec());
+            return;
+        }
+
+        // TODO: check child heights
+        // all checks passed, recurse
+        self.verify_tree(
+            &node,
+            traversal_instruction,
+            bad_link_map,
+            parent_keys,
+            skip_sum_checks,
+        );
+    }
 }
 
 fn fetch_node<'db>(
@@ -557,6 +705,7 @@ fn fetch_node<'db>(
 
 #[cfg(test)]
 mod test {
+
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
         rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
@@ -596,6 +745,41 @@ mod test {
                 218, 90, 71, 153, 240, 47, 227, 168, 1, 104, 239, 237, 140, 147
             ]
         );
+    }
+
+    #[test]
+    fn tree_height() {
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..1);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(1));
+
+        // height 2
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..2);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(2));
+
+        // height 5
+        // 2^5 - 1 = 31 (max number of elements in tree of height 5)
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..31);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(5));
+
+        // should still be height 5 for 29 elements
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..29);
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
+            .unwrap()
+            .expect("apply failed");
+        assert_eq!(merk.height(), Some(5));
     }
 
     #[test]
