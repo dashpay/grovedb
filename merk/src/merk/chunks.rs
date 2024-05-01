@@ -282,15 +282,13 @@ where
         index: usize,
         limit: Option<usize>,
     ) -> Result<SubtreeChunk, Error> {
-        let mut chunk_byte_length = 0;
-
         let max_chunk_index = number_of_chunks(self.height);
         let mut chunk_index = index;
 
         // we first get the chunk at the given index
         // TODO: use the returned chunk index rather than tracking
         let (chunk_ops, _) = self.chunk_with_index(chunk_index)?;
-        chunk_byte_length = chunk_ops.encoding_length().map_err(|_e| {
+        let mut chunk_byte_length = chunk_ops.encoding_length().map_err(|_e| {
             Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
         })?;
         chunk_index += 1;

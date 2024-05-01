@@ -72,7 +72,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         parent_key_value_hash: Option<CryptoHash>,
     ) -> Self {
         let mut chunk_id_to_root_hash = BTreeMap::new();
-        chunk_id_to_root_hash.insert(traversal_instruction_as_string(&vec![]), expected_root_hash);
+        chunk_id_to_root_hash.insert(traversal_instruction_as_string(&[]), expected_root_hash);
         Self {
             merk,
             chunk_id_to_root_hash,

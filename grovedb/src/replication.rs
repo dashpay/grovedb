@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    str::Utf8Error,
 };
 
 use grovedb_merk::{
@@ -71,12 +72,16 @@ impl fmt::Debug for SubtreesMetadata {
     }
 }
 
-// Converts a path into a human-readable string (for debuting)
+// Converts a path into a human-readable string (for debugging)
 pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
     let mut subtree_path_str: Vec<String> = vec![];
     for subtree in path {
-        let string = std::str::from_utf8(subtree).unwrap();
-        subtree_path_str.push(string.parse().unwrap());
+        let string = std::str::from_utf8(subtree).expect("should be able to convert path");
+        subtree_path_str.push(
+            string
+                .parse()
+                .expect("should be able to parse path to string"),
+        );
     }
     subtree_path_str
 }
@@ -124,10 +129,7 @@ impl GroveDb {
     // tx: Transaction. Function returns the data by opening merks at given tx.
     // TODO: Add a SubTreePath as param and start searching from that path instead
     // of root (as it is now)
-    pub fn get_subtrees_metadata<'db>(
-        &'db self,
-        tx: TransactionArg,
-    ) -> Result<SubtreesMetadata, Error> {
+    pub fn get_subtrees_metadata(&self, tx: TransactionArg) -> Result<SubtreesMetadata, Error> {
         let mut subtrees_metadata = crate::replication::SubtreesMetadata::new();
 
         let subtrees_root = self.find_subtrees(&SubtreePath::empty(), tx).value?;
@@ -144,7 +146,7 @@ impl GroveDb {
                         let parent_merk = self
                             .open_non_transactional_merk_at_path(parent_path, None)
                             .value?;
-                        if let Ok((Some((elem_value, elem_value_hash)))) = parent_merk
+                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
                             .get_value_and_value_hash(
                                 parent_key,
                                 true,
@@ -163,7 +165,7 @@ impl GroveDb {
                         let parent_merk = self
                             .open_transactional_merk_at_path(parent_path, t, None)
                             .value?;
-                        if let Ok((Some((elem_value, elem_value_hash)))) = parent_merk
+                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
                             .get_value_and_value_hash(
                                 parent_key,
                                 true,
@@ -204,8 +206,8 @@ impl GroveDb {
     // as a subtree can be big hence traversal instructions for the deepest chunks
     // tx: Transaction. Function returns the data by opening merks at given tx.
     // Returns the Chunk proof operators for the requested chunk
-    pub fn fetch_chunk<'db>(
-        &'db self,
+    pub fn fetch_chunk(
+        &self,
         global_chunk_id: &[u8],
         tx: TransactionArg,
     ) -> Result<Vec<Op>, Error> {
@@ -230,29 +232,67 @@ impl GroveDb {
                 let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
                 let path: &[&[u8]] = &subtree_path;
 
-                let merk = self
-                    .open_non_transactional_merk_at_path(path.into(), None)
-                    .value?;
+                match tx {
+                    None => {
+                        let merk = self
+                            .open_non_transactional_merk_at_path(path.into(), None)
+                            .value?;
 
-                if merk.is_empty_tree().unwrap() {
-                    return Ok(vec![]);
-                }
+                        if merk.is_empty_tree().unwrap() {
+                            return Ok(vec![]);
+                        }
 
-                let chunk_producer_res = ChunkProducer::new(&merk);
-                match chunk_producer_res {
-                    Ok(mut chunk_producer) => {
-                        let chunk_res = chunk_producer
-                            .chunk(String::from_utf8(chunk_id.to_vec()).unwrap().as_str());
-                        match chunk_res {
-                            Ok((chunk, _)) => Ok(chunk),
+                        let chunk_producer_res = ChunkProducer::new(&merk);
+                        match chunk_producer_res {
+                            Ok(mut chunk_producer) => match std::str::from_utf8(chunk_id) {
+                                Ok(chunk_id_str) => {
+                                    let chunk_res = chunk_producer.chunk(chunk_id_str);
+                                    match chunk_res {
+                                        Ok((chunk, _)) => Ok(chunk),
+                                        Err(_) => Err(Error::CorruptedData(
+                                            "Unable to create to load chunk".to_string(),
+                                        )),
+                                    }
+                                }
+                                Err(_) => Err(Error::CorruptedData(
+                                    "Unable to process chunk id".to_string(),
+                                )),
+                            },
                             Err(_) => Err(Error::CorruptedData(
-                                "Unable to create to load chunk".to_string(),
+                                "Unable to create Chunk producer".to_string(),
                             )),
                         }
                     }
-                    Err(_) => Err(Error::CorruptedData(
-                        "Unable to create Chunk producer".to_string(),
-                    )),
+                    Some(t) => {
+                        let merk = self
+                            .open_transactional_merk_at_path(path.into(), &t, None)
+                            .value?;
+
+                        if merk.is_empty_tree().unwrap() {
+                            return Ok(vec![]);
+                        }
+
+                        let chunk_producer_res = ChunkProducer::new(&merk);
+                        match chunk_producer_res {
+                            Ok(mut chunk_producer) => match std::str::from_utf8(chunk_id) {
+                                Ok(chunk_id_str) => {
+                                    let chunk_res = chunk_producer.chunk(chunk_id_str);
+                                    match chunk_res {
+                                        Ok((chunk, _)) => Ok(chunk),
+                                        Err(_) => Err(Error::CorruptedData(
+                                            "Unable to create to load chunk".to_string(),
+                                        )),
+                                    }
+                                }
+                                Err(_) => Err(Error::CorruptedData(
+                                    "Unable to process chunk id".to_string(),
+                                )),
+                            },
+                            Err(_) => Err(Error::CorruptedData(
+                                "Unable to create Chunk producer".to_string(),
+                            )),
+                        }
+                    }
                 }
             }
             None => Err(Error::CorruptedData("Prefix not found".to_string())),
