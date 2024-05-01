@@ -38,9 +38,9 @@ use crate::{
             chunk_op::ChunkOp,
             error::ChunkError,
             util::{
-                chunk_height, chunk_id_from_traversal_instruction,
-                chunk_id_from_traversal_instruction_with_recovery, generate_traversal_instruction,
-                generate_traversal_instruction_as_string, number_of_chunks,
+                chunk_height, chunk_index_from_traversal_instruction,
+                chunk_index_from_traversal_instruction_with_recovery, generate_traversal_instruction,
+                number_of_chunks,
                 string_as_traversal_instruction,
             },
         },
@@ -49,6 +49,7 @@ use crate::{
     Error::ChunkingError,
     Merk,
 };
+use crate::proofs::chunk::util::{generate_traversal_instruction_as_string, generate_traversal_instruction_as_vec_bytes, vec_bytes_as_traversal_instruction};
 
 /// ChunkProof for replication of a single subtree
 #[derive(Debug)]
@@ -72,14 +73,14 @@ impl SubtreeChunk {
 #[derive(Debug)]
 pub struct MultiChunk {
     pub chunk: Vec<ChunkOp>,
-    pub next_index: Option<String>,
+    pub next_index: Option<Vec<u8>>,
     pub remaining_limit: Option<usize>,
 }
 
 impl MultiChunk {
     pub fn new(
         chunk: Vec<ChunkOp>,
-        next_index: Option<String>,
+        next_index: Option<Vec<u8>>,
         remaining_limit: Option<usize>,
     ) -> Self {
         Self {
@@ -131,17 +132,17 @@ where
     }
 
     /// Returns the chunk at a given chunk id.
-    pub fn chunk(&mut self, chunk_id: &str) -> Result<(Vec<Op>, Option<String>), Error> {
-        let traversal_instructions = string_as_traversal_instruction(chunk_id)?;
-        let chunk_index = chunk_id_from_traversal_instruction_with_recovery(
+    pub fn chunk(&mut self, chunk_id: &[u8]) -> Result<(Vec<Op>, Option<Vec<u8>>), Error> {
+        let traversal_instructions = vec_bytes_as_traversal_instruction(chunk_id)?;
+        let chunk_index = chunk_index_from_traversal_instruction_with_recovery(
             traversal_instructions.as_slice(),
             self.height,
         )?;
         let (chunk, next_index) = self.chunk_internal(chunk_index, traversal_instructions)?;
-        let index_string = next_index
-            .map(|index| generate_traversal_instruction_as_string(self.height, index))
+        let next_chunk_id = next_index
+            .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
             .transpose()?;
-        Ok((chunk, index_string))
+        Ok((chunk, next_chunk_id))
     }
 
     /// Returns the chunk at the given index
@@ -191,7 +192,7 @@ where
     ) -> Result<MultiChunk, Error> {
         // we want to convert the chunk id to the index
         let chunk_index = string_as_traversal_instruction(chunk_id).and_then(|instruction| {
-            chunk_id_from_traversal_instruction(instruction.as_slice(), self.height)
+            chunk_index_from_traversal_instruction(instruction.as_slice(), self.height)
         })?;
         self.multi_chunk_with_limit_and_index(chunk_index, limit)
     }
@@ -267,11 +268,11 @@ where
             current_limit = subtree_multi_chunk.remaining_limit;
         }
 
-        let index_string = current_index
-            .map(|index| generate_traversal_instruction_as_string(self.height, index))
+        let index_bytes = current_index
+            .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
             .transpose()?;
 
-        Ok(MultiChunk::new(chunk, index_string, current_limit))
+        Ok(MultiChunk::new(chunk, index_bytes, current_limit))
     }
 
     /// Packs as many chunks as it can from a starting chunk index, into a

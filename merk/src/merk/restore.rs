@@ -41,7 +41,7 @@ use crate::{
             chunk::{LEFT, RIGHT},
             chunk_op::ChunkOp,
             error::{ChunkError, ChunkError::InternalError},
-            util::{string_as_traversal_instruction, traversal_instruction_as_string},
+            util::{string_as_traversal_instruction, traversal_instruction_as_string, vec_bytes_as_traversal_instruction, traversal_instruction_as_vec_bytes},
         },
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
@@ -57,10 +57,10 @@ use crate::{
 /// already.
 pub struct Restorer<S> {
     merk: Merk<S>,
-    chunk_id_to_root_hash: BTreeMap<String, CryptoHash>,
+    chunk_id_to_root_hash: BTreeMap<Vec<u8>, CryptoHash>,
     parent_key_value_hash: Option<CryptoHash>,
     // this is used to keep track of parents whose links need to be rewritten
-    parent_keys: BTreeMap<String, Vec<u8>>,
+    parent_keys: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 impl<'db, S: StorageContext<'db>> Restorer<S> {
@@ -72,7 +72,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         parent_key_value_hash: Option<CryptoHash>,
     ) -> Self {
         let mut chunk_id_to_root_hash = BTreeMap::new();
-        chunk_id_to_root_hash.insert(traversal_instruction_as_string(&[]), expected_root_hash);
+        chunk_id_to_root_hash.insert(traversal_instruction_as_vec_bytes(&[]), expected_root_hash);
         Self {
             merk,
             chunk_id_to_root_hash,
@@ -81,17 +81,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
     }
 
-    // TODO: consider converting chunk id to a vec
     /// Processes a chunk at some chunk id, returns the chunks id's of chunks
     /// that can be requested
     pub fn process_chunk(
         &mut self,
-        chunk_id: String,
+        chunk_id: &[u8],
         chunk: Vec<Op>,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Result<Vec<Vec<u8>>, Error> {
         let expected_root_hash = self
             .chunk_id_to_root_hash
-            .get(&chunk_id)
+            .get(chunk_id)
             .ok_or(Error::ChunkRestoringError(ChunkError::UnexpectedChunk))?;
 
         let mut parent_key_value_hash: Option<CryptoHash> = None;
@@ -100,14 +99,14 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
         let chunk_tree = Self::verify_chunk(chunk, expected_root_hash, &parent_key_value_hash)?;
 
-        let mut root_traversal_instruction = string_as_traversal_instruction(&chunk_id)?;
+        let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
         if root_traversal_instruction.is_empty() {
             let _ = self.merk.set_base_root_key(Some(chunk_tree.key().to_vec()));
         } else {
             // every non root chunk has some associated parent with an placeholder link
             // here we update the placeholder link to represent the true data
-            self.rewrite_parent_link(&chunk_id, &root_traversal_instruction, &chunk_tree)?;
+            self.rewrite_parent_link(chunk_id, &root_traversal_instruction, &chunk_tree)?;
         }
 
         // next up, we need to write the chunk and build the map again
@@ -115,7 +114,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         if chunk_write_result.is_ok() {
             // if we were able to successfully write the chunk, we can remove
             // the chunk expected root hash from our chunk id map
-            self.chunk_id_to_root_hash.remove(&chunk_id);
+            self.chunk_id_to_root_hash.remove(chunk_id);
         }
 
         chunk_write_result
@@ -123,10 +122,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
     /// Process multi chunks (space optimized chunk proofs that can contain
     /// multiple singular chunks)
-    pub fn process_multi_chunk(&mut self, multi_chunk: Vec<ChunkOp>) -> Result<Vec<String>, Error> {
+    pub fn process_multi_chunk(&mut self, multi_chunk: Vec<ChunkOp>) -> Result<Vec<Vec<u8>>, Error> {
         let mut expect_chunk_id = true;
         let mut chunk_ids = vec![];
-        let mut current_chunk_id: String = "".to_string();
+        let mut current_chunk_id = vec![];
 
         for chunk_op in multi_chunk {
             if (matches!(chunk_op, ChunkOp::ChunkId(..)) && !expect_chunk_id)
@@ -138,11 +137,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             }
             match chunk_op {
                 ChunkOp::ChunkId(instructions) => {
-                    current_chunk_id = traversal_instruction_as_string(&instructions);
+                    current_chunk_id = traversal_instruction_as_vec_bytes(&instructions);
                 }
                 ChunkOp::Chunk(chunk) => {
                     // TODO: remove clone
-                    let next_chunk_ids = self.process_chunk(current_chunk_id.clone(), chunk)?;
+                    let next_chunk_ids = self.process_chunk(&current_chunk_id, chunk)?;
                     chunk_ids.extend(next_chunk_ids);
                 }
             }
@@ -210,7 +209,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         &mut self,
         chunk_tree: ProofTree,
         traversal_instruction: &mut Vec<bool>,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Result<Vec<Vec<u8>>, Error> {
         // this contains all the elements we want to write to storage
         let mut batch = self.merk.storage.new_batch();
         let mut new_chunk_ids = Vec::new();
@@ -242,9 +241,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     Node::Hash(hash) => {
                         // the node hash points to the root of another chunk
                         // we get the chunk id and add the hash to restorer state
-                        let chunk_id = traversal_instruction_as_string(node_traversal_instruction);
-                        new_chunk_ids.push(chunk_id.clone());
-                        self.chunk_id_to_root_hash.insert(chunk_id.clone(), *hash);
+                        let chunk_id = traversal_instruction_as_vec_bytes(node_traversal_instruction);
+                        new_chunk_ids.push(chunk_id.to_vec());
+                        self.chunk_id_to_root_hash.insert(chunk_id.to_vec(), *hash);
                         // TODO: handle unwrap
                         self.parent_keys
                             .insert(chunk_id, parent_key.unwrap().to_owned());
@@ -276,7 +275,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// we need to update the parent link to reflect the correct data.
     fn rewrite_parent_link(
         &mut self,
-        chunk_id: &str,
+        chunk_id: &[u8],
         traversal_instruction: &[bool],
         chunk_tree: &ProofTree,
     ) -> Result<(), Error> {

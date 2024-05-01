@@ -36,7 +36,7 @@ fn main() {
 
     // Execute the query and collect the result items in "elements".
     let (elements, _) = db
-        .query_item_value(&path_query, true, None)
+        .query_item_value(&path_query, true, false, true,None)
         .unwrap()
         .expect("expected successful get_path_query");
 
