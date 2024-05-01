@@ -19,6 +19,8 @@ use crate::{replication, Error, GroveDb, Transaction, TransactionArg};
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
+pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
+
 // Struct governing state sync
 pub struct StateSyncInfo<'db> {
     // Current Chunk restorer
@@ -32,6 +34,8 @@ pub struct StateSyncInfo<'db> {
     pub pending_chunks: BTreeSet<Vec<u8>>,
     // Number of processed chunks in current prefix (Path digest)
     pub num_processed_chunks: usize,
+    // Version of state sync protocol,
+    pub version: u16,
 }
 
 // Struct containing information about current subtrees found in GroveDB
@@ -121,6 +125,7 @@ impl GroveDb {
             current_prefix: None,
             pending_chunks,
             num_processed_chunks: 0,
+            version: CURRENT_STATE_SYNC_VERSION,
         }
     }
 
@@ -210,7 +215,15 @@ impl GroveDb {
         &self,
         global_chunk_id: &[u8],
         tx: TransactionArg,
+        version: u16,
     ) -> Result<Vec<Op>, Error> {
+        // For now, only CURRENT_STATE_SYNC_VERSION is supported
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+
         let chunk_prefix_length: usize = 32;
         if global_chunk_id.len() < chunk_prefix_length {
             return Err(Error::CorruptedData(
@@ -311,7 +324,20 @@ impl GroveDb {
         mut state_sync_info: StateSyncInfo<'db>,
         app_hash: CryptoHash,
         tx: &'db Transaction,
+        version: u16,
     ) -> Result<(Vec<Vec<u8>>, StateSyncInfo), Error> {
+        // For now, only CURRENT_STATE_SYNC_VERSION is supported
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+        if version != state_sync_info.version {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+
         let mut res = vec![];
 
         match (
@@ -359,7 +385,20 @@ impl GroveDb {
         mut state_sync_info: StateSyncInfo<'db>,
         chunk: (&[u8], Vec<Op>),
         tx: &'db Transaction,
+        version: u16,
     ) -> Result<(Vec<Vec<u8>>, StateSyncInfo), Error> {
+        // For now, only CURRENT_STATE_SYNC_VERSION is supported
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+        if version != state_sync_info.version {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+
         let mut res = vec![];
 
         let (global_chunk_id, chunk_data) = chunk;
