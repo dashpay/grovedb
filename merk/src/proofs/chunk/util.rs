@@ -171,7 +171,10 @@ fn exit_node_count(height: usize) -> usize {
 }
 
 /// Generate instruction for traversing to a given chunk index in a binary tree
-pub fn generate_traversal_instruction(height: usize, chunk_index: usize) -> Result<Vec<bool>, Error> {
+pub fn generate_traversal_instruction(
+    height: usize,
+    chunk_index: usize,
+) -> Result<Vec<bool>, Error> {
     let mut instructions = vec![];
 
     let total_chunk_count = number_of_chunks(height);
@@ -226,8 +229,8 @@ pub fn generate_traversal_instruction(height: usize, chunk_index: usize) -> Resu
     Ok(instructions)
 }
 
-/// Determine the chunk index given the traversal instruction and the max height of
-/// the tree
+/// Determine the chunk index given the traversal instruction and the max height
+/// of the tree
 pub fn chunk_index_from_traversal_instruction(
     traversal_instruction: &[bool],
     height: usize,
@@ -309,8 +312,8 @@ pub fn chunk_index_from_traversal_instruction(
     Ok(current_chunk_index)
 }
 
-/// Determine the chunk index given the traversal instruction and the max height of
-/// the tree. This can recover from traversal instructions not pointing to a
+/// Determine the chunk index given the traversal instruction and the max height
+/// of the tree. This can recover from traversal instructions not pointing to a
 /// chunk boundary, in such a case, it backtracks until it hits a chunk
 /// boundary.
 pub fn chunk_index_from_traversal_instruction_with_recovery(
@@ -349,7 +352,9 @@ pub fn traversal_instruction_as_vec_bytes(instruction: &[bool]) -> Vec<u8> {
 
 /// Converts a vec bytes that represents a traversal instruction
 /// to a vec of bool, true = left and false = right
-pub fn vec_bytes_as_traversal_instruction(instruction_vec_bytes: &[u8]) -> Result<Vec<bool>, Error> {
+pub fn vec_bytes_as_traversal_instruction(
+    instruction_vec_bytes: &[u8],
+) -> Result<Vec<bool>, Error> {
     instruction_vec_bytes
         .iter()
         .map(|byte| match byte {
@@ -579,8 +584,14 @@ mod test {
 
     #[test]
     fn test_instruction_string_to_traversal_instruction() {
-        assert_eq!(vec_bytes_as_traversal_instruction(&vec![1u8]).unwrap(), vec![LEFT]);
-        assert_eq!(vec_bytes_as_traversal_instruction(&vec![0u8]).unwrap(), vec![RIGHT]);
+        assert_eq!(
+            vec_bytes_as_traversal_instruction(&vec![1u8]).unwrap(),
+            vec![LEFT]
+        );
+        assert_eq!(
+            vec_bytes_as_traversal_instruction(&vec![0u8]).unwrap(),
+            vec![RIGHT]
+        );
         assert_eq!(
             vec_bytes_as_traversal_instruction(&vec![0u8, 0u8, 1u8]).unwrap(),
             vec![RIGHT, RIGHT, LEFT]

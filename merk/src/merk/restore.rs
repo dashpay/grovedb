@@ -41,7 +41,7 @@ use crate::{
             chunk::{LEFT, RIGHT},
             chunk_op::ChunkOp,
             error::{ChunkError, ChunkError::InternalError},
-            util::{vec_bytes_as_traversal_instruction, traversal_instruction_as_vec_bytes},
+            util::{traversal_instruction_as_vec_bytes, vec_bytes_as_traversal_instruction},
         },
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
@@ -122,7 +122,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
     /// Process multi chunks (space optimized chunk proofs that can contain
     /// multiple singular chunks)
-    pub fn process_multi_chunk(&mut self, multi_chunk: Vec<ChunkOp>) -> Result<Vec<Vec<u8>>, Error> {
+    pub fn process_multi_chunk(
+        &mut self,
+        multi_chunk: Vec<ChunkOp>,
+    ) -> Result<Vec<Vec<u8>>, Error> {
         let mut expect_chunk_id = true;
         let mut chunk_ids = vec![];
         let mut current_chunk_id = vec![];
@@ -241,7 +244,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     Node::Hash(hash) => {
                         // the node hash points to the root of another chunk
                         // we get the chunk id and add the hash to restorer state
-                        let chunk_id = traversal_instruction_as_vec_bytes(node_traversal_instruction);
+                        let chunk_id =
+                            traversal_instruction_as_vec_bytes(node_traversal_instruction);
                         new_chunk_ids.push(chunk_id.to_vec());
                         self.chunk_id_to_root_hash.insert(chunk_id.to_vec(), *hash);
                         // TODO: handle unwrap
@@ -670,7 +674,10 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(1).unwrap();
         // apply first chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(vec![].as_slice()), chunk)
+            .process_chunk(
+                &traversal_instruction_as_vec_bytes(vec![].as_slice()),
+                chunk,
+            )
             .expect("should process chunk successfully");
         assert_eq!(new_chunk_ids.len(), 4);
 
@@ -679,22 +686,22 @@ mod tests {
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
         // assert all the chunk hash values
         assert_eq!(
-            restorer.chunk_id_to_root_hash.get(vec![1,1].as_slice()),
+            restorer.chunk_id_to_root_hash.get(vec![1, 1].as_slice()),
             Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[LEFT, LEFT])).unwrap())
                 .as_ref()
         );
         assert_eq!(
-            restorer.chunk_id_to_root_hash.get(vec![1,0].as_slice()),
+            restorer.chunk_id_to_root_hash.get(vec![1, 0].as_slice()),
             Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[LEFT, RIGHT])).unwrap())
                 .as_ref()
         );
         assert_eq!(
-            restorer.chunk_id_to_root_hash.get(vec![0,1].as_slice()),
+            restorer.chunk_id_to_root_hash.get(vec![0, 1].as_slice()),
             Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT])).unwrap())
                 .as_ref()
         );
         assert_eq!(
-            restorer.chunk_id_to_root_hash.get(vec![0,0].as_slice()),
+            restorer.chunk_id_to_root_hash.get(vec![0, 0].as_slice()),
             Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[RIGHT, RIGHT])).unwrap())
                 .as_ref()
         );
@@ -703,18 +710,26 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(2).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&vec![LEFT, LEFT]), chunk)
+            .process_chunk(
+                &traversal_instruction_as_vec_bytes(&vec![LEFT, LEFT]),
+                chunk,
+            )
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 3);
-        assert_eq!(restorer.chunk_id_to_root_hash.get(vec![1,1].as_slice()), None);
+        assert_eq!(
+            restorer.chunk_id_to_root_hash.get(vec![1, 1].as_slice()),
+            None
+        );
 
         // let's try to apply the second chunk again, should not work
         let (chunk, _) = chunk_producer.chunk_with_index(2).unwrap();
         // apply second chunk
-        let chunk_process_result =
-            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&vec![LEFT, LEFT]), chunk);
+        let chunk_process_result = restorer.process_chunk(
+            &traversal_instruction_as_vec_bytes(&vec![LEFT, LEFT]),
+            chunk,
+        );
         assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
@@ -724,8 +739,10 @@ mod tests {
         // next let's get a random but expected chunk and work with that e.g. chunk 4
         // but let's apply it to the wrong place
         let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
-        let chunk_process_result =
-            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&vec![LEFT, RIGHT]), chunk);
+        let chunk_process_result = restorer.process_chunk(
+            &traversal_instruction_as_vec_bytes(&vec![LEFT, RIGHT]),
+            chunk,
+        );
         assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
@@ -738,34 +755,52 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(5).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&vec![RIGHT, RIGHT]), chunk)
+            .process_chunk(
+                &traversal_instruction_as_vec_bytes(&vec![RIGHT, RIGHT]),
+                chunk,
+            )
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 2);
-        assert_eq!(restorer.chunk_id_to_root_hash.get(vec![0,0].as_slice()), None);
+        assert_eq!(
+            restorer.chunk_id_to_root_hash.get(vec![0, 0].as_slice()),
+            None
+        );
 
         // correctly apply chunk 3
         let (chunk, _) = chunk_producer.chunk_with_index(3).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&vec![LEFT, RIGHT]), chunk)
+            .process_chunk(
+                &traversal_instruction_as_vec_bytes(&vec![LEFT, RIGHT]),
+                chunk,
+            )
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
-        assert_eq!(restorer.chunk_id_to_root_hash.get(vec![1,0].as_slice()), None);
+        assert_eq!(
+            restorer.chunk_id_to_root_hash.get(vec![1, 0].as_slice()),
+            None
+        );
 
         // correctly apply chunk 4
         let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&vec![RIGHT, LEFT]), chunk)
+            .process_chunk(
+                &traversal_instruction_as_vec_bytes(&vec![RIGHT, LEFT]),
+                chunk,
+            )
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 0);
-        assert_eq!(restorer.chunk_id_to_root_hash.get(vec![0,1].as_slice()), None);
+        assert_eq!(
+            restorer.chunk_id_to_root_hash.get(vec![0, 1].as_slice()),
+            None
+        );
 
         // finalize merk
         let restored_merk = restorer.finalize().expect("should finalized successfully");
@@ -862,9 +897,7 @@ mod tests {
         // perform chunk production and processing
         let mut chunk_id_opt = Some(vec![]);
         while let Some(chunk_id) = chunk_id_opt {
-            let (chunk, next_chunk_id) = chunk_producer
-                .chunk(&chunk_id)
-                .expect("should get chunk");
+            let (chunk, next_chunk_id) = chunk_producer.chunk(&chunk_id).expect("should get chunk");
             restorer
                 .process_chunk(&chunk_id, chunk)
                 .expect("should process chunk successfully");
@@ -1072,7 +1105,7 @@ mod tests {
         // should only contain the first chunk
         assert_eq!(multi_chunk.chunk.len(), 2);
         // should point to chunk 2
-        assert_eq!(multi_chunk.next_index, Some(vec![1,1]));
+        assert_eq!(multi_chunk.next_index, Some(vec![1, 1]));
         let next_ids = restorer.process_multi_chunk(multi_chunk.chunk).unwrap();
         assert_eq!(next_ids.len(), 4);
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
@@ -1085,7 +1118,7 @@ mod tests {
             .multi_chunk_with_limit(multi_chunk.next_index.unwrap().as_slice(), Some(645))
             .unwrap();
         assert_eq!(multi_chunk.chunk.len(), 4);
-        assert_eq!(multi_chunk.next_index, Some(vec![0u8,1u8]));
+        assert_eq!(multi_chunk.next_index, Some(vec![0u8, 1u8]));
         let next_ids = restorer.process_multi_chunk(multi_chunk.chunk).unwrap();
         // chunks 2 and 3 are leaf chunks
         assert_eq!(next_ids.len(), 0);

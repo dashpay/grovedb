@@ -246,7 +246,7 @@ impl GroveDb {
                                         "Unable to create to load chunk".to_string(),
                                     )),
                                 }
-                            },
+                            }
                             Err(_) => Err(Error::CorruptedData(
                                 "Unable to create Chunk producer".to_string(),
                             )),
@@ -271,7 +271,7 @@ impl GroveDb {
                                         "Unable to create to load chunk".to_string(),
                                     )),
                                 }
-                            },
+                            }
                             Err(_) => Err(Error::CorruptedData(
                                 "Unable to create Chunk producer".to_string(),
                             )),

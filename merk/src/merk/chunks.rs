@@ -39,9 +39,9 @@ use crate::{
             error::ChunkError,
             util::{
                 chunk_height, chunk_index_from_traversal_instruction,
-                chunk_index_from_traversal_instruction_with_recovery, generate_traversal_instruction,
-                generate_traversal_instruction_as_vec_bytes, vec_bytes_as_traversal_instruction,
-                number_of_chunks,
+                chunk_index_from_traversal_instruction_with_recovery,
+                generate_traversal_instruction, generate_traversal_instruction_as_vec_bytes,
+                number_of_chunks, vec_bytes_as_traversal_instruction,
             },
         },
         Node, Op,
@@ -383,7 +383,9 @@ where
             self.chunk_with_index(self.index)
                 .and_then(|(chunk, chunk_index)| {
                     chunk_index
-                        .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
+                        .map(|index| {
+                            generate_traversal_instruction_as_vec_bytes(self.height, index)
+                        })
                         .transpose()
                         .map(|v| (chunk, v))
                 }),
