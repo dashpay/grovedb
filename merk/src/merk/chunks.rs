@@ -41,7 +41,6 @@ use crate::{
                 chunk_height, chunk_index_from_traversal_instruction,
                 chunk_index_from_traversal_instruction_with_recovery, generate_traversal_instruction,
                 number_of_chunks,
-                string_as_traversal_instruction,
             },
         },
         Node, Op,

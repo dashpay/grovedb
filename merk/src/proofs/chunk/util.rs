@@ -367,21 +367,6 @@ pub fn traversal_instruction_as_vec_bytes(instruction: &[bool]) -> Vec<u8> {
         .collect()
 }
 
-/// Converts a string that represents a traversal instruction
-/// to a vec of bool, true = left and false = right
-pub fn string_as_traversal_instruction(instruction_string: &str) -> Result<Vec<bool>, Error> {
-    instruction_string
-        .chars()
-        .map(|char| match char {
-            '1' => Ok(LEFT),
-            '0' => Ok(RIGHT),
-            _ => Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(
-                "failed to parse instruction string",
-            ))),
-        })
-        .collect()
-}
-
 /// Converts a vec bytes that represents a traversal instruction
 /// to a vec of bool, true = left and false = right
 pub fn vec_bytes_as_traversal_instruction(instruction_vec_bytes: &[u8]) -> Result<Vec<bool>, Error> {
@@ -616,15 +601,15 @@ mod test {
 
     #[test]
     fn test_instruction_string_to_traversal_instruction() {
-        assert_eq!(string_as_traversal_instruction("1").unwrap(), vec![LEFT]);
-        assert_eq!(string_as_traversal_instruction("0").unwrap(), vec![RIGHT]);
+        assert_eq!(vec_bytes_as_traversal_instruction(&vec![1u8]).unwrap(), vec![LEFT]);
+        assert_eq!(vec_bytes_as_traversal_instruction(&vec![0u8]).unwrap(), vec![RIGHT]);
         assert_eq!(
-            string_as_traversal_instruction("001").unwrap(),
+            vec_bytes_as_traversal_instruction(&vec![0u8, 0u8, 1u8]).unwrap(),
             vec![RIGHT, RIGHT, LEFT]
         );
-        assert!(string_as_traversal_instruction("002").is_err());
+        assert!(vec_bytes_as_traversal_instruction(&vec![0u8, 0u8, 2u8]).is_err());
         assert_eq!(
-            string_as_traversal_instruction("").unwrap(),
+            vec_bytes_as_traversal_instruction(&vec![]).unwrap(),
             Vec::<bool>::new()
         );
     }

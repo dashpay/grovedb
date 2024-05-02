@@ -41,7 +41,7 @@ use crate::{
             chunk::{LEFT, RIGHT},
             chunk_op::ChunkOp,
             error::{ChunkError, ChunkError::InternalError},
-            util::{string_as_traversal_instruction, traversal_instruction_as_string, vec_bytes_as_traversal_instruction, traversal_instruction_as_vec_bytes},
+            util::{vec_bytes_as_traversal_instruction, traversal_instruction_as_vec_bytes},
         },
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
