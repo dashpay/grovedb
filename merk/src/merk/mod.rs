@@ -63,7 +63,7 @@ use crate::{
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
-            util::traversal_instruction_as_string,
+            util::traversal_instruction_as_vec_bytes,
         },
         query::query_item::QueryItem,
         Query,
@@ -75,7 +75,6 @@ use crate::{
     Link,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
-use crate::proofs::chunk::util::traversal_instruction_as_vec_bytes;
 
 /// Key update types
 pub struct KeyUpdates {

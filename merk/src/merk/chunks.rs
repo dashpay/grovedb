@@ -40,6 +40,7 @@ use crate::{
             util::{
                 chunk_height, chunk_index_from_traversal_instruction,
                 chunk_index_from_traversal_instruction_with_recovery, generate_traversal_instruction,
+                generate_traversal_instruction_as_vec_bytes, vec_bytes_as_traversal_instruction,
                 number_of_chunks,
             },
         },
@@ -48,7 +49,6 @@ use crate::{
     Error::ChunkingError,
     Merk,
 };
-use crate::proofs::chunk::util::{generate_traversal_instruction_as_string, generate_traversal_instruction_as_vec_bytes, vec_bytes_as_traversal_instruction};
 
 /// ChunkProof for replication of a single subtree
 #[derive(Debug)]
@@ -371,7 +371,7 @@ where
     /// optimizing throughput compared to random access.
     // TODO: this is not better than random access, as we are not keeping state
     //  that will make this more efficient, decide if this should be fixed or not
-    fn next_chunk(&mut self) -> Option<Result<(Vec<Op>, Option<String>), Error>> {
+    fn next_chunk(&mut self) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
         let max_index = number_of_chunks(self.height);
         if self.index > max_index {
             return None;
@@ -383,7 +383,7 @@ where
             self.chunk_with_index(self.index)
                 .and_then(|(chunk, chunk_index)| {
                     chunk_index
-                        .map(|index| generate_traversal_instruction_as_string(self.height, index))
+                        .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
                         .transpose()
                         .map(|v| (chunk, v))
                 }),
@@ -396,7 +396,7 @@ impl<'db, S> Iterator for ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
 {
-    type Item = Result<(Vec<Op>, Option<String>), Error>;
+    type Item = Result<(Vec<Op>, Option<Vec<u8>>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_chunk()
@@ -424,7 +424,7 @@ mod test {
                     tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
                     LEFT, RIGHT,
                 },
-                util::traversal_instruction_as_string,
+                util::traversal_instruction_as_vec_bytes,
             },
             tree::execute,
             Tree,
@@ -433,7 +433,6 @@ mod test {
         tree::RefWalker,
         PanicSource,
     };
-    use crate::proofs::chunk::util::traversal_instruction_as_vec_bytes;
 
     #[derive(Default)]
     struct NodeCounts {

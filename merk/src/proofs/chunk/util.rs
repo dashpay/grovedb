@@ -327,16 +327,6 @@ pub fn chunk_index_from_traversal_instruction_with_recovery(
     chunk_index_result
 }
 
-/// Generate instruction for traversing to a given chunk in a binary tree,
-/// returns string representation
-pub fn generate_traversal_instruction_as_string(
-    height: usize,
-    chunk_id: usize,
-) -> Result<String, Error> {
-    let instruction = generate_traversal_instruction(height, chunk_id)?;
-    Ok(traversal_instruction_as_string(&instruction))
-}
-
 /// Generate instruction for traversing to a given chunk index in a binary tree,
 /// returns vec bytes representation
 pub fn generate_traversal_instruction_as_vec_bytes(
@@ -345,16 +335,6 @@ pub fn generate_traversal_instruction_as_vec_bytes(
 ) -> Result<Vec<u8>, Error> {
     let instruction = generate_traversal_instruction(height, chunk_index)?;
     Ok(traversal_instruction_as_vec_bytes(&instruction))
-}
-
-/// Convert traversal instruction to byte string
-/// 1 represents left (true)
-/// 0 represents right (false)
-pub fn traversal_instruction_as_string(instruction: &[bool]) -> String {
-    instruction
-        .iter()
-        .map(|v| if *v { "1" } else { "0" })
-        .collect()
 }
 
 /// Convert traversal instruction to bytes vec
@@ -382,12 +362,10 @@ pub fn vec_bytes_as_traversal_instruction(instruction_vec_bytes: &[u8]) -> Resul
         .collect()
 }
 
-/*
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) -> Result<(), Error> {
     dest.write_all(value)
         .map_err(|_e| InternalError("failed to write to vector"))
 }
-*/
 
 #[cfg(test)]
 mod test {
@@ -590,12 +568,12 @@ mod test {
 
     #[test]
     fn test_traversal_instruction_as_string() {
-        assert_eq!(traversal_instruction_as_string(&vec![]), "");
-        assert_eq!(traversal_instruction_as_string(&vec![LEFT]), "1");
-        assert_eq!(traversal_instruction_as_string(&vec![RIGHT]), "0");
+        assert_eq!(traversal_instruction_as_vec_bytes(&vec![]), vec![]);
+        assert_eq!(traversal_instruction_as_vec_bytes(&vec![LEFT]), vec![1u8]);
+        assert_eq!(traversal_instruction_as_vec_bytes(&vec![RIGHT]), vec![0u8]);
         assert_eq!(
-            traversal_instruction_as_string(&vec![RIGHT, LEFT, LEFT, RIGHT]),
-            "0110"
+            traversal_instruction_as_vec_bytes(&vec![RIGHT, LEFT, LEFT, RIGHT]),
+            vec![0u8, 1u8, 1u8, 0u8]
         );
     }
 
