@@ -187,11 +187,11 @@ where
     /// chunks or hit some optional limit
     pub fn multi_chunk_with_limit(
         &mut self,
-        chunk_id: &str,
+        chunk_id: &[u8],
         limit: Option<usize>,
     ) -> Result<MultiChunk, Error> {
         // we want to convert the chunk id to the index
-        let chunk_index = string_as_traversal_instruction(chunk_id).and_then(|instruction| {
+        let chunk_index = vec_bytes_as_traversal_instruction(chunk_id).and_then(|instruction| {
             chunk_index_from_traversal_instruction(instruction.as_slice(), self.height)
         })?;
         self.multi_chunk_with_limit_and_index(chunk_index, limit)
@@ -434,6 +434,7 @@ mod test {
         tree::RefWalker,
         PanicSource,
     };
+    use crate::proofs::chunk::util::traversal_instruction_as_vec_bytes;
 
     #[derive(Default)]
     struct NodeCounts {
@@ -1028,7 +1029,7 @@ mod test {
 
         // ensure that the remaining limit, next index and values given are correct
         // if limit is smaller than first chunk, we should get an error
-        let chunk_result = chunk_producer.multi_chunk_with_limit("", Some(5));
+        let chunk_result = chunk_producer.multi_chunk_with_limit(vec![].as_slice(), Some(5));
         assert!(matches!(
             chunk_result,
             Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))
@@ -1053,7 +1054,7 @@ mod test {
             .expect("should generate chunk");
         assert_eq!(
             chunk_result.next_index,
-            Some(traversal_instruction_as_string(
+            Some(traversal_instruction_as_vec_bytes(
                 &generate_traversal_instruction(4, 4).unwrap()
             ))
         );
