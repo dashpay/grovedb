@@ -20,21 +20,25 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
-// Struct governing state sync
-pub struct StateSyncInfo<'db> {
+pub struct SubtreeStateSyncInfo<'db> {
     // Current Chunk restorer
     pub restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
-    // Set of processed prefixes (Path digests)
-    pub processed_prefixes: BTreeSet<SubtreePrefix>,
-    // Current processed prefix (Path digest)
-    pub current_prefix: Option<SubtreePrefix>,
     // Set of global chunk ids requested to be fetched and pending for processing. For the
     // description of global chunk id check fetch_chunk().
-    pub pending_chunks: BTreeSet<Vec<u8>>,
+    pub pending_chunks: BTreeSet<String>,
     // Number of processed chunks in current prefix (Path digest)
     pub num_processed_chunks: usize,
     // Version of state sync protocol,
     pub version: u16,
+}
+
+// Struct governing state sync
+pub struct MultiStateSyncInfo<'db> {
+    // Map of current processing subtrees
+    // SubtreePrefix (Path digest) -> SubtreeStateSyncInfo
+    pub current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
+    // Set of processed prefixes (Path digests)
+    pub processed_prefixes: BTreeSet<SubtreePrefix>,
 }
 
 // Struct containing information about current subtrees found in GroveDB
@@ -109,16 +113,22 @@ pub fn util_split_global_chunk_id(
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    pub fn create_state_sync_info(&self) -> StateSyncInfo {
+    pub fn create_subtree_state_sync_info(&self) -> SubtreeStateSyncInfo {
         let pending_chunks = BTreeSet::new();
-        let processed_prefixes = BTreeSet::new();
-        StateSyncInfo {
+        SubtreeStateSyncInfo {
             restorer: None,
-            processed_prefixes,
-            current_prefix: None,
             pending_chunks,
             num_processed_chunks: 0,
             version: CURRENT_STATE_SYNC_VERSION,
+        }
+    }
+
+    pub fn create_multi_state_sync_info(&self) -> MultiStateSyncInfo {
+        let processed_prefixes = BTreeSet::new();
+        let current_prefixes = BTreeMap::default();
+        MultiStateSyncInfo {
+            current_prefixes,
+            processed_prefixes,
         }
     }
 
@@ -304,11 +314,11 @@ impl GroveDb {
     // the StateSyncInfo transferring ownership back to the caller)
     pub fn start_snapshot_syncing<'db>(
         &'db self,
-        mut state_sync_info: StateSyncInfo<'db>,
+        mut state_sync_info: MultiStateSyncInfo<'db>,
         app_hash: CryptoHash,
         tx: &'db Transaction,
         version: u16,
-    ) -> Result<(Vec<Vec<u8>>, StateSyncInfo), Error> {
+    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -323,53 +333,43 @@ impl GroveDb {
 
         let mut res = vec![];
 
-        match (
-            &mut state_sync_info.restorer,
-            &state_sync_info.current_prefix,
-        ) {
-            (None, None) => {
-                if state_sync_info.pending_chunks.is_empty()
-                    && state_sync_info.processed_prefixes.is_empty()
-                {
-                    let root_prefix = [0u8; 32];
-                    if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
-                        let restorer = Restorer::new(merk, app_hash, None);
-                        state_sync_info.restorer = Some(restorer);
-                        state_sync_info.current_prefix = Some(root_prefix);
-                        state_sync_info.pending_chunks.insert(root_prefix.to_vec());
+        if !state_sync_info.current_prefixes.is_empty() || !state_sync_info.processed_prefixes.is_empty() {
+            return Err(Error::InternalError(
+                "GroveDB has already started a snapshot syncing",
+            ));
+        }
 
-                        res.push(root_prefix.to_vec());
-                    } else {
-                        return Err(Error::InternalError("Unable to open merk for replication"));
-                    }
-                } else {
-                    return Err(Error::InternalError("Invalid internal state sync info"));
-                }
-            }
-            _ => {
-                return Err(Error::InternalError(
-                    "GroveDB has already started a snapshot syncing",
-                ));
-            }
+        let mut root_prefix_state_sync_info = self.create_subtree_state_sync_info();
+        let root_prefix = [0u8; 32];
+        if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
+            let restorer = Restorer::new(merk, app_hash, None);
+            root_prefix_state_sync_info.restorer = Some(restorer);
+            root_prefix_state_sync_info.pending_chunks.insert("".to_string());
+            state_sync_info.current_prefixes.insert(root_prefix, root_prefix_state_sync_info);
+
+            res.push(root_prefix.to_vec());
+        } else {
+            return Err(Error::InternalError("Unable to open merk for replication"));
         }
 
         Ok((res, state_sync_info))
     }
 
+
     // Apply a chunk (should be called by ABCI when ApplySnapshotChunk method is
     // called) Params:
-    // state_sync_info: Consumed StateSyncInfo
+    // state_sync_info: Consumed MultiStateSyncInfo
     // chunk: (Global chunk id, Chunk proof operators)
     // tx: Transaction for the state sync
     // Returns the next set of global chunk ids that can be fetched from sources (+
-    // the StateSyncInfo transferring ownership back to the caller)
+    // the MultiStateSyncInfo transferring ownership back to the caller)
     pub fn apply_chunk<'db>(
         &'db self,
-        mut state_sync_info: StateSyncInfo<'db>,
+        mut state_sync_info: MultiStateSyncInfo<'db>,
         chunk: (&[u8], Vec<Op>),
         tx: &'db Transaction,
         version: u16,
-    ) -> Result<(Vec<Vec<u8>>, StateSyncInfo), Error> {
+    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -382,36 +382,107 @@ impl GroveDb {
             ));
         }
 
-        let mut res = vec![];
+        let mut next_chunk_ids = vec![];
 
         let (global_chunk_id, chunk_data) = chunk;
         let (chunk_prefix, chunk_id) = replication::util_split_global_chunk_id(global_chunk_id)?;
 
-        match (
-            &mut state_sync_info.restorer,
-            &state_sync_info.current_prefix,
-        ) {
-            (Some(restorer), Some(ref current_prefix)) => {
-                if *current_prefix != chunk_prefix {
-                    return Err(Error::InternalError("Invalid incoming prefix"));
+        if state_sync_info.current_prefixes.is_empty() {
+            return Err(Error::InternalError("GroveDB is not in syncing mode"));
+        }
+        if let Some(mut subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
+            if let Ok((res, mut new_subtree_state_sync)) = self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk_data) {
+                if !res.is_empty() {
+                    for local_chunk_id in res.iter() {
+                        let mut next_global_chunk_id = chunk_prefix.to_vec();
+                        next_global_chunk_id.extend(local_chunk_id.as_bytes().to_vec());
+                        next_chunk_ids.push(next_global_chunk_id);
+                    }
+
+                    // re-insert subtree_state_sync in state_sync_info
+                    state_sync_info.current_prefixes.insert(chunk_prefix, new_subtree_state_sync);
+                    Ok((next_chunk_ids, state_sync_info))
                 }
-                if !state_sync_info.pending_chunks.contains(global_chunk_id) {
+                else {
+                    if !new_subtree_state_sync.pending_chunks.is_empty() {
+                        // re-insert subtree_state_sync in state_sync_info
+                        state_sync_info.current_prefixes.insert(chunk_prefix, new_subtree_state_sync);
+                        return Ok((vec![], state_sync_info))
+                    }
+
+                    // Subtree is finished. We can save it.
+                    match new_subtree_state_sync.restorer.take() {
+                        None => {
+                            return Err(Error::InternalError("Unable to finalize subtree"));
+                        }
+                        Some(restorer) => {
+                            if (new_subtree_state_sync.num_processed_chunks > 0) && (restorer.finalize().is_err()) {
+                                return Err(Error::InternalError("Unable to finalize Merk"));
+                            }
+                            state_sync_info.processed_prefixes.insert(chunk_prefix);
+
+
+                            // Subtree was successfully save. Time to discover new subtrees that need to be processed
+                            let subtrees_metadata = self.get_subtrees_metadata(Some(tx))?;
+                            if let Some(value) = subtrees_metadata.data.get(&chunk_prefix) {
+                                println!(
+                                    "    path:{:?} done num_processed_chunks:{:?}",
+                                    replication::util_path_to_string(&value.0),
+                                    new_subtree_state_sync.num_processed_chunks
+                                );
+                            }
+
+                            if let Ok((res,new_state_sync_info)) = self.discover_subtrees(state_sync_info, subtrees_metadata, tx) {
+                                next_chunk_ids.extend(res);
+                                Ok((next_chunk_ids, new_state_sync_info))
+                            }
+                            else {
+                                return Err(Error::InternalError("Unable to discover Subtrees"));
+                            }
+                        }
+                    }
+                }
+            }
+            else {
+                return Err(Error::InternalError("Unable to process incoming chunk"));
+            }
+        }
+        else {
+            return Err(Error::InternalError("Invalid incoming prefix"));
+        }
+    }
+
+    // Apply a chunk using the given SubtreeStateSyncInfo
+    // state_sync_info: Consumed SubtreeStateSyncInfo
+    // chunk_id: Local chunk id
+    // chunk_data: Chunk proof operators
+    // Returns the next set of global chunk ids that can be fetched from sources (+
+    // the SubtreeStateSyncInfo transferring ownership back to the caller)
+    fn apply_inner_chunk<'db>(
+        &'db self,
+        mut state_sync_info: SubtreeStateSyncInfo<'db>,
+        chunk_id: &str,
+        chunk_data: Vec<Op>,
+    ) -> Result<(Vec<String>, SubtreeStateSyncInfo), Error> {
+        let mut res = vec![];
+
+        match &mut state_sync_info.restorer {
+            Some(restorer) => {
+                if !state_sync_info.pending_chunks.contains(chunk_id) {
                     return Err(Error::InternalError(
                         "Incoming global_chunk_id not expected",
                     ));
                 }
-                state_sync_info.pending_chunks.remove(global_chunk_id);
+                state_sync_info.pending_chunks.remove(chunk_id);
                 if !chunk_data.is_empty() {
                     match restorer.process_chunk(&chunk_id, chunk_data) {
                         Ok(next_chunk_ids) => {
                             state_sync_info.num_processed_chunks += 1;
                             for next_chunk_id in next_chunk_ids {
-                                let mut next_global_chunk_id = chunk_prefix.to_vec();
-                                next_global_chunk_id.extend(next_chunk_id.to_vec());
                                 state_sync_info
                                     .pending_chunks
-                                    .insert(next_global_chunk_id.clone());
-                                res.push(next_global_chunk_id);
+                                    .insert(next_chunk_id.clone());
+                                res.push(next_chunk_id);
                             }
                         }
                         _ => {
@@ -419,70 +490,61 @@ impl GroveDb {
                         }
                     };
                 }
-            }
+            },
             _ => {
-                return Err(Error::InternalError("GroveDB is not in syncing mode"));
+                return Err(Error::InternalError("Invalid internal state (restorer"));
             }
         }
 
-        if res.is_empty() {
-            if !state_sync_info.pending_chunks.is_empty() {
-                return Ok((res, state_sync_info));
-            }
-            match (
-                state_sync_info.restorer.take(),
-                state_sync_info.current_prefix.take(),
-            ) {
-                (Some(restorer), Some(current_prefix)) => {
-                    if (state_sync_info.num_processed_chunks > 0) && (restorer.finalize().is_err())
-                    {
-                        return Err(Error::InternalError("Unable to finalize merk"));
-                    }
-                    state_sync_info.processed_prefixes.insert(current_prefix);
+        Ok((res, state_sync_info))
+    }
 
-                    let subtrees_metadata = self.get_subtrees_metadata(Some(tx))?;
-                    if let Some(value) = subtrees_metadata.data.get(&current_prefix) {
-                        println!(
-                            "    path:{:?} done",
-                            replication::util_path_to_string(&value.0)
-                        );
-                    }
+    // Prepares SubtreeStateSyncInfos for the freshly discovered subtrees in subtrees_metadata
+    // and returns the root global chunk ids for all of those new subtrees.
+    // state_sync_info: Consumed MultiStateSyncInfo
+    // subtrees_metadata: Metadata about discovered subtrees
+    // chunk_data: Chunk proof operators
+    // Returns the next set of global chunk ids that can be fetched from sources (+
+    // the MultiStateSyncInfo transferring ownership back to the caller)
+    fn discover_subtrees<'db>(
+        &'db self,
+        mut state_sync_info: MultiStateSyncInfo<'db>,
+        subtrees_metadata: SubtreesMetadata,
+        tx: &'db Transaction,
+    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+        let mut res = vec![];
 
-                    for (prefix, prefix_metadata) in &subtrees_metadata.data {
-                        if !state_sync_info.processed_prefixes.contains(prefix) {
-                            let (current_path, s_actual_value_hash, s_elem_value_hash) =
-                                &prefix_metadata;
+        for (prefix, prefix_metadata) in &subtrees_metadata.data {
+            if !state_sync_info.processed_prefixes.contains(prefix) && !state_sync_info.current_prefixes.contains_key(prefix){
+                let (current_path, s_actual_value_hash, s_elem_value_hash) =
+                    &prefix_metadata;
 
-                            let subtree_path: Vec<&[u8]> =
-                                current_path.iter().map(|vec| vec.as_slice()).collect();
-                            let path: &[&[u8]] = &subtree_path;
+                let subtree_path: Vec<&[u8]> =
+                    current_path.iter().map(|vec| vec.as_slice()).collect();
+                let path: &[&[u8]] = &subtree_path;
+                println!(
+                    "    starting:{:?}...",
+                    replication::util_path_to_string(&prefix_metadata.0)
+                );
 
-                            if let Ok(merk) = self.open_merk_for_replication(path.into(), tx) {
-                                let restorer = Restorer::new(
-                                    merk,
-                                    *s_elem_value_hash,
-                                    Some(*s_actual_value_hash),
-                                );
-                                state_sync_info.restorer = Some(restorer);
-                                state_sync_info.current_prefix = Some(*prefix);
-                                state_sync_info.num_processed_chunks = 0;
+                let mut subtree_state_sync_info = self.create_subtree_state_sync_info();
+                if let Ok(merk) = self.open_merk_for_replication(path.into(), tx) {
+                    let restorer = Restorer::new(
+                        merk,
+                        *s_elem_value_hash,
+                        Some(*s_actual_value_hash),
+                    );
+                    subtree_state_sync_info.restorer = Some(restorer);
+                    subtree_state_sync_info.pending_chunks.insert("".to_string());
 
-                                let root_chunk_prefix = prefix.to_vec();
-                                state_sync_info
-                                    .pending_chunks
-                                    .insert(root_chunk_prefix.clone());
-                                res.push(root_chunk_prefix);
-                            } else {
-                                return Err(Error::InternalError(
-                                    "Unable to open merk for replication",
-                                ));
-                            }
-                            break;
-                        }
-                    }
-                }
-                _ => {
-                    return Err(Error::InternalError("Unable to finalize tree"));
+                    state_sync_info.current_prefixes.insert(*prefix, subtree_state_sync_info);
+
+                    let root_chunk_prefix = prefix.to_vec();
+                    res.push(root_chunk_prefix.to_vec());
+                } else {
+                    return Err(Error::InternalError(
+                        "Unable to open Merk for replication",
+                    ));
                 }
             }
         }
