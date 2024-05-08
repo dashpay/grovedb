@@ -38,10 +38,10 @@ use crate::{
             chunk_op::ChunkOp,
             error::ChunkError,
             util::{
-                chunk_height, chunk_id_from_traversal_instruction,
-                chunk_id_from_traversal_instruction_with_recovery, generate_traversal_instruction,
-                generate_traversal_instruction_as_string, number_of_chunks,
-                string_as_traversal_instruction,
+                chunk_height, chunk_index_from_traversal_instruction,
+                chunk_index_from_traversal_instruction_with_recovery,
+                generate_traversal_instruction, generate_traversal_instruction_as_vec_bytes,
+                number_of_chunks, vec_bytes_as_traversal_instruction,
             },
         },
         Node, Op,
@@ -72,14 +72,14 @@ impl SubtreeChunk {
 #[derive(Debug)]
 pub struct MultiChunk {
     pub chunk: Vec<ChunkOp>,
-    pub next_index: Option<String>,
+    pub next_index: Option<Vec<u8>>,
     pub remaining_limit: Option<usize>,
 }
 
 impl MultiChunk {
     pub fn new(
         chunk: Vec<ChunkOp>,
-        next_index: Option<String>,
+        next_index: Option<Vec<u8>>,
         remaining_limit: Option<usize>,
     ) -> Self {
         Self {
@@ -131,17 +131,17 @@ where
     }
 
     /// Returns the chunk at a given chunk id.
-    pub fn chunk(&mut self, chunk_id: &str) -> Result<(Vec<Op>, Option<String>), Error> {
-        let traversal_instructions = string_as_traversal_instruction(chunk_id)?;
-        let chunk_index = chunk_id_from_traversal_instruction_with_recovery(
+    pub fn chunk(&mut self, chunk_id: &[u8]) -> Result<(Vec<Op>, Option<Vec<u8>>), Error> {
+        let traversal_instructions = vec_bytes_as_traversal_instruction(chunk_id)?;
+        let chunk_index = chunk_index_from_traversal_instruction_with_recovery(
             traversal_instructions.as_slice(),
             self.height,
         )?;
         let (chunk, next_index) = self.chunk_internal(chunk_index, traversal_instructions)?;
-        let index_string = next_index
-            .map(|index| generate_traversal_instruction_as_string(self.height, index))
+        let next_chunk_id = next_index
+            .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
             .transpose()?;
-        Ok((chunk, index_string))
+        Ok((chunk, next_chunk_id))
     }
 
     /// Returns the chunk at the given index
@@ -186,12 +186,12 @@ where
     /// chunks or hit some optional limit
     pub fn multi_chunk_with_limit(
         &mut self,
-        chunk_id: &str,
+        chunk_id: &[u8],
         limit: Option<usize>,
     ) -> Result<MultiChunk, Error> {
         // we want to convert the chunk id to the index
-        let chunk_index = string_as_traversal_instruction(chunk_id).and_then(|instruction| {
-            chunk_id_from_traversal_instruction(instruction.as_slice(), self.height)
+        let chunk_index = vec_bytes_as_traversal_instruction(chunk_id).and_then(|instruction| {
+            chunk_index_from_traversal_instruction(instruction.as_slice(), self.height)
         })?;
         self.multi_chunk_with_limit_and_index(chunk_index, limit)
     }
@@ -267,11 +267,11 @@ where
             current_limit = subtree_multi_chunk.remaining_limit;
         }
 
-        let index_string = current_index
-            .map(|index| generate_traversal_instruction_as_string(self.height, index))
+        let index_bytes = current_index
+            .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
             .transpose()?;
 
-        Ok(MultiChunk::new(chunk, index_string, current_limit))
+        Ok(MultiChunk::new(chunk, index_bytes, current_limit))
     }
 
     /// Packs as many chunks as it can from a starting chunk index, into a
@@ -371,7 +371,7 @@ where
     /// optimizing throughput compared to random access.
     // TODO: this is not better than random access, as we are not keeping state
     //  that will make this more efficient, decide if this should be fixed or not
-    fn next_chunk(&mut self) -> Option<Result<(Vec<Op>, Option<String>), Error>> {
+    fn next_chunk(&mut self) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
         let max_index = number_of_chunks(self.height);
         if self.index > max_index {
             return None;
@@ -383,7 +383,9 @@ where
             self.chunk_with_index(self.index)
                 .and_then(|(chunk, chunk_index)| {
                     chunk_index
-                        .map(|index| generate_traversal_instruction_as_string(self.height, index))
+                        .map(|index| {
+                            generate_traversal_instruction_as_vec_bytes(self.height, index)
+                        })
                         .transpose()
                         .map(|v| (chunk, v))
                 }),
@@ -396,7 +398,7 @@ impl<'db, S> Iterator for ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
 {
-    type Item = Result<(Vec<Op>, Option<String>), Error>;
+    type Item = Result<(Vec<Op>, Option<Vec<u8>>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_chunk()
@@ -424,7 +426,7 @@ mod test {
                     tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
                     LEFT, RIGHT,
                 },
-                util::traversal_instruction_as_string,
+                util::traversal_instruction_as_vec_bytes,
             },
             tree::execute,
             Tree,
@@ -1027,7 +1029,7 @@ mod test {
 
         // ensure that the remaining limit, next index and values given are correct
         // if limit is smaller than first chunk, we should get an error
-        let chunk_result = chunk_producer.multi_chunk_with_limit("", Some(5));
+        let chunk_result = chunk_producer.multi_chunk_with_limit(vec![].as_slice(), Some(5));
         assert!(matches!(
             chunk_result,
             Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))
@@ -1052,7 +1054,7 @@ mod test {
             .expect("should generate chunk");
         assert_eq!(
             chunk_result.next_index,
-            Some(traversal_instruction_as_string(
+            Some(traversal_instruction_as_vec_bytes(
                 &generate_traversal_instruction(4, 4).unwrap()
             ))
         );

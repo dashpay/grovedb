@@ -89,7 +89,7 @@ pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
 // Splits the given global chunk id into [SUBTREE_PREFIX:CHUNK_ID]
 pub fn util_split_global_chunk_id(
     global_chunk_id: &[u8],
-) -> Result<(crate::SubtreePrefix, String), Error> {
+) -> Result<(crate::SubtreePrefix, Vec<u8>), Error> {
     let chunk_prefix_length: usize = 32;
     if global_chunk_id.len() < chunk_prefix_length {
         return Err(Error::CorruptedData(
@@ -101,13 +101,7 @@ pub fn util_split_global_chunk_id(
     let mut array = [0u8; 32];
     array.copy_from_slice(chunk_prefix);
     let chunk_prefix_key: crate::SubtreePrefix = array;
-    let str_chunk_id = String::from_utf8(chunk_id.to_vec());
-    match str_chunk_id {
-        Ok(s) => Ok((chunk_prefix_key, s)),
-        Err(_) => Err(Error::CorruptedData(
-            "unable to convert chunk id to string".to_string(),
-        )),
-    }
+    Ok((chunk_prefix_key, chunk_id.to_vec()))
 }
 
 #[cfg(feature = "full")]
@@ -244,20 +238,15 @@ impl GroveDb {
 
                         let chunk_producer_res = ChunkProducer::new(&merk);
                         match chunk_producer_res {
-                            Ok(mut chunk_producer) => match std::str::from_utf8(chunk_id) {
-                                Ok(chunk_id_str) => {
-                                    let chunk_res = chunk_producer.chunk(chunk_id_str);
-                                    match chunk_res {
-                                        Ok((chunk, _)) => Ok(chunk),
-                                        Err(_) => Err(Error::CorruptedData(
-                                            "Unable to create to load chunk".to_string(),
-                                        )),
-                                    }
+                            Ok(mut chunk_producer) => {
+                                let chunk_res = chunk_producer.chunk(chunk_id);
+                                match chunk_res {
+                                    Ok((chunk, _)) => Ok(chunk),
+                                    Err(_) => Err(Error::CorruptedData(
+                                        "Unable to create to load chunk".to_string(),
+                                    )),
                                 }
-                                Err(_) => Err(Error::CorruptedData(
-                                    "Unable to process chunk id".to_string(),
-                                )),
-                            },
+                            }
                             Err(_) => Err(Error::CorruptedData(
                                 "Unable to create Chunk producer".to_string(),
                             )),
@@ -274,20 +263,15 @@ impl GroveDb {
 
                         let chunk_producer_res = ChunkProducer::new(&merk);
                         match chunk_producer_res {
-                            Ok(mut chunk_producer) => match std::str::from_utf8(chunk_id) {
-                                Ok(chunk_id_str) => {
-                                    let chunk_res = chunk_producer.chunk(chunk_id_str);
-                                    match chunk_res {
-                                        Ok((chunk, _)) => Ok(chunk),
-                                        Err(_) => Err(Error::CorruptedData(
-                                            "Unable to create to load chunk".to_string(),
-                                        )),
-                                    }
+                            Ok(mut chunk_producer) => {
+                                let chunk_res = chunk_producer.chunk(chunk_id);
+                                match chunk_res {
+                                    Ok((chunk, _)) => Ok(chunk),
+                                    Err(_) => Err(Error::CorruptedData(
+                                        "Unable to create to load chunk".to_string(),
+                                    )),
                                 }
-                                Err(_) => Err(Error::CorruptedData(
-                                    "Unable to process chunk id".to_string(),
-                                )),
-                            },
+                            }
                             Err(_) => Err(Error::CorruptedData(
                                 "Unable to create Chunk producer".to_string(),
                             )),
@@ -380,12 +364,12 @@ impl GroveDb {
                 }
                 state_sync_info.pending_chunks.remove(global_chunk_id);
                 if !chunk_data.is_empty() {
-                    match restorer.process_chunk(chunk_id.to_string(), chunk_data) {
+                    match restorer.process_chunk(&chunk_id, chunk_data) {
                         Ok(next_chunk_ids) => {
                             state_sync_info.num_processed_chunks += 1;
                             for next_chunk_id in next_chunk_ids {
                                 let mut next_global_chunk_id = chunk_prefix.to_vec();
-                                next_global_chunk_id.extend(next_chunk_id.as_bytes().to_vec());
+                                next_global_chunk_id.extend(next_chunk_id.to_vec());
                                 state_sync_info
                                     .pending_chunks
                                     .insert(next_global_chunk_id.clone());

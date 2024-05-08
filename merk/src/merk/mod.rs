@@ -63,7 +63,7 @@ use crate::{
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
-            util::traversal_instruction_as_string,
+            util::traversal_instruction_as_vec_bytes,
         },
         query::query_item::QueryItem,
         Query,
@@ -556,11 +556,11 @@ where
     pub fn verify(
         &self,
         skip_sum_checks: bool,
-    ) -> (BTreeMap<String, CryptoHash>, BTreeMap<String, Vec<u8>>) {
+    ) -> (BTreeMap<Vec<u8>, CryptoHash>, BTreeMap<Vec<u8>, Vec<u8>>) {
         let tree = self.tree.take();
 
-        let mut bad_link_map: BTreeMap<String, CryptoHash> = BTreeMap::new();
-        let mut parent_keys: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut bad_link_map: BTreeMap<Vec<u8>, CryptoHash> = BTreeMap::new();
+        let mut parent_keys: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         let mut root_traversal_instruction = vec![];
 
         // TODO: remove clone
@@ -581,8 +581,8 @@ where
         &self,
         tree: &TreeNode,
         traversal_instruction: &mut Vec<bool>,
-        bad_link_map: &mut BTreeMap<String, CryptoHash>,
-        parent_keys: &mut BTreeMap<String, Vec<u8>>,
+        bad_link_map: &mut BTreeMap<Vec<u8>, CryptoHash>,
+        parent_keys: &mut BTreeMap<Vec<u8>, Vec<u8>>,
         skip_sum_checks: bool,
     ) {
         if let Some(link) = tree.link(LEFT) {
@@ -617,8 +617,8 @@ where
         link: &Link,
         parent_key: &[u8],
         traversal_instruction: &mut Vec<bool>,
-        bad_link_map: &mut BTreeMap<String, CryptoHash>,
-        parent_keys: &mut BTreeMap<String, Vec<u8>>,
+        bad_link_map: &mut BTreeMap<Vec<u8>, CryptoHash>,
+        parent_keys: &mut BTreeMap<Vec<u8>, Vec<u8>>,
         skip_sum_checks: bool,
     ) {
         let (hash, key, sum) = match link {
@@ -639,7 +639,7 @@ where
             _ => todo!(),
         };
 
-        let instruction_id = traversal_instruction_as_string(traversal_instruction);
+        let instruction_id = traversal_instruction_as_vec_bytes(traversal_instruction);
         let node = TreeNode::get(
             &self.storage,
             key,
@@ -648,29 +648,29 @@ where
         .unwrap();
 
         if node.is_err() {
-            bad_link_map.insert(instruction_id.clone(), hash);
-            parent_keys.insert(instruction_id, parent_key.to_vec());
+            bad_link_map.insert(instruction_id.to_vec(), hash);
+            parent_keys.insert(instruction_id.to_vec(), parent_key.to_vec());
             return;
         }
 
         let node = node.unwrap();
         if node.is_none() {
-            bad_link_map.insert(instruction_id.clone(), hash);
-            parent_keys.insert(instruction_id, parent_key.to_vec());
+            bad_link_map.insert(instruction_id.to_vec(), hash);
+            parent_keys.insert(instruction_id.to_vec(), parent_key.to_vec());
             return;
         }
 
         let node = node.unwrap();
         if node.hash().unwrap() != hash {
-            bad_link_map.insert(instruction_id.clone(), hash);
-            parent_keys.insert(instruction_id, parent_key.to_vec());
+            bad_link_map.insert(instruction_id.to_vec(), hash);
+            parent_keys.insert(instruction_id.to_vec(), parent_key.to_vec());
             return;
         }
 
         // Need to skip this when restoring a sum tree
         if !skip_sum_checks && node.sum().unwrap() != sum {
-            bad_link_map.insert(instruction_id.clone(), hash);
-            parent_keys.insert(instruction_id, parent_key.to_vec());
+            bad_link_map.insert(instruction_id.to_vec(), hash);
+            parent_keys.insert(instruction_id.to_vec(), parent_key.to_vec());
             return;
         }
 

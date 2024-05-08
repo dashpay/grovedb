@@ -203,7 +203,7 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
    let path_query = PathQuery::new_unsized(path_vec, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, None)
+        .query_item_value(&path_query, true, false,true, None)
         .unwrap()
         .expect("expected successful get_path_query");
     for e in elements.into_iter() {

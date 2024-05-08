@@ -170,14 +170,17 @@ fn exit_node_count(height: usize) -> usize {
     2_usize.pow(height as u32)
 }
 
-/// Generate instruction for traversing to a given chunk in a binary tree
-pub fn generate_traversal_instruction(height: usize, chunk_id: usize) -> Result<Vec<bool>, Error> {
+/// Generate instruction for traversing to a given chunk index in a binary tree
+pub fn generate_traversal_instruction(
+    height: usize,
+    chunk_index: usize,
+) -> Result<Vec<bool>, Error> {
     let mut instructions = vec![];
 
     let total_chunk_count = number_of_chunks(height);
 
     // out of bounds
-    if chunk_id < 1 || chunk_id > total_chunk_count {
+    if chunk_index < 1 || chunk_index > total_chunk_count {
         return Err(Error::ChunkingError(ChunkError::OutOfBounds(
             "chunk id out of bounds",
         )));
@@ -202,7 +205,7 @@ pub fn generate_traversal_instruction(height: usize, chunk_id: usize) -> Result<
             // checks if we last decision we made got us to the desired chunk id
             let advance_result = chunk_range.advance_range_start().unwrap();
             chunk_range = advance_result.0;
-            if advance_result.1 == chunk_id {
+            if advance_result.1 == chunk_index {
                 return Ok(instructions);
             }
         } else {
@@ -211,7 +214,7 @@ pub fn generate_traversal_instruction(height: usize, chunk_id: usize) -> Result<
             // we first check which half the desired chunk is
             // then follow that path
             let chunk_id_half = chunk_range
-                .which_half(chunk_id)
+                .which_half(chunk_index)
                 .expect("chunk id must exist in range");
             instructions.push(chunk_id_half);
             chunk_range = chunk_range
@@ -226,9 +229,9 @@ pub fn generate_traversal_instruction(height: usize, chunk_id: usize) -> Result<
     Ok(instructions)
 }
 
-/// Determine the chunk id given the traversal instruction and the max height of
-/// the tree
-pub fn chunk_id_from_traversal_instruction(
+/// Determine the chunk index given the traversal instruction and the max height
+/// of the tree
+pub fn chunk_index_from_traversal_instruction(
     traversal_instruction: &[bool],
     height: usize,
 ) -> Result<usize, Error> {
@@ -238,7 +241,7 @@ pub fn chunk_id_from_traversal_instruction(
     }
 
     let mut chunk_count = number_of_chunks(height);
-    let mut current_chunk_id = 1;
+    let mut current_chunk_index = 1;
 
     let mut layer_heights = chunk_height_per_layer(height);
     let last_layer_height = layer_heights.pop().expect("confirmed not empty");
@@ -301,62 +304,64 @@ pub fn chunk_id_from_traversal_instruction(
 
         chunk_count /= exit_node_count(layer_height);
 
-        current_chunk_id = current_chunk_id + offset_multiplier * chunk_count + 1;
+        current_chunk_index = current_chunk_index + offset_multiplier * chunk_count + 1;
 
         start_index = end_index;
     }
 
-    Ok(current_chunk_id)
+    Ok(current_chunk_index)
 }
 
-/// Determine the chunk id given the traversal instruction and the max height of
-/// the tree. This can recover from traversal instructions not pointing to a
+/// Determine the chunk index given the traversal instruction and the max height
+/// of the tree. This can recover from traversal instructions not pointing to a
 /// chunk boundary, in such a case, it backtracks until it hits a chunk
 /// boundary.
-pub fn chunk_id_from_traversal_instruction_with_recovery(
+pub fn chunk_index_from_traversal_instruction_with_recovery(
     traversal_instruction: &[bool],
     height: usize,
 ) -> Result<usize, Error> {
-    let chunk_id_result = chunk_id_from_traversal_instruction(traversal_instruction, height);
-    if chunk_id_result.is_err() {
-        return chunk_id_from_traversal_instruction_with_recovery(
+    let chunk_index_result = chunk_index_from_traversal_instruction(traversal_instruction, height);
+    if chunk_index_result.is_err() {
+        return chunk_index_from_traversal_instruction_with_recovery(
             &traversal_instruction[0..traversal_instruction.len() - 1],
             height,
         );
     }
-    chunk_id_result
+    chunk_index_result
 }
 
-/// Generate instruction for traversing to a given chunk in a binary tree,
-/// returns string representation
-pub fn generate_traversal_instruction_as_string(
+/// Generate instruction for traversing to a given chunk index in a binary tree,
+/// returns vec bytes representation
+pub fn generate_traversal_instruction_as_vec_bytes(
     height: usize,
-    chunk_id: usize,
-) -> Result<String, Error> {
-    let instruction = generate_traversal_instruction(height, chunk_id)?;
-    Ok(traversal_instruction_as_string(&instruction))
+    chunk_index: usize,
+) -> Result<Vec<u8>, Error> {
+    let instruction = generate_traversal_instruction(height, chunk_index)?;
+    Ok(traversal_instruction_as_vec_bytes(&instruction))
 }
 
-/// Convert traversal instruction to byte string
+/// Convert traversal instruction to bytes vec
 /// 1 represents left (true)
 /// 0 represents right (false)
-pub fn traversal_instruction_as_string(instruction: &[bool]) -> String {
+pub fn traversal_instruction_as_vec_bytes(instruction: &[bool]) -> Vec<u8> {
     instruction
         .iter()
-        .map(|v| if *v { "1" } else { "0" })
+        .map(|v| if *v { 1u8 } else { 0u8 })
         .collect()
 }
 
-/// Converts a string that represents a traversal instruction
+/// Converts a vec bytes that represents a traversal instruction
 /// to a vec of bool, true = left and false = right
-pub fn string_as_traversal_instruction(instruction_string: &str) -> Result<Vec<bool>, Error> {
-    instruction_string
-        .chars()
-        .map(|char| match char {
-            '1' => Ok(LEFT),
-            '0' => Ok(RIGHT),
+pub fn vec_bytes_as_traversal_instruction(
+    instruction_vec_bytes: &[u8],
+) -> Result<Vec<bool>, Error> {
+    instruction_vec_bytes
+        .iter()
+        .map(|byte| match byte {
+            1u8 => Ok(LEFT),
+            0u8 => Ok(RIGHT),
             _ => Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(
-                "failed to parse instruction string",
+                "failed to parse instruction vec bytes",
             ))),
         })
         .collect()
@@ -568,26 +573,32 @@ mod test {
 
     #[test]
     fn test_traversal_instruction_as_string() {
-        assert_eq!(traversal_instruction_as_string(&vec![]), "");
-        assert_eq!(traversal_instruction_as_string(&vec![LEFT]), "1");
-        assert_eq!(traversal_instruction_as_string(&vec![RIGHT]), "0");
+        assert_eq!(traversal_instruction_as_vec_bytes(&vec![]), vec![]);
+        assert_eq!(traversal_instruction_as_vec_bytes(&vec![LEFT]), vec![1u8]);
+        assert_eq!(traversal_instruction_as_vec_bytes(&vec![RIGHT]), vec![0u8]);
         assert_eq!(
-            traversal_instruction_as_string(&vec![RIGHT, LEFT, LEFT, RIGHT]),
-            "0110"
+            traversal_instruction_as_vec_bytes(&vec![RIGHT, LEFT, LEFT, RIGHT]),
+            vec![0u8, 1u8, 1u8, 0u8]
         );
     }
 
     #[test]
     fn test_instruction_string_to_traversal_instruction() {
-        assert_eq!(string_as_traversal_instruction("1").unwrap(), vec![LEFT]);
-        assert_eq!(string_as_traversal_instruction("0").unwrap(), vec![RIGHT]);
         assert_eq!(
-            string_as_traversal_instruction("001").unwrap(),
+            vec_bytes_as_traversal_instruction(&vec![1u8]).unwrap(),
+            vec![LEFT]
+        );
+        assert_eq!(
+            vec_bytes_as_traversal_instruction(&vec![0u8]).unwrap(),
+            vec![RIGHT]
+        );
+        assert_eq!(
+            vec_bytes_as_traversal_instruction(&vec![0u8, 0u8, 1u8]).unwrap(),
             vec![RIGHT, RIGHT, LEFT]
         );
-        assert!(string_as_traversal_instruction("002").is_err());
+        assert!(vec_bytes_as_traversal_instruction(&vec![0u8, 0u8, 2u8]).is_err());
         assert_eq!(
-            string_as_traversal_instruction("").unwrap(),
+            vec_bytes_as_traversal_instruction(&vec![]).unwrap(),
             Vec::<bool>::new()
         );
     }
@@ -597,69 +608,69 @@ mod test {
         // tree of height 4
         let traversal_instruction = generate_traversal_instruction(4, 1).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
             1
         );
         let traversal_instruction = generate_traversal_instruction(4, 2).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
             2
         );
         let traversal_instruction = generate_traversal_instruction(4, 3).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
             3
         );
         let traversal_instruction = generate_traversal_instruction(4, 4).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 4).unwrap(),
             4
         );
 
         // tree of height 6
         let traversal_instruction = generate_traversal_instruction(6, 1).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             1
         );
         let traversal_instruction = generate_traversal_instruction(6, 2).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             2
         );
         let traversal_instruction = generate_traversal_instruction(6, 3).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             3
         );
         let traversal_instruction = generate_traversal_instruction(6, 4).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             4
         );
         let traversal_instruction = generate_traversal_instruction(6, 5).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             5
         );
         let traversal_instruction = generate_traversal_instruction(6, 6).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             6
         );
         let traversal_instruction = generate_traversal_instruction(6, 7).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             7
         );
         let traversal_instruction = generate_traversal_instruction(6, 8).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             8
         );
         let traversal_instruction = generate_traversal_instruction(6, 9).unwrap();
         assert_eq!(
-            chunk_id_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
+            chunk_index_from_traversal_instruction(traversal_instruction.as_slice(), 6).unwrap(),
             9
         );
     }
@@ -674,26 +685,26 @@ mod test {
         // function with recovery we expect this to backtrack to the last chunk
         // boundary e.g. [left] should backtrack to []
         //      [left, left, right, left] should backtrack to [left, left, right]
-        assert!(chunk_id_from_traversal_instruction(&[LEFT], 5).is_err());
+        assert!(chunk_index_from_traversal_instruction(&[LEFT], 5).is_err());
         assert_eq!(
-            chunk_id_from_traversal_instruction_with_recovery(&[LEFT], 5).unwrap(),
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT], 5).unwrap(),
             1
         );
         assert_eq!(
-            chunk_id_from_traversal_instruction_with_recovery(&[LEFT, LEFT], 5).unwrap(),
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT, LEFT], 5).unwrap(),
             1
         );
         assert_eq!(
-            chunk_id_from_traversal_instruction_with_recovery(&[LEFT, LEFT, RIGHT], 5).unwrap(),
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT, LEFT, RIGHT], 5).unwrap(),
             3
         );
         assert_eq!(
-            chunk_id_from_traversal_instruction_with_recovery(&[LEFT, LEFT, RIGHT, LEFT], 5)
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT, LEFT, RIGHT, LEFT], 5)
                 .unwrap(),
             3
         );
         assert_eq!(
-            chunk_id_from_traversal_instruction_with_recovery(&[LEFT; 50], 5).unwrap(),
+            chunk_index_from_traversal_instruction_with_recovery(&[LEFT; 50], 5).unwrap(),
             2
         );
     }
