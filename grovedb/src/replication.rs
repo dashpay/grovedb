@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    str::Utf8Error,
 };
 
 use grovedb_merk::{
@@ -278,7 +277,7 @@ impl GroveDb {
                     }
                     Some(t) => {
                         let merk = self
-                            .open_transactional_merk_at_path(path.into(), &t, None)
+                            .open_transactional_merk_at_path(path.into(), t, None)
                             .value?;
 
                         if merk.is_empty_tree().unwrap() {
