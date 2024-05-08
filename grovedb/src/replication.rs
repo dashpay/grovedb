@@ -20,16 +20,14 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
-pub struct SubtreeStateSyncInfo<'db> {
+struct SubtreeStateSyncInfo<'db> {
     // Current Chunk restorer
     pub restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
     // Set of global chunk ids requested to be fetched and pending for processing. For the
     // description of global chunk id check fetch_chunk().
-    pub pending_chunks: BTreeSet<String>,
+    pub pending_chunks: BTreeSet<Vec<u8>>,
     // Number of processed chunks in current prefix (Path digest)
     pub num_processed_chunks: usize,
-    // Version of state sync protocol,
-    pub version: u16,
 }
 
 // Struct governing state sync
@@ -39,6 +37,8 @@ pub struct MultiStateSyncInfo<'db> {
     pub current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
     // Set of processed prefixes (Path digests)
     pub processed_prefixes: BTreeSet<SubtreePrefix>,
+    // Version of state sync protocol,
+    pub version: u16,
 }
 
 // Struct containing information about current subtrees found in GroveDB
@@ -70,7 +70,7 @@ impl fmt::Debug for SubtreesMetadata {
             let metadata_path_str = util_path_to_string(metadata_path);
             writeln!(
                 f,
-                " prefix:{:?} -> path:{:?}\n",
+                " prefix:{:?} -> path:{:?}",
                 hex::encode(prefix),
                 metadata_path_str
             );
@@ -119,7 +119,6 @@ impl GroveDb {
             restorer: None,
             pending_chunks,
             num_processed_chunks: 0,
-            version: CURRENT_STATE_SYNC_VERSION,
         }
     }
 
@@ -129,6 +128,7 @@ impl GroveDb {
         MultiStateSyncInfo {
             current_prefixes,
             processed_prefixes,
+            version: CURRENT_STATE_SYNC_VERSION,
         }
     }
 
@@ -339,12 +339,17 @@ impl GroveDb {
             ));
         }
 
+        println!(
+            "    starting:{:?}...",
+            replication::util_path_to_string(&vec![])
+        );
+
         let mut root_prefix_state_sync_info = self.create_subtree_state_sync_info();
         let root_prefix = [0u8; 32];
         if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
             let restorer = Restorer::new(merk, app_hash, None);
             root_prefix_state_sync_info.restorer = Some(restorer);
-            root_prefix_state_sync_info.pending_chunks.insert("".to_string());
+            root_prefix_state_sync_info.pending_chunks.insert(vec![]);
             state_sync_info.current_prefixes.insert(root_prefix, root_prefix_state_sync_info);
 
             res.push(root_prefix.to_vec());
@@ -395,7 +400,7 @@ impl GroveDb {
                 if !res.is_empty() {
                     for local_chunk_id in res.iter() {
                         let mut next_global_chunk_id = chunk_prefix.to_vec();
-                        next_global_chunk_id.extend(local_chunk_id.as_bytes().to_vec());
+                        next_global_chunk_id.extend(local_chunk_id.to_vec());
                         next_chunk_ids.push(next_global_chunk_id);
                     }
 
@@ -426,7 +431,7 @@ impl GroveDb {
                             let subtrees_metadata = self.get_subtrees_metadata(Some(tx))?;
                             if let Some(value) = subtrees_metadata.data.get(&chunk_prefix) {
                                 println!(
-                                    "    path:{:?} done num_processed_chunks:{:?}",
+                                    "    path:{:?} done (num_processed_chunks:{:?})",
                                     replication::util_path_to_string(&value.0),
                                     new_subtree_state_sync.num_processed_chunks
                                 );
@@ -461,9 +466,9 @@ impl GroveDb {
     fn apply_inner_chunk<'db>(
         &'db self,
         mut state_sync_info: SubtreeStateSyncInfo<'db>,
-        chunk_id: &str,
+        chunk_id: &[u8],
         chunk_data: Vec<Op>,
-    ) -> Result<(Vec<String>, SubtreeStateSyncInfo), Error> {
+    ) -> Result<(Vec<Vec<u8>>, SubtreeStateSyncInfo), Error> {
         let mut res = vec![];
 
         match &mut state_sync_info.restorer {
@@ -523,7 +528,7 @@ impl GroveDb {
                     current_path.iter().map(|vec| vec.as_slice()).collect();
                 let path: &[&[u8]] = &subtree_path;
                 println!(
-                    "    starting:{:?}...",
+                    "    path:{:?} starting...",
                     replication::util_path_to_string(&prefix_metadata.0)
                 );
 
@@ -535,7 +540,7 @@ impl GroveDb {
                         Some(*s_actual_value_hash),
                     );
                     subtree_state_sync_info.restorer = Some(restorer);
-                    subtree_state_sync_info.pending_chunks.insert("".to_string());
+                    subtree_state_sync_info.pending_chunks.insert(vec![]);
 
                     state_sync_info.current_prefixes.insert(*prefix, subtree_state_sync_info);
 
