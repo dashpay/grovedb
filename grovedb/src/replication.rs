@@ -398,8 +398,7 @@ impl GroveDb {
         if state_sync_info.current_prefixes.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
         }
-        if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix)
-        {
+        if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
             if let Ok((res, mut new_subtree_state_sync)) =
                 self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk_data)
             {
@@ -426,9 +425,7 @@ impl GroveDb {
 
                     // Subtree is finished. We can save it.
                     match new_subtree_state_sync.restorer.take() {
-                        None => {
-                            Err(Error::InternalError("Unable to finalize subtree"))
-                        }
+                        None => Err(Error::InternalError("Unable to finalize subtree")),
                         Some(restorer) => {
                             if (new_subtree_state_sync.num_processed_chunks > 0)
                                 && (restorer.finalize().is_err())
