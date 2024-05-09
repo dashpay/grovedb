@@ -22,23 +22,23 @@ pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
 struct SubtreeStateSyncInfo<'db> {
     // Current Chunk restorer
-    pub restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
+    restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
     // Set of global chunk ids requested to be fetched and pending for processing. For the
     // description of global chunk id check fetch_chunk().
-    pub pending_chunks: BTreeSet<Vec<u8>>,
+    pending_chunks: BTreeSet<Vec<u8>>,
     // Number of processed chunks in current prefix (Path digest)
-    pub num_processed_chunks: usize,
+    num_processed_chunks: usize,
 }
 
 // Struct governing state sync
 pub struct MultiStateSyncInfo<'db> {
     // Map of current processing subtrees
     // SubtreePrefix (Path digest) -> SubtreeStateSyncInfo
-    pub current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
+    current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
     // Set of processed prefixes (Path digests)
-    pub processed_prefixes: BTreeSet<SubtreePrefix>,
+    processed_prefixes: BTreeSet<SubtreePrefix>,
     // Version of state sync protocol,
-    pub version: u16,
+    version: u16,
 }
 
 // Struct containing information about current subtrees found in GroveDB
@@ -113,7 +113,7 @@ pub fn util_split_global_chunk_id(
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    pub fn create_subtree_state_sync_info(&self) -> SubtreeStateSyncInfo {
+    fn create_subtree_state_sync_info(&self) -> SubtreeStateSyncInfo {
         let pending_chunks = BTreeSet::new();
         SubtreeStateSyncInfo {
             restorer: None,
@@ -343,7 +343,7 @@ impl GroveDb {
 
         println!(
             "    starting:{:?}...",
-            replication::util_path_to_string(&vec![])
+            replication::util_path_to_string(&[])
         );
 
         let mut root_prefix_state_sync_info = self.create_subtree_state_sync_info();
@@ -398,7 +398,7 @@ impl GroveDb {
         if state_sync_info.current_prefixes.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
         }
-        if let Some(mut subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix)
+        if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix)
         {
             if let Ok((res, mut new_subtree_state_sync)) =
                 self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk_data)
@@ -427,7 +427,7 @@ impl GroveDb {
                     // Subtree is finished. We can save it.
                     match new_subtree_state_sync.restorer.take() {
                         None => {
-                            return Err(Error::InternalError("Unable to finalize subtree"));
+                            Err(Error::InternalError("Unable to finalize subtree"))
                         }
                         Some(restorer) => {
                             if (new_subtree_state_sync.num_processed_chunks > 0)
@@ -454,16 +454,16 @@ impl GroveDb {
                                 next_chunk_ids.extend(res);
                                 Ok((next_chunk_ids, new_state_sync_info))
                             } else {
-                                return Err(Error::InternalError("Unable to discover Subtrees"));
+                                Err(Error::InternalError("Unable to discover Subtrees"))
                             }
                         }
                     }
                 }
             } else {
-                return Err(Error::InternalError("Unable to process incoming chunk"));
+                Err(Error::InternalError("Unable to process incoming chunk"))
             }
         } else {
-            return Err(Error::InternalError("Invalid incoming prefix"));
+            Err(Error::InternalError("Invalid incoming prefix"))
         }
     }
 
@@ -490,7 +490,7 @@ impl GroveDb {
                 }
                 state_sync_info.pending_chunks.remove(chunk_id);
                 if !chunk_data.is_empty() {
-                    match restorer.process_chunk(&chunk_id, chunk_data) {
+                    match restorer.process_chunk(chunk_id, chunk_data) {
                         Ok(next_chunk_ids) => {
                             state_sync_info.num_processed_chunks += 1;
                             for next_chunk_id in next_chunk_ids {
