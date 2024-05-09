@@ -1,16 +1,18 @@
 use std::collections::VecDeque;
 use std::path::Path;
-use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction, replication::StateSyncInfo};
+use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction};
 use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, };
 use grovedb::element::SumValue;
 use grovedb::replication::CURRENT_STATE_SYNC_VERSION;
-use grovedb_path::{SubtreePath};
+use grovedb::replication::MultiStateSyncInfo;
 
 const MAIN_ΚΕΥ: &[u8] = b"key_main";
 const MAIN_ΚΕΥ_EMPTY: &[u8] = b"key_main_empty";
 
 const KEY_INT_0: &[u8] = b"key_int_0";
+const KEY_INT_1: &[u8] = b"key_int_1";
+const KEY_INT_2: &[u8] = b"key_int_2";
 const KEY_INT_REF_0: &[u8] = b"key_int_ref_0";
 const KEY_INT_A: &[u8] = b"key_sum_0";
 const ROOT_PATH: &[&[u8]] = &[];
@@ -29,11 +31,27 @@ fn populate_db(grovedb_path: String) -> GroveDb {
     insert_empty_tree_db(&db, ROOT_PATH, MAIN_ΚΕΥ);
     insert_empty_tree_db(&db, ROOT_PATH, MAIN_ΚΕΥ_EMPTY);
     insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_0);
+    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_1);
+    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_2);
 
     let tx = db.start_transaction();
-    let batch_size = 100;
-    for i in 0..=10 {
+    let batch_size = 50;
+    for i in 0..=5 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_0], i * batch_size, i * batch_size + batch_size - 1, &tx);
+    }
+    let _ = db.commit_transaction(tx);
+
+    let tx = db.start_transaction();
+    let batch_size = 50;
+    for i in 0..=5 {
+        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_1], i * batch_size, i * batch_size + batch_size - 1, &tx);
+    }
+    let _ = db.commit_transaction(tx);
+
+    let tx = db.start_transaction();
+    let batch_size = 50;
+    for i in 0..=5 {
+        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_2], i * batch_size, i * batch_size + batch_size - 1, &tx);
     }
     let _ = db.commit_transaction(tx);
 
@@ -46,8 +64,8 @@ fn populate_db(grovedb_path: String) -> GroveDb {
     insert_empty_sum_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_A);
 
     let tx_3 = db.start_transaction();
-    insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 1, 100, &tx_3);
-    insert_sum_element_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 101, 150, &tx_3);
+    insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 1, 500, &tx_3);
+    insert_sum_element_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 501, 550, &tx_3);
     let _ = db.commit_transaction(tx_3);
     db
 }
@@ -83,7 +101,7 @@ fn main() {
     println!("{:?}", subtrees_metadata_source);
 
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
-    let state_info = db_destination.create_state_sync_info();
+    let state_info = db_destination.create_multi_state_sync_info();
     let tx = db_destination.start_transaction();
     sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &tx).unwrap();
     db_destination.commit_transaction(tx).unwrap().expect("expected to commit transaction");
@@ -204,7 +222,7 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
    let path_query = PathQuery::new_unsized(path_vec, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, false,true, None)
+        .query_item_value(&path_query, true, false, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
     for e in elements.into_iter() {
@@ -223,7 +241,7 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
 fn sync_db_demo(
     source_db: &GroveDb,
     target_db: &GroveDb,
-    state_sync_info: StateSyncInfo,
+    state_sync_info: MultiStateSyncInfo,
     target_tx: &Transaction,
 ) -> Result<(), grovedb::Error> {
     let app_hash = source_db.root_hash(None).value.unwrap();
