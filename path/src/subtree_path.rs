@@ -146,6 +146,17 @@ impl SubtreePath<'static, [u8; 0]> {
     }
 }
 
+impl<B> SubtreePath<'_, B> {
+    /// Returns the length of the subtree path.
+    pub fn len(&self) -> usize {
+        match &self.ref_variant {
+            SubtreePathInner::Slice(s) => s.len(),
+            SubtreePathInner::SubtreePath(path) => path.len(),
+            SubtreePathInner::SubtreePathIter(path_iter) => path_iter.len(),
+        }
+    }
+}
+
 impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     /// Get a derived path that will reuse this [Self] as it's base path and
     /// capable of owning data.
@@ -241,17 +252,17 @@ mod tests {
         let parent = builder.derive_parent().unwrap().0;
 
         let as_vec = parent.to_vec();
-        assert_eq!(
-            as_vec,
-            vec![
-                b"one".to_vec(),
-                b"two".to_vec(),
-                b"three".to_vec(),
-                b"four".to_vec(),
-                b"five".to_vec(),
-                b"six".to_vec(),
-                b"seven".to_vec(),
-            ],
-        );
+        let reference_vec = vec![
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec(),
+            b"four".to_vec(),
+            b"five".to_vec(),
+            b"six".to_vec(),
+            b"seven".to_vec(),
+        ];
+
+        assert_eq!(as_vec, reference_vec);
+        assert_eq!(parent.len(), reference_vec.len());
     }
 }

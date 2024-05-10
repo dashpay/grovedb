@@ -52,6 +52,10 @@ impl<'b, B> Clone for SubtreePathIter<'b, B> {
 }
 
 impl<'b, B> SubtreePathIter<'b, B> {
+    pub(crate) fn len(&self) -> usize {
+        self.current_iter.len() + self.next_subtree_path.map(|p| p.len()).unwrap_or_default()
+    }
+
     pub(crate) fn new<I>(iter: I) -> Self
     where
         I: Into<CurrentSubtreePathIter<'b, B>>,
@@ -131,6 +135,16 @@ pub(crate) enum CurrentSubtreePathIter<'b, B> {
     /// Current derivation point is a [SubtreePathBuilder] with multiple path
     /// segments, will reuse it's own iterator type to keep track
     OwnedBytes(CompactBytesIter<'b>),
+}
+
+impl<B> CurrentSubtreePathIter<'_, B> {
+    pub fn len(&self) -> usize {
+        match self {
+            CurrentSubtreePathIter::Single(_) => 1,
+            CurrentSubtreePathIter::Slice(s) => s.len(),
+            CurrentSubtreePathIter::OwnedBytes(cb) => cb.len(),
+        }
+    }
 }
 
 impl<'b, B> Clone for CurrentSubtreePathIter<'b, B> {
