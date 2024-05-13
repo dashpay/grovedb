@@ -464,10 +464,10 @@ impl<'a> Iterator for Decoder<'a> {
 mod test {
     use super::super::{Node, Op};
     use crate::{
+        proofs::Decoder,
         tree::HASH_LENGTH,
         TreeFeatureType::{BasicMerkNode, SummedMerkNode},
     };
-    use crate::proofs::Decoder;
 
     #[test]
     fn encode_push_hash() {

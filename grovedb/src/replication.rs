@@ -4,13 +4,12 @@ use std::{
 };
 
 use grovedb_merk::{
+    ed::Encode,
     merk::restore::Restorer,
-    proofs::Op,
+    proofs::{Decoder, Op},
     tree::{hash::CryptoHash, kv::ValueDefinedCostType, value_hash},
     ChunkProducer,
 };
-use grovedb_merk::ed::Encode;
-use grovedb_merk::proofs::Decoder;
 use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[rustfmt::skip]
@@ -113,9 +112,7 @@ pub fn util_split_global_chunk_id(
     Ok((chunk_prefix_key, chunk_id.to_vec()))
 }
 
-pub fn util_encode_vec_ops(
-    chunk: Vec<Op>,
-) -> Result<Vec<u8>, Error> {
+pub fn util_encode_vec_ops(chunk: Vec<Op>) -> Result<Vec<u8>, Error> {
     let mut res = vec![];
     for op in chunk {
         if op.encode_into(&mut res).is_err() {
@@ -126,9 +123,7 @@ pub fn util_encode_vec_ops(
     Ok(res)
 }
 
-pub fn util_decode_vec_ops(
-    chunk: Vec<u8>,
-) -> Result<Vec<Op>, Error> {
+pub fn util_decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
     let mut decoder = Decoder::new(&chunk);
     let mut res = vec![];
     for op in decoder {
@@ -294,13 +289,11 @@ impl GroveDb {
                             Ok(mut chunk_producer) => {
                                 let chunk_res = chunk_producer.chunk(chunk_id);
                                 match chunk_res {
-                                    Ok((chunk, _)) => {
-                                        match util_encode_vec_ops(chunk) {
-                                            Ok(op_bytes) => Ok(op_bytes),
-                                            Err(_) => Err(Error::CorruptedData(
-                                                "Unable to create to load chunk".to_string(),
-                                            )),
-                                        }
+                                    Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
+                                        Ok(op_bytes) => Ok(op_bytes),
+                                        Err(_) => Err(Error::CorruptedData(
+                                            "Unable to create to load chunk".to_string(),
+                                        )),
                                     },
                                     Err(_) => Err(Error::CorruptedData(
                                         "Unable to create to load chunk".to_string(),
@@ -326,13 +319,11 @@ impl GroveDb {
                             Ok(mut chunk_producer) => {
                                 let chunk_res = chunk_producer.chunk(chunk_id);
                                 match chunk_res {
-                                    Ok((chunk, _)) => {
-                                        match util_encode_vec_ops(chunk) {
-                                            Ok(op_bytes) => Ok(op_bytes),
-                                            Err(_) => Err(Error::CorruptedData(
-                                                "Unable to create to load chunk".to_string(),
-                                            )),
-                                        }
+                                    Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
+                                        Ok(op_bytes) => Ok(op_bytes),
+                                        Err(_) => Err(Error::CorruptedData(
+                                            "Unable to create to load chunk".to_string(),
+                                        )),
                                     },
                                     Err(_) => Err(Error::CorruptedData(
                                         "Unable to create to load chunk".to_string(),
@@ -538,17 +529,23 @@ impl GroveDb {
                                 Ok(next_chunk_ids) => {
                                     state_sync_info.num_processed_chunks += 1;
                                     for next_chunk_id in next_chunk_ids {
-                                        state_sync_info.pending_chunks.insert(next_chunk_id.clone());
+                                        state_sync_info
+                                            .pending_chunks
+                                            .insert(next_chunk_id.clone());
                                         res.push(next_chunk_id);
                                     }
                                 }
                                 _ => {
-                                    return Err(Error::InternalError("Unable to process incoming chunk"));
+                                    return Err(Error::InternalError(
+                                        "Unable to process incoming chunk",
+                                    ));
                                 }
                             };
-                        },
+                        }
                         Err(_) => {
-                            return Err(Error::CorruptedData("Unable to decode incoming chunk".to_string()));
+                            return Err(Error::CorruptedData(
+                                "Unable to decode incoming chunk".to_string(),
+                            ));
                         }
                     }
                 }
