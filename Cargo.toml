@@ -3,10 +3,10 @@ resolver = "2"
 members = [
     "costs",
     "grovedb",
-    "grovedbg-grpc",
     "merk",
     "node-grove",
     "storage",
     "visualize",
     "path",
+    "grovedbg-types",
 ]

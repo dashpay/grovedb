@@ -173,6 +173,8 @@ use std::sync::Arc;
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+#[cfg(feature = "grovedbg")]
+use debugger::start_visualizer;
 #[cfg(any(feature = "full", feature = "verify"))]
 use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -253,12 +255,12 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
-    // #[cfg(feature = "grovedbg")]
-    // /// Opens GroveDB with a debugger support
-    // pub fn open_with_debugger<P: AsRef<Path>>(path: P) -> Result<Arc<Self>,
-    // Error> {     let db = Arc::new(GroveDb::open(path)?);
-    //     Ok(db)
-    // }
+    #[cfg(feature = "grovedbg")]
+    // Start visualizer server for the GroveDB instance
+    pub fn start_visualzier(self: &Arc<Self>, port: u16) {
+        let weak = Arc::downgrade(self);
+        start_visualizer(weak, port);
+    }
 
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb
     pub fn wipe(&self) -> Result<(), Error> {
