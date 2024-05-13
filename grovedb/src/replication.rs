@@ -130,7 +130,10 @@ pub fn util_decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
         match op {
             Ok(op) => res.push(op),
             Err(e) => {
-                return Err(Error::CorruptedData(format!("unable to decode chunk: {}", e)));
+                return Err(Error::CorruptedData(format!(
+                    "unable to decode chunk: {}",
+                    e
+                )));
             }
         }
     }
