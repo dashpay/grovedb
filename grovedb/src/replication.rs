@@ -124,13 +124,13 @@ pub fn util_encode_vec_ops(chunk: Vec<Op>) -> Result<Vec<u8>, Error> {
 }
 
 pub fn util_decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
-    let mut decoder = Decoder::new(&chunk);
+    let decoder = Decoder::new(&chunk);
     let mut res = vec![];
     for op in decoder {
         match op {
             Ok(op) => res.push(op),
             Err(e) => {
-                return Err(Error::CorruptedData("unable to decode chunk".to_string()));
+                return Err(Error::CorruptedData(format!("unable to decode chunk: {}", e)));
             }
         }
     }
