@@ -467,6 +467,7 @@ mod test {
         tree::HASH_LENGTH,
         TreeFeatureType::{BasicMerkNode, SummedMerkNode},
     };
+    use crate::proofs::Decoder;
 
     #[test]
     fn encode_push_hash() {
@@ -992,6 +993,24 @@ mod test {
         let bytes = [0x11];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::Child);
+    }
+
+    #[test]
+    fn decode_multiple_child() {
+        let bytes = [0x11, 0x11, 0x11, 0x10];
+        let mut decoder = Decoder {
+            bytes: &bytes,
+            offset: 0,
+        };
+
+        let mut vecop = vec![];
+        for op in decoder {
+            match op {
+                Ok(op) => vecop.push(op),
+                Err(e) => eprintln!("Error decoding: {:?}", e),
+            }
+        }
+        assert_eq!(vecop, vec![Op::Child, Op::Child, Op::Child, Op::Parent]);
     }
 
     #[test]
