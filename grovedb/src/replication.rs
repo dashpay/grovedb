@@ -115,11 +115,9 @@ pub fn util_split_global_chunk_id(
 pub fn util_encode_vec_ops(chunk: Vec<Op>) -> Result<Vec<u8>, Error> {
     let mut res = vec![];
     for op in chunk {
-        if op.encode_into(&mut res).is_err() {
-            return Err(Error::CorruptedData("unable to encode chunk".to_string()));
-        }
+        op.encode_into(&mut res)
+            .map_err(|e| Error::CorruptedData(format!("unable to encode chunk: {}", e)))?;
     }
-
     Ok(res)
 }
 
