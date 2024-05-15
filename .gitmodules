@@ -1,0 +1,3 @@
+[submodule "grovedb/grovedbg"]
+	path = grovedb/grovedbg
+	url = https://github.com/fominok/grovedbg

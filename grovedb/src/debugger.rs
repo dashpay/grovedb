@@ -1,6 +1,6 @@
 //! GroveDB debugging support module.
 
-use std::{net::Ipv4Addr, sync::Weak};
+use std::{fs, net::Ipv4Addr, sync::Weak};
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use grovedb_merk::debugger::NodeDbg;
@@ -11,13 +11,22 @@ use tower_http::services::ServeDir;
 
 use crate::{reference_path::ReferencePathType, GroveDb};
 
+const GROVEDBG_ZIP: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip")).len()] =
+    *include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
+
 pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
     std::thread::spawn(move || {
+        let grovedbg_www =
+            tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
+        let grovedbg_zip = grovedbg_www.path().join("grovedbg.zip");
+
+        fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
+
         let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
         let app = Router::new()
             .route("/fetch_node", post(fetch_node))
             .route("/fetch_root_node", post(fetch_root_node))
-            .fallback_service(ServeDir::new("/home/yolo/dash/grovedbg/dist"))
+            .fallback_service(ServeDir::new(grovedbg_zip))
             .with_state((shutdown_send, grovedb));
 
         tokio::runtime::Runtime::new()

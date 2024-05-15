@@ -32,6 +32,7 @@ anyhow = { version = "1.0.83", optional = true }
 tower-http = { version = "0.5.2", features = ["fs"], optional = true }
 blake3 = "1.4.0"
 bitvec = "1"
+zip-extensions = { version ="0.6.2", optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
@@ -69,4 +70,17 @@ verify = [
     "integer-encoding",
 ]
 estimated_costs = ["full"]
-grovedbg = ["grovedbg-types", "tokio", "full", "grovedb-merk/grovedbg", "axum", "anyhow", "tower-http"]
+grovedbg = [
+    "grovedbg-types",
+    "tokio",
+    "full",
+    "grovedb-merk/grovedbg",
+    "axum",
+    "anyhow",
+    "tower-http",
+    "zip-extensions",
+    "tempfile"
+]
+
+[build-dependencies]
+zip-extensions = "0.6.2"
