@@ -16,12 +16,13 @@ const GROVEDBG_ZIP: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"
 
 pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
     std::thread::spawn(move || {
-        let grovedbg_www =
+        let grovedbg_tmp =
             tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
-        let grovedbg_zip = grovedbg_www.path().join("grovedbg.zip");
+        let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
+        let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
 
         fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
-        zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www.path().into())
+        zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
             .expect("cannot extract grovedbg contents");
 
         let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
