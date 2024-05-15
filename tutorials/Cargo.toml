@@ -7,9 +7,14 @@ default-run = "tutorials"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-grovedb = { git = "https://github.com/dashpay/grovedb.git" }
-path = { path = "../path" }
+#grovedb = { git = "https://github.com/dashpay/grovedb.git" }
+grovedb = { path = "../grovedb" }
+grovedb-merk = { path = "../merk" }
+grovedb-storage = { path = "../storage" }
+grovedb-visualize = { path = "../visualize" }
+grovedb-path = { path = "../path" }
 rand = "0.8.5"
+hex = "0.4"
 
 [workspace]
 

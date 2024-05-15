@@ -46,7 +46,7 @@ use crate::{
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF].as_ref(),
             &i_vec,
@@ -70,7 +70,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
 
         for j in 100u32..150 {
             let mut j_vec = i_vec.clone();
-            j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
+            j_vec.append(&mut j.to_be_bytes().to_vec());
             db.insert(
                 [TEST_LEAF, i_vec.as_slice(), b"\0"].as_ref(),
                 &j_vec.clone(),
@@ -87,7 +87,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
 fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 0u32..10 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF].as_ref(),
             &i_vec,
@@ -110,7 +110,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
         .expect("successful subtree insert");
 
         for j in 25u32..50 {
-            let j_vec = (j as u32).to_be_bytes().to_vec();
+            let j_vec = j.to_be_bytes().to_vec();
             db.insert(
                 [TEST_LEAF, i_vec.as_slice(), b"a"].as_ref(),
                 &j_vec,
@@ -134,7 +134,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
             .expect("successful subtree insert");
 
             for k in 100u32..110 {
-                let k_vec = (k as u32).to_be_bytes().to_vec();
+                let k_vec = k.to_be_bytes().to_vec();
                 db.insert(
                     [TEST_LEAF, i_vec.as_slice(), b"a", &j_vec, b"\0"].as_ref(),
                     &k_vec.clone(),
@@ -173,7 +173,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
     .expect("successful subtree insert");
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF, b"1"].as_ref(),
             &i_vec,
@@ -198,7 +198,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
         for j in 100u32..150 {
             let random_key = rand::thread_rng().gen::<[u8; 32]>();
             let mut j_vec = i_vec.clone();
-            j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
+            j_vec.append(&mut j.to_be_bytes().to_vec());
 
             // We should insert every item to the tree holding items
             db.insert(
@@ -231,7 +231,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
 fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF].as_ref(),
             &i_vec,
@@ -278,7 +278,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
     .expect("successful subtree insert");
 
     for i in 1985u32..2000 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF, b"1"].as_ref(),
             &i_vec,
@@ -333,7 +333,7 @@ fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut 
     .expect("successful subtree insert");
     // Insert a couple of subtrees first
     for i in 100u32..200 {
-        let i_vec = (i as u32).to_be_bytes().to_vec();
+        let i_vec = i.to_be_bytes().to_vec();
         db.insert(
             [TEST_LEAF, &[], b"\0"].as_ref(),
             &i_vec,
@@ -365,7 +365,7 @@ fn test_get_range_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -402,7 +402,7 @@ fn test_get_range_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -437,7 +437,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -481,7 +481,7 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -524,7 +524,7 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -562,7 +562,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -602,7 +602,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -642,7 +642,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -680,7 +680,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -717,7 +717,7 @@ fn test_get_range_from_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -755,7 +755,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -792,7 +792,7 @@ fn test_get_range_to_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -830,7 +830,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -870,7 +870,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bou
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -907,7 +907,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -945,7 +945,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -985,7 +985,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1027,7 +1027,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1069,7 +1069,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1117,7 +1117,7 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1156,7 +1156,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), None, None));
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1187,7 +1187,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), None, None));
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1218,7 +1218,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(55), None));
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1249,7 +1249,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1287,7 +1287,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1322,7 +1322,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1343,7 +1343,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1366,7 +1366,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path, SizedQuery::new(query.clone(), Some(5), Some(2)));
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1609,7 +1609,7 @@ fn test_mixed_level_proofs() {
 
     let path_query = PathQuery::new_unsized(path.clone(), query.clone());
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("successful get_path_query");
 
@@ -1625,7 +1625,7 @@ fn test_mixed_level_proofs() {
     // Test mixed element proofs with limit and offset
     let path_query = PathQuery::new_unsized(path.clone(), query.clone());
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("successful get_path_query");
 
@@ -1642,7 +1642,7 @@ fn test_mixed_level_proofs() {
 
     let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(1), None));
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("successful get_path_query");
 
@@ -1660,7 +1660,7 @@ fn test_mixed_level_proofs() {
         SizedQuery::new(query.clone(), Some(3), Some(0)),
     );
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("successful get_path_query");
 
@@ -1678,7 +1678,7 @@ fn test_mixed_level_proofs() {
         SizedQuery::new(query.clone(), Some(4), Some(0)),
     );
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("successful get_path_query");
 
@@ -1693,7 +1693,7 @@ fn test_mixed_level_proofs() {
 
     let path_query = PathQuery::new(path, SizedQuery::new(query.clone(), Some(10), Some(4)));
     let (elements, _) = db
-        .query_item_value(&path_query, true, true, None)
+        .query_item_value(&path_query, true, true, true, None)
         .unwrap()
         .expect("successful get_path_query");
 
@@ -1790,6 +1790,7 @@ fn test_mixed_level_proofs_with_tree() {
             &path_query,
             true,
             true,
+            true,
             QueryResultType::QueryPathKeyElementTrioResultType,
             None,
         )
@@ -1811,6 +1812,7 @@ fn test_mixed_level_proofs_with_tree() {
     let (elements, _) = db
         .query_raw(
             &path_query,
+            true,
             true,
             true,
             QueryResultType::QueryPathKeyElementTrioResultType,

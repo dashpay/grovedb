@@ -159,7 +159,7 @@ pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
 #[cfg(feature = "full")]
-mod replication;
+pub mod replication;
 #[cfg(all(test, feature = "full"))]
 mod tests;
 #[cfg(feature = "full")]
@@ -175,8 +175,6 @@ use std::{collections::HashMap, option::Option::None, path::Path};
 
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
-#[cfg(any(feature = "full", feature = "verify"))]
-use element::helpers;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use element::Element;
 #[cfg(feature = "full")]
@@ -220,13 +218,11 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-#[cfg(feature = "full")]
-pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 
+#[cfg(feature = "full")]
+use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
-#[cfg(feature = "full")]
-use crate::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 use crate::Error::MerkError;
@@ -239,6 +235,8 @@ pub struct GroveDb {
     #[cfg(feature = "full")]
     db: RocksDbStorage,
 }
+
+pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 /// Transaction
 #[cfg(feature = "full")]

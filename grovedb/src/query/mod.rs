@@ -158,13 +158,14 @@ impl PathQuery {
         path_queries.into_iter().try_for_each(|path_query| {
             if path_query.query.offset.is_some() {
                 return Err(Error::NotSupported(
-                    "can not merge pathqueries with offsets",
+                    "can not merge pathqueries with offsets".to_string(),
                 ));
             }
             if path_query.query.limit.is_some() {
                 return Err(Error::NotSupported(
                     "can not merge pathqueries with limits, consider setting the limit after the \
-                     merge",
+                     merge"
+                        .to_string(),
                 ));
             }
             path_query
@@ -535,6 +536,7 @@ mod tests {
                 &merged_path_query,
                 true,
                 true,
+                true,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None,
             )
@@ -826,6 +828,7 @@ mod tests {
         let (result_set_merged, _) = temp_db
             .query_raw(
                 &merged_path_query,
+                true,
                 true,
                 true,
                 QueryResultType::QueryPathKeyElementTrioResultType,

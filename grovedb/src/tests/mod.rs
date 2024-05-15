@@ -465,7 +465,7 @@ fn test_element_with_flags() {
     let db = make_test_grovedb();
 
     db.insert(
-        [TEST_LEAF.as_ref()].as_ref(),
+        [TEST_LEAF].as_ref(),
         b"key1",
         Element::empty_tree(),
         None,
@@ -541,7 +541,14 @@ fn test_element_with_flags() {
         SizedQuery::new(query, None, None),
     );
     let (flagged_ref_no_follow, _) = db
-        .query_raw(&path_query, true, true, QueryKeyElementPairResultType, None)
+        .query_raw(
+            &path_query,
+            true,
+            true,
+            true,
+            QueryKeyElementPairResultType,
+            None,
+        )
         .unwrap()
         .expect("should get successfully");
 
@@ -2623,6 +2630,7 @@ fn test_get_full_query() {
             &[&path_query1, &path_query2],
             true,
             true,
+            true,
             QueryKeyElementPairResultType,
             None
         )
@@ -2804,7 +2812,7 @@ fn test_root_hash() {
 #[test]
 fn test_get_non_existing_root_leaf() {
     let db = make_test_grovedb();
-    assert!(matches!(db.get(EMPTY_PATH, b"ayy", None).unwrap(), Err(_)));
+    assert!(db.get(EMPTY_PATH, b"ayy", None).unwrap().is_err());
 }
 
 #[test]
@@ -2831,7 +2839,7 @@ fn test_check_subtree_exists_function() {
 
     // Empty tree path means root always exist
     assert!(db
-        .check_subtree_exists_invalid_path(EMPTY_PATH.into(), None)
+        .check_subtree_exists_invalid_path(EMPTY_PATH, None)
         .unwrap()
         .is_ok());
 
@@ -2944,17 +2952,14 @@ fn test_storage_wipe() {
     .expect("cannot insert item");
 
     // retrieve key before wipe
-    let elem = db
-        .get(&[TEST_LEAF.as_ref()], b"key", None)
-        .unwrap()
-        .unwrap();
+    let elem = db.get(&[TEST_LEAF], b"key", None).unwrap().unwrap();
     assert_eq!(elem, Element::new_item(b"ayy".to_vec()));
 
     // wipe the database
     db.grove_db.wipe().unwrap();
 
     // retrieve key after wipe
-    let elem_result = db.get(&[TEST_LEAF.as_ref()], b"key", None).unwrap();
+    let elem_result = db.get(&[TEST_LEAF], b"key", None).unwrap();
     assert!(elem_result.is_err());
     assert!(matches!(
         elem_result,

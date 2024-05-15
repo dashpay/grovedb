@@ -32,7 +32,7 @@
 
 /// The top-level store API.
 #[cfg(feature = "full")]
-mod merk;
+pub mod merk;
 
 #[cfg(feature = "grovedbg")]
 pub mod debugger;

@@ -12,7 +12,7 @@ documentation = "https://docs.rs/grovedb"
 
 [dependencies]
 grovedb-merk = { version = "1.0.0-rc.2", path = "../merk", optional = true, default-features = false }
-thiserror = { version = "1.0.58", optional = true }
+thiserror = { version = "1.0.59", optional = true }
 tempfile = { version = "3.10.1", optional = true }
 bincode = { version = "2.0.0-rc.3" }
 grovedb-storage = { version = "1.0.0-rc.2", path = "../storage", optional = true }
@@ -29,7 +29,9 @@ grovedbg-types = { path = "../grovedbg-types", optional = true }
 tokio = { version = "1.37.0", features = ["rt-multi-thread", "net"], optional = true }
 axum = { version = "0.7.5", features = ["macros"], optional = true }
 anyhow = { version = "1.0.83", optional = true }
-tower-http = { version = "0.5.2", features = ["fs"] }
+tower-http = { version = "0.5.2", features = ["fs"], optional = true }
+blake3 = "1.4.0"
+bitvec = "1"
 
 [dev-dependencies]
 rand = "0.8.5"
@@ -67,4 +69,4 @@ verify = [
     "integer-encoding",
 ]
 estimated_costs = ["full"]
-grovedbg = ["grovedbg-types", "tokio", "grovedb-merk", "axum", "anyhow"]
+grovedbg = ["grovedbg-types", "tokio", "grovedb-merk", "axum", "anyhow", "tower-http"]

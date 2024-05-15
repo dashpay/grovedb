@@ -29,7 +29,7 @@
 //! Implementation of prefixed storage context.
 
 mod batch;
-mod context_immediate;
+pub mod context_immediate;
 mod context_no_tx;
 mod context_tx;
 mod raw_iterator;
