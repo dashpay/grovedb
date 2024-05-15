@@ -34,7 +34,7 @@ struct SubtreeStateSyncInfo<'db> {
 
 impl<'a> SubtreeStateSyncInfo<'a> {
     // Function to create an instance of SubtreeStateSyncInfo with default values
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 }
