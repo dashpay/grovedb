@@ -34,7 +34,7 @@
 #[cfg(feature = "full")]
 mod merk;
 
-// #[cfg(feature = "grovedbg")]
+#[cfg(feature = "grovedbg")]
 pub mod debugger;
 
 #[cfg(feature = "full")]

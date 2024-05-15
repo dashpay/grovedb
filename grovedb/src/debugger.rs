@@ -2,11 +2,12 @@
 
 use std::{net::Ipv4Addr, sync::Weak};
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use grovedb_merk::debugger::NodeDbg;
 use grovedb_path::SubtreePath;
 use grovedbg_types::{NodeFetchRequest, NodeUpdate, Path};
 use tokio::sync::mpsc::{self, Sender};
+use tower_http::services::ServeDir;
 
 use crate::{reference_path::ReferencePathType, GroveDb};
 
@@ -14,7 +15,9 @@ pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
     std::thread::spawn(move || {
         let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
         let app = Router::new()
-            .route("/fetch_node", get(fetch_node))
+            .route("/fetch_node", post(fetch_node))
+            .route("/fetch_root_node", post(fetch_root_node))
+            .fallback_service(ServeDir::new("/home/yolo/dash/grovedbg/dist"))
             .with_state((shutdown_send, grovedb));
 
         tokio::runtime::Runtime::new()
@@ -23,9 +26,12 @@ pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
                 let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
                     .await
                     .expect("can't bind visualizer port");
-                axum::serve(listener, app).with_graceful_shutdown(async move {
-                    shutdown_receive.recv().await;
-                })
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move {
+                        shutdown_receive.recv().await;
+                    })
+                    .await
+                    .unwrap()
             });
     });
 }
@@ -153,252 +159,3 @@ fn node_to_update(
         right_child,
     })
 }
-
-// use std::sync::Weak;
-
-// use grovedb_merk::debugger::NodeDbg;
-// pub use grovedbg_grpc::grove_dbg_server::GroveDbgServer;
-// use grovedbg_grpc::{
-//     grove_dbg_server::GroveDbg, tonic, DbMessage, FetchRequest, NodeUpdate, StartStream,
-// };
-// use tokio_stream::wrappers::UnboundedReceiverStream;
-
-// use crate::{reference_path::ReferencePathType, GroveDb};
-
-// pub struct GroveDbgService {
-//     grovedb: Weak<GroveDb>,
-// }
-
-// impl GroveDbgService {
-//     pub fn new(grovedb: Weak<GroveDb>) -> Self {
-//         GroveDbgService { grovedb }
-//     }
-// }
-
-// #[tonic::async_trait]
-// impl GroveDbg for GroveDbgService {
-//     type DbEventsStream = UnboundedReceiverStream<Result<DbMessage, tonic::Status>>;
-
-//     async fn db_events(
-//         &self,
-//         request: tonic::Request<StartStream>,
-//     ) -> Result<tonic::Response<Self::DbEventsStream>, tonic::Status> {
-//         todo!()
-//     }
-
-//     async fn fetch_node(
-//         &self,
-//         request: tonic::Request<FetchRequest>,
-//     ) -> Result<tonic::Response<NodeUpdate>, tonic::Status> {
-//         let FetchRequest { path, key } = request.into_inner();
-
-//         let db = self.grovedb.upgrade().expect("GroveDB is closed");
-
-//         let merk = db
-//             .open_non_transactional_merk_at_path(path.as_slice().into(), None)
-//             .unwrap()
-//             .map_err(|e| tonic::Status::internal(e.to_string()))?;
-
-//         let node = if path.is_empty() && key.is_empty() {
-//             // The GroveDB root is a corner case and handled separately
-//             merk.get_root_node_dbg()
-//                 .map_err(|e| tonic::Status::internal(e.to_string()))?
-//         } else {
-//             merk.get_node_dbg(&key)
-//                 .map_err(|e| tonic::Status::internal(e.to_string()))?
-//         };
-
-//         if let Some(NodeDbg {
-//             key,
-//         if let Some(NodeDbg {
-//             key,
-//             value,
-//             left_child,
-//             right_child,
-//         }) = node
-//         {
-//             let grovedb_element = crate::Element::deserialize(&value)
-//                 .map_err(|e| tonic::Status::internal(e.to_string()))?;
-
-//             let element = match grovedb_element {
-//                 crate::Element::Item(bytes, ..) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::Item(grovedbg_grpc::Item {
-//                         value: bytes,
-//                     })),
-//                 },
-//                 crate::Element::Tree(root_key, ..) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::Subtree(
-//                         grovedbg_grpc::Subtree { root_key },
-//                     )),
-//                 },
-//                 crate::Element::Reference(ReferencePathType::AbsolutePathReference(path), ..) => {
-//                     grovedbg_grpc::Element {
-//                         element: Some(grovedbg_grpc::element::Element::AbsolutePathReference(
-//                             grovedbg_grpc::AbsolutePathReference { path },
-//                         )),
-//                     }
-//                 }
-//                 crate::Element::Reference(
-//                     ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
-//                     ..,
-//                 ) => grovedbg_grpc::Element {
-//                     element: Some(
-//                         grovedbg_grpc::element::Element::UpstreamRootHeightReference(
-//                             grovedbg_grpc::UpstreamRootHeightReference {
-//                                 n_keep: n_keep.into(),
-//                                 path_append,
-//                             },
-//                         ),
-//                     ),
-//                 },
-//                 crate::Element::Reference(
-//                     ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
-//                     ..,
-//                 ) => grovedbg_grpc::Element {
-//                     element: Some(
-//                         grovedbg_grpc::element::Element::UpstreamFromElementHeightReference(
-//                             grovedbg_grpc::UpstreamFromElementHeightReference {
-//                                 n_remove: n_remove.into(),
-//                                 path_append,
-//                             },
-//                         ),
-//                     ),
-//                 },
-//                 crate::Element::Reference(ReferencePathType::CousinReference(swap_parent), ..) => {
-//                     grovedbg_grpc::Element {
-//                         element: Some(grovedbg_grpc::element::Element::CousinReference(
-//                             grovedbg_grpc::CousinReference { swap_parent },
-//                         )),
-//                     }
-//                 }
-//                 crate::Element::Reference(
-//                     ReferencePathType::RemovedCousinReference(swap_parent),
-//                     ..,
-//                 ) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::RemovedCousinReference(
-//                         grovedbg_grpc::RemovedCousinReference { swap_parent },
-//                     )),
-//                 },
-//                 crate::Element::Reference(ReferencePathType::SiblingReference(sibling_key), ..) => {
-//                     grovedbg_grpc::Element {
-//                         element: Some(grovedbg_grpc::element::Element::SiblingReference(
-//                             grovedbg_grpc::SiblingReference { sibling_key },
-//                         )),
-//                     }
-//                 }
-//                 crate::Element::SumItem(sum, _) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::SumItem(
-//                         grovedbg_grpc::SumItem { value: sum },
-//                     )),
-//                 },
-//                 crate::Element::SumTree(root_key, sum, _) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::Sumtree(
-//                         grovedbg_grpc::Sumtree { root_key, sum },
-//                     )),
-//                 },
-//             };
-
-//             value,
-//             left_child,
-//             right_child,
-//         }) = node
-//         {
-//             let grovedb_element = crate::Element::deserialize(&value)
-//                 .map_err(|e| tonic::Status::internal(e.to_string()))?;
-
-//             let element = match grovedb_element {
-//                 crate::Element::Item(bytes, ..) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::Item(grovedbg_grpc::Item {
-//                         value: bytes,
-//                     })),
-//                 },
-//                 crate::Element::Tree(root_key, ..) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::Subtree(
-//                         grovedbg_grpc::Subtree { root_key },
-//                     )),
-//                 },
-//                 crate::Element::Reference(ReferencePathType::AbsolutePathReference(path), ..) => {
-//                     grovedbg_grpc::Element {
-//                         element: Some(grovedbg_grpc::element::Element::AbsolutePathReference(
-//                             grovedbg_grpc::AbsolutePathReference { path },
-//                         )),
-//                     }
-//                 }
-//                 crate::Element::Reference(
-//                     ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
-//                     ..,
-//                 ) => grovedbg_grpc::Element {
-//                     element: Some(
-//                         grovedbg_grpc::element::Element::UpstreamRootHeightReference(
-//                             grovedbg_grpc::UpstreamRootHeightReference {
-//                                 n_keep: n_keep.into(),
-//                                 path_append,
-//                             },
-//                         ),
-//                     ),
-//                 },
-//                 crate::Element::Reference(
-//                     ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
-//                     ..,
-//                 ) => grovedbg_grpc::Element {
-//                     element: Some(
-//                         grovedbg_grpc::element::Element::UpstreamFromElementHeightReference(
-//                             grovedbg_grpc::UpstreamFromElementHeightReference {
-//                                 n_remove: n_remove.into(),
-//                                 path_append,
-//                             },
-//                         ),
-//                     ),
-//                 },
-//                 crate::Element::Reference(ReferencePathType::CousinReference(swap_parent), ..) => {
-//                     grovedbg_grpc::Element {
-//                         element: Some(grovedbg_grpc::element::Element::CousinReference(
-//                             grovedbg_grpc::CousinReference { swap_parent },
-//                         )),
-//                     }
-//                 }
-//                 crate::Element::Reference(
-//                     ReferencePathType::RemovedCousinReference(swap_parent),
-//                     ..,
-//                 ) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::RemovedCousinReference(
-//                         grovedbg_grpc::RemovedCousinReference { swap_parent },
-//                     )),
-//                 },
-//                 crate::Element::Reference(ReferencePathType::SiblingReference(sibling_key), ..) => {
-//                     grovedbg_grpc::Element {
-//                         element: Some(grovedbg_grpc::element::Element::SiblingReference(
-//                             grovedbg_grpc::SiblingReference { sibling_key },
-//                         )),
-//                     }
-//                 }
-//                 crate::Element::SumItem(sum, _) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::SumItem(
-//                         grovedbg_grpc::SumItem { value: sum },
-//                     )),
-//                 },
-//                 crate::Element::SumTree(root_key, sum, _) => grovedbg_grpc::Element {
-//                     element: Some(grovedbg_grpc::element::Element::Sumtree(
-//                         grovedbg_grpc::Sumtree { root_key, sum },
-//                     )),
-//                 },
-//             };
-
-//             Ok(tonic::Response::new(NodeUpdate {
-//                 path,
-//                 key,
-//                 element: Some(element),
-//                 left_child,
-//                 right_child,
-//             }))
-//         } else {
-//             Ok(tonic::Response::new(NodeUpdate {
-//                 path,
-//                 key,
-//                 element: None,
-//                 left_child: None,
-//                 right_child: None,
-//             }))
-//         }
-//     }
-// }
