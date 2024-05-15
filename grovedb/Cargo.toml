@@ -69,4 +69,4 @@ verify = [
     "integer-encoding",
 ]
 estimated_costs = ["full"]
-grovedbg = ["grovedbg-types", "tokio", "grovedb-merk", "axum", "anyhow", "tower-http"]
+grovedbg = ["grovedbg-types", "tokio", "full", "grovedb-merk/grovedbg", "axum", "anyhow", "tower-http"]

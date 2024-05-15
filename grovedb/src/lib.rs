@@ -164,6 +164,7 @@ pub mod replication;
 mod tests;
 #[cfg(feature = "full")]
 mod util;
+#[cfg(any(feature = "full", feature = "verify"))]
 mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
@@ -225,6 +226,7 @@ use crate::element::helpers::raw_decode;
 pub use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error::MerkError;
 
 #[cfg(feature = "full")]
