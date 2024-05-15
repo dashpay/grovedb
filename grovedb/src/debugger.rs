@@ -21,12 +21,14 @@ pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
         let grovedbg_zip = grovedbg_www.path().join("grovedbg.zip");
 
         fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
+        zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www.path().into())
+            .expect("cannot extract grovedbg contents");
 
         let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
         let app = Router::new()
             .route("/fetch_node", post(fetch_node))
             .route("/fetch_root_node", post(fetch_root_node))
-            .fallback_service(ServeDir::new(grovedbg_zip))
+            .fallback_service(ServeDir::new(grovedbg_www))
             .with_state((shutdown_send, grovedb));
 
         tokio::runtime::Runtime::new()
