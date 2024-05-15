@@ -43,6 +43,12 @@ impl SubtreeStateSyncInfo<'_> {
     }
 }
 
+impl Default for SubtreeStateSyncInfo<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Struct governing state sync
 pub struct MultiStateSyncInfo<'db> {
     // Map of current processing subtrees
