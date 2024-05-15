@@ -101,7 +101,7 @@ fn main() {
     println!("{:?}", subtrees_metadata_source);
 
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
-    let state_info = db_destination.create_multi_state_sync_info();
+    let state_info = MultiStateSyncInfo::new();
     let tx = db_destination.start_transaction();
     sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &tx).unwrap();
     db_destination.commit_transaction(tx).unwrap().expect("expected to commit transaction");
