@@ -67,6 +67,12 @@ impl MultiStateSyncInfo<'_> {
     }
 }
 
+impl Default for MultiStateSyncInfo<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Struct containing information about current subtrees found in GroveDB
 pub struct SubtreesMetadata {
     // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent
