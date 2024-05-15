@@ -21,6 +21,7 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
+#[derive(Default)]
 struct SubtreeStateSyncInfo<'db> {
     // Current Chunk restorer
     restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
@@ -31,21 +32,10 @@ struct SubtreeStateSyncInfo<'db> {
     num_processed_chunks: usize,
 }
 
-impl SubtreeStateSyncInfo<'_> {
+impl<'a> SubtreeStateSyncInfo<'a> {
     // Function to create an instance of SubtreeStateSyncInfo with default values
     fn new() -> Self {
-        let pending_chunks = BTreeSet::new();
-        Self {
-            restorer: None,
-            pending_chunks,
-            num_processed_chunks: 0,
-        }
-    }
-}
-
-impl Default for SubtreeStateSyncInfo<'_> {
-    fn default() -> Self {
-        Self::new()
+        Self::default()
     }
 }
 
@@ -60,22 +50,13 @@ pub struct MultiStateSyncInfo<'db> {
     version: u16,
 }
 
-impl MultiStateSyncInfo<'_> {
-    // Function to create an instance of MultiStateSyncInfo with default values
-    pub fn new() -> Self {
-        let processed_prefixes = BTreeSet::new();
-        let current_prefixes = BTreeMap::default();
+impl<'db> Default for MultiStateSyncInfo<'db> {
+    fn default() -> Self {
         Self {
-            current_prefixes,
-            processed_prefixes,
+            current_prefixes: BTreeMap::new(),
+            processed_prefixes: BTreeSet::new(),
             version: CURRENT_STATE_SYNC_VERSION,
         }
-    }
-}
-
-impl Default for MultiStateSyncInfo<'_> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -401,7 +382,7 @@ impl GroveDb {
             replication::util_path_to_string(&[])
         );
 
-        let mut root_prefix_state_sync_info = SubtreeStateSyncInfo::new();
+        let mut root_prefix_state_sync_info = SubtreeStateSyncInfo::default();
         let root_prefix = [0u8; 32];
         if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
             let restorer = Restorer::new(merk, app_hash, None);
@@ -606,7 +587,7 @@ impl GroveDb {
                     replication::util_path_to_string(&prefix_metadata.0)
                 );
 
-                let mut subtree_state_sync_info = SubtreeStateSyncInfo::new();
+                let mut subtree_state_sync_info = SubtreeStateSyncInfo::default();
                 if let Ok(merk) = self.open_merk_for_replication(path.into(), tx) {
                     let restorer =
                         Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
