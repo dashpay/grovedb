@@ -395,12 +395,12 @@ mod tests {
 
     #[test]
     fn test_proof_token_type_encoding() {
-        assert_eq!(0x01_u8, ProofTokenType::Merk.into());
-        assert_eq!(0x02_u8, ProofTokenType::SizedMerk.into());
-        assert_eq!(0x04_u8, ProofTokenType::EmptyTree.into());
-        assert_eq!(0x05_u8, ProofTokenType::AbsentPath.into());
-        assert_eq!(0x06_u8, ProofTokenType::PathInfo.into());
-        assert_eq!(0x10_u8, ProofTokenType::Invalid.into());
+        assert_eq!(0x01_u8, Into::<u8>::into(ProofTokenType::Merk));
+        assert_eq!(0x02_u8, Into::<u8>::into(ProofTokenType::SizedMerk));
+        assert_eq!(0x04_u8, Into::<u8>::into(ProofTokenType::EmptyTree));
+        assert_eq!(0x05_u8, Into::<u8>::into(ProofTokenType::AbsentPath));
+        assert_eq!(0x06_u8, Into::<u8>::into(ProofTokenType::PathInfo));
+        assert_eq!(0x10_u8, Into::<u8>::into(ProofTokenType::Invalid));
     }
 
     #[test]
