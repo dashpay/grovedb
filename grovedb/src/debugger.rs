@@ -78,7 +78,7 @@ async fn fetch_node(
     Json(NodeFetchRequest { path, key }): Json<NodeFetchRequest>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
     let Some(db) = grovedb.upgrade() else {
-        shutdown.send(()).await;
+        shutdown.send(()).await.ok();
         return Err(AppError::Closed);
     };
 
@@ -99,7 +99,7 @@ async fn fetch_root_node(
     State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
     let Some(db) = grovedb.upgrade() else {
-        shutdown.send(()).await;
+        shutdown.send(()).await.ok();
         return Err(AppError::Closed);
     };
 
