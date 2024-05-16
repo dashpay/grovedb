@@ -21,6 +21,7 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
+#[derive(Default)]
 struct SubtreeStateSyncInfo<'db> {
     // Current Chunk restorer
     restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
@@ -29,6 +30,13 @@ struct SubtreeStateSyncInfo<'db> {
     pending_chunks: BTreeSet<Vec<u8>>,
     // Number of processed chunks in current prefix (Path digest)
     num_processed_chunks: usize,
+}
+
+impl<'a> SubtreeStateSyncInfo<'a> {
+    // Function to create an instance of SubtreeStateSyncInfo with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 // Struct governing state sync
@@ -40,6 +48,16 @@ pub struct MultiStateSyncInfo<'db> {
     processed_prefixes: BTreeSet<SubtreePrefix>,
     // Version of state sync protocol,
     version: u16,
+}
+
+impl<'db> Default for MultiStateSyncInfo<'db> {
+    fn default() -> Self {
+        Self {
+            current_prefixes: BTreeMap::new(),
+            processed_prefixes: BTreeSet::new(),
+            version: CURRENT_STATE_SYNC_VERSION,
+        }
+    }
 }
 
 // Struct containing information about current subtrees found in GroveDB
@@ -140,25 +158,6 @@ pub fn util_decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    fn create_subtree_state_sync_info(&self) -> SubtreeStateSyncInfo {
-        let pending_chunks = BTreeSet::new();
-        SubtreeStateSyncInfo {
-            restorer: None,
-            pending_chunks,
-            num_processed_chunks: 0,
-        }
-    }
-
-    pub fn create_multi_state_sync_info(&self) -> MultiStateSyncInfo {
-        let processed_prefixes = BTreeSet::new();
-        let current_prefixes = BTreeMap::default();
-        MultiStateSyncInfo {
-            current_prefixes,
-            processed_prefixes,
-            version: CURRENT_STATE_SYNC_VERSION,
-        }
-    }
-
     // Returns the discovered subtrees found recursively along with their associated
     // metadata Params:
     // tx: Transaction. Function returns the data by opening merks at given tx.
@@ -383,7 +382,7 @@ impl GroveDb {
             replication::util_path_to_string(&[])
         );
 
-        let mut root_prefix_state_sync_info = self.create_subtree_state_sync_info();
+        let mut root_prefix_state_sync_info = SubtreeStateSyncInfo::default();
         let root_prefix = [0u8; 32];
         if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
             let restorer = Restorer::new(merk, app_hash, None);
@@ -588,7 +587,7 @@ impl GroveDb {
                     replication::util_path_to_string(&prefix_metadata.0)
                 );
 
-                let mut subtree_state_sync_info = self.create_subtree_state_sync_info();
+                let mut subtree_state_sync_info = SubtreeStateSyncInfo::default();
                 if let Ok(merk) = self.open_merk_for_replication(path.into(), tx) {
                     let restorer =
                         Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
