@@ -150,6 +150,11 @@ impl<B> SubtreePathBuilder<'_, B> {
     pub fn len(&self) -> usize {
         self.base.len() + self.relative.len()
     }
+
+    /// Returns whether the path is empty (the root tree).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
