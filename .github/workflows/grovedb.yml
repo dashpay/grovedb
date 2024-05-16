@@ -50,6 +50,8 @@ jobs:
 
       - name: Check out repo
         uses: actions/checkout@v2
+        with:
+          submodules: recursive
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -57,11 +59,15 @@ jobs:
           toolchain: stable
           default: true
           components: clippy
+          target: wasm32-unknown-unknown
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+
+      - name: Setup Trunk
+        uses: jetli/trunk-action@v0.5.0
 
       - uses: actions-rs/clippy-check@v1
         with:
