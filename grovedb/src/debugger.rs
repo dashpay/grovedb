@@ -50,7 +50,7 @@ pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
 
 enum AppError {
     Closed,
-    Any(anyhow::Error),
+    Any(String),
 }
 
 impl IntoResponse for AppError {
@@ -59,17 +59,14 @@ impl IntoResponse for AppError {
             AppError::Closed => {
                 (StatusCode::SERVICE_UNAVAILABLE, "GroveDB is closed").into_response()
             }
-            AppError::Any(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            AppError::Any(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         }
     }
 }
 
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
+impl<E: std::error::Error> From<E> for AppError {
     fn from(err: E) -> Self {
-        Self::Any(err.into())
+        Self::Any(err.to_string())
     }
 }
 
@@ -125,7 +122,7 @@ fn node_to_update(
         left_child,
         right_child,
     }: NodeDbg,
-) -> Result<NodeUpdate, anyhow::Error> {
+) -> Result<NodeUpdate, crate::Error> {
     let grovedb_element = crate::Element::deserialize(&value)?;
 
     let element = match grovedb_element {

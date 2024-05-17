@@ -28,7 +28,6 @@ grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
 grovedbg-types = { path = "../grovedbg-types", optional = true }
 tokio = { version = "1.37.0", features = ["rt-multi-thread", "net"], optional = true }
 axum = { version = "0.7.5", features = ["macros"], optional = true }
-anyhow = { version = "1.0.83", optional = true }
 tower-http = { version = "0.5.2", features = ["fs"], optional = true }
 blake3 = "1.4.0"
 bitvec = "1"
@@ -76,7 +75,6 @@ grovedbg = [
     "full",
     "grovedb-merk/grovedbg",
     "axum",
-    "anyhow",
     "tower-http",
     "zip-extensions",
     "tempfile"
