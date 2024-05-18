@@ -49,8 +49,10 @@ use crate::element::SumValue;
 #[cfg(feature = "full")]
 #[derive(Debug, Eq, PartialEq, Clone)]
 /// A return type for query_item_value_or_sum
-pub enum QueryReturnType {
+pub enum QueryItemOrSumReturnType {
+    /// an Item in serialized form
     ItemData(Vec<u8>),
+    /// A sum item or a sum tree value
     SumValue(SumValue),
 }
 
@@ -328,7 +330,7 @@ where {
         decrease_limit_on_range_with_no_sub_elements: bool,
         error_if_intermediate_path_tree_not_present: bool,
         transaction: TransactionArg,
-    ) -> CostResult<(Vec<QueryReturnType>, u16), Error> {
+    ) -> CostResult<(Vec<QueryItemOrSumReturnType>, u16), Error> {
         let mut cost = OperationCost::default();
 
         let (elements, skipped) = cost_return_on_error!(
@@ -365,9 +367,9 @@ where {
                                         .unwrap_add_cost(&mut cost)?;
 
                                     match maybe_item {
-                                        Element::Item(item, _) => Ok(QueryReturnType::ItemData(item)),
-                                        Element::SumItem(sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
-                                        Element::SumTree(_, sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
+                                        Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
+                                        Element::SumItem(sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
+                                        Element::SumTree(_, sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),
@@ -378,9 +380,9 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(QueryReturnType::ItemData(item)),
-                        Element::SumItem(sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
-                        Element::SumTree(_, sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
+                        Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
+                        Element::SumItem(sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
+                        Element::SumTree(_, sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
                         Element::Tree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items, sum items, references and sum trees",
                         )),
@@ -390,7 +392,7 @@ where {
                     "query returned incorrect result type",
                 )),
             })
-            .collect::<Result<Vec<QueryReturnType>, Error>>();
+            .collect::<Result<Vec<QueryItemOrSumReturnType>, Error>>();
 
         let results = cost_return_on_error_no_add!(&cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
