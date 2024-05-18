@@ -32,6 +32,8 @@
 mod average_case;
 #[cfg(feature = "full")]
 mod query;
+#[cfg(feature = "full")]
+pub use query::QueryReturnType;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
