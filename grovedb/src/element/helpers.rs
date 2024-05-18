@@ -64,12 +64,38 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    /// Decoded the integer value in the SumItem element type, returns 0 for
-    /// everything else
+    /// Decoded the integer value in the SumItem element type
     pub fn as_sum_item_value(&self) -> Result<i64, Error> {
         match self {
             Element::SumItem(value, _) => Ok(*value),
             _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumItem element type
+    pub fn into_sum_item_value(self) -> Result<i64, Error> {
+        match self {
+            Element::SumItem(value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumTree element type
+    pub fn as_sum_tree_value(&self) -> Result<i64, Error> {
+        match self {
+            Element::SumTree(_, value, _) => Ok(*value),
+            _ => Err(Error::WrongElementType("expected a sum tree")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumTree element type
+    pub fn into_sum_tree_value(self) -> Result<i64, Error> {
+        match self {
+            Element::SumTree(_, value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a sum tree")),
         }
     }
 
