@@ -42,4 +42,4 @@ pub(crate) mod is_empty_tree;
 pub mod proof;
 
 #[cfg(feature = "full")]
-pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS}
+pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};
