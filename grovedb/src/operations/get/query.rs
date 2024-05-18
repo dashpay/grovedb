@@ -43,6 +43,16 @@ use crate::{
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
+#[cfg(feature = "full")]
+use crate::element::SumValue;
+
+#[cfg(feature = "full")]
+#[derive(Debug, Eq, PartialEq, Clone)]
+/// A return type for query_item_value_or_sum
+pub enum QueryReturnType {
+    ItemData(Vec<u8>),
+    SumValue(SumValue),
+}
 
 #[cfg(feature = "full")]
 impl GroveDb {
@@ -304,6 +314,83 @@ where {
                 )),
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>();
+
+        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        Ok((results, skipped)).wrap_with_cost(cost)
+    }
+
+    /// Queries the backing store and returns element items by their value,
+    /// Sum Items are returned
+    pub fn query_item_value_or_sum(
+        &self,
+        path_query: &PathQuery,
+        allow_cache: bool,
+        decrease_limit_on_range_with_no_sub_elements: bool,
+        error_if_intermediate_path_tree_not_present: bool,
+        transaction: TransactionArg,
+    ) -> CostResult<(Vec<QueryReturnType>, u16), Error> {
+        let mut cost = OperationCost::default();
+
+        let (elements, skipped) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                path_query,
+                allow_cache,
+                decrease_limit_on_range_with_no_sub_elements,
+                error_if_intermediate_path_tree_not_present,
+                QueryResultType::QueryElementResultType,
+                transaction
+            )
+        );
+
+        let results_wrapped = elements
+            .into_iterator()
+            .map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(element) => {
+                    match element {
+                        Element::Reference(reference_path, ..) => {
+                            match reference_path {
+                                ReferencePathType::AbsolutePathReference(absolute_path) => {
+                                    // While `map` on iterator is lazy, we should accumulate costs
+                                    // even if `collect` will
+                                    // end in `Err`, so we'll use
+                                    // external costs accumulator instead of
+                                    // returning costs from `map` call.
+                                    let maybe_item = self
+                                        .follow_reference(
+                                            absolute_path.as_slice().into(),
+                                            allow_cache,
+                                            transaction,
+                                        )
+                                        .unwrap_add_cost(&mut cost)?;
+
+                                    match maybe_item {
+                                        Element::Item(item, _) => Ok(QueryReturnType::ItemData(item)),
+                                        Element::SumItem(sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
+                                        Element::SumTree(_, sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
+                                        _ => Err(Error::InvalidQuery(
+                                            "the reference must result in an item",
+                                        )),
+                                    }
+                                }
+                                _ => Err(Error::CorruptedCodeExecution(
+                                    "reference after query must have absolute paths",
+                                )),
+                            }
+                        }
+                        Element::Item(item, _) => Ok(QueryReturnType::ItemData(item)),
+                        Element::SumItem(sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
+                        Element::SumTree(_, sum_value, _) => Ok(QueryReturnType::SumValue(sum_value)),
+                        Element::Tree(..) => Err(Error::InvalidQuery(
+                            "path_queries can only refer to items, sum items, references and sum trees",
+                        )),
+                    }
+                }
+                _ => Err(Error::CorruptedCodeExecution(
+                    "query returned incorrect result type",
+                )),
+            })
+            .collect::<Result<Vec<QueryReturnType>, Error>>();
 
         let results = cost_return_on_error_no_add!(&cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
