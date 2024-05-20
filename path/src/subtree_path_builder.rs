@@ -115,6 +115,10 @@ impl SubtreePathRelative<'_> {
             SubtreePathRelative::Multi(cb) => cb.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self, SubtreePathRelative::Empty)
+    }
 }
 
 impl Hash for SubtreePathRelative<'_> {
@@ -153,7 +157,7 @@ impl<B> SubtreePathBuilder<'_, B> {
 
     /// Returns whether the path is empty (the root tree).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.base.is_empty() && self.relative.is_empty()
     }
 }
 

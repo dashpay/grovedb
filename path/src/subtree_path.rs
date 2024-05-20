@@ -158,7 +158,11 @@ impl<B> SubtreePath<'_, B> {
 
     /// Returns whether the path is empty (the root tree).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        match &self.ref_variant {
+            SubtreePathInner::Slice(s) => s.is_empty(),
+            SubtreePathInner::SubtreePath(path) => path.is_empty(),
+            SubtreePathInner::SubtreePathIter(path_iter) => path_iter.is_empty(),
+        }
     }
 }
 
