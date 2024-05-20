@@ -107,6 +107,20 @@ pub(crate) enum SubtreePathRelative<'r> {
     Multi(CompactBytes),
 }
 
+impl SubtreePathRelative<'_> {
+    pub fn len(&self) -> usize {
+        match self {
+            SubtreePathRelative::Empty => 0,
+            SubtreePathRelative::Single(_) => 1,
+            SubtreePathRelative::Multi(cb) => cb.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self, SubtreePathRelative::Empty)
+    }
+}
+
 impl Hash for SubtreePathRelative<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -132,6 +146,18 @@ impl SubtreePathBuilder<'static, [u8; 0]> {
 impl Default for SubtreePathBuilder<'static, [u8; 0]> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<B> SubtreePathBuilder<'_, B> {
+    /// Returns the length of the subtree path.
+    pub fn len(&self) -> usize {
+        self.base.len() + self.relative.len()
+    }
+
+    /// Returns whether the path is empty (the root tree).
+    pub fn is_empty(&self) -> bool {
+        self.base.is_empty() && self.relative.is_empty()
     }
 }
 
@@ -266,17 +292,17 @@ mod tests {
         builder.push_segment(b"seven");
 
         let as_vec = builder.to_vec();
-        assert_eq!(
-            as_vec,
-            vec![
-                b"one".to_vec(),
-                b"two".to_vec(),
-                b"three".to_vec(),
-                b"four".to_vec(),
-                b"five".to_vec(),
-                b"six".to_vec(),
-                b"seven".to_vec(),
-            ],
-        );
+        let reference_vec = vec![
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec(),
+            b"four".to_vec(),
+            b"five".to_vec(),
+            b"six".to_vec(),
+            b"seven".to_vec(),
+        ];
+
+        assert_eq!(as_vec, reference_vec);
+        assert_eq!(builder.len(), reference_vec.len());
     }
 }

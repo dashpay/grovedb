@@ -70,6 +70,7 @@ verify = [
         "ed",
         "blake3"
 ]
+grovedbg = ["full"]
 
 [dev-dependencies]
 tempfile = "3.10.1"

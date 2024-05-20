@@ -30,12 +30,12 @@
 
 // #![deny(missing_docs)]
 
-#[cfg(feature = "full")]
-extern crate core;
-
 /// The top-level store API.
 #[cfg(feature = "full")]
 pub mod merk;
+
+#[cfg(feature = "grovedbg")]
+pub mod debugger;
 
 #[cfg(feature = "full")]
 pub use crate::merk::{chunks::ChunkProducer, options::MerkOptions, restore::Restorer};
