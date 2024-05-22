@@ -407,13 +407,13 @@ impl GroveDb {
     // tx: Transaction for the state sync
     // Returns the next set of global chunk ids that can be fetched from sources (+
     // the MultiStateSyncInfo transferring ownership back to the caller)
-    pub fn apply_chunk<'db>(
-        &'db self,
-        mut state_sync_info: MultiStateSyncInfo<'db>,
+    pub fn apply_chunk<'tx, 'a: 'tx>(
+        &'a self,
+        mut state_sync_info: MultiStateSyncInfo<'tx>,
         chunk: (&[u8], Vec<u8>),
-        tx: &'db Transaction,
+        tx: &'tx Transaction,
         version: u16,
-    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo<'tx>), Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
