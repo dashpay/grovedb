@@ -420,9 +420,9 @@ impl GroveDb {
     // tx: Transaction for the state sync
     // Returns the first set of global chunk ids that can be fetched from sources (+
     // the StateSyncInfo transferring ownership back to the caller)
-    pub fn start_snapshot_syncing<'db>(
-        &'db self,
-        state_sync_info: &'db mut MultiStateSyncSession<'db>,
+    pub fn start_snapshot_syncing<'db, 'g: 'db>(
+        &'g self,
+        state_sync_info: &'g mut MultiStateSyncSession<'db>,
         app_hash: CryptoHash,
         version: u16,
     ) -> Result<Vec<Vec<u8>>, Error> {
