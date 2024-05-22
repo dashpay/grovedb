@@ -319,8 +319,8 @@ impl GroveDb {
 
     /// Opens a Merk at given path for with direct write access. Intended for
     /// replication purposes.
-    fn open_merk_for_replication<'db, 'b, B>(
-        &'db self,
+    fn open_merk_for_replication<'db, 'b, 'a: 'db, B>(
+        &'a self,
         path: SubtreePath<'b, B>,
         tx: &'db Transaction,
     ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'db>>, Error>

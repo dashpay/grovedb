@@ -32,6 +32,65 @@ struct SubtreeStateSyncInfo<'db> {
     num_processed_chunks: usize,
 }
 
+impl<'db> SubtreeStateSyncInfo<'db> {
+    // Apply a chunk using the given SubtreeStateSyncInfo
+    // state_sync_info: Consumed SubtreeStateSyncInfo
+    // chunk_id: Local chunk id
+    // chunk_data: Chunk proof operators encoded in bytes
+    // Returns the next set of global chunk ids that can be fetched from sources (+
+    // the SubtreeStateSyncInfo transferring ownership back to the caller)
+    fn apply_inner_chunk(
+        mut self,
+        chunk_id: &[u8],
+        chunk_data: Vec<u8>,
+    ) -> Result<(Vec<Vec<u8>>, SubtreeStateSyncInfo<'db>), Error> {
+        let mut res = vec![];
+
+        match &mut self.restorer {
+            Some(restorer) => {
+                if !self.pending_chunks.contains(chunk_id) {
+                    return Err(Error::InternalError(
+                        "Incoming global_chunk_id not expected",
+                    ));
+                }
+                self.pending_chunks.remove(chunk_id);
+                if !chunk_data.is_empty() {
+                    match util_decode_vec_ops(chunk_data) {
+                        Ok(ops) => {
+                            match restorer.process_chunk(chunk_id, ops) {
+                                Ok(next_chunk_ids) => {
+                                    self.num_processed_chunks += 1;
+                                    for next_chunk_id in next_chunk_ids {
+                                        self
+                                            .pending_chunks
+                                            .insert(next_chunk_id.clone());
+                                        res.push(next_chunk_id);
+                                    }
+                                }
+                                _ => {
+                                    return Err(Error::InternalError(
+                                        "Unable to process incoming chunk",
+                                    ));
+                                }
+                            };
+                        }
+                        Err(_) => {
+                            return Err(Error::CorruptedData(
+                                "Unable to decode incoming chunk".to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {
+                return Err(Error::InternalError("Invalid internal state (restorer"));
+            }
+        }
+
+        Ok((res, self))
+    }
+}
+
 impl<'a> SubtreeStateSyncInfo<'a> {
     // Function to create an instance of SubtreeStateSyncInfo with default values
     pub fn new() -> Self {
@@ -436,7 +495,7 @@ impl GroveDb {
         }
         if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
             if let Ok((res, mut new_subtree_state_sync)) =
-                self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk_data)
+                subtree_state_sync.apply_inner_chunk(&chunk_id, chunk_data)
             {
                 if !res.is_empty() {
                     for local_chunk_id in res.iter() {
@@ -498,64 +557,6 @@ impl GroveDb {
         } else {
             Err(Error::InternalError("Invalid incoming prefix"))
         }
-    }
-
-    // Apply a chunk using the given SubtreeStateSyncInfo
-    // state_sync_info: Consumed SubtreeStateSyncInfo
-    // chunk_id: Local chunk id
-    // chunk_data: Chunk proof operators encoded in bytes
-    // Returns the next set of global chunk ids that can be fetched from sources (+
-    // the SubtreeStateSyncInfo transferring ownership back to the caller)
-    fn apply_inner_chunk<'db>(
-        &'db self,
-        mut state_sync_info: SubtreeStateSyncInfo<'db>,
-        chunk_id: &[u8],
-        chunk_data: Vec<u8>,
-    ) -> Result<(Vec<Vec<u8>>, SubtreeStateSyncInfo), Error> {
-        let mut res = vec![];
-
-        match &mut state_sync_info.restorer {
-            Some(restorer) => {
-                if !state_sync_info.pending_chunks.contains(chunk_id) {
-                    return Err(Error::InternalError(
-                        "Incoming global_chunk_id not expected",
-                    ));
-                }
-                state_sync_info.pending_chunks.remove(chunk_id);
-                if !chunk_data.is_empty() {
-                    match util_decode_vec_ops(chunk_data) {
-                        Ok(ops) => {
-                            match restorer.process_chunk(chunk_id, ops) {
-                                Ok(next_chunk_ids) => {
-                                    state_sync_info.num_processed_chunks += 1;
-                                    for next_chunk_id in next_chunk_ids {
-                                        state_sync_info
-                                            .pending_chunks
-                                            .insert(next_chunk_id.clone());
-                                        res.push(next_chunk_id);
-                                    }
-                                }
-                                _ => {
-                                    return Err(Error::InternalError(
-                                        "Unable to process incoming chunk",
-                                    ));
-                                }
-                            };
-                        }
-                        Err(_) => {
-                            return Err(Error::CorruptedData(
-                                "Unable to decode incoming chunk".to_string(),
-                            ));
-                        }
-                    }
-                }
-            }
-            _ => {
-                return Err(Error::InternalError("Invalid internal state (restorer"));
-            }
-        }
-
-        Ok((res, state_sync_info))
     }
 
     // Prepares SubtreeStateSyncInfos for the freshly discovered subtrees in
