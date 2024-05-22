@@ -11,7 +11,7 @@ use grovedb_merk::{
     ChunkProducer,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage};
 #[rustfmt::skip]
 use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
 
@@ -61,9 +61,7 @@ impl<'db> SubtreeStateSyncInfo<'db> {
                                 Ok(next_chunk_ids) => {
                                     self.num_processed_chunks += 1;
                                     for next_chunk_id in next_chunk_ids {
-                                        self
-                                            .pending_chunks
-                                            .insert(next_chunk_id.clone());
+                                        self.pending_chunks.insert(next_chunk_id.clone());
                                         res.push(next_chunk_id);
                                     }
                                 }
@@ -99,7 +97,8 @@ impl<'a> SubtreeStateSyncInfo<'a> {
 }
 
 // Struct governing state sync
-pub struct MultiStateSyncInfo<'db> {
+pub struct MultiStateSyncSession<'db> {
+    pub transaction: Transaction<'db>,
     // Map of current processing subtrees
     // SubtreePrefix (Path digest) -> SubtreeStateSyncInfo
     current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
@@ -109,15 +108,15 @@ pub struct MultiStateSyncInfo<'db> {
     version: u16,
 }
 
-impl<'db> Default for MultiStateSyncInfo<'db> {
-    fn default() -> Self {
-        Self {
-            current_prefixes: BTreeMap::new(),
-            processed_prefixes: BTreeSet::new(),
-            version: CURRENT_STATE_SYNC_VERSION,
-        }
-    }
-}
+// impl<'db> Default for MultiStateSyncInfo<'db> {
+//     fn default() -> Self {
+//         Self {
+//             current_prefixes: BTreeMap::new(),
+//             processed_prefixes: BTreeSet::new(),
+//             version: CURRENT_STATE_SYNC_VERSION,
+//         }
+//     }
+// }
 
 // Struct containing information about current subtrees found in GroveDB
 pub struct SubtreesMetadata {
@@ -217,6 +216,20 @@ pub fn util_decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    pub fn start_new_session(&self) -> MultiStateSyncSession {
+        MultiStateSyncSession {
+            transaction: self.start_transaction(),
+            current_prefixes: Default::default(),
+            processed_prefixes: Default::default(),
+            version: 0,
+        }
+    }
+
+    pub fn commit_session(&self, session: MultiStateSyncSession) {
+        // we do not care about the cost
+        let _ = self.commit_transaction(session.transaction);
+    }
+
     // Returns the discovered subtrees found recursively along with their associated
     // metadata Params:
     // tx: Transaction. Function returns the data by opening merks at given tx.
@@ -409,11 +422,10 @@ impl GroveDb {
     // the StateSyncInfo transferring ownership back to the caller)
     pub fn start_snapshot_syncing<'db>(
         &'db self,
-        mut state_sync_info: MultiStateSyncInfo<'db>,
+        state_sync_info: &'db mut MultiStateSyncSession<'db>,
         app_hash: CryptoHash,
-        tx: &'db Transaction,
         version: u16,
-    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+    ) -> Result<Vec<Vec<u8>>, Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -443,7 +455,9 @@ impl GroveDb {
 
         let mut root_prefix_state_sync_info = SubtreeStateSyncInfo::default();
         let root_prefix = [0u8; 32];
-        if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
+        if let Ok(merk) =
+            self.open_merk_for_replication(SubtreePath::empty(), &state_sync_info.transaction)
+        {
             let restorer = Restorer::new(merk, app_hash, None);
             root_prefix_state_sync_info.restorer = Some(restorer);
             root_prefix_state_sync_info.pending_chunks.insert(vec![]);
@@ -456,7 +470,7 @@ impl GroveDb {
             return Err(Error::InternalError("Unable to open merk for replication"));
         }
 
-        Ok((res, state_sync_info))
+        Ok(res)
     }
 
     // Apply a chunk (should be called by ABCI when ApplySnapshotChunk method is
@@ -468,11 +482,10 @@ impl GroveDb {
     // the MultiStateSyncInfo transferring ownership back to the caller)
     pub fn apply_chunk<'tx, 'a: 'tx>(
         &'a self,
-        mut state_sync_info: MultiStateSyncInfo<'tx>,
+        state_sync_info: &'tx mut MultiStateSyncSession<'tx>,
         chunk: (&[u8], Vec<u8>),
-        tx: &'tx Transaction,
         version: u16,
-    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo<'tx>), Error> {
+    ) -> Result<Vec<Vec<u8>>, Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -493,6 +506,7 @@ impl GroveDb {
         if state_sync_info.current_prefixes.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
         }
+        let tx = &state_sync_info.transaction;
         if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
             if let Ok((res, mut new_subtree_state_sync)) =
                 subtree_state_sync.apply_inner_chunk(&chunk_id, chunk_data)
@@ -508,14 +522,14 @@ impl GroveDb {
                     state_sync_info
                         .current_prefixes
                         .insert(chunk_prefix, new_subtree_state_sync);
-                    Ok((next_chunk_ids, state_sync_info))
+                    Ok(next_chunk_ids)
                 } else {
                     if !new_subtree_state_sync.pending_chunks.is_empty() {
                         // re-insert subtree_state_sync in state_sync_info
                         state_sync_info
                             .current_prefixes
                             .insert(chunk_prefix, new_subtree_state_sync);
-                        return Ok((vec![], state_sync_info));
+                        return Ok(vec![]);
                     }
 
                     // Subtree is finished. We can save it.
@@ -540,11 +554,11 @@ impl GroveDb {
                                 );
                             }
 
-                            if let Ok((res, new_state_sync_info)) =
-                                self.discover_subtrees(state_sync_info, subtrees_metadata, tx)
+                            if let Ok(res) =
+                                self.discover_subtrees(state_sync_info, subtrees_metadata)
                             {
                                 next_chunk_ids.extend(res);
-                                Ok((next_chunk_ids, new_state_sync_info))
+                                Ok(next_chunk_ids)
                             } else {
                                 Err(Error::InternalError("Unable to discover Subtrees"))
                             }
@@ -568,10 +582,9 @@ impl GroveDb {
     // the MultiStateSyncInfo transferring ownership back to the caller)
     fn discover_subtrees<'db>(
         &'db self,
-        mut state_sync_info: MultiStateSyncInfo<'db>,
+        state_sync_info: &'db mut MultiStateSyncSession<'db>,
         subtrees_metadata: SubtreesMetadata,
-        tx: &'db Transaction,
-    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+    ) -> Result<Vec<Vec<u8>>, Error> {
         let mut res = vec![];
 
         for (prefix, prefix_metadata) in &subtrees_metadata.data {
@@ -589,7 +602,9 @@ impl GroveDb {
                 );
 
                 let mut subtree_state_sync_info = SubtreeStateSyncInfo::default();
-                if let Ok(merk) = self.open_merk_for_replication(path.into(), tx) {
+                if let Ok(merk) =
+                    self.open_merk_for_replication(path.into(), &state_sync_info.transaction)
+                {
                     let restorer =
                         Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
                     subtree_state_sync_info.restorer = Some(restorer);
@@ -607,6 +622,6 @@ impl GroveDb {
             }
         }
 
-        Ok((res, state_sync_info))
+        Ok(res)
     }
 }
