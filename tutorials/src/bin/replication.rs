@@ -240,10 +240,10 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
 fn sync_db_demo(
     source_db: &GroveDb,
     target_db: &GroveDb,
-    state_sync_info: MultiStateSyncSession,
+    mut state_sync_info: MultiStateSyncSession,
 ) -> Result<MultiStateSyncSession, grovedb::Error> {
     let app_hash = source_db.root_hash(None).value.unwrap();
-    let (chunk_ids, mut state_sync_info) = target_db.start_snapshot_syncing(state_sync_info, app_hash, CURRENT_STATE_SYNC_VERSION)?;
+    let chunk_ids = target_db.start_snapshot_syncing(&mut state_sync_info, app_hash, CURRENT_STATE_SYNC_VERSION)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
@@ -251,8 +251,7 @@ fn sync_db_demo(
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
-        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), CURRENT_STATE_SYNC_VERSION)?;
-        state_sync_info = new_state_sync_info;
+        let more_chunks = target_db.apply_chunk(&mut state_sync_info, (chunk_id.as_slice(), ops), CURRENT_STATE_SYNC_VERSION)?;
         chunk_queue.extend(more_chunks);
     }
 
