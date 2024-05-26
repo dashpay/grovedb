@@ -136,7 +136,8 @@ impl<'db> MultiStateSyncSession<'db> {
 
         if let Ok(merk) = db.open_merk_for_replication(path, transaction_ref) {
             let restorer = Restorer::new(merk, hash, actual_hash);
-            let sync_info = SubtreeStateSyncInfo::new(restorer);
+            let mut sync_info = SubtreeStateSyncInfo::new(restorer);
+            sync_info.pending_chunks.insert(vec![]);
             self.as_mut()
                 .current_prefixes()
                 .insert(chunk_prefix, sync_info);
