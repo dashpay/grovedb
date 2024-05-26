@@ -5,7 +5,7 @@ use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, };
 use grovedb::element::SumValue;
 use grovedb::replication::CURRENT_STATE_SYNC_VERSION;
-use grovedb::replication::MultiStateSyncInfo;
+use grovedb::replication::MultiStateSyncSession;
 
 const MAIN_ΚΕΥ: &[u8] = b"key_main";
 const MAIN_ΚΕΥ_EMPTY: &[u8] = b"key_main_empty";
@@ -101,10 +101,9 @@ fn main() {
     println!("{:?}", subtrees_metadata_source);
 
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
-    let state_info = MultiStateSyncInfo::default();
-    let tx = db_destination.start_transaction();
-    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &tx).unwrap();
-    db_destination.commit_transaction(tx).unwrap().expect("expected to commit transaction");
+    let mut state_sync_session = db_destination.start_new_session();
+    sync_db_demo(&db_checkpoint_0, &db_destination, &mut state_sync_session).unwrap();
+    db_destination.commit_session(state_sync_session);
 
     println!("\n######### verify db_destination");
     let incorrect_hashes = db_destination.verify_grovedb(None).unwrap();
@@ -238,14 +237,13 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
     } else { println!("Verification FAILED"); };
 }
 
-fn sync_db_demo(
-    source_db: &GroveDb,
-    target_db: &GroveDb,
-    state_sync_info: MultiStateSyncInfo,
-    target_tx: &Transaction,
+fn sync_db_demo<'a, 'c, 'b: 'c>(
+    source_db: &'a GroveDb,
+    target_db: &'b GroveDb,
+    state_sync_info: &'b mut MultiStateSyncSession<'c>,
 ) -> Result<(), grovedb::Error> {
     let app_hash = source_db.root_hash(None).value.unwrap();
-    let (chunk_ids, mut state_sync_info) = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx, CURRENT_STATE_SYNC_VERSION)?;
+    let chunk_ids = target_db.start_snapshot_syncing(state_sync_info, app_hash, CURRENT_STATE_SYNC_VERSION)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
@@ -253,8 +251,7 @@ fn sync_db_demo(
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
-        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), target_tx, CURRENT_STATE_SYNC_VERSION)?;
-        state_sync_info = new_state_sync_info;
+        let more_chunks = target_db.apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), CURRENT_STATE_SYNC_VERSION)?;
         chunk_queue.extend(more_chunks);
     }
 
