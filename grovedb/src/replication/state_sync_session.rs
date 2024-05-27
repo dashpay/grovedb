@@ -9,17 +9,17 @@ use grovedb_merk::{CryptoHash, Restorer};
 use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
 
-use crate::{replication::util_path_to_string, Error, GroveDb, Transaction};
-
 use super::{util_decode_vec_ops, util_split_global_chunk_id, CURRENT_STATE_SYNC_VERSION};
+use crate::{replication::util_path_to_string, Error, GroveDb, Transaction};
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 struct SubtreeStateSyncInfo<'db> {
     /// Current Chunk restorer
     restorer: Restorer<PrefixedRocksDbImmediateStorageContext<'db>>,
-    /// Set of global chunk ids requested to be fetched and pending for processing. For the
-    /// description of global chunk id check fetch_chunk().
+    /// Set of global chunk ids requested to be fetched and pending for
+    /// processing. For the description of global chunk id check
+    /// fetch_chunk().
     pending_chunks: BTreeSet<Vec<u8>>,
     /// Number of processed chunks in current prefix (Path digest)
     num_processed_chunks: usize,
@@ -114,7 +114,8 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     pub fn into_transaction(self: Pin<Box<Self>>) -> Transaction<'db> {
-        // SAFETY: the struct isn't used anymore and no one will refer to transaction address again
+        // SAFETY: the struct isn't used anymore and no one will refer to transaction
+        // address again
         unsafe { Pin::into_inner_unchecked(self) }.transaction
     }
 
@@ -126,8 +127,9 @@ impl<'db> MultiStateSyncSession<'db> {
         actual_hash: Option<CryptoHash>,
         chunk_prefix: [u8; 32],
     ) -> Result<(), Error> {
-        // SAFETY: we get an immutable reference of a transaction that stays behind `Pin` so this
-        // reference shall remain valid for the whole session object lifetime.
+        // SAFETY: we get an immutable reference of a transaction that stays behind
+        // `Pin` so this reference shall remain valid for the whole session
+        // object lifetime.
         let transaction_ref: &'db Transaction<'db> = unsafe {
             let tx: &mut Transaction<'db> =
                 &mut Pin::into_inner_unchecked(self.as_mut()).transaction;
@@ -150,21 +152,22 @@ impl<'db> MultiStateSyncSession<'db> {
     fn current_prefixes(
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>> {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the `transaciton`
-        // so it will be safe to modify them
+        // SAFETY: no memory-sensitive assumptions are made about fields except the
+        // `transaciton` so it will be safe to modify them
         &mut unsafe { self.get_unchecked_mut() }.current_prefixes
     }
 
     fn processed_prefixes(
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeSet<SubtreePrefix> {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the `transaciton`
-        // so it will be safe to modify them
+        // SAFETY: no memory-sensitive assumptions are made about fields except the
+        // `transaciton` so it will be safe to modify them
         &mut unsafe { self.get_unchecked_mut() }.processed_prefixes
     }
 
-    /// Applies a chunk, shuold be called by ABCI when `ApplySnapshotChunk` method is called.
-    /// `chunk` is a pair of global chunk id and an encoded proof.
+    /// Applies a chunk, shuold be called by ABCI when `ApplySnapshotChunk`
+    /// method is called. `chunk` is a pair of global chunk id and an
+    /// encoded proof.
     pub fn apply_chunk(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
         db: &'db GroveDb,
@@ -245,8 +248,8 @@ impl<'db> MultiStateSyncSession<'db> {
         }
     }
 
-    /// Prepares sync session for the freshly discovered subtrees and returns global chunk ids of
-    /// those new subtrees.
+    /// Prepares sync session for the freshly discovered subtrees and returns
+    /// global chunk ids of those new subtrees.
     fn discover_subtrees(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
         db: &'db GroveDb,

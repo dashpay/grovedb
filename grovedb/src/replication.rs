@@ -11,10 +11,9 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
-use crate::{Error, GroveDb, TransactionArg};
-
 pub use self::state_sync_session::MultiStateSyncSession;
 use self::state_sync_session::SubtreesMetadata;
+use crate::{Error, GroveDb, TransactionArg};
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
@@ -212,9 +211,10 @@ impl GroveDb {
         }
     }
 
-    /// Starts a state sync process of a snapshot with `app_hash` root hash, should be called by
-    /// ABCI when OfferSnapshot  method is called.
-    /// Returns the first set of global chunk ids that can be fetched from sources and a new sync session.
+    /// Starts a state sync process of a snapshot with `app_hash` root hash,
+    /// should be called by ABCI when OfferSnapshot  method is called.
+    /// Returns the first set of global chunk ids that can be fetched from
+    /// sources and a new sync session.
     pub fn start_snapshot_syncing<'db>(
         &'db self,
         app_hash: CryptoHash,
