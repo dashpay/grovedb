@@ -76,7 +76,23 @@ pub enum ReferencePathType {
     SiblingReference(Vec<u8>),
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
+impl ReferencePathType {
+    /// Given the reference path type and the current qualified path (path+key),
+    /// this computes the absolute path of the item the reference is pointing to.
+    pub fn absolute_path_using_current_qualified_path<B: AsRef<[u8]>>(self, current_qualified_path: &[B]) -> Result<Vec<Vec<u8>>, Error> {
+        path_from_reference_qualified_path_type(self, current_qualified_path)
+    }
+
+    /// Given the reference path type, the current path and the terminal key, this
+    /// computes the absolute path of the item the reference is pointing to.
+    pub fn absolute_path<B: AsRef<[u8]>>(self,     current_path: &[B],
+                                         current_key: Option<&[u8]>) -> Result<Vec<Vec<u8>>, Error> {
+        path_from_reference_path_type(self, current_path, current_key)
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
 impl fmt::Debug for ReferencePathType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -86,7 +102,7 @@ impl fmt::Debug for ReferencePathType {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
@@ -103,7 +119,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
@@ -208,7 +224,7 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 impl ReferencePathType {
     /// Serialized size
     pub fn serialized_size(&self) -> usize {
