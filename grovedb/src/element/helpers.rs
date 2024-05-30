@@ -118,6 +118,15 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Gives the reference path type in the Reference element type
+    pub fn into_reference_path_type(self) -> Result<ReferencePathType, Error> {
+        match self {
+            Element::Reference(value, ..) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a reference")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
@@ -127,6 +136,12 @@ impl Element {
     /// Check if the element is a tree
     pub fn is_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a reference
+    pub fn is_reference(&self) -> bool {
+        matches!(self, Element::Reference(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
