@@ -36,6 +36,8 @@ use grovedb_costs::{
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
+#[cfg(feature = "full")]
+use crate::element::SumValue;
 use crate::{element::QueryOptions, query_result_type::PathKeyOptionalElementTrio};
 #[cfg(feature = "full")]
 use crate::{
@@ -43,8 +45,6 @@ use crate::{
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
-#[cfg(feature = "full")]
-use crate::element::SumValue;
 
 #[cfg(feature = "full")]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -203,9 +203,7 @@ where {
                 }
             }
             Element::Item(..) | Element::SumItem(..) | Element::SumTree(..) => Ok(element),
-            Element::Tree(..) => Err(Error::InvalidQuery(
-                "path_queries can not refer to trees",
-            )),
+            Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
         }
     }
 
