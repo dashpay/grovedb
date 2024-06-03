@@ -32,12 +32,6 @@ struct SubtreeStateSyncInfo<'db> {
     num_processed_chunks: usize,
 }
 
-impl<'a> SubtreeStateSyncInfo<'a> {
-    // Function to create an instance of SubtreeStateSyncInfo with default values
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
 
 // Struct governing state sync
 pub struct MultiStateSyncInfo<'db> {
