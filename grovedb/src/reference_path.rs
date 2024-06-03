@@ -257,7 +257,7 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 impl ReferencePathType {
     /// Serialized size
     pub fn serialized_size(&self) -> usize {
