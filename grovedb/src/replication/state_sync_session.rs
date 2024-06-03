@@ -101,7 +101,7 @@ pub struct MultiStateSyncSession<'db> {
 
 impl<'db> MultiStateSyncSession<'db> {
     /// Initializes a new state sync session.
-    pub fn new(transaction: Transaction<'db>, app_hash:[u8; 32]) -> Pin<Box<Self>> {
+    pub fn new(transaction: Transaction<'db>, app_hash: [u8; 32]) -> Pin<Box<Self>> {
         Box::pin(MultiStateSyncSession {
             transaction,
             current_prefixes: Default::default(),
@@ -201,8 +201,7 @@ impl<'db> MultiStateSyncSession<'db> {
 
         let mut next_chunk_ids = vec![];
 
-        let (chunk_prefix, chunk_id) =
-            util_split_global_chunk_id(global_chunk_id, self.app_hash)?;
+        let (chunk_prefix, chunk_id) = util_split_global_chunk_id(global_chunk_id, self.app_hash)?;
 
         if self.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
