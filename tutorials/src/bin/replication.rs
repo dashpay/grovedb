@@ -245,15 +245,16 @@ fn sync_db_demo(
     target_tx: &Transaction,
 ) -> Result<(), grovedb::Error> {
     let app_hash = source_db.root_hash(None).value.unwrap();
-    let (chunk_ids, mut state_sync_info) = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx, CURRENT_STATE_SYNC_VERSION)?;
+    let mut state_sync_info = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx, CURRENT_STATE_SYNC_VERSION)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
-    chunk_queue.extend(chunk_ids);
+    // The very first chunk to fetch is always identified by the root app_hash
+    chunk_queue.push_back(app_hash.to_vec());
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
-        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, (chunk_id.as_slice(), ops), target_tx, CURRENT_STATE_SYNC_VERSION)?;
+        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, chunk_id.as_slice(), ops, target_tx, CURRENT_STATE_SYNC_VERSION)?;
         state_sync_info = new_state_sync_info;
         chunk_queue.extend(more_chunks);
     }
