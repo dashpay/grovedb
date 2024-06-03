@@ -32,7 +32,6 @@ struct SubtreeStateSyncInfo<'db> {
     num_processed_chunks: usize,
 }
 
-
 // Struct governing state sync
 pub struct MultiStateSyncInfo<'db> {
     // Map of current processing subtrees
