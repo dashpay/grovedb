@@ -19,8 +19,8 @@ pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    pub fn start_syncing_session(&self) -> Pin<Box<MultiStateSyncSession>> {
-        MultiStateSyncSession::new(self.start_transaction())
+    pub fn start_syncing_session(&self, app_hash:[u8; 32]) -> Pin<Box<MultiStateSyncSession>> {
+        MultiStateSyncSession::new(self.start_transaction(), app_hash)
     }
 
     pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) {
@@ -130,11 +130,9 @@ impl GroveDb {
             ));
         }
 
-        let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
-
-        let mut array = [0u8; 32];
-        array.copy_from_slice(chunk_prefix);
-        let chunk_prefix_key: crate::SubtreePrefix = array;
+        let root_app_hash = self.root_hash(tx).value?;
+        let (chunk_prefix_key, chunk_id) =
+            util_split_global_chunk_id(global_chunk_id, root_app_hash)?;
 
         let subtrees_metadata = self.get_subtrees_metadata(tx)?;
 
@@ -157,7 +155,7 @@ impl GroveDb {
                         let chunk_producer_res = ChunkProducer::new(&merk);
                         match chunk_producer_res {
                             Ok(mut chunk_producer) => {
-                                let chunk_res = chunk_producer.chunk(chunk_id);
+                                let chunk_res = chunk_producer.chunk(&chunk_id);
                                 match chunk_res {
                                     Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
                                         Ok(op_bytes) => Ok(op_bytes),
@@ -187,7 +185,7 @@ impl GroveDb {
                         let chunk_producer_res = ChunkProducer::new(&merk);
                         match chunk_producer_res {
                             Ok(mut chunk_producer) => {
-                                let chunk_res = chunk_producer.chunk(chunk_id);
+                                let chunk_res = chunk_producer.chunk(&chunk_id);
                                 match chunk_res {
                                     Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
                                         Ok(op_bytes) => Ok(op_bytes),
@@ -219,7 +217,7 @@ impl GroveDb {
         &'db self,
         app_hash: CryptoHash,
         version: u16,
-    ) -> Result<(Vec<Vec<u8>>, Pin<Box<MultiStateSyncSession<'db>>>), Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'db>>>, Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -231,10 +229,11 @@ impl GroveDb {
 
         let root_prefix = [0u8; 32];
 
-        let mut session = self.start_syncing_session();
+        let mut session = self.start_syncing_session(app_hash);
+
         session.add_subtree_sync_info(self, SubtreePath::empty(), app_hash, None, root_prefix)?;
 
-        Ok((vec![root_prefix.to_vec()], session))
+        Ok(session)
     }
 }
 
@@ -255,12 +254,19 @@ pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
 // Splits the given global chunk id into [SUBTREE_PREFIX:CHUNK_ID]
 pub fn util_split_global_chunk_id(
     global_chunk_id: &[u8],
+    app_hash: [u8; 32],
 ) -> Result<(crate::SubtreePrefix, Vec<u8>), Error> {
     let chunk_prefix_length: usize = 32;
     if global_chunk_id.len() < chunk_prefix_length {
         return Err(Error::CorruptedData(
             "expected global chunk id of at least 32 length".to_string(),
         ));
+    }
+
+    if global_chunk_id == app_hash {
+        let array_of_zeros: [u8; 32] = [0; 32];
+        let root_chunk_prefix_key: crate::SubtreePrefix = array_of_zeros;
+        return Ok((root_chunk_prefix_key, vec![]));
     }
 
     let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);

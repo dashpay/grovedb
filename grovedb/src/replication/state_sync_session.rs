@@ -90,6 +90,8 @@ pub struct MultiStateSyncSession<'db> {
     current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
     // Set of processed prefixes (Path digests)
     processed_prefixes: BTreeSet<SubtreePrefix>,
+    // Root app_hash
+    app_hash: [u8; 32],
     // Version of state sync protocol,
     pub(crate) version: u16,
     // Transaction goes last to be dropped last as well
@@ -99,11 +101,12 @@ pub struct MultiStateSyncSession<'db> {
 
 impl<'db> MultiStateSyncSession<'db> {
     /// Initializes a new state sync session.
-    pub fn new(transaction: Transaction<'db>) -> Pin<Box<Self>> {
+    pub fn new(transaction: Transaction<'db>, app_hash:[u8; 32]) -> Pin<Box<Self>> {
         Box::pin(MultiStateSyncSession {
             transaction,
             current_prefixes: Default::default(),
             processed_prefixes: Default::default(),
+            app_hash,
             version: CURRENT_STATE_SYNC_VERSION,
             _pin: PhantomPinned,
         })
@@ -180,7 +183,8 @@ impl<'db> MultiStateSyncSession<'db> {
     pub fn apply_chunk(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
         db: &'db GroveDb,
-        chunk: (&[u8], Vec<u8>),
+        global_chunk_id: &[u8],
+        chunk: Vec<u8>,
         version: u16,
     ) -> Result<Vec<Vec<u8>>, Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
@@ -197,8 +201,8 @@ impl<'db> MultiStateSyncSession<'db> {
 
         let mut next_chunk_ids = vec![];
 
-        let (global_chunk_id, chunk_data) = chunk;
-        let (chunk_prefix, chunk_id) = util_split_global_chunk_id(global_chunk_id)?;
+        let (chunk_prefix, chunk_id) =
+            util_split_global_chunk_id(global_chunk_id, self.app_hash)?;
 
         if self.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
@@ -208,7 +212,7 @@ impl<'db> MultiStateSyncSession<'db> {
         let Some(subtree_state_sync) = current_prefixes.get_mut(&chunk_prefix) else {
             return Err(Error::InternalError("Unable to process incoming chunk"));
         };
-        let Ok(res) = subtree_state_sync.apply_inner_chunk(&chunk_id, chunk_data) else {
+        let Ok(res) = subtree_state_sync.apply_inner_chunk(&chunk_id, chunk) else {
             return Err(Error::InternalError("Invalid incoming prefix"));
         };
 
