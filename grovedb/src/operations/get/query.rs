@@ -365,9 +365,15 @@ where {
                                         .unwrap_add_cost(&mut cost)?;
 
                                     match maybe_item {
-                                        Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
-                                        Element::SumItem(sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
-                                        Element::SumTree(_, sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
+                                        Element::Item(item, _) => {
+                                            Ok(QueryItemOrSumReturnType::ItemData(item))
+                                        }
+                                        Element::SumItem(sum_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::SumValue(sum_value))
+                                        }
+                                        Element::SumTree(_, sum_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::SumValue(sum_value))
+                                        }
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),
@@ -379,10 +385,15 @@ where {
                             }
                         }
                         Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
-                        Element::SumItem(sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
-                        Element::SumTree(_, sum_value, _) => Ok(QueryItemOrSumReturnType::SumValue(sum_value)),
+                        Element::SumItem(sum_value, _) => {
+                            Ok(QueryItemOrSumReturnType::SumValue(sum_value))
+                        }
+                        Element::SumTree(_, sum_value, _) => {
+                            Ok(QueryItemOrSumReturnType::SumValue(sum_value))
+                        }
                         Element::Tree(..) => Err(Error::InvalidQuery(
-                            "path_queries can only refer to items, sum items, references and sum trees",
+                            "path_queries can only refer to items, sum items, references and sum \
+                             trees",
                         )),
                     }
                 }

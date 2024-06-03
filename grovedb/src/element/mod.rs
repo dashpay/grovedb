@@ -56,7 +56,7 @@ use bincode::{Decode, Encode};
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
 use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_visualize::visualize_to_vec;
 
 #[cfg(any(feature = "full", feature = "verify"))]

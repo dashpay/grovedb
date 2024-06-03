@@ -28,7 +28,7 @@
 
 //! Space efficient methods for referencing other elements in GroveDB
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use std::fmt;
 
 use bincode::{Decode, Encode};
@@ -37,7 +37,7 @@ use grovedb_visualize::visualize_to_vec;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -55,9 +55,9 @@ pub enum ReferencePathType {
     UpstreamRootHeightReference(u8, Vec<Vec<u8>>),
 
     /// This is very similar to the UpstreamRootHeightReference, however
-    /// it appends to the absolute path when resolving the parent of the reference
-    /// If the reference is stored at 15/9/80/7 then 80 will be appended to what
-    /// we are referring to.
+    /// it appends to the absolute path when resolving the parent of the
+    /// reference If the reference is stored at 15/9/80/7 then 80 will be
+    /// appended to what we are referring to.
     UpstreamRootHeightWithParentPathAdditionReference(u8, Vec<Vec<u8>>),
 
     /// This discards the last n elements from the current path and appends a
@@ -85,7 +85,8 @@ pub enum ReferencePathType {
 #[cfg(any(feature = "full", feature = "verify"))]
 impl ReferencePathType {
     /// Given the reference path type and the current qualified path (path+key),
-    /// this computes the absolute path of the item the reference is pointing to.
+    /// this computes the absolute path of the item the reference is pointing
+    /// to.
     pub fn absolute_path_using_current_qualified_path<B: AsRef<[u8]>>(
         self,
         current_qualified_path: &[B],
@@ -93,8 +94,9 @@ impl ReferencePathType {
         path_from_reference_qualified_path_type(self, current_qualified_path)
     }
 
-    /// Given the reference path type, the current path and the terminal key, this
-    /// computes the absolute path of the item the reference is pointing to.
+    /// Given the reference path type, the current path and the terminal key,
+    /// this computes the absolute path of the item the reference is
+    /// pointing to.
     pub fn absolute_path<B: AsRef<[u8]>>(
         self,
         current_path: &[B],
@@ -158,7 +160,10 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
             subpath_as_vec.append(&mut path);
             Ok(subpath_as_vec)
         }
-        ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(no_of_elements_to_keep, mut path) => {
+        ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+            no_of_elements_to_keep,
+            mut path,
+        ) => {
             if usize::from(no_of_elements_to_keep) > current_path.len() || current_path.len() == 0 {
                 return Err(Error::InvalidInput(
                     "reference stored path cannot satisfy reference constraints",
@@ -315,12 +320,20 @@ mod tests {
     fn test_upstream_root_height_with_parent_addition_reference() {
         let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
         // selects the first 2 elements from the stored path and appends the new path.
-        let ref1 =
-            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(2, vec![b"c".to_vec(), b"d".to_vec()]);
+        let ref1 = ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+            2,
+            vec![b"c".to_vec(), b"d".to_vec()],
+        );
         let final_path = path_from_reference_path_type(ref1, &stored_path, None).unwrap();
         assert_eq!(
             final_path,
-            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec(), b"m".to_vec()]
+            vec![
+                b"a".to_vec(),
+                b"b".to_vec(),
+                b"c".to_vec(),
+                b"d".to_vec(),
+                b"m".to_vec()
+            ]
         );
     }
 

@@ -44,11 +44,12 @@ use grovedb_merk::{
 use integer_encoding::VarInt;
 
 #[cfg(any(feature = "full", feature = "verify"))]
+use crate::reference_path::{path_from_reference_path_type, ReferencePathType};
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::{element::SUM_ITEM_COST_SIZE, Element, Error};
 #[cfg(feature = "full")]
 use crate::{
     element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
-    reference_path::{path_from_reference_path_type, ReferencePathType},
     ElementFlags,
 };
 

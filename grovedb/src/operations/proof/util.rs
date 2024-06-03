@@ -38,9 +38,9 @@ use grovedb_merk::{
 #[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader};
 
-use crate::operations::proof::verify::ProvedKeyValues;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
+use crate::{operations::proof::verify::ProvedKeyValues, reference_path::ReferencePathType};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
