@@ -130,7 +130,7 @@ pub fn util_split_global_chunk_id(
     if (global_chunk_id == app_hash) {
         let array_of_zeros: [u8; 32] = [0; 32];
         let root_chunk_prefix_key: crate::SubtreePrefix = array_of_zeros;
-        return Ok((root_chunk_prefix_key, vec![]))
+        return Ok((root_chunk_prefix_key, vec![]));
     }
 
     let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
@@ -264,7 +264,8 @@ impl GroveDb {
         }
 
         let root_app_hash = self.root_hash(tx).value?;
-        let (chunk_prefix, chunk_id) = replication::util_split_global_chunk_id(global_chunk_id, &root_app_hash)?;
+        let (chunk_prefix, chunk_id) =
+            replication::util_split_global_chunk_id(global_chunk_id, &root_app_hash)?;
 
         let subtrees_metadata = self.get_subtrees_metadata(tx)?;
 
@@ -426,7 +427,8 @@ impl GroveDb {
 
         let mut next_chunk_ids = vec![];
 
-        let (chunk_prefix, chunk_id) = replication::util_split_global_chunk_id(global_chunk_id, &state_sync_info.app_hash)?;
+        let (chunk_prefix, chunk_id) =
+            replication::util_split_global_chunk_id(global_chunk_id, &state_sync_info.app_hash)?;
 
         if state_sync_info.current_prefixes.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
