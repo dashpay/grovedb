@@ -127,7 +127,7 @@ pub fn util_split_global_chunk_id(
         ));
     }
 
-    if (global_chunk_id == app_hash) {
+    if global_chunk_id == app_hash {
         let array_of_zeros: [u8; 32] = [0; 32];
         let root_chunk_prefix_key: crate::SubtreePrefix = array_of_zeros;
         return Ok((root_chunk_prefix_key, vec![]));
