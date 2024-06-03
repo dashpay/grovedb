@@ -40,7 +40,7 @@ pub struct MultiStateSyncInfo<'db> {
     // Set of processed prefixes (Path digests)
     processed_prefixes: BTreeSet<SubtreePrefix>,
     // Root app_hash
-    app_hash: Vec<u8>,
+    app_hash: [u8; 32],
     // Version of state sync protocol,
     version: u16,
 }
@@ -50,7 +50,7 @@ impl<'db> Default for MultiStateSyncInfo<'db> {
         Self {
             current_prefixes: BTreeMap::new(),
             processed_prefixes: BTreeSet::new(),
-            app_hash: vec![],
+            app_hash: [0; 32],
             version: CURRENT_STATE_SYNC_VERSION,
         }
     }
@@ -382,7 +382,7 @@ impl GroveDb {
             state_sync_info
                 .current_prefixes
                 .insert(root_prefix, root_prefix_state_sync_info);
-            state_sync_info.app_hash = app_hash.to_vec();
+            state_sync_info.app_hash = app_hash;
         } else {
             return Err(Error::InternalError("Unable to open merk for replication"));
         }
