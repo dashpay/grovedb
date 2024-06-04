@@ -44,7 +44,7 @@ mod verify;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::RangeFull};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
