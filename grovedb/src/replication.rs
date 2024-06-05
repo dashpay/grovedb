@@ -241,11 +241,9 @@ impl GroveDb {
 pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
     let mut subtree_path_str: Vec<String> = vec![];
     for subtree in path {
-        let string = std::str::from_utf8(subtree).expect("should be able to convert path");
+        let string = std::str::from_utf8(&subtree).unwrap_or_else(|_| "<NON_UTF8_PATH>");
         subtree_path_str.push(
-            string
-                .parse()
-                .expect("should be able to parse path to string"),
+            string.to_string()
         );
     }
     subtree_path_str
