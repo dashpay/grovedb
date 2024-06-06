@@ -9,8 +9,8 @@ use grovedb_merk::{CryptoHash, Restorer};
 use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
 
-use super::{util_decode_vec_ops, util_split_global_chunk_id, CURRENT_STATE_SYNC_VERSION};
-use crate::{replication::util_path_to_string, Error, GroveDb, Transaction};
+use super::{util_decode_vec_ops, util_split_global_chunk_id, CURRENT_STATE_SYNC_VERSION, util_create_global_chunk_id_2};
+use crate::{replication::util_path_to_string, Error, GroveDb, Transaction, replication};
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
@@ -20,6 +20,8 @@ struct SubtreeStateSyncInfo<'db> {
     /// Set of global chunk ids requested to be fetched and pending for
     /// processing. For the description of global chunk id check
     /// fetch_chunk().
+    root_key: Option<Vec<u8>>,
+    is_sum_tree: bool,
     pending_chunks: BTreeSet<Vec<u8>>,
     /// Number of processed chunks in current prefix (Path digest)
     num_processed_chunks: usize,
@@ -77,6 +79,8 @@ impl<'tx> SubtreeStateSyncInfo<'tx> {
     pub fn new(restorer: Restorer<PrefixedRocksDbImmediateStorageContext<'tx>>) -> Self {
         SubtreeStateSyncInfo {
             restorer,
+            root_key: None,
+            is_sum_tree: false,
             pending_chunks: Default::default(),
             num_processed_chunks: 0,
         }
@@ -138,7 +142,7 @@ impl<'db> MultiStateSyncSession<'db> {
         hash: CryptoHash,
         actual_hash: Option<CryptoHash>,
         chunk_prefix: [u8; 32],
-    ) -> Result<(), Error> {
+    ) -> Result<(Vec<u8>), Error> {
         // SAFETY: we get an immutable reference of a transaction that stays behind
         // `Pin` so this reference shall remain valid for the whole session
         // object lifetime.
@@ -148,14 +152,17 @@ impl<'db> MultiStateSyncSession<'db> {
             &*(tx as *mut _)
         };
 
-        if let Ok(merk) = db.open_merk_for_replication(path, transaction_ref) {
+        if let Ok((merk, root_key, is_sum_tree)) = db.open_merk_for_replication(path, transaction_ref) {
             let restorer = Restorer::new(merk, hash, actual_hash);
             let mut sync_info = SubtreeStateSyncInfo::new(restorer);
             sync_info.pending_chunks.insert(vec![]);
+            sync_info.root_key = root_key.clone();
+            sync_info.is_sum_tree = is_sum_tree;
             self.as_mut()
                 .current_prefixes()
                 .insert(chunk_prefix, sync_info);
-            Ok(())
+            let x = util_create_global_chunk_id_2(chunk_prefix, root_key, is_sum_tree, vec![]);
+            Ok((x))
         } else {
             Err(Error::InternalError("Unable to open merk for replication"))
         }
@@ -201,7 +208,10 @@ impl<'db> MultiStateSyncSession<'db> {
 
         let mut next_chunk_ids = vec![];
 
-        let (chunk_prefix, chunk_id) = util_split_global_chunk_id(global_chunk_id, self.app_hash)?;
+        // [OLD_WAY]
+        //let (chunk_prefix, chunk_id) = util_split_global_chunk_id(global_chunk_id, self.app_hash)?;
+        // [NEW_WAY]
+        let (chunk_prefix, _, _, chunk_id) = replication::util_split_global_chunk_id_2(global_chunk_id, &self.app_hash)?;
 
         if self.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
@@ -217,9 +227,13 @@ impl<'db> MultiStateSyncSession<'db> {
 
         if !res.is_empty() {
             for local_chunk_id in res.iter() {
-                let mut next_global_chunk_id = chunk_prefix.to_vec();
-                next_global_chunk_id.extend(local_chunk_id.to_vec());
-                next_chunk_ids.push(next_global_chunk_id);
+                // [NEW_WAY]
+                let x = util_create_global_chunk_id_2(chunk_prefix, subtree_state_sync.root_key.clone(), subtree_state_sync.is_sum_tree.clone(), local_chunk_id.clone());
+                next_chunk_ids.push(x);
+                // [OLD_WAY]
+                //let mut next_global_chunk_id = chunk_prefix.to_vec();
+                //next_global_chunk_id.extend(local_chunk_id.to_vec());
+                //next_chunk_ids.push(next_global_chunk_id);
             }
 
             Ok(next_chunk_ids)
@@ -284,14 +298,20 @@ impl<'db> MultiStateSyncSession<'db> {
                     util_path_to_string(&prefix_metadata.0)
                 );
 
-                self.add_subtree_sync_info(
+                let x = self.add_subtree_sync_info(
                     db,
                     path.into(),
                     elem_value_hash.clone(),
                     Some(actual_value_hash.clone()),
                     prefix.clone(),
                 )?;
-                res.push(prefix.to_vec());
+
+                // [NEW_WAY]
+                res.push(x);
+                // [OLD_WAY]
+                //let root_chunk_prefix = prefix.to_vec();
+                //res.push(root_chunk_prefix.to_vec());
+                //res.push(prefix.to_vec());
             }
         }
 

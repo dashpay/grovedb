@@ -323,7 +323,7 @@ impl GroveDb {
         &'db self,
         path: SubtreePath<'b, B>,
         tx: &'tx Transaction<'db>,
-    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Error>
+    ) -> Result<(Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Option<Vec<u8>>, bool), Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -350,29 +350,37 @@ impl GroveDb {
                 .unwrap()?;
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                Ok((
                 Merk::open_layered_with_root_key(
                     storage,
-                    root_key,
+                    root_key.clone(),
                     is_sum_tree,
                     Some(&Element::value_defined_cost_for_serialized_value),
                 )
                 .map_err(|_| {
                     Error::CorruptedData("cannot open a subtree with given root key".to_owned())
                 })
-                .unwrap()
+                .unwrap()?,
+                    root_key,
+                    is_sum_tree
+                ))
             } else {
                 Err(Error::CorruptedPath(
                     "cannot open a subtree as parent exists but is not a tree",
                 ))
             }
         } else {
+            Ok((
             Merk::open_base(
                 storage,
                 false,
                 None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
             )
             .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-            .unwrap()
+            .unwrap()?,
+                None,
+                false
+            ))
         }
     }
 

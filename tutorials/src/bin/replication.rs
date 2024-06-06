@@ -250,7 +250,8 @@ fn sync_db_demo(
     chunk_queue.push_back(app_hash.to_vec());
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
-        let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
+        //let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
+        let ops = source_db.fetch_chunk_2(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
         let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), ops, CURRENT_STATE_SYNC_VERSION)?;
         chunk_queue.extend(more_chunks);
     }
