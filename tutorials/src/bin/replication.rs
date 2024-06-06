@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::Path;
+use std::time::Instant;
 use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction};
 use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, };
@@ -43,14 +44,14 @@ fn populate_db(grovedb_path: String) -> GroveDb {
 
     let tx = db.start_transaction();
     let batch_size = 50;
-    for i in 0..=5 {
+    for i in 0..=55 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_1], i * batch_size, i * batch_size + batch_size - 1, &tx);
     }
     let _ = db.commit_transaction(tx);
 
     let tx = db.start_transaction();
     let batch_size = 50;
-    for i in 0..=5 {
+    for i in 0..=55 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_2], i * batch_size, i * batch_size + batch_size - 1, &tx);
     }
     let _ = db.commit_transaction(tx);
@@ -239,6 +240,7 @@ fn sync_db_demo(
     source_db: &GroveDb,
     target_db: &GroveDb,
 ) -> Result<(), grovedb::Error> {
+    let start_time = Instant::now();
     let app_hash = source_db.root_hash(None).value.unwrap();
     let mut session = target_db.start_snapshot_syncing(app_hash, CURRENT_STATE_SYNC_VERSION)?;
 
@@ -256,7 +258,10 @@ fn sync_db_demo(
     if session.is_sync_completed() {
         target_db.commit_session(session);
     }
-    
+    let elapsed = start_time.elapsed();
+    println!("state_synced in {:.2?}", elapsed);
+
+
     Ok(())
 }
 
