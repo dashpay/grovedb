@@ -55,7 +55,7 @@ pub type AverageFlagsSize = u32;
 pub type Weight = u8;
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated number of sum trees
 #[derive(Default)]
 pub enum EstimatedSumTrees {
@@ -91,7 +91,7 @@ impl EstimatedSumTrees {
 }
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated layer sizes
 pub enum EstimatedLayerSizes {
     /// All subtrees
@@ -259,7 +259,7 @@ pub type EstimatedLevelNumber = u32;
 pub type EstimatedToBeEmpty = bool;
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Information on an estimated layer
 pub struct EstimatedLayerInformation {
     /// Is sum tree?
@@ -274,7 +274,7 @@ pub struct EstimatedLayerInformation {
 impl EstimatedLayerInformation {}
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated elements and level number of a layer
 pub enum EstimatedLayerCount {
     /// Potentially at max elements
