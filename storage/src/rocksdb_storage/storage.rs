@@ -58,7 +58,7 @@ use crate::{
 
 const BLAKE_BLOCK_LEN: usize = 64;
 
-pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
+pub type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 fn blake_block_count(len: usize) -> usize {
     if len == 0 {
@@ -472,6 +472,15 @@ impl<'db> Storage<'db> for RocksDbStorage {
             .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix, batch))
     }
 
+    fn get_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        batch: Option<&'db StorageBatch>,
+    ) -> CostContext<Self::BatchStorageContext>
+    {
+        PrefixedRocksDbStorageContext::new(&self.db, prefix, batch).wrap_with_cost(OperationCost::default())
+    }
+
     fn get_transactional_storage_context<'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
@@ -484,6 +493,16 @@ impl<'db> Storage<'db> for RocksDbStorage {
         Self::build_prefix(path).map(|prefix| {
             PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
         })
+    }
+
+    fn get_transactional_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        batch: Option<&'db StorageBatch>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::BatchTransactionalStorageContext>
+    {
+        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch).wrap_with_cost(OperationCost::default())
     }
 
     fn get_immediate_storage_context<'b, B>(
