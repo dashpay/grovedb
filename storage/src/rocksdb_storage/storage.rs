@@ -518,6 +518,15 @@ impl<'db> Storage<'db> for RocksDbStorage {
         })
     }
 
+    fn get_immediate_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>
+    {
+        PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix).wrap_with_cost(OperationCost::default())
+    }
+
     fn commit_multi_context_batch(
         &self,
         batch: StorageBatch,

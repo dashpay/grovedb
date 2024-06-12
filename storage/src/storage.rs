@@ -129,6 +129,14 @@ pub trait Storage<'db> {
     where
         B: AsRef<[u8]> + 'b;
 
+    /// Make context for a subtree by prefix on transactional data that will apply all
+    /// operations straight to the storage.
+    fn get_immediate_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>;
+
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
 
