@@ -255,16 +255,6 @@ impl<'db> MultiStateSyncSession<'db> {
             }
             self.as_mut().processed_prefixes().insert(chunk_prefix);
 
-            // // Subtree was successfully save. Time to discover new subtrees that
-            // // need to be processed
-            // if let Some(value) = subtrees_metadata.data.get(&chunk_prefix) {
-            //     println!(
-            //         "    path:{:?} done (num_processed_chunks:{:?})",
-            //         util_path_to_string(&value.0),
-            //         subtree_state_sync.num_processed_chunks
-            //     );
-            // }
-
             if let Ok(res) = self.discover_subtrees(db) {
                 next_chunk_ids.extend(res);
                 Ok(next_chunk_ids)
@@ -319,48 +309,6 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 }
 
-// impl<'db> Default for MultiStateSyncInfo<'db> {
-//     fn default() -> Self {
-//         Self {
-//             current_prefixes: BTreeMap::new(),
-//             processed_prefixes: BTreeSet::new(),
-//             version: CURRENT_STATE_SYNC_VERSION,
-//         }
-//     }
-// }
-
-// fn lol(db: &GroveDb) -> MultiStateSyncSession {
-//     let mut sync = MultiStateSyncSession {
-//         transaction: db.start_transaction(),
-//         current_prefixes: Default::default(),
-//         processed_prefixes: Default::default(),
-//         version: 0,
-//     };
-
-//     sync.current_prefixes.insert(
-//         b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
-//         SubtreeStateSyncInfo {
-//             restorer: Some(Restorer::new(
-//                 db.open_merk_for_replication(SubtreePath::empty(),
-// &sync.transaction)                     .unwrap(),
-//                 b"11111111111111111111111111111111".to_owned(),
-//                 None,
-//             )),
-//             pending_chunks: Default::default(),
-//             num_processed_chunks: 0,
-//         },
-//     );
-
-//     let ass: Option<&mut SubtreeStateSyncInfo> =
-// sync.current_prefixes.values_mut().next();
-
-//     let ass2: &mut SubtreeStateSyncInfo = ass.unwrap();
-
-//     ass2.apply_inner_chunk(b"a", vec![]).unwrap();
-
-//     sync
-// }
-
 // Struct containing information about current subtrees found in GroveDB
 pub struct SubtreesMetadata {
     // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent
@@ -380,21 +328,5 @@ impl SubtreesMetadata {
 impl Default for SubtreesMetadata {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl fmt::Debug for SubtreesMetadata {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (prefix, metadata) in self.data.iter() {
-            let metadata_path = &metadata.0;
-            let metadata_path_str = util_path_to_string(metadata_path);
-            writeln!(
-                f,
-                " prefix:{:?} -> path:{:?}",
-                hex::encode(prefix),
-                metadata_path_str
-            )?;
-        }
-        Ok(())
     }
 }

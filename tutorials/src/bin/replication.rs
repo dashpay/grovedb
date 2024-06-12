@@ -97,12 +97,8 @@ fn main() {
     let root_hash_destination = db_destination.root_hash(None).unwrap().unwrap();
     println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
-    println!("\n######### source_subtree_metadata of db_source");
-    let subtrees_metadata_source = db_source.get_subtrees_metadata(None).unwrap();
-    println!("{:?}", subtrees_metadata_source);
-
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
-    sync_db_demo(&db_checkpoint_0, &db_destination, /*&mut state_sync_session*/).unwrap();
+    sync_db_demo(&db_checkpoint_0, &db_destination).unwrap();
 
     println!("\n######### verify db_destination");
     let incorrect_hashes = db_destination.verify_grovedb(None).unwrap();
@@ -250,8 +246,7 @@ fn sync_db_demo(
     chunk_queue.push_back(app_hash.to_vec());
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
-        //let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
-        let ops = source_db.fetch_chunk_2(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
+        let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
         let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), ops, CURRENT_STATE_SYNC_VERSION)?;
         chunk_queue.extend(more_chunks);
     }
