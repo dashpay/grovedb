@@ -97,6 +97,10 @@ fn main() {
     let root_hash_destination = db_destination.root_hash(None).unwrap().unwrap();
     println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
+    println!("\n######### source_subtree_metadata of db_source");
+    let subtrees_metadata_source = db_source.get_subtrees_metadata(None).unwrap();
+    println!("{:?}", subtrees_metadata_source);
+
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
     sync_db_demo(&db_checkpoint_0, &db_destination).unwrap();
 

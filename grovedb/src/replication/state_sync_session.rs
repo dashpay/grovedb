@@ -4,6 +4,8 @@ use std::{
     marker::PhantomPinned,
     pin::Pin,
 };
+use std::fs::Metadata;
+use grovedb_costs::CostsExt;
 
 use grovedb_merk::{CryptoHash, Restorer};
 use grovedb_path::SubtreePath;
@@ -11,8 +13,11 @@ use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
 
 use super::{util_decode_vec_ops, util_split_global_chunk_id, CURRENT_STATE_SYNC_VERSION, util_create_global_chunk_id_2};
 use crate::{replication::util_path_to_string, Error, GroveDb, Transaction, replication};
+use crate::util::storage_context_optional_tx;
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
+
+pub(crate) type SubtreeMetadata = (SubtreePrefix, Vec<Vec<u8>>, /*Option<Vec<u8>>, bool,*/ CryptoHash, CryptoHash);
 
 struct SubtreeStateSyncInfo<'db> {
     /// Current Chunk restorer
@@ -23,6 +28,7 @@ struct SubtreeStateSyncInfo<'db> {
     root_key: Option<Vec<u8>>,
     is_sum_tree: bool,
     pending_chunks: BTreeSet<Vec<u8>>,
+    current_path: Vec<Vec<u8>>,
     /// Number of processed chunks in current prefix (Path digest)
     num_processed_chunks: usize,
 }
@@ -82,6 +88,7 @@ impl<'tx> SubtreeStateSyncInfo<'tx> {
             root_key: None,
             is_sum_tree: false,
             pending_chunks: Default::default(),
+            current_path: vec![],
             num_processed_chunks: 0,
         }
     }
@@ -142,6 +149,8 @@ impl<'db> MultiStateSyncSession<'db> {
         hash: CryptoHash,
         actual_hash: Option<CryptoHash>,
         chunk_prefix: [u8; 32],
+        parent_path: Vec<Vec<u8>>,
+        current_path: Vec<u8>,
     ) -> Result<(Vec<u8>), Error> {
         // SAFETY: we get an immutable reference of a transaction that stays behind
         // `Pin` so this reference shall remain valid for the whole session
@@ -152,12 +161,13 @@ impl<'db> MultiStateSyncSession<'db> {
             &*(tx as *mut _)
         };
 
-        if let Ok((merk, root_key, is_sum_tree)) = db.open_merk_for_replication(path, transaction_ref) {
+        if let Ok((merk, root_key, is_sum_tree)) = db.open_merk_for_replication(path.clone(), transaction_ref) {
             let restorer = Restorer::new(merk, hash, actual_hash);
             let mut sync_info = SubtreeStateSyncInfo::new(restorer);
             sync_info.pending_chunks.insert(vec![]);
             sync_info.root_key = root_key.clone();
             sync_info.is_sum_tree = is_sum_tree;
+            println!("{}", format!("adding:{} {:?} {} {:?}", hex::encode(chunk_prefix), root_key.clone(), is_sum_tree, util_path_to_string(path.to_vec().as_slice())));
             self.as_mut()
                 .current_prefixes()
                 .insert(chunk_prefix, sync_info);
@@ -166,6 +176,15 @@ impl<'db> MultiStateSyncSession<'db> {
         } else {
             Err(Error::InternalError("Unable to open merk for replication"))
         }
+    }
+
+    pub fn add_subtree_sync_info_2<'b, B: AsRef<[u8]>>(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        db: &'db GroveDb,
+        metadata: SubtreeMetadata
+    ) -> Result<(Vec<u8>), Error> {
+        let (prefix, path, hash, actual_hash) = metadata;
+        Ok(vec![])
     }
 
     fn current_prefixes(
@@ -294,6 +313,8 @@ impl<'db> MultiStateSyncSession<'db> {
                     elem_value_hash.clone(),
                     Some(actual_value_hash.clone()),
                     prefix.clone(),
+                    vec![],
+                    vec![],
                 )?;
 
                 // [NEW_WAY]
@@ -328,5 +349,21 @@ impl SubtreesMetadata {
 impl Default for SubtreesMetadata {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl fmt::Debug for SubtreesMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (prefix, metadata) in self.data.iter() {
+            let metadata_path = &metadata.0;
+            let metadata_path_str = util_path_to_string(metadata_path);
+            writeln!(
+                f,
+                " prefix:{:?} -> path:{:?}",
+                hex::encode(prefix),
+                metadata_path_str
+            )?;
+        }
+        Ok(())
     }
 }

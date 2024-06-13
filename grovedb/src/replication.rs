@@ -1,15 +1,17 @@
 mod state_sync_session;
 
 use std::pin::Pin;
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 use grovedb_merk::{ed::Encode, proofs::{Decoder, Op}, tree::{hash::CryptoHash, kv::ValueDefinedCostType, value_hash}, ChunkProducer, Merk};
 use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
-use grovedb_storage::Storage;
+use grovedb_storage::{Storage, StorageContext};
 
 pub use self::state_sync_session::MultiStateSyncSession;
 use self::state_sync_session::SubtreesMetadata;
 use crate::{Element, Error, error, GroveDb, replication, TransactionArg};
+use crate::replication::state_sync_session::{SubtreeMetadata, SubtreePrefix};
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
@@ -22,6 +24,72 @@ impl GroveDb {
     pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) {
         // we do not care about the cost
         let _ = self.commit_transaction(session.into_transaction());
+    }
+
+    pub fn get_subtree_metadata_by_prefix(
+        &self,
+        transaction: TransactionArg,
+        path: Vec<Vec<u8>>,
+    ) -> Result<Vec<SubtreeMetadata>, Error> {
+        let mut res = vec![];
+
+        if let Some(tx) = transaction {
+            let current_path = SubtreePath::from(path.as_slice());
+            let storage = self.db.get_transactional_storage_context(current_path, None, tx)
+                .value;
+            let mut raw_iter = Element::iterator(storage.raw_iter()).value;
+            while let Ok(Some((key, value))) = raw_iter.next_element().value
+            {
+                match value {
+                    Element::Tree(ref root_key, _) => {}
+                    Element::SumTree(ref root_key, _, _) => {}
+                    _ => {}
+                }
+                if value.is_tree() {
+
+                }
+            }
+        }
+        /*
+        if let Some(tx) = transaction {
+            let storage = self.db.get_transactional_storage_context_by_subtree_prefix(prefix, None, tx)
+                .unwrap_add_cost(&mut cost);
+            let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
+            while let Some((key, value)) =
+                cost_return_on_error!(&mut cost, raw_iter.next_element())
+            {
+                match value {
+
+                }
+                if value.is_tree() {
+
+                }
+            }
+        }
+*/
+        //let storage = self.get_transactional_storage_context_by_subtree_prefix()
+        /*
+                while let Some(q) = queue.pop() {
+                    let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
+                    // Get the correct subtree with q_ref as path
+                    storage_context_optional_tx!(self.db, subtree_path, None, transaction, storage, {
+                        let storage = storage.unwrap_add_cost(&mut cost);
+                        let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
+                        while let Some((key, value)) =
+                            cost_return_on_error!(&mut cost, raw_iter.next_element())
+                        {
+                            if value.is_tree() {
+                                let mut sub_path = q.clone();
+                                sub_path.push(key.to_vec());
+                                queue.push(sub_path.clone());
+                                result.push(sub_path);
+                            }
+                        }
+                    })
+                }
+                Ok(result).wrap_with_cost(cost)
+        */
+        Ok(res)
     }
 
     // Returns the discovered subtrees found recursively along with their associated
@@ -99,7 +167,7 @@ impl GroveDb {
     pub fn fetch_chunk(
         &self,
         global_chunk_id: &[u8],
-        tx: TransactionArg,
+        transaction: TransactionArg,
         version: u16,
     ) -> Result<Vec<u8>, Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
@@ -109,96 +177,63 @@ impl GroveDb {
             ));
         }
 
-        let root_app_hash = self.root_hash(tx).value?;
+        let root_app_hash = self.root_hash(transaction).value?;
         let (chunk_prefix, root_key, is_sum_tree, chunk_id) =
             replication::util_split_global_chunk_id_2(global_chunk_id, &root_app_hash)?;
 
-        match tx {
+        // TODO: Refactor this by writing fetch_chunk_inner (as only merk constructor and type are different)
+        match transaction {
             None => {
-                let storage = self
-                    .db
-                    .get_storage_context_by_subtree_prefix(chunk_prefix, None).value;
-                if root_key.is_some() {
-                    let merk = Merk::open_layered_with_root_key(
-                        storage,
-                        root_key,
-                        is_sum_tree,
-                        Some(&Element::value_defined_cost_for_serialized_value),
-                    ).value;
-                    match merk {
-                        Ok(m) => {
-                            if m.is_empty_tree().unwrap() {
-                                return Ok(vec![]);
-                            }
-
-                            let chunk_producer_res = ChunkProducer::new(&m);
-                            match chunk_producer_res {
-                                Ok(mut chunk_producer) => {
-                                    let chunk_res = chunk_producer.chunk(&chunk_id);
-                                    match chunk_res {
-                                        Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
-                                            Ok(op_bytes) => Ok(op_bytes),
-                                            Err(e) => Err(Error::CorruptedData(
-                                                format!("2_no_tx_layered fail_0:{}", e),
-                                            )),
-                                        },
-                                        Err(e) => Err(Error::CorruptedData(
-                                            format!("2_no_tx_layered fail_1:{}", e),
-                                        )),
-                                    }
-                                }
-                                Err(e) => Err(Error::CorruptedData(
-                                    format!("2_no_tx_layered fail_2:{}", e),
-                                )),
-                            }
-                        }
-                        Err(e) => Err(Error::CorruptedData(
-                            format!("2_no_tx_layered fail_3:{}", e),
-                        )),
-                    }
-                }
-                else {
-                    let merk = Merk::open_base(
-                        storage,
-                        false,
-                        Some(&Element::value_defined_cost_for_serialized_value),
-                    ).value;
-                    match merk {
-                        Ok(m) => {
-                            if m.is_empty_tree().unwrap() {
-                                return Ok(vec![]);
-                            }
-
-                            let chunk_producer_res = ChunkProducer::new(&m);
-                            match chunk_producer_res {
-                                Ok(mut chunk_producer) => {
-                                    let chunk_res = chunk_producer.chunk(&chunk_id);
-                                    match chunk_res {
-                                        Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
-                                            Ok(op_bytes) => Ok(op_bytes),
-                                            Err(e) => Err(Error::CorruptedData(
-                                                format!("2_no_tx_base fail_0:{}", e),
-                                            )),
-                                        },
-                                        Err(e) => Err(Error::CorruptedData(
-                                            format!("2_no_tx_base fail_1:{}", e),
-                                        )),
-                                    }
-                                }
-                                Err(e) => Err(Error::CorruptedData(
-                                    format!("2_no_tx_base fail_2:{}", e),
-                                )),
-                            }
-                        }
-                        Err(e) => Err(Error::CorruptedData(
-                            format!("2_no_tx_base fail_3:{}", e),
-                        )),
-                    }
+                let merk = self.open_non_transactional_merk_by_prefix(chunk_prefix,
+                root_key,
+                is_sum_tree, None)
+                    .value
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to open merk by prefix non-tx:{} with:{}", e, hex::encode(chunk_prefix)),
+                    ))?;
+                if merk.is_empty_tree().unwrap() {
+                    return Ok(vec![]);
                 }
 
+                let mut chunk_producer = ChunkProducer::new(&merk)
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to create chunk producer by prefix non-tx:{} with:{}", hex::encode(chunk_prefix), e),
+                    ))?;
+                let ((chunk,_)) = chunk_producer.chunk(&chunk_id)
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to apply chunk:{} with:{}", hex::encode(chunk_prefix), e),
+                    ))?;
+                let op_bytes = util_encode_vec_ops(chunk)
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to encode chunk ops:{} with:{}", hex::encode(chunk_prefix), e),
+                    ))?;
+                Ok(op_bytes)
             }
-            Some(t) => {
-                Ok(vec![])
+            Some(tx) => {
+                let merk = self.open_transactional_merk_by_prefix(chunk_prefix,
+                                                                      root_key,
+                                                                      is_sum_tree, tx, None)
+                    .value
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to open merk by prefix tx:{} with:{}", hex::encode(chunk_prefix), e),
+                    ))?;
+                if merk.is_empty_tree().unwrap() {
+                    return Ok(vec![]);
+                }
+
+                let mut chunk_producer = ChunkProducer::new(&merk)
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to create chunk producer by prefix tx:{} with:{}", hex::encode(chunk_prefix), e),
+                    ))?;
+                let ((chunk,_)) = chunk_producer.chunk(&chunk_id)
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to apply chunk:{} with:{}", hex::encode(chunk_prefix), e),
+                    ))?;
+                let op_bytes = util_encode_vec_ops(chunk)
+                    .map_err(|e| Error::CorruptedData(
+                        format!("failed to encode chunk ops:{} with:{}", hex::encode(chunk_prefix), e),
+                    ))?;
+                Ok(op_bytes)
             }
         }
     }
@@ -225,7 +260,7 @@ impl GroveDb {
 
         let mut session = self.start_syncing_session(app_hash);
 
-        session.add_subtree_sync_info(self, SubtreePath::empty(), app_hash, None, root_prefix)?;
+        session.add_subtree_sync_info(self, SubtreePath::empty(), app_hash, None, root_prefix, vec![], vec![])?;
 
         Ok(session)
     }

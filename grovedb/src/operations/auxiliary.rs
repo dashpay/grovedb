@@ -166,4 +166,49 @@ impl GroveDb {
         }
         Ok(result).wrap_with_cost(cost)
     }
+
+    /// Finds keys which are trees for a given subtree.
+    /// One element means a key of a `merk`, n > 1 elements mean relative path
+    /// for a deeply nested subtree.
+    pub fn find_subtrees_non_recursive<B: AsRef<[u8]>>(
+        &self,
+        path: &SubtreePath<B>,
+        transaction: TransactionArg,
+    ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
+        let mut cost = OperationCost::default();
+
+        // TODO: remove conversion to vec;
+        // However, it's not easy for a reason:
+        // new keys to enqueue are taken from raw iterator which returns Vec<u8>;
+        // changing that to slice is hard as cursor should be moved for next iteration
+        // which requires exclusive (&mut) reference, also there is no guarantee that
+        // slice which points into storage internals will remain valid if raw
+        // iterator got altered so why that reference should be exclusive;
+        //
+        // Update: there are pinned views into RocksDB to return slices of data, perhaps
+        // there is something for iterators
+
+        let mut queue: Vec<Vec<Vec<u8>>> = vec![path.to_vec()];
+        let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
+
+        while let Some(q) = queue.pop() {
+            let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
+            // Get the correct subtree with q_ref as path
+            storage_context_optional_tx!(self.db, subtree_path, None, transaction, storage, {
+                let storage = storage.unwrap_add_cost(&mut cost);
+                let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
+                while let Some((key, value)) =
+                    cost_return_on_error!(&mut cost, raw_iter.next_element())
+                {
+                    if value.is_tree() {
+                        let mut sub_path = q.clone();
+                        sub_path.push(key.to_vec());
+                        queue.push(sub_path.clone());
+                        result.push(sub_path);
+                    }
+                }
+            })
+        }
+        Ok(result).wrap_with_cost(cost)
+    }
 }
