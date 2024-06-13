@@ -59,8 +59,8 @@ impl Element {
             let value = result?;
             value.ok_or_else(|| {
                 Error::PathKeyNotFound(format!(
-                    "key not found in Merk for get: {}",
-                    hex::encode(key)
+                    "get: key \"{}\" not found in Merk that has a root key [{}] and is of type {}",
+                    hex::encode(key), merk.root_key().map(|key| hex::encode(key)).unwrap_or("None".to_string()), merk.merk_type
                 ))
             })
         })
