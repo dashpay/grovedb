@@ -208,6 +208,41 @@ impl QueryResultElements {
         map
     }
 
+    /// To last path to key, elements btree map
+    pub fn to_last_path_to_key_elements_btree_map(self) -> BTreeMap<Key, BTreeMap<Key, Element>> {
+        let mut map: BTreeMap<Vec<u8>, BTreeMap<Key, Element>> = BTreeMap::new();
+
+        for result_item in self.elements.into_iter() {
+            if let QueryResultElement::PathKeyElementTrioResultItem((mut path, key, element)) =
+                result_item
+            {
+                if let Some(last) = path.pop() {
+                    map.entry(last).or_insert_with(BTreeMap::new).insert(key, element);
+                }
+            }
+        }
+
+        map
+    }
+
+    /// To last path to elements btree map
+    /// This is useful if the key is not import
+    pub fn to_last_path_to_elements_btree_map(self) -> BTreeMap<Key, Vec<Element>> {
+        let mut map: BTreeMap<Vec<u8>, Vec<Element>> = BTreeMap::new();
+
+        for result_item in self.elements.into_iter() {
+            if let QueryResultElement::PathKeyElementTrioResultItem((mut path, _, element)) =
+                result_item
+            {
+                if let Some(last) = path.pop() {
+                    map.entry(last).or_insert_with(Vec::new).push(element);
+                }
+            }
+        }
+
+        map
+    }
+
     /// To last path to keys btree map
     /// This is useful if for example the element is a sum item and isn't
     /// important Used in Platform Drive for getting voters for multiple
