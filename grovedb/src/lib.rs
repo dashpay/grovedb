@@ -257,7 +257,7 @@ impl GroveDb {
 
     #[cfg(feature = "grovedbg")]
     // Start visualizer server for the GroveDB instance
-    pub fn start_visualzier(self: &Arc<Self>, port: u16) {
+    pub fn start_visualizer(self: &Arc<Self>, port: u16) {
         let weak = Arc::downgrade(self);
         start_visualizer(weak, port);
     }
