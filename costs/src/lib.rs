@@ -93,6 +93,11 @@ pub struct OperationCost {
 }
 
 impl OperationCost {
+    /// Is Nothing
+    pub fn is_nothing(&self) -> bool {
+        self == &Self::default()
+    }
+
     /// Helper function to build default `OperationCost` with different
     /// `seek_count`.
     pub fn with_seek_count(seek_count: u16) -> Self {
