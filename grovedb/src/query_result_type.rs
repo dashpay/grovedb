@@ -217,7 +217,9 @@ impl QueryResultElements {
                 result_item
             {
                 if let Some(last) = path.pop() {
-                    map.entry(last).or_insert_with(BTreeMap::new).insert(key, element);
+                    map.entry(last)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(key, element);
                 }
             }
         }
