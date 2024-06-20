@@ -6,7 +6,10 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::po
 use grovedb_merk::debugger::NodeDbg;
 use grovedb_path::SubtreePath;
 use grovedbg_types::{NodeFetchRequest, NodeUpdate, Path};
-use tokio::sync::mpsc::{self, Sender};
+use tokio::{
+    net::ToSocketAddrs,
+    sync::mpsc::{self, Sender},
+};
 use tower_http::services::ServeDir;
 
 use crate::{reference_path::ReferencePathType, GroveDb};
@@ -14,7 +17,10 @@ use crate::{reference_path::ReferencePathType, GroveDb};
 const GROVEDBG_ZIP: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip")).len()] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
 
-pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
+pub(super) fn start_visualizer<A>(grovedb: Weak<GroveDb>, addr: A)
+where
+    A: ToSocketAddrs + Send + 'static,
+{
     std::thread::spawn(move || {
         let grovedbg_tmp =
             tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
@@ -35,7 +41,7 @@ pub(super) fn start_visualizer(grovedb: Weak<GroveDb>, port: u16) {
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(async move {
-                let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                let listener = tokio::net::TcpListener::bind(addr)
                     .await
                     .expect("can't bind visualizer port");
                 axum::serve(listener, app)

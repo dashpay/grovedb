@@ -219,6 +219,8 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
+#[cfg(feature = "grovedbg")]
+use tokio::net::ToSocketAddrs;
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
@@ -257,9 +259,12 @@ impl GroveDb {
 
     #[cfg(feature = "grovedbg")]
     // Start visualizer server for the GroveDB instance
-    pub fn start_visualizer(self: &Arc<Self>, port: u16) {
+    pub fn start_visualizer<A>(self: &Arc<Self>, addr: A)
+    where
+        A: ToSocketAddrs + Send + 'static,
+    {
         let weak = Arc::downgrade(self);
-        start_visualizer(weak, port);
+        start_visualizer(weak, addr);
     }
 
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb
