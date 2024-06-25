@@ -253,7 +253,7 @@ impl<'a> ProofReader<'a> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
-        if data_type != [ProofTokenType::PathInfo.into()] {
+        if data_type != [Into::<u8>::into(ProofTokenType::PathInfo)] {
             return Err(Error::InvalidProof("wrong data_type, expected path_info"));
         }
 
