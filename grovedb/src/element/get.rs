@@ -62,7 +62,7 @@ impl Element {
                     "get: key \"{}\" not found in Merk that has a root key [{}] and is of type {}",
                     hex::encode(key),
                     merk.root_key()
-                        .map(|key| hex::encode(key))
+                        .map(hex::encode)
                         .unwrap_or("None".to_string()),
                     merk.merk_type
                 ))

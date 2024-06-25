@@ -274,7 +274,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         let base_path = KeyInfoPath(vec![]);
         if let Some(estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
-            if self.cached_merks.get(&base_path).is_none() {
+            if !self.cached_merks.contains_key(&base_path) {
                 GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
                     &mut cost,
                     &base_path,
