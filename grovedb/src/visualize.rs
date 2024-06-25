@@ -130,6 +130,21 @@ impl Visualize for ReferencePathType {
                         .as_bytes(),
                 )?;
             }
+            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+                height,
+                end_path,
+            ) => {
+                drawer.write(b"upstream root height with parent path addition reference: ")?;
+                drawer.write(format!("[height: {height}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
             ReferencePathType::UpstreamFromElementHeightReference(up, end_path) => {
                 drawer.write(b"upstream from element reference: ")?;
                 drawer.write(format!("[up: {up}").as_bytes())?;

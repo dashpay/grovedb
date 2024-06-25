@@ -220,6 +220,17 @@ pub enum MerkType {
     LayeredMerk,
 }
 
+impl fmt::Display for MerkType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let description = match self {
+            MerkType::StandaloneMerk => "StandaloneMerk",
+            MerkType::BaseMerk => "BaseMerk",
+            MerkType::LayeredMerk => "LayeredMerk",
+        };
+        write!(f, "{}", description)
+    }
+}
+
 impl MerkType {
     /// Returns bool
     pub(crate) fn requires_root_storage_update(&self) -> bool {

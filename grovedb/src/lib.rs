@@ -164,7 +164,6 @@ pub mod replication;
 mod tests;
 #[cfg(feature = "full")]
 mod util;
-#[cfg(any(feature = "full", feature = "verify"))]
 mod versioning;
 #[cfg(feature = "full")]
 mod visualize;

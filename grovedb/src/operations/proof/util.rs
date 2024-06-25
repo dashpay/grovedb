@@ -38,9 +38,9 @@ use grovedb_merk::{
 #[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader};
 
-use crate::operations::proof::verify::ProvedKeyValues;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
+use crate::{operations::proof::verify::ProvedKeyValues, reference_path::ReferencePathType};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
@@ -253,7 +253,7 @@ impl<'a> ProofReader<'a> {
         let mut data_type = [0; 1];
         self.read_into_slice(&mut data_type)?;
 
-        if data_type != [Into::<u8>::into(ProofTokenType::PathInfo)] {
+        if data_type != [ProofTokenType::PathInfo.into()] {
             return Err(Error::InvalidProof("wrong data_type, expected path_info"));
         }
 
