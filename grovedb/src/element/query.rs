@@ -52,10 +52,10 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, storage_context_optional_tx, merk_optional_tx_internal_error},
     Error, PathQuery, TransactionArg,
 };
-use crate::{query_result_type::Path, util::merk_optional_tx_internal_error};
+use crate::{query_result_type::Path};
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, SizedQuery};
 
