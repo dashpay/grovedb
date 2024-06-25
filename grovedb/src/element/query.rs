@@ -42,6 +42,7 @@ use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
+use crate::query_result_type::Path;
 #[cfg(feature = "full")]
 use crate::{
     element::helpers::raw_decode,
@@ -52,10 +53,9 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    util::{merk_optional_tx, storage_context_optional_tx, merk_optional_tx_internal_error},
+    util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
-use crate::{query_result_type::Path};
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, SizedQuery};
 
