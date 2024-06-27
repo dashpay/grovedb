@@ -17,7 +17,7 @@ tempfile = { version = "3.10.1", optional = true }
 bincode = { version = "2.0.0-rc.3" }
 grovedb-storage = { version = "1.0.0-rc.2", path = "../storage", optional = true }
 grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize", optional = true }
-hex = { version = "0.4.3", optional = true }
+hex = { version = "0.4.3"}
 itertools = { version = "0.12.1", optional = true }
 integer-encoding = { version = "4.0.0", optional = true }
 grovedb-costs = { version = "1.0.0-rc.2", path = "../costs", optional = true }
@@ -51,7 +51,6 @@ full = [
     "tempfile",
     "grovedb-storage/rocksdb_storage",
     "visualize",
-    "hex",
     "itertools",
     "integer-encoding",
     "grovedb-costs",
