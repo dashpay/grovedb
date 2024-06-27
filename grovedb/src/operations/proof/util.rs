@@ -26,6 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use std::fmt;
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::io::Read;
 #[cfg(feature = "full")]
@@ -61,6 +62,21 @@ pub enum ProofTokenType {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for ProofTokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let variant_str = match self {
+            ProofTokenType::Merk => "Merk",
+            ProofTokenType::SizedMerk => "SizedMerk",
+            ProofTokenType::EmptyTree => "EmptyTree",
+            ProofTokenType::AbsentPath => "AbsentPath",
+            ProofTokenType::PathInfo => "PathInfo",
+            ProofTokenType::Invalid => "Invalid",
+        };
+        write!(f, "{}", variant_str)
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
 impl From<ProofTokenType> for u8 {
     fn from(proof_token_type: ProofTokenType) -> Self {
         match proof_token_type {
@@ -84,6 +100,20 @@ impl From<u8> for ProofTokenType {
             0x05 => ProofTokenType::AbsentPath,
             0x06 => ProofTokenType::PathInfo,
             _ => ProofTokenType::Invalid,
+        }
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl ProofTokenType {
+    pub fn u8_to_display(val: u8) -> String {
+        match val {
+            0x01 => "merk".to_string(),
+            0x02 => "sized merk".to_string(),
+            0x04 => "empty tree".to_string(),
+            0x05 => "absent path".to_string(),
+            0x06 => "path info".to_string(),
+            v => format!("invalid proof token {}", v),
         }
     }
 }
@@ -151,7 +181,7 @@ impl<'a> ProofReader<'a> {
     fn read_length_data(&mut self) -> Result<usize, Error> {
         self.proof_data
             .read_varint()
-            .map_err(|_| Error::InvalidProof("expected length data"))
+            .map_err(|_| Error::InvalidProof("expected length data".to_string()))
     }
 
     /// Read proof with optional type
@@ -175,7 +205,7 @@ impl<'a> ProofReader<'a> {
             proof_token_type,
             proof,
             Some(key.ok_or(Error::InvalidProof(
-                "key must exist for verbose merk proofs",
+                "key must exist for verbose merk proofs".to_string(),
             ))?),
         ))
     }
@@ -207,8 +237,11 @@ impl<'a> ProofReader<'a> {
         self.read_into_slice(&mut data_type)?;
 
         if let Some(expected_data_type) = expected_data_type_option {
-            if data_type != [expected_data_type] {
-                return Err(Error::InvalidProof("wrong data_type"));
+            if data_type[0] != expected_data_type {
+                return Err(Error::InvalidProof(format!(
+                    "wrong data_type, expected {}, got {}",
+                    expected_data_type, data_type[0]
+                )));
             }
         }
 
@@ -242,7 +275,9 @@ impl<'a> ProofReader<'a> {
 
             (proof, key)
         } else {
-            return Err(Error::InvalidProof("expected merk or sized merk proof"));
+            return Err(Error::InvalidProof(
+                "expected merk or sized merk proof".to_string(),
+            ));
         };
 
         Ok((proof_token_type, proof, key))
@@ -254,7 +289,10 @@ impl<'a> ProofReader<'a> {
         self.read_into_slice(&mut data_type)?;
 
         if data_type != [ProofTokenType::PathInfo.into()] {
-            return Err(Error::InvalidProof("wrong data_type, expected path_info"));
+            return Err(Error::InvalidProof(format!(
+                "wrong data_type, expected path_info, got {}",
+                ProofTokenType::u8_to_display(data_type[0])
+            )));
         }
 
         let mut path = vec![];

@@ -111,6 +111,18 @@ pub enum Element {
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
+impl Element {
+    pub fn type_str(&self) -> &str {
+        match self {
+            Element::Item(..) => "item",
+            Element::Reference(..) => "reference",
+            Element::Tree(..) => "tree",
+            Element::SumItem(..) => "sum item",
+            Element::SumTree(..) => "sum tree",
+        }
+    }
+}
+
 #[cfg(any(feature = "full", feature = "visualize"))]
 impl fmt::Debug for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
