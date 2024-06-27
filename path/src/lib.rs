@@ -62,6 +62,7 @@ mod tests {
         let subtree_path_builder = subtree_path_ref.derive_owned();
         assert_eq!(calculate_hash(&path), calculate_hash(&subtree_path_ref));
         assert_eq!(calculate_hash(&path), calculate_hash(&subtree_path_builder));
+        assert_eq!(path.len(), reference.len());
     }
 
     #[test]

@@ -141,10 +141,9 @@
 //! [Tutorial](https://www.grovedb.org/tutorials.html)
 
 #[cfg(feature = "full")]
-extern crate core;
-
-#[cfg(feature = "full")]
 pub mod batch;
+#[cfg(feature = "grovedbg")]
+pub mod debugger;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod element;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -169,9 +168,13 @@ mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
 
+#[cfg(feature = "grovedbg")]
+use std::sync::Arc;
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+#[cfg(feature = "grovedbg")]
+use debugger::start_visualizer;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use element::Element;
 #[cfg(feature = "full")]
@@ -215,6 +218,8 @@ use grovedb_storage::{Storage, StorageContext};
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
+#[cfg(feature = "grovedbg")]
+use tokio::net::ToSocketAddrs;
 
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
@@ -222,6 +227,7 @@ use crate::element::helpers::raw_decode;
 pub use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error::MerkError;
 
 #[cfg(feature = "full")]
@@ -248,6 +254,16 @@ impl GroveDb {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         Ok(GroveDb { db })
+    }
+
+    #[cfg(feature = "grovedbg")]
+    // Start visualizer server for the GroveDB instance
+    pub fn start_visualizer<A>(self: &Arc<Self>, addr: A)
+    where
+        A: ToSocketAddrs + Send + 'static,
+    {
+        let weak = Arc::downgrade(self);
+        start_visualizer(weak, addr);
     }
 
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb

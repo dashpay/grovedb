@@ -61,7 +61,6 @@ impl CompactBytes {
         }
     }
 
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.n_segments
     }
