@@ -194,7 +194,7 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
+        let reached_limit = current_limit.map_or(false, |limit| limit == 0);
         if reached_limit {
             if is_first_call {
                 cost_return_on_error!(
