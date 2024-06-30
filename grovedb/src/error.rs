@@ -19,7 +19,7 @@ pub enum Error {
     InternalError(&'static str),
     #[error("invalid proof: {0}")]
     /// Invalid proof
-    InvalidProof(&'static str),
+    InvalidProof(String),
     #[error("invalid input: {0}")]
     /// Invalid input
     InvalidInput(&'static str),

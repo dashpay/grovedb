@@ -164,7 +164,6 @@ pub mod replication;
 mod tests;
 #[cfg(feature = "full")]
 mod util;
-#[cfg(any(feature = "full", feature = "verify"))]
 mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
@@ -336,11 +335,11 @@ impl GroveDb {
 
     /// Opens a Merk at given path for with direct write access. Intended for
     /// replication purposes.
-    fn open_merk_for_replication<'db, 'b, B>(
+    fn open_merk_for_replication<'tx, 'db: 'tx, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
-        tx: &'db Transaction,
-    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'db>>, Error>
+        tx: &'tx Transaction<'db>,
+    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {

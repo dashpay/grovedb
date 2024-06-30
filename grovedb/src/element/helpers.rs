@@ -44,11 +44,12 @@ use grovedb_merk::{
 use integer_encoding::VarInt;
 
 #[cfg(any(feature = "full", feature = "verify"))]
+use crate::reference_path::{path_from_reference_path_type, ReferencePathType};
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::{element::SUM_ITEM_COST_SIZE, Element, Error};
 #[cfg(feature = "full")]
 use crate::{
     element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
-    reference_path::{path_from_reference_path_type, ReferencePathType},
     ElementFlags,
 };
 
@@ -64,12 +65,38 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    /// Decoded the integer value in the SumItem element type, returns 0 for
-    /// everything else
+    /// Decoded the integer value in the SumItem element type
     pub fn as_sum_item_value(&self) -> Result<i64, Error> {
         match self {
             Element::SumItem(value, _) => Ok(*value),
             _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumItem element type
+    pub fn into_sum_item_value(self) -> Result<i64, Error> {
+        match self {
+            Element::SumItem(value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumTree element type
+    pub fn as_sum_tree_value(&self) -> Result<i64, Error> {
+        match self {
+            Element::SumTree(_, value, _) => Ok(*value),
+            _ => Err(Error::WrongElementType("expected a sum tree")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumTree element type
+    pub fn into_sum_tree_value(self) -> Result<i64, Error> {
+        match self {
+            Element::SumTree(_, value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a sum tree")),
         }
     }
 
@@ -92,6 +119,15 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Gives the reference path type in the Reference element type
+    pub fn into_reference_path_type(self) -> Result<ReferencePathType, Error> {
+        match self {
+            Element::Reference(value, ..) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a reference")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
@@ -101,6 +137,12 @@ impl Element {
     /// Check if the element is a tree
     pub fn is_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a reference
+    pub fn is_reference(&self) -> bool {
+        matches!(self, Element::Reference(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]

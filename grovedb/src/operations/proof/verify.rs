@@ -223,9 +223,11 @@ impl GroveDb {
             )?;
             let (new_root_hash, new_elements) = Self::verify_subset_query(proof, &new_path_query)?;
             if new_root_hash != last_root_hash {
-                return Err(Error::InvalidProof(
-                    "root hash for different path queries do no match",
-                ));
+                return Err(Error::InvalidProof(format!(
+                    "root hash for different path queries do no match, first is {}, this one is {}",
+                    hex::encode(last_root_hash),
+                    hex::encode(new_root_hash)
+                )));
             }
             results.push(new_elements);
         }
@@ -276,7 +278,8 @@ impl ProofVerifier {
             } else if original_path.len() > path_slices.len() {
                 // TODO: can we relax this constraint
                 return Err(Error::InvalidProof(
-                    "original path query path must not be greater than the subset path len",
+                    "original path query path must not be greater than the subset path len"
+                        .to_string(),
                 ));
             } else {
                 let original_path_in_new_path = original_path
@@ -285,7 +288,7 @@ impl ProofVerifier {
 
                 if !original_path_in_new_path {
                     return Err(Error::InvalidProof(
-                        "the original path should be a subset of the subset path",
+                        "the original path should be a subset of the subset path".to_string(),
                     ));
                 } else {
                     // We construct a new path query
@@ -373,7 +376,7 @@ impl ProofVerifier {
 
                 last_root_hash = proof_root_hash;
                 let children = children.ok_or(Error::InvalidProof(
-                    "MERK_PROOF always returns a result set",
+                    "MERK_PROOF always returns a result set".to_string(),
                 ))?;
 
                 for proved_path_key_value in children {
@@ -474,7 +477,8 @@ impl ProofVerifier {
                                         // which is invalid as there exists a subquery value
                                         return Err(Error::InvalidProof(
                                             "expected unsized proof for subquery path as subquery \
-                                             value exists",
+                                             value exists"
+                                                .to_string(),
                                         ));
                                     }
                                     let subquery_path_result_set =
@@ -517,9 +521,11 @@ impl ProofVerifier {
                             .to_owned();
 
                             if combined_child_hash != expected_combined_child_hash {
-                                return Err(Error::InvalidProof(
-                                    "child hash doesn't match the expected hash",
-                                ));
+                                return Err(Error::InvalidProof(format!(
+                                    "child hash {} doesn't match the expected hash {}",
+                                    hex::encode(combined_child_hash),
+                                    hex::encode(expected_combined_child_hash)
+                                )));
                             }
                         }
                         _ => {
@@ -552,10 +558,13 @@ impl ProofVerifier {
             ProofTokenType::EmptyTree => {
                 last_root_hash = EMPTY_TREE_HASH;
             }
-            _ => {
+            t => {
                 // execute_subquery_proof only expects proofs for merk trees
                 // root proof is handled separately
-                return Err(Error::InvalidProof("wrong proof type"));
+                return Err(Error::InvalidProof(format!(
+                    "wrong proof type, expected sized merk, merk or empty tree but got {}",
+                    t
+                )));
             }
         }
         Ok(last_root_hash)
@@ -576,13 +585,14 @@ impl ProofVerifier {
                 *expected_child_hash = subquery_path_result_set[0].proof;
                 *current_value_bytes = subquery_path_result_set[0].value.to_owned();
             }
-            _ => {
+            e => {
                 // the means that the subquery path pointed to a non tree
                 // element, this is not valid as you cannot apply the
                 // the subquery value to non tree items
-                return Err(Error::InvalidProof(
-                    "subquery path cannot point to non tree element",
-                ));
+                return Err(Error::InvalidProof(format!(
+                    "subquery path cannot point to non tree element, got {}",
+                    e.type_str()
+                )));
             }
         }
         Ok(())
@@ -607,9 +617,10 @@ impl ProofVerifier {
                 proof_reader.read_next_proof(current_path.last().unwrap_or(&Default::default()))?;
             // intermediate proofs are all going to be unsized merk proofs
             if proof_token_type != ProofTokenType::Merk {
-                return Err(Error::InvalidProof(
-                    "expected MERK proof type for intermediate subquery path keys",
-                ));
+                return Err(Error::InvalidProof(format!(
+                    "expected MERK proof type for intermediate subquery path keys, got {}",
+                    proof_token_type
+                )));
             }
             match proof_token_type {
                 ProofTokenType::Merk => {
@@ -645,9 +656,11 @@ impl ProofVerifier {
                             .to_owned();
 
                     if combined_child_hash != *expected_root_hash {
-                        return Err(Error::InvalidProof(
-                            "child hash doesn't match the expected hash",
-                        ));
+                        return Err(Error::InvalidProof(format!(
+                            "child hash {} doesn't match the expected hash {}",
+                            hex::encode(combined_child_hash),
+                            hex::encode(expected_root_hash)
+                        )));
                     }
 
                     // after confirming they are linked use the latest hash values for subsequent
@@ -658,10 +671,11 @@ impl ProofVerifier {
                         &result_set.expect("confirmed is some"),
                     )?;
                 }
-                _ => {
-                    return Err(Error::InvalidProof(
-                        "expected merk of sized merk proof type for subquery path",
-                    ));
+                t => {
+                    return Err(Error::InvalidProof(format!(
+                        "expected merk of sized merk proof type for subquery path, got {}",
+                        t
+                    )));
                 }
             }
         }
@@ -669,9 +683,10 @@ impl ProofVerifier {
         let (proof_token_type, subkey_proof) =
             proof_reader.read_next_proof(current_path.last().unwrap_or(&Default::default()))?;
         if proof_token_type != expected_proof_token_type {
-            return Err(Error::InvalidProof(
-                "unexpected proof type for subquery path",
-            ));
+            return Err(Error::InvalidProof(format!(
+                "unexpected proof type for subquery path, expected {}, got {}",
+                expected_proof_token_type, proof_token_type
+            )));
         }
 
         match proof_token_type {
@@ -691,9 +706,10 @@ impl ProofVerifier {
 
                 Ok((verification_result.0, verification_result.1, false))
             }
-            _ => Err(Error::InvalidProof(
-                "expected merk or sized merk proof type for subquery path",
-            )),
+            t => Err(Error::InvalidProof(format!(
+                "expected merk or sized merk proof type for subquery path, got {}",
+                t
+            ))),
         }
     }
 
@@ -720,14 +736,18 @@ impl ProofVerifier {
                 if Some(combined_hash) != expected_child_hash {
                     return Err(Error::InvalidProof(
                         "proof invalid: could not verify empty subtree while generating absent \
-                         path proof",
+                         path proof"
+                            .to_string(),
                     ));
                 } else {
                     last_result_set = vec![];
                     break;
                 }
             } else if proof_token_type != ProofTokenType::Merk {
-                return Err(Error::InvalidProof("expected a merk proof for absent path"));
+                return Err(Error::InvalidProof(format!(
+                    "expected a merk proof for absent path, got {}",
+                    proof_token_type
+                )));
             }
 
             let mut child_query = Query::new();
@@ -743,18 +763,22 @@ impl ProofVerifier {
                 Vec::new(),
             )?;
 
-            if expected_child_hash.is_none() {
-                root_key_hash = Some(proof_result.0);
-            } else {
+            if let Some(expected_child_hash) = expected_child_hash {
                 let combined_hash = combine_hash(
                     value_hash_fn(last_result_set[0].value.as_slice()).value(),
                     &proof_result.0,
                 )
                 .value()
                 .to_owned();
-                if Some(combined_hash) != expected_child_hash {
-                    return Err(Error::InvalidProof("proof invalid: invalid parent"));
+                if combined_hash != expected_child_hash {
+                    return Err(Error::InvalidProof(format!(
+                        "proof invalid: invalid parent, expected {}, got {}",
+                        hex::encode(expected_child_hash),
+                        hex::encode(combined_hash)
+                    )));
                 }
+            } else {
+                root_key_hash = Some(proof_result.0);
             }
 
             last_result_set = proof_result
@@ -768,9 +792,10 @@ impl ProofVerifier {
             let elem = Element::deserialize(last_result_set[0].value.as_slice())?;
             let child_hash = match elem {
                 Element::Tree(..) | Element::SumTree(..) => Ok(Some(last_result_set[0].proof)),
-                _ => Err(Error::InvalidProof(
-                    "intermediate proofs should be for trees",
-                )),
+                e => Err(Error::InvalidProof(format!(
+                    "intermediate proofs should be for trees, got {}",
+                    e.type_str()
+                ))),
             }?;
             expected_child_hash = child_hash;
         }
@@ -779,10 +804,14 @@ impl ProofVerifier {
             if let Some(hash) = root_key_hash {
                 Ok(hash)
             } else {
-                Err(Error::InvalidProof("proof invalid: no non root tree found"))
+                Err(Error::InvalidProof(
+                    "proof invalid: no non root tree found".to_string(),
+                ))
             }
         } else {
-            Err(Error::InvalidProof("proof invalid: path not absent"))
+            Err(Error::InvalidProof(
+                "proof invalid: path not absent".to_string(),
+            ))
         }
     }
 
@@ -802,7 +831,10 @@ impl ProofVerifier {
             let (proof_token_type, parent_merk_proof) =
                 proof_reader.read_next_proof(path_slice.last().unwrap_or(&Default::default()))?;
             if proof_token_type != ProofTokenType::Merk {
-                return Err(Error::InvalidProof("wrong data_type expected merk proof"));
+                return Err(Error::InvalidProof(format!(
+                    "wrong data_type expected Merk Proof, got {}",
+                    proof_token_type
+                )));
             }
 
             let mut parent_query = Query::new();
@@ -821,15 +853,18 @@ impl ProofVerifier {
                 .1
                 .expect("MERK_PROOF always returns a result set");
             if result_set.is_empty() || &result_set[0].key != key {
-                return Err(Error::InvalidProof("proof invalid: invalid parent"));
+                return Err(Error::InvalidProof(
+                    "proof invalid: invalid parent".to_string(),
+                ));
             }
 
             let elem = Element::deserialize(result_set[0].value.as_slice())?;
             let child_hash = match elem {
                 Element::Tree(..) | Element::SumTree(..) => Ok(result_set[0].proof),
-                _ => Err(Error::InvalidProof(
-                    "intermediate proofs should be for trees",
-                )),
+                t => Err(Error::InvalidProof(format!(
+                    "intermediate proofs should be for trees, got {}",
+                    t.type_str()
+                ))),
             }?;
 
             let combined_root_hash = combine_hash(
@@ -839,9 +874,11 @@ impl ProofVerifier {
             .value()
             .to_owned();
             if child_hash != combined_root_hash {
-                return Err(Error::InvalidProof(
-                    "Bad path: tree hash does not have expected hash",
-                ));
+                return Err(Error::InvalidProof(format!(
+                    "Bad path: tree hash does not have expected hash, got {}, expected {}",
+                    hex::encode(child_hash),
+                    hex::encode(combined_root_hash)
+                )));
             }
 
             *expected_root_hash = proof_result.0;
@@ -876,7 +913,7 @@ impl ProofVerifier {
                 .unwrap()
                 .map_err(|e| {
                     eprintln!("{e}");
-                    Error::InvalidProof("invalid proof verification parameters")
+                    Error::InvalidProof("invalid proof verification parameters".to_string())
                 })?;
 
         // convert the result set to proved_path_key_values

@@ -998,7 +998,7 @@ mod test {
     #[test]
     fn decode_multiple_child() {
         let bytes = [0x11, 0x11, 0x11, 0x10];
-        let mut decoder = Decoder {
+        let decoder = Decoder {
             bytes: &bytes,
             offset: 0,
         };

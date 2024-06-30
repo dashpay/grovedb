@@ -101,7 +101,7 @@ pub enum Element {
     Item(Vec<u8>, Option<ElementFlags>),
     /// A reference to an object by its path
     Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
-    /// A subtree, contains the a prefixed key representing the root of the
+    /// A subtree, contains the prefixed key representing the root of the
     /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
     /// Signed integer value that can be totaled in a sum tree
@@ -109,6 +109,18 @@ pub enum Element {
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+}
+
+impl Element {
+    pub fn type_str(&self) -> &str {
+        match self {
+            Element::Item(..) => "item",
+            Element::Reference(..) => "reference",
+            Element::Tree(..) => "tree",
+            Element::SumItem(..) => "sum item",
+            Element::SumTree(..) => "sum tree",
+        }
+    }
 }
 
 #[cfg(any(feature = "full", feature = "visualize"))]

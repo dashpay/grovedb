@@ -53,7 +53,7 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -563,7 +563,7 @@ impl Element {
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res = merk_optional_tx!(
+                let element_res = merk_optional_tx_internal_error!(
                     &mut cost,
                     storage,
                     subtree_path,
