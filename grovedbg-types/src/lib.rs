@@ -44,6 +44,10 @@ pub enum Element {
         n_keep: u32,
         path_append: Vec<PathSegment>,
     },
+    UpstreamRootHeightWithParentPathAdditionReference {
+        n_keep: u32,
+        path_append: Vec<PathSegment>,
+    },
     UpstreamFromElementHeightReference {
         n_remove: u32,
         path_append: Vec<PathSegment>,
