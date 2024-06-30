@@ -145,7 +145,10 @@ fn node_to_update(
             path_append,
         },
         crate::Element::Reference(
-            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(n_keep, path_append),
+            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+                n_keep,
+                path_append,
+            ),
             ..,
         ) => grovedbg_types::Element::UpstreamRootHeightWithParentPathAdditionReference {
             n_keep: n_keep.into(),
