@@ -57,10 +57,11 @@ pub enum ReferencePathType {
     /// This is very similar to the UpstreamRootHeightReference, however
     /// it appends to the absolute path when resolving the parent of the
     /// reference. If the reference is stored at 15/9/80/7 then 80 will be
-    /// appended to what we are referring to. For example if we have the reference at
-    /// [a, b, c, d, e, f] (e is the parent path here) and we have in the
-    /// UpstreamRootHeightWithParentPathAdditionReference the height set to 2 and the addon
-    /// path set to [x, y], we would get as a result [a, b, x, y, e]
+    /// appended to what we are referring to. For example if we have the
+    /// reference at [a, b, c, d, e, f] (e is the parent path here) and we
+    /// have in the UpstreamRootHeightWithParentPathAdditionReference the
+    /// height set to 2 and the addon path set to [x, y], we would get as a
+    /// result [a, b, x, y, e]
     UpstreamRootHeightWithParentPathAdditionReference(u8, Vec<Vec<u8>>),
 
     /// This discards the last n elements from the current path and appends a
