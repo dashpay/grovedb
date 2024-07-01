@@ -3493,7 +3493,7 @@ mod tests {
         reference_key_query.insert_key(b"key1".to_vec());
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], reference_key_query);
         let proof = db
-            .prove_query(&path_query)
+            .prove_query(&path_query, None)
             .unwrap()
             .expect("should generate proof");
         let verification_result = GroveDb::verify_query_raw(&proof, &path_query);

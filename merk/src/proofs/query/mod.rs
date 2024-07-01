@@ -57,7 +57,7 @@ pub use query_item::intersect::QueryItemIntersectionResult;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
-use verify::ProofAbsenceLimitOffset;
+use verify::ProofAbsenceLimit;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use verify::{execute_proof, verify_query, ProofVerificationResult, ProvedKeyValue};
 #[cfg(feature = "full")]
@@ -114,6 +114,15 @@ impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
         Self::new_with_direction(true)
+    }
+
+    /// Creates a new query which contains all items.
+    pub fn new_range_full() -> Self {
+        Self {
+            items: vec![QueryItem::RangeFull(RangeFull)],
+            left_to_right: true,
+            ..Self::default()
+        }
     }
 
     /// Creates a new query which contains only one key.
@@ -520,10 +529,9 @@ where
         &mut self,
         query: &[QueryItem],
         limit: Option<u16>,
-        offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
-        self.create_proof(query, limit, offset, left_to_right)
+    ) -> CostResult<ProofAbsenceLimit, Error> {
+        self.create_proof(query, limit, left_to_right)
     }
 
     /// Generates a proof for the list of queried keys. Returns a tuple
@@ -537,9 +545,8 @@ where
         &mut self,
         query: &[QueryItem],
         limit: Option<u16>,
-        offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
+    ) -> CostResult<ProofAbsenceLimit, Error> {
         let mut cost = OperationCost::default();
 
         // TODO: don't copy into vec, support comparing QI to byte slice
@@ -557,8 +564,6 @@ where
 
         let current_node_in_query: bool;
         let mut node_on_non_inclusive_bounds = false;
-        // becomes true if the offset exists and is non zero
-        let mut skip_current_node = false;
 
         let (mut left_items, mut right_items) = match search {
             Ok(index) => {
@@ -602,77 +607,63 @@ where
             }
         };
 
-        if offset.is_none() || offset == Some(0) {
-            // when the limit hits zero, the rest of the query batch should be cleared
-            // so empty the left, right query batch, and set the current node to not found
-            if let Some(current_limit) = limit {
-                if current_limit == 0 {
-                    left_items = &[];
-                    search = Err(Default::default());
-                    right_items = &[];
-                }
+        // when the limit hits zero, the rest of the query batch should be cleared
+        // so empty the left, right query batch, and set the current node to not found
+        if let Some(current_limit) = limit {
+            if current_limit == 0 {
+                left_items = &[];
+                search = Err(Default::default());
+                right_items = &[];
             }
         }
 
         let proof_direction = left_to_right; // signifies what direction the DFS should go
-        let (mut proof, left_absence, mut new_limit, mut new_offset) = if left_to_right {
+        let (mut proof, left_absence, mut new_limit) = if left_to_right {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, left_items, limit, offset, left_to_right)
+                self.create_child_proof(proof_direction, left_items, limit, left_to_right)
             )
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, right_items, limit, offset, left_to_right)
+                self.create_child_proof(proof_direction, right_items, limit, left_to_right)
             )
         };
 
-        if let Some(current_offset) = new_offset {
-            if current_offset > 0 && current_node_in_query && !node_on_non_inclusive_bounds {
-                // reserve offset slot for current node before generating proof for right
-                // subtree
-                new_offset = Some(current_offset - 1);
-                skip_current_node = true;
-            }
-        }
-
-        if !skip_current_node && (new_offset.is_none() || new_offset == Some(0)) {
-            if let Some(current_limit) = new_limit {
-                // if after generating proof for the left subtree, the limit becomes 0
-                // clear the current node and clear the right batch
-                if current_limit == 0 {
+        if let Some(current_limit) = new_limit {
+            // if after generating proof for the left subtree, the limit becomes 0
+            // clear the current node and clear the right batch
+            if current_limit == 0 {
+                if left_to_right {
+                    right_items = &[];
+                } else {
+                    left_items = &[];
+                }
+                search = Err(Default::default());
+            } else if current_node_in_query && !node_on_non_inclusive_bounds {
+                // if limit is not zero, reserve a limit slot for the current node
+                // before generating proof for the right subtree
+                new_limit = Some(current_limit - 1);
+                // if after limit slot reservation, limit becomes 0, right query
+                // should be cleared
+                if current_limit - 1 == 0 {
                     if left_to_right {
                         right_items = &[];
                     } else {
                         left_items = &[];
-                    }
-                    search = Err(Default::default());
-                } else if current_node_in_query && !node_on_non_inclusive_bounds {
-                    // if limit is not zero, reserve a limit slot for the current node
-                    // before generating proof for the right subtree
-                    new_limit = Some(current_limit - 1);
-                    // if after limit slot reservation, limit becomes 0, right query
-                    // should be cleared
-                    if current_limit - 1 == 0 {
-                        if left_to_right {
-                            right_items = &[];
-                        } else {
-                            left_items = &[];
-                        }
                     }
                 }
             }
         }
 
         let proof_direction = !proof_direction; // search the opposite path on second pass
-        let (mut right_proof, right_absence, new_limit, new_offset) = if left_to_right {
+        let (mut right_proof, right_absence, new_limit) = if left_to_right {
             cost_return_on_error!(
                 &mut cost,
                 self.create_child_proof(
                     proof_direction,
                     right_items,
                     new_limit,
-                    new_offset,
                     left_to_right,
                 )
             )
@@ -683,7 +674,6 @@ where
                     proof_direction,
                     left_items,
                     new_limit,
-                    new_offset,
                     left_to_right,
                 )
             )
@@ -693,7 +683,7 @@ where
 
         proof.push_back(match search {
             Ok(_) => {
-                if node_on_non_inclusive_bounds || skip_current_node {
+                if node_on_non_inclusive_bounds {
                     if left_to_right {
                         Op::Push(self.to_kvdigest_node())
                     } else {
@@ -741,7 +731,6 @@ where
             proof,
             (left_absence.0, right_absence.1),
             new_limit,
-            new_offset,
         ))
         .wrap_with_cost(cost)
     }
@@ -754,16 +743,15 @@ where
         left: bool,
         query: &[QueryItem],
         limit: Option<u16>,
-        offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
+    ) -> CostResult<ProofAbsenceLimit, Error> {
         if !query.is_empty() {
             self.walk(left, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
                 .flat_map_ok(|child_opt| {
                     if let Some(mut child) = child_opt {
-                        child.create_proof(query, limit, offset, left_to_right)
+                        child.create_proof(query, limit, left_to_right)
                     } else {
-                        Ok((LinkedList::new(), (true, true), limit, offset))
+                        Ok((LinkedList::new(), (true, true), limit))
                             .wrap_with_cost(Default::default())
                     }
                 })
@@ -774,9 +762,9 @@ where
             } else {
                 Op::PushInverted(link.to_hash_node())
             });
-            Ok((proof, (false, false), limit, offset)).wrap_with_cost(Default::default())
+            Ok((proof, (false, false), limit)).wrap_with_cost(Default::default())
         } else {
-            Ok((LinkedList::new(), (false, false), limit, offset))
+            Ok((LinkedList::new(), (false, false), limit))
                 .wrap_with_cost(Default::default())
         }
     }
@@ -875,7 +863,6 @@ mod test {
                     .collect::<Vec<_>>()
                     .as_slice(),
                 None,
-                None,
                 true,
             )
             .unwrap()
@@ -893,7 +880,7 @@ mod test {
             query.insert_key(key.clone());
         }
 
-        let result = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+        let result = verify_query(bytes.as_slice(), &query, None, true, expected_hash)
             .unwrap()
             .expect("verify failed");
 
@@ -1105,7 +1092,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence, ..) = walker
-            .create_full_proof(vec![].as_slice(), None, None, true)
+            .create_full_proof(vec![].as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1142,7 +1129,6 @@ mod test {
             bytes.as_slice(),
             &Query::new(),
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1158,7 +1144,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![5])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1203,7 +1189,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1219,7 +1204,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1264,7 +1249,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1280,7 +1264,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3]), QueryItem::Key(vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1329,7 +1313,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1349,7 +1332,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1402,7 +1385,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1421,7 +1403,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![8])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1465,7 +1447,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1481,7 +1462,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1527,7 +1508,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             true,
             tree.hash().unwrap(),
@@ -1621,7 +1601,7 @@ mod test {
             QueryItem::Key(vec![4]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1722,7 +1702,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1791,7 +1770,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1875,7 +1854,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -1889,7 +1867,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_tree_seq(10);
@@ -1899,7 +1877,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1912,7 +1890,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -1924,7 +1901,7 @@ mod test {
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_tree_seq(10);
@@ -1934,7 +1911,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1948,7 +1925,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -1956,7 +1932,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_tree_seq(10);
@@ -1966,7 +1942,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1980,7 +1956,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -1988,7 +1963,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(198));
 
         // right to left test
         let mut tree = make_tree_seq(10);
@@ -1998,7 +1972,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2011,7 +1985,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             false,
             tree.hash().unwrap(),
@@ -2036,7 +2009,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2121,7 +2094,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2136,7 +2108,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_tree_seq(10);
@@ -2146,7 +2118,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2159,7 +2131,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -2171,7 +2142,7 @@ mod test {
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_tree_seq(10);
@@ -2181,7 +2152,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2195,7 +2166,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -2206,7 +2176,7 @@ mod test {
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_tree_seq(10);
@@ -2216,7 +2186,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2230,7 +2200,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -2238,7 +2207,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(197));
 
         // right_to_left proof
         let mut tree = make_tree_seq(10);
@@ -2248,7 +2216,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2261,7 +2229,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             false,
             tree.hash().unwrap(),
@@ -2285,7 +2252,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, Some(2), false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2299,7 +2266,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            Some(2),
             false,
             tree.hash().unwrap(),
         )
@@ -2311,7 +2277,7 @@ mod test {
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, Some(0));
+        
     }
 
     #[test]
@@ -2321,7 +2287,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2382,7 +2348,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2393,7 +2358,7 @@ mod test {
             vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -2401,13 +2366,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::Key(vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2424,7 +2389,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2432,7 +2396,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -2440,7 +2404,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2450,7 +2414,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2467,7 +2431,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2475,7 +2438,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -2483,13 +2446,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2506,7 +2469,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(100),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2517,7 +2479,7 @@ mod test {
             vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, Some(97));
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -2525,7 +2487,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2538,7 +2500,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -2547,7 +2508,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -2555,7 +2516,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2569,7 +2530,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -2577,7 +2537,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![8], vec![8])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -2585,7 +2545,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2599,7 +2559,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -2607,7 +2566,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(197));
 
         // right_to_left test
         let mut tree = make_6_node_tree();
@@ -2615,7 +2573,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2630,7 +2588,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             false,
             tree.hash().unwrap(),
@@ -2647,7 +2604,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), Some(1), false)
+            .create_full_proof(queryitems.as_slice(), Some(2), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2663,7 +2620,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            Some(1),
             false,
             tree.hash().unwrap(),
         )
@@ -2671,7 +2627,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
     }
 
     #[test]
@@ -2681,7 +2637,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2765,7 +2721,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2781,7 +2736,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -2789,13 +2744,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2812,7 +2767,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2820,7 +2774,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -2828,13 +2782,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2851,7 +2805,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2859,7 +2812,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -2867,13 +2820,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2890,7 +2843,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(100),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -2906,7 +2858,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(96));
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -2914,7 +2866,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2927,7 +2879,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -2936,7 +2887,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -2944,7 +2895,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2958,7 +2909,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -2966,7 +2916,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -2974,7 +2924,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2988,7 +2938,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -2996,7 +2945,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(196));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
@@ -3004,7 +2952,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3019,7 +2967,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             false,
             tree.hash().unwrap(),
@@ -3041,7 +2988,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, false)
+            .create_full_proof(queryitems.as_slice(), Some(2), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3057,7 +3004,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             false,
             tree.hash().unwrap(),
         )
@@ -3065,7 +3011,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
     }
 
     #[test]
@@ -3075,7 +3021,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3159,7 +3105,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3175,7 +3120,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -3183,13 +3128,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3206,7 +3151,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3214,7 +3158,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -3222,13 +3166,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3245,7 +3189,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3253,7 +3196,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -3261,13 +3204,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3284,7 +3227,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(100),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3300,7 +3242,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(96));
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -3308,7 +3250,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3321,7 +3263,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -3330,7 +3271,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -3338,7 +3279,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3352,7 +3293,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -3360,7 +3300,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -3368,7 +3308,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3382,7 +3322,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -3390,7 +3329,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(196));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
@@ -3398,7 +3336,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3413,7 +3351,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             false,
             tree.hash().unwrap(),
@@ -3435,7 +3372,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), false)
+            .create_full_proof(queryitems.as_slice(), Some(1), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3451,7 +3388,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(1),
             false,
             tree.hash().unwrap(),
         )
@@ -3459,7 +3395,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
     }
 
     #[test]
@@ -3469,7 +3405,7 @@ mod test {
 
         let queryitems = vec![RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3553,7 +3489,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3569,7 +3504,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -3577,13 +3512,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3600,7 +3535,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3608,7 +3542,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -3616,13 +3550,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3639,7 +3573,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3647,7 +3580,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -3655,13 +3588,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3678,7 +3611,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(100),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3694,7 +3626,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(96));
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -3702,7 +3634,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3715,7 +3647,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -3724,7 +3655,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -3732,7 +3663,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3746,7 +3677,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -3754,7 +3684,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -3762,7 +3692,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3776,7 +3706,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -3784,7 +3713,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(196));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
@@ -3792,7 +3720,7 @@ mod test {
 
         let queryitems = vec![RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3807,7 +3735,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             false,
             tree.hash().unwrap(),
@@ -3829,7 +3756,7 @@ mod test {
 
         let queryitems = vec![RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(3), None, false)
+            .create_full_proof(queryitems.as_slice(), Some(3), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3845,7 +3772,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(3),
-            None,
             false,
             tree.hash().unwrap(),
         )
@@ -3856,7 +3782,7 @@ mod test {
             vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
     }
 
     #[test]
@@ -3866,7 +3792,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3945,7 +3871,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3953,7 +3878,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -3961,13 +3886,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3984,7 +3909,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -3992,7 +3916,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -4000,13 +3924,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4023,7 +3947,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4031,7 +3954,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -4039,13 +3962,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4062,7 +3985,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(100),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4070,7 +3992,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(98));
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -4078,7 +4000,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4091,7 +4013,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -4100,7 +4021,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -4108,7 +4029,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4122,7 +4043,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -4130,7 +4050,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -4138,7 +4058,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4152,7 +4072,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -4160,7 +4079,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(198));
 
         // right_to_left
         let mut tree = make_6_node_tree();
@@ -4168,7 +4086,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4184,7 +4102,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             false,
             tree.hash().unwrap(),
         )
@@ -4197,7 +4114,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(300), Some(1), false)
+            .create_full_proof(queryitems.as_slice(), Some(300), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4213,7 +4130,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(300),
-            Some(1),
             false,
             tree.hash().unwrap(),
         )
@@ -4221,7 +4137,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(299));
-        assert_eq!(res.offset, Some(0));
+        
     }
 
     #[test]
@@ -4231,7 +4147,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4309,7 +4225,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4320,7 +4235,7 @@ mod test {
             vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -4328,13 +4243,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4351,7 +4266,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4359,7 +4273,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -4367,13 +4281,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4390,7 +4304,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4398,7 +4311,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -4406,13 +4319,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4429,7 +4342,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(100),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4440,7 +4352,7 @@ mod test {
             vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, Some(97));
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -4448,7 +4360,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4461,7 +4373,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            Some(1),
             Some(1),
             true,
             tree.hash().unwrap(),
@@ -4470,7 +4381,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -4478,7 +4389,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4492,7 +4403,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -4500,7 +4410,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -4508,7 +4418,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4522,7 +4432,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -4530,7 +4439,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(197));
 
         // right_to_left proof
         // let mut tree = make_6_node_tree();
@@ -4574,7 +4482,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4664,7 +4572,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4682,7 +4589,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -4690,13 +4597,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4713,7 +4620,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4721,7 +4627,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -4729,13 +4635,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4752,7 +4658,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4760,7 +4665,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -4768,13 +4673,13 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
+            .create_full_proof(queryitems.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeFull(..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4791,7 +4696,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(100),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -4809,7 +4713,7 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(94));
-        assert_eq!(res.offset, None);
+        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -4817,7 +4721,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(3), Some(1), true)
+            .create_full_proof(queryitems.as_slice(), Some(3), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4831,7 +4735,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(3),
-            Some(1),
             true,
             tree.hash().unwrap(),
         )
@@ -4842,7 +4745,7 @@ mod test {
             vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -4850,7 +4753,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4864,7 +4767,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -4872,7 +4774,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -4880,7 +4782,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4894,7 +4796,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(200),
             true,
             tree.hash().unwrap(),
         )
@@ -4902,7 +4803,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        assert_eq!(res.offset, Some(194));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
@@ -4910,7 +4810,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4925,7 +4825,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             false,
             tree.hash().unwrap(),
@@ -4949,7 +4848,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), Some(2), false)
+            .create_full_proof(queryitems.as_slice(), Some(2), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4965,7 +4864,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(2),
-            Some(2),
             false,
             tree.hash().unwrap(),
         )
@@ -4973,7 +4871,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
     }
 
     #[test]
@@ -4982,14 +4880,13 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
-        let (proof, _, limit, offset) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
+        let (proof, _, limit) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
         // TODO: Add this test for other range types
         assert_eq!(limit, Some(0));
-        assert_eq!(offset, None);
 
         let mut iter = proof.iter();
         assert_eq!(
@@ -5047,7 +4944,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -5055,7 +4951,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, None);
+        
     }
 
     #[test]
@@ -5065,7 +4961,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
+            .create_full_proof(queryitems.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5131,7 +5027,6 @@ mod test {
             bytes.as_slice(),
             &query,
             Some(1),
-            Some(2),
             true,
             tree.hash().unwrap(),
         )
@@ -5139,7 +5034,7 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        assert_eq!(res.offset, Some(0));
+        
     }
 
     #[test]
@@ -5149,7 +5044,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .create_full_proof(queryitems.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5235,7 +5130,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             false,
             tree.hash().unwrap(),
         )
@@ -5262,7 +5156,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 6, 5],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5345,7 +5239,6 @@ mod test {
         let res = verify_query(
             bytes.as_slice(),
             &query,
-            None,
             None,
             true,
             tree.hash().unwrap(),
@@ -5371,7 +5264,7 @@ mod test {
             QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, None, true)
+            .create_full_proof(queryitems.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5454,7 +5347,6 @@ mod test {
             bytes.as_slice(),
             &query,
             None,
-            None,
             true,
             tree.hash().unwrap(),
         )
@@ -5477,7 +5369,7 @@ mod test {
         query.insert_all();
 
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, None, true)
+            .create_full_proof(query.items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5488,7 +5380,7 @@ mod test {
         let mut query = Query::new();
         query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 6]);
 
-        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+        let res = verify_query(bytes.as_slice(), &query, None, true, expected_hash)
             .unwrap()
             .unwrap();
 
@@ -5503,7 +5395,7 @@ mod test {
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
         query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 7]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, None, true)
+            .create_full_proof(query.items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5513,7 +5405,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 3]..=vec![0, 0, 0, 0, 0, 0, 0, 4]);
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 7]..=vec![0, 0, 0, 0, 0, 0, 0, 8]);
-        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+        let res = verify_query(bytes.as_slice(), &query, None, true, expected_hash)
             .unwrap()
             .unwrap();
 
@@ -5533,7 +5425,7 @@ mod test {
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
         query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 6]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, None, true)
+            .create_full_proof(query.items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5542,7 +5434,7 @@ mod test {
 
         let mut query = Query::new();
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 4]..=vec![0, 0, 0, 0, 0, 0, 0, 8]);
-        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+        let res = verify_query(bytes.as_slice(), &query, None, true, expected_hash)
             .unwrap()
             .unwrap();
 
@@ -5563,7 +5455,7 @@ mod test {
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 3]);
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, None, true)
+            .create_full_proof(query.items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5572,7 +5464,7 @@ mod test {
 
         let mut query = Query::new();
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
-        let res = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+        let res = verify_query(bytes.as_slice(), &query, None, true, expected_hash)
             .unwrap()
             .unwrap();
 
@@ -5592,7 +5484,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), Some(5), None, true)
+            .create_full_proof(query.items.as_slice(), Some(5), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5601,7 +5493,7 @@ mod test {
 
         let mut query = Query::new();
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
-        let res = verify_query(bytes.as_slice(), &query, Some(5), None, true, expected_hash)
+        let res = verify_query(bytes.as_slice(), &query, Some(5), true, expected_hash)
             .unwrap()
             .unwrap();
 
@@ -5621,7 +5513,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, Some(1), true)
+            .create_full_proof(query.items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5630,7 +5522,7 @@ mod test {
 
         let mut query = Query::new();
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
-        let res = verify_query(bytes.as_slice(), &query, None, Some(1), true, expected_hash)
+        let res = verify_query(bytes.as_slice(), &query, None, true, expected_hash)
             .unwrap()
             .unwrap();
 
@@ -5665,7 +5557,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), Some(3), None, true)
+            .create_full_proof(query.items.as_slice(), Some(3), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -5676,7 +5568,7 @@ mod test {
         let mut query = Query::new();
         query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 4]);
         assert!(
-            verify_query(bytes.as_slice(), &query, Some(3), None, true, expected_hash)
+            verify_query(bytes.as_slice(), &query, Some(3), true, expected_hash)
                 .unwrap()
                 .is_err()
         );
@@ -5686,7 +5578,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         assert!(
-            verify_query(bytes.as_slice(), &query, Some(4), None, true, expected_hash)
+            verify_query(bytes.as_slice(), &query, Some(4), true, expected_hash)
                 .unwrap()
                 .is_err()
         );
@@ -5695,7 +5587,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         assert!(
-            verify_query(bytes.as_slice(), &query, Some(2), None, true, expected_hash)
+            verify_query(bytes.as_slice(), &query, Some(2), true, expected_hash)
                 .unwrap()
                 .is_err()
         );
@@ -5755,7 +5647,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, ..) = walker
-            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, None, true)
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, true)
             .unwrap()
             .expect("failed to create proof");
         let mut bytes = vec![];
@@ -5780,7 +5672,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, ..) = walker
-            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, None, true)
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, true)
             .unwrap()
             .expect("failed to create proof");
         let mut bytes = vec![];
@@ -5806,7 +5698,6 @@ mod test {
                     .collect::<Vec<_>>()
                     .as_slice(),
                 None,
-                None,
                 true,
             )
             .unwrap()
@@ -5819,7 +5710,7 @@ mod test {
             query.insert_key(key.clone());
         }
 
-        let _result = verify_query(bytes.as_slice(), &query, None, None, true, [42; 32])
+        let _result = verify_query(bytes.as_slice(), &query, None, true, [42; 32])
             .unwrap()
             .expect("verify failed");
     }

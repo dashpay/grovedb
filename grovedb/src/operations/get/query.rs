@@ -45,6 +45,7 @@ use crate::{
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
+use crate::operations::proof::ProveOptions;
 
 #[cfg(feature = "full")]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -152,7 +153,7 @@ where {
     pub fn get_proved_path_query(
         &self,
         path_query: &PathQuery,
-        is_verbose: bool,
+        prove_options: Option<ProveOptions>,
         transaction: TransactionArg,
     ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
@@ -160,10 +161,8 @@ where {
                 "transactions are not currently supported".to_string(),
             ))
             .wrap_with_cost(Default::default())
-        } else if is_verbose {
-            self.prove_verbose(path_query)
         } else {
-            self.prove_query(path_query)
+            self.prove_query(path_query, prove_options)
         }
     }
 
@@ -1273,7 +1272,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
 
-        let raw_result = db
+        db
             .query_raw_keys_optional(&path_query, true, true, true, None)
             .unwrap()
             .expect_err(

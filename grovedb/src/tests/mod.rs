@@ -50,6 +50,7 @@ use crate::{
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
     reference_path::ReferencePathType, tests::common::compare_result_tuples,
 };
+use crate::query_result_type::QueryResultType;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 
@@ -157,6 +158,10 @@ pub fn make_deep_tree() -> TempGroveDb {
     //              deeper_4
     //                  k10,v10
     //                  k11,v11
+    //              deeper_5
+    //                  k12,v12
+    //                  k13,v13
+    //                  k14,v14
 
     // Insert elements into grovedb instance
     let temp_db = make_test_grovedb();
@@ -339,6 +344,16 @@ pub fn make_deep_tree() -> TempGroveDb {
         )
         .unwrap()
         .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_2"].as_ref(),
+            b"deeper_5",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
     // Insert level 3 nodes
     temp_db
         .insert(
@@ -451,6 +466,265 @@ pub fn make_deep_tree() -> TempGroveDb {
         )
         .unwrap()
         .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_2", b"deeper_5"].as_ref(),
+            b"key12",
+            Element::new_item(b"value12".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_2", b"deeper_5"].as_ref(),
+            b"key13",
+            Element::new_item(b"value13".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_2", b"deeper_5"].as_ref(),
+            b"key14",
+            Element::new_item(b"value14".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
+    temp_db
+}
+
+pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
+    // Tree Structure
+    // root
+    //     deep_leaf
+    //          deep_node_1
+    //              "" -> "empty"
+    //              a -> "storage"
+    //              c
+    //                  1 (sum tree)
+    //                      [0;32], 1
+    //                      [1;32], 1
+    //              d
+    //                  0,v1
+    //                  1 (sum tree)
+    //                      [0;32], 4
+    //                      [1;32], 1
+    //              e
+    //                  0,v4
+    //                  1 (sum tree)
+    //                      [0;32], 1
+    //                      [1;32], 4
+    //              f
+    //                  0,v1
+    //                  1 (sum tree)
+    //                      [0;32], 1
+    //                      [1;32], 4
+    //              g
+    //                  0,v4
+    //                  1 (sum tree)
+    //                      [3;32], 4
+    //                      [5;32], 4
+    //              h -> "h"
+    //              .. -> ..
+    //              z -> "z"
+
+    let temp_db = make_test_grovedb();
+
+    // Add deep_leaf to root
+    temp_db
+        .insert(EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful root tree leaf insert");
+
+    // Add deep_node_1 to deep_leaf
+    temp_db
+        .insert(
+            [DEEP_LEAF].as_ref(),
+            b"deep_node_1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful subtree insert");
+
+    // Add a -> "storage" to deep_node_1
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_1"].as_ref(),
+            b"",
+            Element::new_item("empty".as_bytes().to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful item insert");
+
+
+    // Add a -> "storage" to deep_node_1
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_1"].as_ref(),
+            b"a",
+            Element::new_item("storage".as_bytes().to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful item insert");
+
+    // Add c, d, e, f, g to deep_node_1
+    for key in [b"c", b"d", b"e", b"f", b"g"].iter() {
+        temp_db
+            .insert(
+                [DEEP_LEAF, b"deep_node_1"].as_ref(),
+                key.as_slice(),
+                Element::empty_tree(),
+                None,
+                None,
+            )
+            .unwrap()
+            .expect("successful subtree insert");
+    }
+
+    // Add sum tree to c
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_1", b"c"].as_ref(),
+            b"1",
+            Element::new_sum_tree(None),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful sum tree insert");
+
+    // Add items to sum tree in c
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_1", b"c", b"1"].as_ref(),
+            &[0; 32],
+            Element::SumItem(1, None),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful sum item insert");
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_1", b"c", b"1"].as_ref(),
+            &[1; 32],
+            Element::SumItem(1, None),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful sum item insert");
+
+    // Add items to 4, 5, 6, 7
+    for (key, value) in [
+        (b"d", b"v1"),
+        (b"e", b"v4"),
+        (b"f", b"v1"),
+        (b"g", b"v4"),
+    ]
+        .iter()
+    {
+        temp_db
+            .insert(
+                [DEEP_LEAF, b"deep_node_1", key.as_slice()].as_ref(),
+                b"0",
+                Element::new_item(value.to_vec()),
+                None,
+                None,
+            )
+            .unwrap()
+            .expect("successful item insert");
+
+        temp_db
+            .insert(
+                [DEEP_LEAF, b"deep_node_1", key.as_slice()].as_ref(),
+                b"1",
+                Element::new_sum_tree(None),
+                None,
+                None,
+            )
+            .unwrap()
+            .expect("successful sum tree insert");
+    }
+
+    // Add items to sum trees in d, e, f
+    for key in [b"d", b"e", b"f"].iter() {
+        let (value1, value2) = if *key == b"d" {
+            (4, 1)
+        } else {
+            (1, 4)
+        };
+
+        temp_db
+            .insert(
+                [DEEP_LEAF, b"deep_node_1", key.as_slice(), b"1"].as_ref(),
+                &[0; 32],
+                Element::SumItem(value1, None),
+                None,
+                None,
+            )
+            .unwrap()
+            .expect("successful sum item insert");
+        temp_db
+            .insert(
+                [DEEP_LEAF, b"deep_node_1", key.as_slice(), b"1"].as_ref(),
+                &[1; 32],
+                Element::SumItem(value2, None),
+                None,
+                None,
+            )
+            .unwrap()
+            .expect("successful sum item insert");
+    }
+
+    // Add items to sum tree in 7
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_1", b"g", b"1"].as_ref(),
+            &[3; 32],
+            Element::SumItem(4, None),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful sum item insert");
+    temp_db
+        .insert(
+            [DEEP_LEAF, b"deep_node_1", b"g", b"1"].as_ref(),
+            &[5; 32],
+            Element::SumItem(4, None),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("successful sum item insert");
+
+    // Add entries for all letters from "h" to "z"
+    for letter in b'h'..=b'z' {
+        temp_db
+            .insert(
+                [DEEP_LEAF, b"deep_node_1"].as_ref(),
+                &[letter],
+                Element::new_item(vec![letter]),
+                None,
+                None,
+            )
+            .unwrap()
+            .expect(&format!("successful item insert for {}", letter as char));
+    }
+
     temp_db
 }
 
@@ -590,7 +864,7 @@ fn test_element_with_flags() {
         SizedQuery::new(query, None, None),
     );
     let proof = db
-        .prove_query(&path_query)
+        .prove_query(&path_query, None)
         .unwrap()
         .expect("should successfully create proof");
     let (root_hash, result_set) =
@@ -1036,7 +1310,7 @@ fn test_proof_for_invalid_path_root_key() {
     let query = Query::new();
     let path_query = PathQuery::new_unsized(vec![b"invalid_path_key".to_vec()], query);
 
-    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1052,7 +1326,7 @@ fn test_proof_for_invalid_path() {
     let path_query =
         PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"invalid_key".to_vec()], query);
 
-    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1069,7 +1343,7 @@ fn test_proof_for_invalid_path() {
         query,
     );
 
-    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1087,7 +1361,7 @@ fn test_proof_for_invalid_path() {
         query,
     );
 
-    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1105,7 +1379,7 @@ fn test_proof_for_invalid_path() {
         query,
     );
 
-    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1123,7 +1397,7 @@ fn test_proof_for_non_existent_data() {
     // path to empty subtree
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1270,7 +1544,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         query,
     );
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     assert_eq!(
         hex::encode(&proof),
         "010285010198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb979cb\
@@ -1404,7 +1678,7 @@ fn test_path_query_proofs_without_subquery() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     assert_eq!(
         hex::encode(proof.as_slice()),
         "01025503046b6579310009000676616c7565310002018655e18e4555b0b65\
@@ -1431,29 +1705,13 @@ fn test_path_query_proofs_without_subquery() {
         SizedQuery::new(query, Some(1), None),
     );
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
     compare_result_tuples(result_set, vec![(b"key2".to_vec(), r1)]);
-
-    // Range query + offset + limit
-    let mut query = Query::new();
-    query.insert_range_after(b"key1".to_vec()..);
-    let path_query = PathQuery::new(
-        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
-        SizedQuery::new(query, Some(1), Some(1)),
-    );
-
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
-    let (hash, result_set) =
-        GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
-
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-    let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
-    compare_result_tuples(result_set, vec![(b"key3".to_vec(), r1)]);
 
     // Range query + direction + limit
     let mut query = Query::new_with_direction(false);
@@ -1463,7 +1721,7 @@ fn test_path_query_proofs_without_subquery() {
         SizedQuery::new(query, Some(2), None),
     );
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1489,7 +1747,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1523,7 +1781,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1546,7 +1804,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect(
         "should
     execute proof",
@@ -1576,12 +1834,12 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-    assert_eq!(result_set.len(), 11);
+    assert_eq!(result_set.len(), 14);
 
     let keys = [
         b"key1".to_vec(),
@@ -1595,6 +1853,9 @@ fn test_path_query_proofs_with_default_subquery() {
         b"key9".to_vec(),
         b"key10".to_vec(),
         b"key11".to_vec(),
+        b"key12".to_vec(),
+        b"key13".to_vec(),
+        b"key14".to_vec(),
     ];
     let values = [
         b"value1".to_vec(),
@@ -1608,6 +1869,9 @@ fn test_path_query_proofs_with_default_subquery() {
         b"value9".to_vec(),
         b"value10".to_vec(),
         b"value11".to_vec(),
+        b"value12".to_vec(),
+        b"value13".to_vec(),
+        b"value14".to_vec(),
     ];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
@@ -1629,7 +1893,7 @@ fn test_path_query_proofs_with_subquery_path() {
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1653,7 +1917,7 @@ fn test_path_query_proofs_with_subquery_path() {
     query.set_subquery(subq);
 
     let path_query = PathQuery::new_unsized(vec![], query);
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
@@ -1677,7 +1941,7 @@ fn test_path_query_proofs_with_subquery_path() {
 
     let path_query =
         PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()], query);
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
@@ -1719,7 +1983,7 @@ fn test_path_query_proofs_with_subquery_path() {
     query.set_subquery(subq);
 
     let path_query = PathQuery::new_unsized(vec![], query);
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
@@ -1741,7 +2005,7 @@ fn test_path_query_proofs_with_key_and_subquery() {
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1777,7 +2041,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     query.set_subquery(subquery);
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1789,6 +2053,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
         b"deeper_3".to_vec(),
         b"key10".to_vec(),
         b"key11".to_vec(),
+        b"deeper_5".to_vec(),
     ];
     assert_eq!(result_set.len(), keys.len());
 
@@ -1820,7 +2085,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     query.set_subquery(subquery);
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1865,7 +2130,7 @@ fn test_path_query_proofs_with_sized_query() {
     final_conditional_subquery.insert_all();
 
     let mut final_default_subquery = Query::new();
-    final_default_subquery.insert_range_inclusive(b"key3".to_vec()..=b"key6".to_vec());
+    final_default_subquery.insert_range_inclusive(b"key4".to_vec()..=b"key6".to_vec());
 
     subquery.add_conditional_subquery(
         QueryItem::Key(b"deeper_4".to_vec()),
@@ -1878,9 +2143,9 @@ fn test_path_query_proofs_with_sized_query() {
 
     let path_query = PathQuery::new(
         vec![DEEP_LEAF.to_vec()],
-        SizedQuery::new(query, Some(3), Some(1)),
+        SizedQuery::new(query, Some(3), None),
     );
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1892,6 +2157,122 @@ fn test_path_query_proofs_with_sized_query() {
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     compare_result_tuples(result_set, expected_result_set);
+}
+
+#[test]
+fn test_path_query_proof_with_range_subquery_and_limit() {
+    let db = make_deep_tree();
+
+    // Create a path query with a range query, subquery, and limit
+    let mut main_query = Query::new();
+    main_query.insert_range_after(b"deeper_3".to_vec()..);
+
+    let mut subquery = Query::new();
+    subquery.insert_all();
+
+    main_query.set_subquery(subquery);
+
+    let path_query = PathQuery::new(
+        vec![DEEP_LEAF.to_vec(), b"deep_node_2".to_vec()],
+        SizedQuery::new(main_query.clone(), Some(3), None),
+    );
+
+    // Generate proof
+    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+
+    // Verify proof
+    let verification_result = GroveDb::verify_query_raw(&proof, &path_query);
+
+    match verification_result {
+        Ok((hash, result_set)) => {
+            // Check if the hash matches the root hash
+            assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+            // Check if we got the correct number of results
+            assert_eq!(result_set.len(), 3, "Expected 3 results due to limit");
+        }
+        Err(e) => {
+            panic!("Proof verification failed: {:?}", e);
+        }
+    }
+
+    // Now test without a limit to compare
+    let path_query_no_limit = PathQuery::new(
+        vec![DEEP_LEAF.to_vec(), b"deep_node_2".to_vec()],
+        SizedQuery::new(main_query.clone(), None, None),
+    );
+
+    let proof_no_limit = db.prove_query(&path_query_no_limit, None).unwrap().unwrap();
+    let verification_result_no_limit = GroveDb::verify_query_raw(&proof_no_limit, &path_query_no_limit);
+
+    match verification_result_no_limit {
+        Ok((hash, result_set)) => {
+            assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+            assert_eq!(result_set.len(), 5, "Expected 5 results without limit");
+        }
+        Err(e) => {
+            panic!("Proof verification failed (no limit): {:?}", e);
+        }
+    }
+}
+
+#[test]
+fn test_path_query_proof_with_range_subquery_and_limit_with_sum_trees() {
+    let db = make_deep_tree_with_sum_trees();
+
+    // Create a path query with a range query, subquery, and limit
+    let mut main_query = Query::new();
+    main_query.insert_key(b"a".to_vec());
+    main_query.insert_range_after(b"b".to_vec()..);
+
+    let mut subquery = Query::new();
+    subquery.insert_all();
+
+    main_query.set_subquery(subquery);
+
+    main_query.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, None);
+
+    let path_query = PathQuery::new(
+        vec![DEEP_LEAF.to_vec(), b"deep_node_1".to_vec()],
+        SizedQuery::new(main_query.clone(), Some(3), None),
+    );
+
+    let non_proved_result_elements = db.query(&path_query, false, false, false, QueryResultType::QueryPathKeyElementTrioResultType, None).unwrap().expect("expected query to execute").0;
+
+    assert_eq!(non_proved_result_elements.len(), 3, "Expected 3 results due to limit");
+
+    let key_elements = non_proved_result_elements.to_key_elements();
+
+    assert_eq!(key_elements, vec![(vec![97], Element::new_item("storage".as_bytes().to_vec())), (vec![49], Element::SumTree(Some(vec![0;32]), 2, None)), (vec![48], Element::new_item("v1".as_bytes().to_vec()))]);
+
+    // Generate proof
+    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+
+    // Verify proof
+    let (hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query).expect("proof verification failed");
+
+    // Check if the hash matches the root hash
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    // Check if we got the correct number of results
+    assert_eq!(result_set.len(), 3, "Expected 3 results due to limit");
+
+    // Now test without a limit to compare
+    let path_query_no_limit = PathQuery::new(
+        vec![DEEP_LEAF.to_vec(), b"deep_node_2".to_vec()],
+        SizedQuery::new(main_query.clone(), None, None),
+    );
+
+    let proof_no_limit = db.prove_query(&path_query_no_limit, None).unwrap().unwrap();
+    let verification_result_no_limit = GroveDb::verify_query_raw(&proof_no_limit, &path_query_no_limit);
+
+    match verification_result_no_limit {
+        Ok((hash, result_set)) => {
+            assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+            assert_eq!(result_set.len(), 5, "Expected 5 results without limit");
+        }
+        Err(e) => {
+            panic!("Proof verification failed (no limit): {:?}", e);
+        }
+    }
 }
 
 #[test]
@@ -1921,17 +2302,17 @@ fn test_path_query_proofs_with_direction() {
 
     let path_query = PathQuery::new(
         vec![DEEP_LEAF.to_vec()],
-        SizedQuery::new(query, Some(3), Some(1)),
+        SizedQuery::new(query, Some(4), None),
     );
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-    assert_eq!(result_set.len(), 3);
+    assert_eq!(result_set.len(), 4);
 
-    let keys = [b"key10".to_vec(), b"key6".to_vec(), b"key5".to_vec()];
-    let values = [b"value10".to_vec(), b"value6".to_vec(), b"value5".to_vec()];
+    let keys = [b"key11".to_vec(), b"key10".to_vec(), b"key6".to_vec(), b"key5".to_vec()];
+    let values = [b"value11".to_vec(), b"value10".to_vec(), b"value6".to_vec(), b"value5".to_vec()];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     compare_result_tuples(result_set, expected_result_set);
@@ -1951,12 +2332,12 @@ fn test_path_query_proofs_with_direction() {
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-    assert_eq!(result_set.len(), 11);
+    assert_eq!(result_set.len(), 14);
 
     let keys = [
         b"key4".to_vec(),
@@ -1965,6 +2346,9 @@ fn test_path_query_proofs_with_direction() {
         b"key1".to_vec(),
         b"key2".to_vec(),
         b"key3".to_vec(),
+        b"key12".to_vec(),
+        b"key13".to_vec(),
+        b"key14".to_vec(),
         b"key10".to_vec(),
         b"key11".to_vec(),
         b"key7".to_vec(),
@@ -1978,6 +2362,9 @@ fn test_path_query_proofs_with_direction() {
         b"value1".to_vec(),
         b"value2".to_vec(),
         b"value3".to_vec(),
+        b"value12".to_vec(),
+        b"value13".to_vec(),
+        b"value14".to_vec(),
         b"value10".to_vec(),
         b"value11".to_vec(),
         b"value7".to_vec(),

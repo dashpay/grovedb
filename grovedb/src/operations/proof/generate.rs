@@ -47,38 +47,52 @@ use grovedb_storage::StorageContext;
 use crate::{
     element::helpers::raw_decode,
     operations::proof::util::{
-        increase_limit_and_offset_by, reduce_limit_and_offset_by, write_slice_of_slice_to_slice,
-        write_slice_to_vec, write_to_vec, ProofTokenType, EMPTY_TREE_HASH,
+        increase_limit_by, reduce_limit_by, write_slice_of_slice_to_slice,
+        write_slice_to_vec, write_to_vec, ProofTokenType,
     },
     reference_path::path_from_reference_path_type,
     versioning::{prepend_version_to_bytes, PROOF_VERSION},
     Element, Error, GroveDb, PathQuery, Query,
 };
+use crate::query_result_type::QueryResultType;
 
-type LimitOffset = (Option<u16>, Option<u16>);
+#[derive(Debug, Clone, Copy)]
+pub struct ProveOptions {
+    pub is_verbose: bool,
+    pub multilevel_results: bool,
+}
+
+impl Default for ProveOptions {
+    fn default() -> Self {
+        ProveOptions {
+            is_verbose: false,
+            multilevel_results: false,
+        }
+    }
+}
 
 impl GroveDb {
     /// Prove one or more path queries.
     /// If we more than one path query, we merge into a single path query before
     /// proving.
-    pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
+    pub fn prove_query_many(&self, query: Vec<&PathQuery>, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
         if query.len() > 1 {
             let query = cost_return_on_error_default!(PathQuery::merge(query));
-            self.prove_query(&query)
+            self.prove_query(&query, prove_options)
         } else {
-            self.prove_query(query[0])
+            self.prove_query(query[0], prove_options)
         }
     }
 
     /// Prove one or more path queries verbose.
     /// If we more than one path query, we merge into a single path query before
     /// proving verbose.
-    pub fn prove_verbose_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
+    pub fn prove_verbose_many(&self, query: Vec<&PathQuery>, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
         if query.len() > 1 {
             let query = cost_return_on_error_default!(PathQuery::merge(query));
-            self.prove_verbose(&query)
+            self.prove_query(&query, prove_options)
         } else {
-            self.prove_verbose(query[0])
+            self.prove_query(query[0], prove_options)
         }
     }
 
@@ -86,38 +100,31 @@ impl GroveDb {
     /// doesn't allow for subset verification
     /// Proofs generated with this can only be verified by the path query used
     /// to generate them.
-    pub fn prove_query(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
-        self.prove_internal(query, false)
+    pub fn prove_query(&self, query: &PathQuery, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
+        self.prove_internal(query, prove_options)
     }
 
-    /// Generate a verbose proof for a given path query
-    /// Any path query that is a subset of the original proof generating path
-    /// query can be used to verify this (subset verification)
-    pub fn prove_verbose(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
-        // TODO: we need to solve the localized limit and offset problem.
-        //      when using a path query that has a limit and offset value,
-        //      to get the expected behaviour, you need to know exactly
-        //      how the proving internals work and how your state looks.
-        self.prove_internal(query, true)
-    }
-
-    /// Generates a verbose or non verbose proof based on a bool
-    fn prove_internal(&self, query: &PathQuery, is_verbose: bool) -> CostResult<Vec<u8>, Error> {
+    /// Generates a verbose or non-verbose proof based on a bool
+    fn prove_internal(&self, path_query: &PathQuery, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
+        let ProveOptions {
+            is_verbose, multilevel_results
+        } = prove_options.unwrap_or_default();
         let mut cost = OperationCost::default();
+
+        if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
+            return Err(Error::InvalidQuery("proved path queries can not have offsets")).wrap_with_cost(cost);
+        }
 
         let mut proof_result =
             cost_return_on_error_default!(prepend_version_to_bytes(vec![], PROOF_VERSION));
 
-        let mut limit: Option<u16> = query.query.limit;
-        let mut offset: Option<u16> = query.query.offset;
-
-        let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+        let path_slices = path_query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
         let subtree_exists = self
             .check_subtree_exists_path_not_found(path_slices.as_slice().into(), None)
             .unwrap_add_cost(&mut cost);
 
-        // if the subtree at the given path doesn't exists, prove that this path
+        // if the subtree at the given path doesn't exist, prove that this path
         // doesn't point to a valid subtree
         match subtree_exists {
             Ok(_) => {
@@ -147,14 +154,24 @@ impl GroveDb {
             );
         }
 
+        let mut limit: Option<u16> = path_query.query.limit;
+
+        let precomputed_result_map = if !multilevel_results || limit.is_none() {
+            None
+        } else {
+            let result =             cost_return_on_error!(
+                &mut cost,
+                self.query(path_query, false, true, false, QueryResultType::QueryPathKeyElementTrioResultType, None)).0;
+            Some(result.to_path_to_key_elements_btree_map())
+        };
+
         cost_return_on_error!(
             &mut cost,
             self.prove_subqueries(
                 &mut proof_result,
                 path_slices.clone(),
-                query,
+                path_query,
                 &mut limit,
-                &mut offset,
                 true,
                 is_verbose
             )
@@ -175,7 +192,6 @@ impl GroveDb {
         path: Vec<&[u8]>,
         query: &PathQuery,
         current_limit: &mut Option<u16>,
-        current_offset: &mut Option<u16>,
         is_first_call: bool,
         is_verbose: bool,
     ) -> CostResult<(), Error> {
@@ -186,7 +202,7 @@ impl GroveDb {
             &mut cost,
             self.open_non_transactional_merk_at_path(path.as_slice().into(), None)
         );
-        if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
+        if !subtree.has_root_key() {
             cost_return_on_error_no_add!(
                 &cost,
                 write_to_vec(proofs, &[ProofTokenType::EmptyTree.into()])
@@ -203,7 +219,7 @@ impl GroveDb {
                         &path.as_slice().into(),
                         &subtree,
                         &query.query.query,
-                        (*current_limit, *current_offset),
+                        *current_limit,
                         ProofTokenType::SizedMerk,
                         proofs,
                         is_verbose,
@@ -222,10 +238,13 @@ impl GroveDb {
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
 
+        //let mut elements_to_prove = vec![];
+
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
             let mut encountered_absence = false;
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
+            println!("Element is {:?}", element);
             match element {
                 Element::Tree(root_key, _) | Element::SumTree(root_key, ..) => {
                     let (mut subquery_path, subquery_value) =
@@ -234,13 +253,8 @@ impl GroveDb {
                     if subquery_value.is_none() && subquery_path.is_none() {
                         // this element should be added to the result set
                         // hence we have to update the limit and offset value
-                        let reduced_offset =
-                            reduce_limit_and_offset_by(current_limit, current_offset, 1);
-                        if reduced_offset {
-                            offset_inc += 1;
-                        } else {
+                            reduce_limit_by(current_limit, 1);
                             limit_inc += 1;
-                        }
                         continue;
                     }
 
@@ -248,7 +262,7 @@ impl GroveDb {
                         continue;
                     }
 
-                    // if the element is a non empty tree then current tree is not a leaf tree
+                    // if the element is a non-empty tree then current tree is not a leaf tree
                     if is_leaf_tree {
                         is_leaf_tree = false;
                         cost_return_on_error!(
@@ -257,7 +271,7 @@ impl GroveDb {
                                 &path.as_slice().into(),
                                 &subtree,
                                 &query.query.query,
-                                (None, None),
+                                None,
                                 ProofTokenType::Merk,
                                 proofs,
                                 is_verbose,
@@ -291,7 +305,7 @@ impl GroveDb {
                                         &new_path.as_slice().into(),
                                         &inner_subtree,
                                         &key_as_query,
-                                        (None, None),
+                                        None,
                                         ProofTokenType::Merk,
                                         proofs,
                                         is_verbose,
@@ -345,7 +359,7 @@ impl GroveDb {
                                     &new_path.as_slice().into(),
                                     &inner_subtree,
                                     &key_as_query,
-                                    (None, None),
+                                    None,
                                     ProofTokenType::Merk,
                                     proofs,
                                     is_verbose,
@@ -401,7 +415,6 @@ impl GroveDb {
                             new_path,
                             &new_path_query,
                             current_limit,
-                            current_offset,
                             false,
                             is_verbose,
                         )
@@ -420,14 +433,14 @@ impl GroveDb {
         if is_leaf_tree {
             // if no useful subtree, then we care about the result set of this subtree.
             // apply the sized query
-            increase_limit_and_offset_by(current_limit, current_offset, limit_inc, offset_inc);
+            increase_limit_by(current_limit, limit_inc);
             let limit_offset = cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
                     &path.as_slice().into(),
                     &subtree,
                     &query.query.query,
-                    (*current_limit, *current_offset),
+                    *current_limit,
                     ProofTokenType::SizedMerk,
                     proofs,
                     is_verbose,
@@ -435,11 +448,10 @@ impl GroveDb {
                 )
             );
 
-            // update limit and offset values
-            *current_limit = limit_offset.0;
-            *current_offset = limit_offset.1;
+            // update limit
+            *current_limit = limit_offset;
         } else {
-            reduce_limit_and_offset_by(current_limit, current_offset, to_add_to_result_set);
+            reduce_limit_by(current_limit, to_add_to_result_set);
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -471,7 +483,7 @@ impl GroveDb {
                     &path_slice.into(),
                     &subtree,
                     &query,
-                    (None, None),
+                    None,
                     ProofTokenType::Merk,
                     proof_result,
                     is_verbose,
@@ -490,12 +502,12 @@ impl GroveDb {
         path: &SubtreePath<B>,
         subtree: &'a Merk<S>,
         query: &Query,
-        limit_offset: LimitOffset,
+        limit: Option<u16>,
         proof_token_type: ProofTokenType,
         proofs: &mut Vec<u8>,
         is_verbose: bool,
         key: &[u8],
-    ) -> CostResult<(Option<u16>, Option<u16>), Error>
+    ) -> CostResult<Option<u16>, Error>
     where
         S: StorageContext<'a> + 'a,
         B: AsRef<[u8]>,
@@ -507,22 +519,23 @@ impl GroveDb {
             ))
             .wrap_with_cost(Default::default());
         }
+        println!("generate_and_store_merk_proof path {:?} query {:?} limit_offset {:?} proof_token_type {}", path.to_vec().into_iter().map(hex::encode).collect::<Vec<_>>().join("/"), query, limit, proof_token_type);
 
         let mut cost = OperationCost::default();
 
         // if the subtree is empty, return the EmptyTree proof op
-        if subtree.root_hash().unwrap() == EMPTY_TREE_HASH {
+        if !subtree.has_root_key() {
             cost_return_on_error_no_add!(
                 &cost,
                 write_to_vec(proofs, &[ProofTokenType::EmptyTree.into()])
             );
-            return Ok(limit_offset).wrap_with_cost(cost);
+            return Ok(limit).wrap_with_cost(cost);
         }
 
         let mut proof_result = cost_return_on_error_no_add!(
             &cost,
             subtree
-                .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
+                .prove_without_encoding(query.clone(), limit)
                 .unwrap()
                 .map_err(|_e| Error::InternalError("failed to generate proof"))
         );
@@ -542,7 +555,7 @@ impl GroveDb {
         // write the merk proof
         cost_return_on_error_no_add!(&cost, write_slice_to_vec(proofs, &proof_bytes));
 
-        Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
+        Ok(proof_result.limit).wrap_with_cost(cost)
     }
 
     /// Serializes a path and add it to the proof vector
@@ -596,7 +609,7 @@ impl GroveDb {
                     &current_path.as_slice().into(),
                     &subtree,
                     &next_key_query,
-                    (None, None),
+                    None,
                     ProofTokenType::Merk,
                     proof_result,
                     is_verbose,
@@ -731,7 +744,7 @@ mod tests {
             &path.as_slice().into(),
             &merk,
             &query,
-            (None, None),
+            None,
             ProofTokenType::Merk,
             &mut proof,
             true,
@@ -747,7 +760,7 @@ mod tests {
         assert_eq!(proof_token_type, ProofTokenType::Merk);
         assert_eq!(key, Some(b"innertree".to_vec()));
 
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
             .unwrap()
             .unwrap();
         assert_eq!(root_hash, expected_root_hash);
@@ -765,7 +778,7 @@ mod tests {
             &EMPTY_PATH,
             &merk,
             &query,
-            (None, None),
+            None,
             ProofTokenType::Merk,
             &mut proof,
             true,
@@ -781,7 +794,7 @@ mod tests {
         assert_eq!(proof_token_type, ProofTokenType::Merk);
         assert_eq!(key, Some(vec![]));
 
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
             .unwrap()
             .unwrap();
         assert_eq!(root_hash, expected_root_hash);
@@ -811,7 +824,7 @@ mod tests {
             &path.as_slice().into(),
             &merk,
             &query,
-            (None, None),
+            None,
             ProofTokenType::Merk,
             &mut proofs,
             true,
@@ -831,7 +844,7 @@ mod tests {
             &path.as_slice().into(),
             &merk,
             &query,
-            (None, None),
+            None,
             ProofTokenType::Merk,
             &mut proofs,
             true,
@@ -851,7 +864,7 @@ mod tests {
             &path.as_slice().into(),
             &merk,
             &query,
-            (None, None),
+            None,
             ProofTokenType::Merk,
             &mut proofs,
             true,
@@ -869,7 +882,7 @@ mod tests {
 
         assert_eq!(proof_token_type, ProofTokenType::Merk);
 
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
             .unwrap()
             .unwrap();
         assert_eq!(root_hash, inner_tree_root_hash);
@@ -884,7 +897,7 @@ mod tests {
 
         assert_eq!(proof_token_type, ProofTokenType::Merk);
 
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
             .unwrap()
             .unwrap();
         assert_eq!(root_hash, inner_tree_4_root_hash);
@@ -898,7 +911,7 @@ mod tests {
 
         assert_eq!(proof_token_type, ProofTokenType::Merk);
 
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, None, true)
+        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
             .unwrap()
             .unwrap();
         assert_eq!(root_hash, deeper_1_root_hash);

@@ -478,7 +478,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query)
+            .prove_query(&path_query, None)
             .unwrap()
             .expect("should generate proof");
         let (hash, result) =

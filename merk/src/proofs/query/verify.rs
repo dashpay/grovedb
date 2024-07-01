@@ -12,7 +12,7 @@ use crate::{
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
-pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
+pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), Option<u16>);
 
 #[cfg(feature = "full")]
 /// Verify proof against expected hash
@@ -52,7 +52,6 @@ pub fn execute_proof(
     bytes: &[u8],
     query: &Query,
     limit: Option<u16>,
-    offset: Option<u16>,
     left_to_right: bool,
 ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
     let mut cost = OperationCost::default();
@@ -62,7 +61,6 @@ pub fn execute_proof(
     let mut query = query.directional_iter(left_to_right).peekable();
     let mut in_range = false;
     let mut current_limit = limit;
-    let mut current_offset = offset;
 
     let ops = Decoder::new(bytes);
 
@@ -191,22 +189,6 @@ pub fn execute_proof(
 
                 // this push matches the queried item
                 if query_item.contains(key) {
-                    // if there are still offset slots, and node is of type kvdigest
-                    // reduce the offset counter
-                    // also, verify that a kv node was not pushed before offset is exhausted
-                    if let Some(offset) = current_offset {
-                        if offset > 0 && value.is_none() {
-                            current_offset = Some(offset - 1);
-                            break;
-                        } else if offset > 0 && value.is_some() {
-                            // inserting a kv node before exhausting offset
-                            return Err(Error::InvalidProofError(
-                                "Proof returns data before offset is exhausted".to_string(),
-                            ));
-                        }
-                    }
-
-                    // offset is equal to zero or none
                     if let Some(val) = value {
                         if let Some(limit) = current_limit {
                             if limit == 0 {
@@ -220,6 +202,11 @@ pub fn execute_proof(
                                 }
                             }
                         }
+                        println!("pushing {:?}", ProvedKeyValue {
+                            key: key.clone(),
+                            value: val.clone(),
+                            proof: value_hash,
+                        });
                         // add data to output
                         output.push(ProvedKeyValue {
                             key: key.clone(),
@@ -242,12 +229,16 @@ pub fn execute_proof(
         };
 
         if let Node::KV(key, value) = node {
+            println!("going into kv");
             execute_node(key, Some(value), value_hash(value).unwrap())?;
         } else if let Node::KVValueHash(key, value, value_hash) = node {
+            println!("going into kv hash");
             execute_node(key, Some(value), *value_hash)?;
         } else if let Node::KVDigest(key, value_hash) = node {
+            println!("going into kv digest");
             execute_node(key, None, *value_hash)?;
         } else if let Node::KVRefValueHash(key, value, value_hash) = node {
+            println!("going into kv ref value hash");
             execute_node(key, Some(value), *value_hash)?;
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
@@ -293,7 +284,6 @@ pub fn execute_proof(
         ProofVerificationResult {
             result_set: output,
             limit: current_limit,
-            offset: current_offset,
         },
     ))
     .wrap_with_cost(cost)
@@ -319,8 +309,6 @@ pub struct ProofVerificationResult {
     pub result_set: Vec<ProvedKeyValue>,
     /// Limit
     pub limit: Option<u16>,
-    /// Offset
-    pub offset: Option<u16>,
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -329,11 +317,10 @@ pub fn verify_query(
     bytes: &[u8],
     query: &Query,
     limit: Option<u16>,
-    offset: Option<u16>,
     left_to_right: bool,
     expected_hash: MerkHash,
 ) -> CostResult<ProofVerificationResult, Error> {
-    execute_proof(bytes, query, limit, offset, left_to_right)
+    execute_proof(bytes, query, limit, left_to_right)
         .map_ok(|(root_hash, verification_result)| {
             if root_hash == expected_hash {
                 Ok(verification_result)

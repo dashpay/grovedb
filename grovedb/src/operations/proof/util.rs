@@ -41,7 +41,7 @@ use integer_encoding::{VarInt, VarIntReader};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
-use crate::{operations::proof::verify::ProvedKeyValues, reference_path::ReferencePathType};
+use crate::operations::proof::verify::ProvedKeyValues;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
@@ -337,29 +337,12 @@ pub fn write_slice_of_slice_to_slice<W: Write>(dest: &mut W, value: &[&[u8]]) ->
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-pub fn reduce_limit_and_offset_by(
+pub fn reduce_limit_by(
     limit: &mut Option<u16>,
-    offset: &mut Option<u16>,
     n: u16,
-) -> bool {
-    let mut skip_limit = false;
-    let mut n = n;
-
-    if let Some(offset_value) = *offset {
-        if offset_value > 0 {
-            if offset_value >= n {
-                *offset = Some(offset_value - n);
-                n = 0;
-            } else {
-                *offset = Some(0);
-                n -= offset_value;
-            }
-            skip_limit = true;
-        }
-    }
-
+) {
     if let Some(limit_value) = *limit {
-        if !skip_limit && limit_value > 0 {
+        if limit_value > 0 {
             if limit_value >= n {
                 *limit = Some(limit_value - n);
             } else {
@@ -367,19 +350,12 @@ pub fn reduce_limit_and_offset_by(
             }
         }
     }
-
-    skip_limit
 }
 
-pub fn increase_limit_and_offset_by(
+pub fn increase_limit_by(
     limit: &mut Option<u16>,
-    offset: &mut Option<u16>,
     limit_inc: u16,
-    offset_inc: u16,
 ) {
-    if let Some(offset_value) = *offset {
-        *offset = Some(offset_value + offset_inc);
-    }
     if let Some(limit_value) = *limit {
         *limit = Some(limit_value + limit_inc);
     }

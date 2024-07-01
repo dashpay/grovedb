@@ -42,7 +42,7 @@ use grovedb_merk::{
 
 use crate::{
     operations::proof::util::{
-        reduce_limit_and_offset_by, ProvedPathKeyValue, ProvedPathKeyValues,
+        reduce_limit_by, ProvedPathKeyValue, ProvedPathKeyValues,
     },
     query_result_type::PathKeyOptionalElementTrio,
     versioning::read_and_consume_proof_version,
@@ -240,7 +240,6 @@ impl GroveDb {
 /// Proof verifier
 struct ProofVerifier {
     limit: Option<u16>,
-    offset: Option<u16>,
     result_set: ProvedPathKeyValues,
 }
 
@@ -250,7 +249,6 @@ impl ProofVerifier {
     pub fn new(query: &PathQuery) -> Self {
         ProofVerifier {
             limit: query.query.limit,
-            offset: query.query.offset,
             result_set: vec![],
         }
     }
@@ -406,26 +404,21 @@ impl ProofVerifier {
 
                             if subquery_value.is_none() && subquery_path.is_none() {
                                 // add this element to the result set
-                                let skip_limit = reduce_limit_and_offset_by(
+                                reduce_limit_by(
                                     &mut self.limit,
-                                    &mut self.offset,
                                     1,
                                 );
 
-                                if !skip_limit {
-                                    // only insert to the result set if the offset value is not
-                                    // greater than 0
-                                    self.result_set.push(
-                                        ProvedPathKeyValue::from_proved_key_value(
-                                            path,
-                                            ProvedKeyValue {
-                                                key,
-                                                value: current_value_bytes,
-                                                proof: value_hash,
-                                            },
-                                        ),
-                                    );
-                                }
+                                self.result_set.push(
+                                    ProvedPathKeyValue::from_proved_key_value(
+                                        path,
+                                        ProvedKeyValue {
+                                            key,
+                                            value: current_value_bytes,
+                                            proof: value_hash,
+                                        },
+                                    ),
+                                );
 
                                 continue;
                             }
@@ -535,22 +528,17 @@ impl ProofVerifier {
                                 break;
                             }
 
-                            let skip_limit =
-                                reduce_limit_and_offset_by(&mut self.limit, &mut self.offset, 1);
+                            reduce_limit_by(&mut self.limit, 1);
 
-                            if !skip_limit {
-                                // only insert to the result set if the offset value is not greater
-                                // than 0
-                                self.result_set
-                                    .push(ProvedPathKeyValue::from_proved_key_value(
-                                        path,
-                                        ProvedKeyValue {
-                                            key,
-                                            value: value_bytes,
-                                            proof: value_hash,
-                                        },
-                                    ));
-                            }
+                            self.result_set
+                                .push(ProvedPathKeyValue::from_proved_key_value(
+                                    path,
+                                    ProvedKeyValue {
+                                        key,
+                                        value: value_bytes,
+                                        proof: value_hash,
+                                    },
+                                ));
                         }
                     }
                 }
@@ -901,15 +889,13 @@ impl ProofVerifier {
     ) -> Result<(CryptoHash, Option<ProvedPathKeyValues>), Error> {
         let is_sized_proof = proof_token_type == ProofTokenType::SizedMerk;
         let mut limit = None;
-        let mut offset = None;
 
         if is_sized_proof {
             limit = self.limit;
-            offset = self.offset;
         }
 
         let (hash, result) =
-            grovedb_merk::execute_proof(proof, query, limit, offset, left_to_right)
+            grovedb_merk::execute_proof(proof, query, limit, left_to_right)
                 .unwrap()
                 .map_err(|e| {
                     eprintln!("{e}");
@@ -922,7 +908,6 @@ impl ProofVerifier {
 
         if is_sized_proof {
             self.limit = result.limit;
-            self.offset = result.offset;
             self.result_set.extend(proved_path_key_values);
             Ok((hash, None))
         } else {

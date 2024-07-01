@@ -209,6 +209,23 @@ impl QueryResultElements {
         map
     }
 
+    /// To path to key, elements btree map
+    pub fn to_path_to_key_elements_btree_map(self) -> BTreeMap<Path, BTreeMap<Key, Element>> {
+        let mut map: BTreeMap<Path, BTreeMap<Key, Element>> = BTreeMap::new();
+
+        for result_item in self.elements.into_iter() {
+            if let QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) =
+                result_item
+            {
+                map.entry(path)
+                    .or_insert_with(BTreeMap::new)
+                    .insert(key, element);
+            }
+        }
+
+        map
+    }
+
     /// To last path to key, elements btree map
     pub fn to_last_path_to_key_elements_btree_map(self) -> BTreeMap<Key, BTreeMap<Key, Element>> {
         let mut map: BTreeMap<Vec<u8>, BTreeMap<Key, Element>> = BTreeMap::new();

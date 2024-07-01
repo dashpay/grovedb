@@ -103,7 +103,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"key".to_vec()], query);
     let proof = db
-        .prove_query(&path_query)
+        .prove_query(&path_query, None)
         .unwrap()
         .expect("should generate proof");
     let (root_hash, result_set) =
@@ -169,7 +169,7 @@ fn test_sum_item_behaves_like_regular_item() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sumkey".to_vec()], query);
     let proof = db
-        .prove_query(&path_query)
+        .prove_query(&path_query, None)
         .unwrap()
         .expect("should generate proof");
     let (root_hash, result_set) =

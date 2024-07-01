@@ -294,7 +294,7 @@ mod tests {
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_one, None).unwrap().unwrap();
         let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
             .expect("should execute proof");
         assert_eq!(result_set_one.len(), 1);
@@ -304,7 +304,7 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_two, None).unwrap().unwrap();
         let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
@@ -312,7 +312,7 @@ mod tests {
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
             .expect("should merge path queries");
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db.prove_query(&merged_path_query, None).unwrap().unwrap();
         let (_, result_set_tree) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");
         assert_eq!(result_set_tree.len(), 2);
@@ -330,7 +330,7 @@ mod tests {
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_one, None).unwrap().unwrap();
         let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
             .expect("should execute proof");
         assert_eq!(result_set_one.len(), 1);
@@ -340,7 +340,7 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_two, None).unwrap().unwrap();
         let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db.prove_query(&merged_path_query, None).unwrap().unwrap();
         let (_, result_set_merged) =
             GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
                 .expect("should execute proof");
@@ -374,7 +374,7 @@ mod tests {
             query_one.clone(),
         );
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_one, None).unwrap().unwrap();
         let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
             .expect("should execute proof");
         assert_eq!(result_set_one.len(), 3);
@@ -391,7 +391,7 @@ mod tests {
             query_two.clone(),
         );
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_two, None).unwrap().unwrap();
         let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
@@ -408,7 +408,7 @@ mod tests {
             query_three.clone(),
         );
 
-        let proof = temp_db.prove_query(&path_query_three).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_three, None).unwrap().unwrap();
         let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_three)
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
@@ -544,7 +544,7 @@ mod tests {
             .expect("expected to get results");
         assert_eq!(result_set_merged.len(), 7);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db.prove_query(&merged_path_query, None).unwrap().unwrap();
         let (_, proved_result_set_merged) =
             GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
                 .expect("should execute proof");
@@ -589,7 +589,7 @@ mod tests {
             query_one,
         );
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_one, None).unwrap().unwrap();
         let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
             .expect("should execute proof");
         assert_eq!(result_set_one.len(), 6);
@@ -606,7 +606,7 @@ mod tests {
             query_two,
         );
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_two, None).unwrap().unwrap();
         let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
@@ -615,7 +615,7 @@ mod tests {
             .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db.prove_query(&merged_path_query, None).unwrap().unwrap();
         let (_, result_set_merged) =
             GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
                 .expect("should execute proof");
@@ -655,7 +655,7 @@ mod tests {
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_one, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
@@ -665,7 +665,7 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_two, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
@@ -677,7 +677,7 @@ mod tests {
             query_three,
         );
 
-        let proof = temp_db.prove_query(&path_query_three).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_three, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_three)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 2);
@@ -686,7 +686,7 @@ mod tests {
             PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
                 .expect("should merge three queries");
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db.prove_query(&merged_path_query, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 4);
@@ -705,7 +705,7 @@ mod tests {
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_one, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
@@ -715,7 +715,7 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_two, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
@@ -723,7 +723,7 @@ mod tests {
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
             .expect("should merge three queries");
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db.prove_query(&merged_path_query, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 2);
@@ -738,7 +738,7 @@ mod tests {
             query_one,
         );
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_one, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 2);
@@ -755,7 +755,7 @@ mod tests {
             query_one,
         );
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query_two, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 3);
@@ -838,7 +838,7 @@ mod tests {
             .expect("expected to get results");
         assert_eq!(result_set_merged.len(), 4);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db.prove_query(&merged_path_query, None).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");
         assert_eq!(result_set.len(), 4);
