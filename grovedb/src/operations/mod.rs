@@ -10,11 +10,11 @@ pub(crate) mod get;
 pub mod insert;
 #[cfg(feature = "full")]
 pub(crate) mod is_empty_tree;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub mod proof;
+// #[cfg(any(feature = "full", feature = "verify"))]
+// pub mod proof;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-pub mod proof_v2;
+pub mod proof;
 
 #[cfg(feature = "full")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};

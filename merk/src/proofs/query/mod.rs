@@ -660,22 +660,12 @@ where
         let (mut right_proof, right_absence, new_limit) = if left_to_right {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(
-                    proof_direction,
-                    right_items,
-                    new_limit,
-                    left_to_right,
-                )
+                self.create_child_proof(proof_direction, right_items, new_limit, left_to_right,)
             )
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(
-                    proof_direction,
-                    left_items,
-                    new_limit,
-                    left_to_right,
-                )
+                self.create_child_proof(proof_direction, left_items, new_limit, left_to_right,)
             )
         };
 
@@ -727,12 +717,7 @@ where
             }
         }
 
-        Ok((
-            proof,
-            (left_absence.0, right_absence.1),
-            new_limit,
-        ))
-        .wrap_with_cost(cost)
+        Ok((proof, (left_absence.0, right_absence.1), new_limit)).wrap_with_cost(cost)
     }
 
     /// Similar to `create_proof`. Recurses into the child on the given side and
@@ -764,8 +749,7 @@ where
             });
             Ok((proof, (false, false), limit)).wrap_with_cost(Default::default())
         } else {
-            Ok((LinkedList::new(), (false, false), limit))
-                .wrap_with_cost(Default::default())
+            Ok((LinkedList::new(), (false, false), limit)).wrap_with_cost(Default::default())
         }
     }
 }
@@ -1185,15 +1169,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
     }
 
@@ -1245,15 +1223,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
     }
 
@@ -1309,15 +1281,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![3], vec![3]), (vec![7], vec![7])]);
     }
 
@@ -1381,15 +1347,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7])],
@@ -1443,15 +1403,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(res.result_set, vec![]);
     }
 
@@ -1505,15 +1459,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(res.result_set, vec![]);
     }
 
@@ -1698,15 +1646,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -1850,15 +1792,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -1867,7 +1803,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        
 
         // skip 1 element
         let mut tree = make_tree_seq(10);
@@ -1901,7 +1836,6 @@ mod test {
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_tree_seq(10);
@@ -1932,7 +1866,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        
 
         // skip all elements
         let mut tree = make_tree_seq(10);
@@ -1978,19 +1911,13 @@ mod test {
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
+        let mut query = Query::new_with_direction(false);
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -2090,15 +2017,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -2108,7 +2029,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        
 
         // skip 1 element
         let mut tree = make_tree_seq(10);
@@ -2142,7 +2062,6 @@ mod test {
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_tree_seq(10);
@@ -2176,7 +2095,6 @@ mod test {
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
-        
 
         // skip all elements
         let mut tree = make_tree_seq(10);
@@ -2226,15 +2144,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
 
         compare_result_tuples(
             res.result_set,
@@ -2262,22 +2174,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
 
         compare_result_tuples(
             res.result_set,
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])],
         );
         assert_eq!(res.limit, None);
-        
     }
 
     #[test]
@@ -2344,21 +2249,14 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, None);
-        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -2396,7 +2294,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -2438,7 +2335,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -2479,7 +2375,6 @@ mod test {
             vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, Some(97));
-        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -2508,7 +2403,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -2537,7 +2431,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![8], vec![8])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -2585,15 +2478,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
@@ -2627,7 +2514,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
     }
 
     #[test]
@@ -2717,15 +2603,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -2736,7 +2616,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -2774,7 +2653,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -2812,7 +2690,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -2858,7 +2735,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(96));
-        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -2887,7 +2763,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -2916,7 +2791,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -2964,15 +2838,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -3011,7 +2879,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
     }
 
     #[test]
@@ -3101,15 +2968,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -3120,7 +2981,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -3158,7 +3018,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -3196,7 +3055,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -3242,7 +3100,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(96));
-        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -3271,7 +3128,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -3300,7 +3156,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -3348,15 +3203,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -3395,7 +3244,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
     }
 
     #[test]
@@ -3485,15 +3333,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -3504,7 +3346,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -3542,7 +3383,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -3580,7 +3420,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -3626,7 +3465,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(96));
-        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -3655,7 +3493,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -3684,7 +3521,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -3732,15 +3568,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -3782,7 +3612,6 @@ mod test {
             vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
-        
     }
 
     #[test]
@@ -3867,18 +3696,11 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, None);
-        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -3916,7 +3738,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -3954,7 +3775,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -3992,7 +3812,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(98));
-        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -4021,7 +3840,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -4050,7 +3868,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
-        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -4098,15 +3915,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
 
         let mut tree = make_6_node_tree();
@@ -4137,7 +3948,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(299));
-        
     }
 
     #[test]
@@ -4221,21 +4031,14 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, None);
-        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -4273,7 +4076,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -4311,7 +4113,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -4352,7 +4153,6 @@ mod test {
             vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, Some(97));
-        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -4381,7 +4181,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -4410,7 +4209,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -4568,15 +4366,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -4589,7 +4381,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, None);
-        
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
@@ -4627,7 +4418,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
@@ -4665,7 +4455,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -4713,7 +4502,6 @@ mod test {
             ],
         );
         assert_eq!(res.limit, Some(94));
-        
 
         // skip 1 element
         let mut tree = make_6_node_tree();
@@ -4745,7 +4533,6 @@ mod test {
             vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
-        
 
         // skip 2 elements
         let mut tree = make_6_node_tree();
@@ -4774,7 +4561,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
-        
 
         // skip all elements
         let mut tree = make_6_node_tree();
@@ -4822,15 +4608,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -4871,7 +4651,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
     }
 
     #[test]
@@ -4951,7 +4730,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
-        
     }
 
     #[test]
@@ -5034,7 +4812,6 @@ mod test {
         .unwrap();
         compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
-        
     }
 
     #[test]
@@ -5122,19 +4899,13 @@ mod test {
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
+        let mut query = Query::new_with_direction(false);
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            false,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -5236,15 +5007,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![
@@ -5343,15 +5108,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(
-            bytes.as_slice(),
-            &query,
-            None,
-            true,
-            tree.hash().unwrap(),
-        )
-        .unwrap()
-        .unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
         compare_result_tuples(
             res.result_set,
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],

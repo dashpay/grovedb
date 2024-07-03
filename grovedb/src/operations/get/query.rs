@@ -38,14 +38,16 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "full")]
 use crate::element::SumValue;
-use crate::{element::QueryOptions, query_result_type::PathKeyOptionalElementTrio};
+use crate::{
+    element::QueryOptions, operations::proof::ProveOptions,
+    query_result_type::PathKeyOptionalElementTrio,
+};
 #[cfg(feature = "full")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
-use crate::operations::proof_v2::ProveOptions;
 
 #[cfg(feature = "full")]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -1272,8 +1274,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
 
-        db
-            .query_raw_keys_optional(&path_query, true, true, true, None)
+        db.query_raw_keys_optional(&path_query, true, true, true, None)
             .unwrap()
             .expect_err(
                 "query with subquery should error if error_if_intermediate_path_tree_not_present \

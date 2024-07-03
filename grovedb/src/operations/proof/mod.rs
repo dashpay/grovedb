@@ -1,11 +1,9 @@
 //! Proof operations
 
-// #[cfg(feature = "full")]
-// mod generate;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
+mod generate;
 pub mod util;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub mod verify;
+mod verify;
 
-// #[cfg(feature = "full")]
-// pub use generate::ProveOptions;
+#[cfg(feature = "full")]
+pub use generate::ProveOptions;

@@ -64,7 +64,7 @@ pub enum BTreeMapLevelResultOrItem {
 /// BTreeMap level result
 #[derive(Debug, Clone)]
 pub struct BTreeMapLevelResult {
-    pub key_values : BTreeMap<Key, BTreeMapLevelResultOrItem>
+    pub key_values: BTreeMap<Key, BTreeMapLevelResultOrItem>,
 }
 
 impl BTreeMapLevelResult {
@@ -76,11 +76,11 @@ impl BTreeMapLevelResult {
             match current.key_values.get(*segment) {
                 Some(BTreeMapLevelResultOrItem::BTreeMapLevelResult(next_level)) => {
                     current = next_level;
-                },
+                }
                 Some(BTreeMapLevelResultOrItem::ResultItem(_)) => {
                     // We've reached a ResultItem before the end of the path
                     return 0;
-                },
+                }
                 None => {
                     // Path not found
                     return 0;
@@ -310,37 +310,43 @@ impl QueryResultElements {
             element: Element,
         ) {
             if let Some(segment) = path.next() {
-                let next_level = current_level.key_values
-                    .entry(segment)
-                    .or_insert_with(|| BTreeMapLevelResultOrItem::BTreeMapLevelResult(BTreeMapLevelResult {
-                        key_values: BTreeMap::new()
-                    }));
+                let next_level = current_level.key_values.entry(segment).or_insert_with(|| {
+                    BTreeMapLevelResultOrItem::BTreeMapLevelResult(BTreeMapLevelResult {
+                        key_values: BTreeMap::new(),
+                    })
+                });
 
                 match next_level {
                     BTreeMapLevelResultOrItem::BTreeMapLevelResult(inner) => {
                         insert_recursive(inner, path, key, element);
-                    },
+                    }
                     BTreeMapLevelResultOrItem::ResultItem(_) => {
-                        // This shouldn't happen in a well-formed structure, but we'll handle it anyway
-                        *next_level = BTreeMapLevelResultOrItem::BTreeMapLevelResult(BTreeMapLevelResult {
-                            key_values: BTreeMap::new()
-                        });
+                        // This shouldn't happen in a well-formed structure, but we'll handle it
+                        // anyway
+                        *next_level =
+                            BTreeMapLevelResultOrItem::BTreeMapLevelResult(BTreeMapLevelResult {
+                                key_values: BTreeMap::new(),
+                            });
                         if let BTreeMapLevelResultOrItem::BTreeMapLevelResult(inner) = next_level {
                             insert_recursive(inner, path, key, element);
                         }
-                    },
+                    }
                 }
             } else {
-                current_level.key_values.insert(key, BTreeMapLevelResultOrItem::ResultItem(element));
+                current_level
+                    .key_values
+                    .insert(key, BTreeMapLevelResultOrItem::ResultItem(element));
             }
         }
 
         let mut root = BTreeMapLevelResult {
-            key_values: BTreeMap::new()
+            key_values: BTreeMap::new(),
         };
 
         for result_item in self.elements {
-            if let QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) = result_item {
+            if let QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) =
+                result_item
+            {
                 insert_recursive(&mut root, path.into_iter(), key, element);
             }
         }

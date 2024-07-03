@@ -202,11 +202,14 @@ pub fn execute_proof(
                                 }
                             }
                         }
-                        println!("pushing {:?}", ProvedKeyValue {
-                            key: key.clone(),
-                            value: val.clone(),
-                            proof: value_hash,
-                        });
+                        println!(
+                            "pushing {:?}",
+                            ProvedKeyValue {
+                                key: key.clone(),
+                                value: val.clone(),
+                                proof: value_hash,
+                            }
+                        );
                         // add data to output
                         output.push(ProvedKeyValue {
                             key: key.clone(),

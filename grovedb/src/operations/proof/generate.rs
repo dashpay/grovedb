@@ -1,62 +1,30 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Generate proof operations
 
-// TODO: entire file is due for a refactor, need some kind of path generator
-//  that supports multiple implementations for verbose and non-verbose
-// generation
-
 use std::collections::BTreeMap;
+
+use bincode::{Decode, Encode};
+use derive_more::From;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
 };
 use grovedb_merk::{
-    proofs::{encode_into, Node, Op},
+    proofs::{
+        encode_into,
+        query::{Key, QueryItem},
+        Node, Op,
+    },
     tree::value_hash,
-    KVIterator, Merk, ProofWithoutEncodingResult,
+    Merk, ProofWithoutEncodingResult,
 };
-use grovedb_merk::proofs::query::{Key, Path};
 use grovedb_path::SubtreePath;
 use grovedb_storage::StorageContext;
 
 use crate::{
-    element::helpers::raw_decode,
-    operations::proof::util::{
-        increase_limit_by, reduce_limit_by, write_slice_of_slice_to_slice,
-        write_slice_to_vec, write_to_vec, ProofTokenType,
-    },
+    query_result_type::{BTreeMapLevelResult, BTreeMapLevelResultOrItem, QueryResultType},
     reference_path::path_from_reference_path_type,
-    versioning::{prepend_version_to_bytes, PROOF_VERSION},
-    Element, Error, GroveDb, PathQuery, Query,
+    Element, Error, GroveDb, PathQuery,
 };
-use crate::query_result_type::{BTreeMapLevelResult, QueryResultType};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProveOptions {
@@ -73,23 +41,31 @@ impl Default for ProveOptions {
     }
 }
 
+#[derive(Encode, Decode)]
+pub struct LayerProof {
+    pub merk_proof: Vec<u8>,
+    pub lower_layers: BTreeMap<Key, LayerProof>,
+}
+
+#[derive(Encode, Decode, From)]
+pub enum GroveDBProof {
+    V0(GroveDBProofV0),
+}
+
+#[derive(Encode, Decode)]
+pub struct GroveDBProofV0 {
+    pub root_layer: LayerProof,
+}
+
 impl GroveDb {
     /// Prove one or more path queries.
-    /// If we more than one path query, we merge into a single path query before
-    /// proving.
-    pub fn prove_query_many(&self, query: Vec<&PathQuery>, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
-        if query.len() > 1 {
-            let query = cost_return_on_error_default!(PathQuery::merge(query));
-            self.prove_query(&query, prove_options)
-        } else {
-            self.prove_query(query[0], prove_options)
-        }
-    }
-
-    /// Prove one or more path queries verbose.
-    /// If we more than one path query, we merge into a single path query before
-    /// proving verbose.
-    pub fn prove_verbose_many(&self, query: Vec<&PathQuery>, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
+    /// If we have more than one path query, we merge into a single path query
+    /// before proving.
+    pub fn prove_query_many(
+        &self,
+        query: Vec<&PathQuery>,
+        prove_options: Option<ProveOptions>,
+    ) -> CostResult<Vec<u8>, Error> {
         if query.len() > 1 {
             let query = cost_return_on_error_default!(PathQuery::merge(query));
             self.prove_query(&query, prove_options)
@@ -102,550 +78,182 @@ impl GroveDb {
     /// doesn't allow for subset verification
     /// Proofs generated with this can only be verified by the path query used
     /// to generate them.
-    pub fn prove_query(&self, query: &PathQuery, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
-        self.prove_internal(query, prove_options)
+    pub fn prove_query(
+        &self,
+        query: &PathQuery,
+        prove_options: Option<ProveOptions>,
+    ) -> CostResult<Vec<u8>, Error> {
+        self.prove_internal_serialized(query, prove_options)
     }
 
-    /// Generates a verbose or non-verbose proof based on a bool
-    fn prove_internal(&self, path_query: &PathQuery, prove_options: Option<ProveOptions>) -> CostResult<Vec<u8>, Error> {
-        let ProveOptions {
-            is_verbose, multilevel_results
-        } = prove_options.unwrap_or_default();
+    /// Generates a proof and serializes it
+    fn prove_internal_serialized(
+        &self,
+        path_query: &PathQuery,
+        prove_options: Option<ProveOptions>,
+    ) -> CostResult<Vec<u8>, Error> {
+        let mut cost = OperationCost::default();
+        let proof =
+            cost_return_on_error!(&mut cost, self.prove_internal(path_query, prove_options));
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let encoded_proof = cost_return_on_error_no_add!(
+            &cost,
+            bincode::encode_to_vec(proof, config)
+                .map_err(|e| Error::CorruptedData(format!("unable to encode proof {}", e)))
+        );
+        Ok(encoded_proof).wrap_with_cost(cost)
+    }
+
+    /// Generates a proof
+    fn prove_internal(
+        &self,
+        path_query: &PathQuery,
+        prove_options: Option<ProveOptions>,
+    ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
-            return Err(Error::InvalidQuery("proved path queries can not have offsets")).wrap_with_cost(cost);
+            return Err(Error::InvalidQuery(
+                "proved path queries can not have offsets",
+            ))
+            .wrap_with_cost(cost);
         }
 
-        let mut proof_result =
-            cost_return_on_error_default!(prepend_version_to_bytes(vec![], PROOF_VERSION));
+        // we want to query raw because we want the references to not be resolved at
+        // this point
 
-        let path_slices = path_query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
-
-        let subtree_exists = self
-            .check_subtree_exists_path_not_found(path_slices.as_slice().into(), None)
-            .unwrap_add_cost(&mut cost);
-
-        // if the subtree at the given path doesn't exist, prove that this path
-        // doesn't point to a valid subtree
-        match subtree_exists {
-            Ok(_) => {
-                // subtree exists
-                // do nothing
-            }
-            Err(_) => {
-                cost_return_on_error!(
-                    &mut cost,
-                    self.generate_and_store_absent_path_proof(
-                        &path_slices,
-                        &mut proof_result,
-                        is_verbose
-                    )
-                );
-                // return the absence proof no need to continue proof generation
-                return Ok(proof_result).wrap_with_cost(cost);
-            }
-        }
-
-        // if the subtree exists and the proof type is verbose we need to insert
-        // the path information to the proof
-        if is_verbose {
-            cost_return_on_error!(
-                &mut cost,
-                Self::generate_and_store_path_proof(path_slices.clone(), &mut proof_result)
-            );
-        }
-
-        let mut limit: Option<u16> = path_query.query.limit;
-
-        let precomputed_result_map = if !multilevel_results || limit.is_none() {
-            None
-        } else {
-            let result =             cost_return_on_error!(
-                &mut cost,
-                self.query(path_query, false, true, false, QueryResultType::QueryPathKeyElementTrioResultType, None)).0;
-            Some(result.to_btree_map_level_results())
-        };
+        let precomputed_result_map = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                path_query,
+                false,
+                true,
+                false,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None
+            )
+        )
+        .0
+        .to_btree_map_level_results();
 
         println!("precomputed results are {:?}", precomputed_result_map);
 
-        cost_return_on_error!(
+        let root_layer = cost_return_on_error!(
             &mut cost,
-            self.prove_subqueries(
-                &mut proof_result,
-                path_slices.clone(),
-                path_query,
-                &mut limit,
-                true,
-                is_verbose,
-                &precomputed_result_map,
-            )
-        );
-        cost_return_on_error!(
-            &mut cost,
-            self.prove_path(&mut proof_result, path_slices, is_verbose)
+            self.prove_subqueries(vec![], path_query, precomputed_result_map,)
         );
 
-        Ok(proof_result).wrap_with_cost(cost)
+        Ok(GroveDBProofV0 { root_layer }.into()).wrap_with_cost(cost)
     }
 
     /// Perform a pre-order traversal of the tree based on the provided
     /// subqueries
     fn prove_subqueries(
         &self,
-        proofs: &mut Vec<u8>,
         path: Vec<&[u8]>,
-        query: &PathQuery,
-        current_limit: &mut Option<u16>,
-        is_first_call: bool,
-        is_verbose: bool,
-        precomputed_results: &Option<BTreeMapLevelResult>
-    ) -> CostResult<(), Error> {
+        path_query: &PathQuery,
+        layer_precomputed_results: BTreeMapLevelResult,
+    ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
-        let mut to_add_to_result_set: u16 = 0;
+
+        let (query_at_path, left_to_right) = cost_return_on_error_no_add!(
+            &cost,
+            path_query
+                .query_items_at_path(path.as_slice())
+                .ok_or(Error::CorruptedPath("path should be part of path_query"))
+        );
 
         let subtree = cost_return_on_error!(
             &mut cost,
             self.open_non_transactional_merk_at_path(path.as_slice().into(), None)
         );
-        if !subtree.has_root_key() {
-            cost_return_on_error_no_add!(
-                &cost,
-                write_to_vec(proofs, &[ProofTokenType::EmptyTree.into()])
-            );
-            return Ok(()).wrap_with_cost(cost);
-        }
 
-        let precomputed_items_count = precomputed_results.as_ref().map(|level_results| level_results.len_of_values_at_path(path.as_slice()));
+        let limit = layer_precomputed_results.key_values.len();
 
-        let reached_limit = current_limit.map_or(false, |limit| limit == 0);
-        if reached_limit {
-            if is_first_call {
-                cost_return_on_error!(
-                    &mut cost,
-                    self.generate_and_store_merk_proof(
-                        &path.as_slice().into(),
-                        &subtree,
-                        &query.query.query,
-                        *current_limit,
-                        ProofTokenType::SizedMerk,
-                        proofs,
-                        is_verbose,
-                        path.iter().last().unwrap_or(&(&[][..]))
-                    )
-                );
-            }
-            return Ok(()).wrap_with_cost(cost);
-        }
+        let merk_proof = cost_return_on_error!(
+            &mut cost,
+            self.generate_merk_proof(
+                &path.as_slice().into(),
+                &subtree,
+                &query_at_path,
+                left_to_right,
+                Some(limit as u16),
+            )
+        );
 
-        let mut is_leaf_tree = true;
-
-        let mut limit_inc = 0;
-
-        let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
-            .unwrap_add_cost(&mut cost);
-
-        //let mut elements_to_prove = vec![];
-
-        while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
-            let mut encountered_absence = false;
-
-            let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
-            match element {
-                Element::Tree(root_key, _) | Element::SumTree(root_key, ..) => {
-                    let (mut subquery_path, subquery_value) =
-                        Element::subquery_paths_and_value_for_sized_query(&query.query, &key);
-
-                    if subquery_value.is_none() && subquery_path.is_none() {
-                        // this element should be added to the result set
-                        // hence we have to update the limit and offset value
-                            reduce_limit_by(current_limit, 1);
-                            limit_inc += 1;
-                        continue;
-                    }
-
-                    if root_key.is_none() {
-                        continue;
-                    }
-
-                    // if the element is a non-empty tree then current tree is not a leaf tree
-                    if is_leaf_tree {
-                        let proof_token_type = if precomputed_items_count.is_some() {
-                            ProofTokenType::SizedMerk
-                        } else {
-                            ProofTokenType::Merk
-                        };
-                        is_leaf_tree = false;
-                        cost_return_on_error!(
-                            &mut cost,
-                            self.generate_and_store_merk_proof(
-                                &path.as_slice().into(),
-                                &subtree,
-                                &query.query.query,
-                                precomputed_items_count,
-                                proof_token_type,
-                                proofs,
-                                is_verbose,
-                                path.iter().last().unwrap_or(&Default::default())
-                            )
-                        );
-                    }
-
-                    let mut new_path = path.clone();
-                    new_path.push(key.as_ref());
-
-                    let mut query = subquery_value;
-
-                    if query.is_some() {
-                        if let Some(subquery_path) = &subquery_path {
-                            for subkey in subquery_path.iter() {
-                                let inner_subtree = cost_return_on_error!(
-                                    &mut cost,
-                                    self.open_non_transactional_merk_at_path(
-                                        new_path.as_slice().into(),
-                                        None,
-                                    )
-                                );
-
-                                let mut key_as_query = Query::new();
-                                key_as_query.insert_key(subkey.clone());
-
-                                cost_return_on_error!(
-                                    &mut cost,
-                                    self.generate_and_store_merk_proof(
-                                        &new_path.as_slice().into(),
-                                        &inner_subtree,
-                                        &key_as_query,
-                                        None,
-                                        ProofTokenType::Merk,
-                                        proofs,
-                                        is_verbose,
-                                        new_path.iter().last().unwrap_or(&Default::default())
-                                    )
-                                );
-
-                                new_path.push(subkey);
-
-                                if self
-                                    .check_subtree_exists_path_not_found(
-                                        new_path.as_slice().into(),
-                                        None,
-                                    )
-                                    .unwrap_add_cost(&mut cost)
-                                    .is_err()
-                                {
-                                    encountered_absence = true;
-                                    break;
-                                }
-                            }
-
-                            if encountered_absence {
-                                continue;
-                            }
-                        }
-                    } else if let Some(subquery_path) = &mut subquery_path {
-                        if subquery_path.is_empty() {
-                            // nothing to do on this path, since subquery path is empty
-                            // and there is no consecutive subquery value
-                            continue;
-                        }
-
-                        let last_key = subquery_path.remove(subquery_path.len() - 1);
-
-                        for subkey in subquery_path.iter() {
-                            let inner_subtree = cost_return_on_error!(
-                                &mut cost,
-                                self.open_non_transactional_merk_at_path(
-                                    new_path.as_slice().into(),
-                                    None
-                                )
-                            );
-
-                            let mut key_as_query = Query::new();
-                            key_as_query.insert_key(subkey.clone());
-
-                            cost_return_on_error!(
-                                &mut cost,
-                                self.generate_and_store_merk_proof(
-                                    &new_path.as_slice().into(),
-                                    &inner_subtree,
-                                    &key_as_query,
-                                    None,
-                                    ProofTokenType::Merk,
-                                    proofs,
-                                    is_verbose,
-                                    new_path.iter().last().unwrap_or(&Default::default())
-                                )
-                            );
-
-                            new_path.push(subkey);
-
-                            // check if the new path points to a valid subtree
-                            // if it does not, we should stop proof generation on this path
-                            if self
-                                .check_subtree_exists_path_not_found(
-                                    new_path.as_slice().into(),
-                                    None,
-                                )
+        let lower_layers = cost_return_on_error_no_add!(
+            &cost,
+            layer_precomputed_results
+                .key_values
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    match value {
+                        BTreeMapLevelResultOrItem::BTreeMapLevelResult(layer) => {
+                            let mut lower_path = path.clone();
+                            lower_path.push(key.as_slice());
+                            match self
+                                .prove_subqueries(lower_path, path_query, layer)
                                 .unwrap_add_cost(&mut cost)
-                                .is_err()
                             {
-                                encountered_absence = true;
-                                break;
+                                Ok(layer_proof) => Some(Ok((key, layer_proof))),
+                                Err(e) => Some(Err(e)),
                             }
                         }
-
-                        if encountered_absence {
-                            continue;
-                        }
-
-                        let mut key_as_query = Query::new();
-                        key_as_query.insert_key(last_key);
-                        query = Some(key_as_query);
-                    } else {
-                        return Err(Error::CorruptedCodeExecution("subquery_path must exist"))
-                            .wrap_with_cost(cost);
+                        BTreeMapLevelResultOrItem::ResultItem(_) => None,
                     }
+                })
+                .collect::<Result<BTreeMap<Key, LayerProof>, Error>>()
+        );
 
-                    let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
-
-                    let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
-
-                    if self
-                        .check_subtree_exists_path_not_found(new_path.as_slice().into(), None)
-                        .unwrap_add_cost(&mut cost)
-                        .is_err()
-                    {
-                        continue;
-                    }
-
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.prove_subqueries(
-                            proofs,
-                            new_path,
-                            &new_path_query,
-                            current_limit,
-                            false,
-                            is_verbose,
-                            precomputed_results,
-                        )
-                    );
-
-                    if *current_limit == Some(0) {
-                        break;
-                    }
-                }
-                _ => {
-                    to_add_to_result_set += 1;
-                }
-            }
-        }
-
-        if is_leaf_tree {
-            // if no useful subtree, then we care about the result set of this subtree.
-            // apply the sized query
-            increase_limit_by(current_limit, limit_inc);
-            let limit_offset = cost_return_on_error!(
-                &mut cost,
-                self.generate_and_store_merk_proof(
-                    &path.as_slice().into(),
-                    &subtree,
-                    &query.query.query,
-                    *current_limit,
-                    ProofTokenType::SizedMerk,
-                    proofs,
-                    is_verbose,
-                    path.iter().last().unwrap_or(&Default::default())
-                )
-            );
-
-            // update limit
-            *current_limit = limit_offset;
-        } else {
-            reduce_limit_by(current_limit, to_add_to_result_set);
-        }
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    /// Given a path, construct and append a set of proofs that shows there is
-    /// a valid path from the root of the db to that point.
-    fn prove_path(
-        &self,
-        proof_result: &mut Vec<u8>,
-        path_slices: Vec<&[u8]>,
-        is_verbose: bool,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-
-        // generate proof to show that the path leads up to the root
-        let mut split_path = path_slices.split_last();
-        while let Some((key, path_slice)) = split_path {
-            let subtree = cost_return_on_error!(
-                &mut cost,
-                self.open_non_transactional_merk_at_path(path_slice.into(), None)
-            );
-            let mut query = Query::new();
-            query.insert_key(key.to_vec());
-
-            cost_return_on_error!(
-                &mut cost,
-                self.generate_and_store_merk_proof(
-                    &path_slice.into(),
-                    &subtree,
-                    &query,
-                    None,
-                    ProofTokenType::Merk,
-                    proof_result,
-                    is_verbose,
-                    path_slice.iter().last().unwrap_or(&Default::default())
-                )
-            );
-            split_path = path_slice.split_last();
-        }
-        Ok(()).wrap_with_cost(cost)
+        Ok(LayerProof {
+            merk_proof,
+            lower_layers,
+        })
+        .wrap_with_cost(cost)
     }
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_and_store_merk_proof<'a, S, B>(
+    fn generate_merk_proof<'a, S, B>(
         &self,
         path: &SubtreePath<B>,
         subtree: &'a Merk<S>,
-        query: &Query,
+        query_items: &Vec<QueryItem>,
+        left_to_right: bool,
         limit: Option<u16>,
-        proof_token_type: ProofTokenType,
-        proofs: &mut Vec<u8>,
-        is_verbose: bool,
-        key: &[u8],
-    ) -> CostResult<Option<u16>, Error>
+    ) -> CostResult<Vec<u8>, Error>
     where
         S: StorageContext<'a> + 'a,
         B: AsRef<[u8]>,
     {
-        if proof_token_type != ProofTokenType::Merk && proof_token_type != ProofTokenType::SizedMerk
-        {
-            return Err(Error::InvalidInput(
-                "expect proof type for merk proof generation to be sized or merk proof type",
-            ))
-            .wrap_with_cost(Default::default());
-        }
-        println!("generate_and_store_merk_proof path {:?} query {:?} limit_offset {:?} proof_token_type {}", path.to_vec().into_iter().map(hex::encode).collect::<Vec<_>>().join("/"), query, limit, proof_token_type);
-
         let mut cost = OperationCost::default();
-
-        // if the subtree is empty, return the EmptyTree proof op
-        if !subtree.has_root_key() {
-            cost_return_on_error_no_add!(
-                &cost,
-                write_to_vec(proofs, &[ProofTokenType::EmptyTree.into()])
-            );
-            return Ok(limit).wrap_with_cost(cost);
-        }
 
         let mut proof_result = cost_return_on_error_no_add!(
             &cost,
             subtree
-                .prove_without_encoding(query.clone(), limit)
+                .prove_unchecked_query_items(query_items, limit, left_to_right)
+                .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
                 .unwrap()
                 .map_err(|_e| Error::InternalError("failed to generate proof"))
         );
 
-        cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
+        cost_return_on_error!(
+            &mut cost,
+            self.post_process_merk_proof(path, &mut proof_result)
+        );
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
-        cost_return_on_error_no_add!(&cost, write_to_vec(proofs, &[proof_token_type.into()]));
-
-        // if is verbose, write the key
-        if is_verbose {
-            cost_return_on_error_no_add!(&cost, write_slice_to_vec(proofs, key));
-        }
-
-        // write the merk proof
-        cost_return_on_error_no_add!(&cost, write_slice_to_vec(proofs, &proof_bytes));
-
-        Ok(proof_result.limit).wrap_with_cost(cost)
-    }
-
-    /// Serializes a path and add it to the proof vector
-    fn generate_and_store_path_proof(
-        path: Vec<&[u8]>,
-        proofs: &mut Vec<u8>,
-    ) -> CostResult<(), Error> {
-        let cost = OperationCost::default();
-
-        cost_return_on_error_no_add!(
-            &cost,
-            write_to_vec(proofs, &[ProofTokenType::PathInfo.into()])
-        );
-
-        cost_return_on_error_no_add!(&cost, write_slice_of_slice_to_slice(proofs, &path));
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    fn generate_and_store_absent_path_proof(
-        &self,
-        path_slices: &[&[u8]],
-        proof_result: &mut Vec<u8>,
-        is_verbose: bool,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-
-        cost_return_on_error_no_add!(
-            &cost,
-            write_to_vec(proof_result, &[ProofTokenType::AbsentPath.into()])
-        );
-        let mut current_path: Vec<&[u8]> = vec![];
-
-        let mut split_path = path_slices.split_first();
-        while let Some((key, path_slice)) = split_path {
-            let subtree = self
-                .open_non_transactional_merk_at_path(current_path.as_slice().into(), None)
-                .unwrap_add_cost(&mut cost);
-
-            let Ok(subtree) = subtree else {
-                break;
-            };
-
-            let has_item = Element::get(&subtree, key, true).unwrap_add_cost(&mut cost);
-
-            let mut next_key_query = Query::new();
-            next_key_query.insert_key(key.to_vec());
-            cost_return_on_error!(
-                &mut cost,
-                self.generate_and_store_merk_proof(
-                    &current_path.as_slice().into(),
-                    &subtree,
-                    &next_key_query,
-                    None,
-                    ProofTokenType::Merk,
-                    proof_result,
-                    is_verbose,
-                    current_path.iter().last().unwrap_or(&(&[][..]))
-                )
-            );
-
-            current_path.push(key);
-
-            if has_item.is_err() || path_slice.is_empty() {
-                // reached last key
-                break;
-            }
-
-            split_path = path_slice.split_first();
-        }
-
-        Ok(()).wrap_with_cost(cost)
+        Ok(proof_bytes).wrap_with_cost(cost)
     }
 
     /// Converts Items to Node::KV from Node::KVValueHash
     /// Converts References to Node::KVRefValueHash and sets the value to the
     /// referenced element
-    fn post_process_proof<B: AsRef<[u8]>>(
+    fn post_process_merk_proof<B: AsRef<[u8]>>(
         &self,
         path: &SubtreePath<B>,
         proof_result: &mut ProofWithoutEncodingResult,
@@ -706,233 +314,234 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use grovedb_merk::{execute_proof, proofs::Query};
-    use grovedb_storage::StorageBatch;
-
-    use crate::{
-        operations::proof::util::{ProofReader, ProofTokenType},
-        tests::{common::EMPTY_PATH, make_deep_tree, TEST_LEAF},
-        GroveDb,
-    };
-
-    #[test]
-    fn test_path_info_encoding_and_decoding() {
-        let path = vec![b"a".as_slice(), b"b".as_slice(), b"c".as_slice()];
-        let mut proof_vector = vec![];
-        GroveDb::generate_and_store_path_proof(path.clone(), &mut proof_vector)
-            .unwrap()
-            .unwrap();
-
-        let mut proof_reader = ProofReader::new(proof_vector.as_slice());
-        let decoded_path = proof_reader.read_path_info().unwrap();
-
-        assert_eq!(path, decoded_path);
-    }
-
-    #[test]
-    fn test_reading_of_verbose_proofs() {
-        let db = make_deep_tree();
-
-        let path = vec![TEST_LEAF, b"innertree"];
-        let mut query = Query::new();
-        query.insert_all();
-
-        let batch = StorageBatch::new();
-
-        let merk = db
-            .open_non_transactional_merk_at_path(
-                [TEST_LEAF, b"innertree"].as_ref().into(),
-                Some(&batch),
-            )
-            .unwrap()
-            .unwrap();
-        let expected_root_hash = merk.root_hash().unwrap();
-
-        let mut proof = vec![];
-        db.generate_and_store_merk_proof(
-            &path.as_slice().into(),
-            &merk,
-            &query,
-            None,
-            ProofTokenType::Merk,
-            &mut proof,
-            true,
-            b"innertree",
-        )
-        .unwrap()
-        .unwrap();
-        assert_ne!(proof.len(), 0);
-
-        let mut proof_reader = ProofReader::new(&proof);
-        let (proof_token_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
-
-        assert_eq!(proof_token_type, ProofTokenType::Merk);
-        assert_eq!(key, Some(b"innertree".to_vec()));
-
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
-            .unwrap()
-            .unwrap();
-        assert_eq!(root_hash, expected_root_hash);
-        assert_eq!(result_set.result_set.len(), 3);
-
-        // what is the key is empty??
-        let merk = db
-            .open_non_transactional_merk_at_path(EMPTY_PATH, Some(&batch))
-            .unwrap()
-            .unwrap();
-        let expected_root_hash = merk.root_hash().unwrap();
-
-        let mut proof = vec![];
-        db.generate_and_store_merk_proof(
-            &EMPTY_PATH,
-            &merk,
-            &query,
-            None,
-            ProofTokenType::Merk,
-            &mut proof,
-            true,
-            &[],
-        )
-        .unwrap()
-        .unwrap();
-        assert_ne!(proof.len(), 0);
-
-        let mut proof_reader = ProofReader::new(&proof);
-        let (proof_token_type, proof, key) = proof_reader.read_verbose_proof().unwrap();
-
-        assert_eq!(proof_token_type, ProofTokenType::Merk);
-        assert_eq!(key, Some(vec![]));
-
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
-            .unwrap()
-            .unwrap();
-        assert_eq!(root_hash, expected_root_hash);
-        assert_eq!(result_set.result_set.len(), 3);
-    }
-
-    #[test]
-    fn test_reading_verbose_proof_at_key() {
-        // going to generate an array of multiple proofs with different keys
-        let db = make_deep_tree();
-        let mut proofs = vec![];
-
-        let mut query = Query::new();
-        query.insert_all();
-
-        // insert all under inner tree
-        let path = vec![TEST_LEAF, b"innertree"];
-
-        let batch = StorageBatch::new();
-
-        let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice().into(), Some(&batch))
-            .unwrap()
-            .unwrap();
-        let inner_tree_root_hash = merk.root_hash().unwrap();
-        db.generate_and_store_merk_proof(
-            &path.as_slice().into(),
-            &merk,
-            &query,
-            None,
-            ProofTokenType::Merk,
-            &mut proofs,
-            true,
-            path.iter().last().unwrap_or(&(&[][..])),
-        )
-        .unwrap()
-        .unwrap();
-
-        // insert all under innertree4
-        let path = vec![TEST_LEAF, b"innertree4"];
-        let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice().into(), Some(&batch))
-            .unwrap()
-            .unwrap();
-        let inner_tree_4_root_hash = merk.root_hash().unwrap();
-        db.generate_and_store_merk_proof(
-            &path.as_slice().into(),
-            &merk,
-            &query,
-            None,
-            ProofTokenType::Merk,
-            &mut proofs,
-            true,
-            path.iter().last().unwrap_or(&(&[][..])),
-        )
-        .unwrap()
-        .unwrap();
-
-        // insert all for deeper_1
-        let path: Vec<&[u8]> = vec![b"deep_leaf", b"deep_node_1", b"deeper_1"];
-        let merk = db
-            .open_non_transactional_merk_at_path(path.as_slice().into(), Some(&batch))
-            .unwrap()
-            .unwrap();
-        let deeper_1_root_hash = merk.root_hash().unwrap();
-        db.generate_and_store_merk_proof(
-            &path.as_slice().into(),
-            &merk,
-            &query,
-            None,
-            ProofTokenType::Merk,
-            &mut proofs,
-            true,
-            path.iter().last().unwrap_or(&(&[][..])),
-        )
-        .unwrap()
-        .unwrap();
-
-        // read the proof at innertree
-        let contextual_proof = proofs.clone();
-        let mut proof_reader = ProofReader::new(&contextual_proof);
-        let (proof_token_type, proof) = proof_reader
-            .read_verbose_proof_at_key(b"innertree")
-            .unwrap();
-
-        assert_eq!(proof_token_type, ProofTokenType::Merk);
-
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
-            .unwrap()
-            .unwrap();
-        assert_eq!(root_hash, inner_tree_root_hash);
-        assert_eq!(result_set.result_set.len(), 3);
-
-        // read the proof at innertree4
-        let contextual_proof = proofs.clone();
-        let mut proof_reader = ProofReader::new(&contextual_proof);
-        let (proof_token_type, proof) = proof_reader
-            .read_verbose_proof_at_key(b"innertree4")
-            .unwrap();
-
-        assert_eq!(proof_token_type, ProofTokenType::Merk);
-
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
-            .unwrap()
-            .unwrap();
-        assert_eq!(root_hash, inner_tree_4_root_hash);
-        assert_eq!(result_set.result_set.len(), 2);
-
-        // read the proof at deeper_1
-        let contextual_proof = proofs.clone();
-        let mut proof_reader = ProofReader::new(&contextual_proof);
-        let (proof_token_type, proof) =
-            proof_reader.read_verbose_proof_at_key(b"deeper_1").unwrap();
-
-        assert_eq!(proof_token_type, ProofTokenType::Merk);
-
-        let (root_hash, result_set) = execute_proof(&proof, &query, None, true)
-            .unwrap()
-            .unwrap();
-        assert_eq!(root_hash, deeper_1_root_hash);
-        assert_eq!(result_set.result_set.len(), 3);
-
-        // read the proof at an invalid key
-        let contextual_proof = proofs.clone();
-        let mut proof_reader = ProofReader::new(&contextual_proof);
-        let reading_result = proof_reader.read_verbose_proof_at_key(b"unknown_key");
-        assert!(reading_result.is_err())
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use grovedb_merk::{execute_proof, proofs::Query};
+//     use grovedb_storage::StorageBatch;
+//
+//     use crate::{
+//         operations::proof::util::{ProofReader, ProofTokenType},
+//         tests::{common::EMPTY_PATH, make_deep_tree, TEST_LEAF},
+//         GroveDb,
+//     };
+//
+//     #[test]
+//     fn test_path_info_encoding_and_decoding() {
+//         let path = vec![b"a".as_slice(), b"b".as_slice(), b"c".as_slice()];
+//         let mut proof_vector = vec![];
+//         GroveDb::generate_and_store_path_proof(path.clone(), &mut
+// proof_vector)             .unwrap()
+//             .unwrap();
+//
+//         let mut proof_reader = ProofReader::new(proof_vector.as_slice());
+//         let decoded_path = proof_reader.read_path_info().unwrap();
+//
+//         assert_eq!(path, decoded_path);
+//     }
+//
+//     #[test]
+//     fn test_reading_of_verbose_proofs() {
+//         let db = make_deep_tree();
+//
+//         let path = vec![TEST_LEAF, b"innertree"];
+//         let mut query = Query::new();
+//         query.insert_all();
+//
+//         let batch = StorageBatch::new();
+//
+//         let merk = db
+//             .open_non_transactional_merk_at_path(
+//                 [TEST_LEAF, b"innertree"].as_ref().into(),
+//                 Some(&batch),
+//             )
+//             .unwrap()
+//             .unwrap();
+//         let expected_root_hash = merk.root_hash().unwrap();
+//
+//         let mut proof = vec![];
+//         db.generate_and_store_merk_proof(
+//             &path.as_slice().into(),
+//             &merk,
+//             &query,
+//             None,
+//             ProofTokenType::Merk,
+//             &mut proof,
+//             true,
+//             b"innertree",
+//         )
+//         .unwrap()
+//         .unwrap();
+//         assert_ne!(proof.len(), 0);
+//
+//         let mut proof_reader = ProofReader::new(&proof);
+//         let (proof_token_type, proof, key) =
+// proof_reader.read_verbose_proof().unwrap();
+//
+//         assert_eq!(proof_token_type, ProofTokenType::Merk);
+//         assert_eq!(key, Some(b"innertree".to_vec()));
+//
+//         let (root_hash, result_set) = execute_proof(&proof, &query, None,
+// true)             .unwrap()
+//             .unwrap();
+//         assert_eq!(root_hash, expected_root_hash);
+//         assert_eq!(result_set.result_set.len(), 3);
+//
+//         // what is the key is empty??
+//         let merk = db
+//             .open_non_transactional_merk_at_path(EMPTY_PATH, Some(&batch))
+//             .unwrap()
+//             .unwrap();
+//         let expected_root_hash = merk.root_hash().unwrap();
+//
+//         let mut proof = vec![];
+//         db.generate_and_store_merk_proof(
+//             &EMPTY_PATH,
+//             &merk,
+//             &query,
+//             None,
+//             ProofTokenType::Merk,
+//             &mut proof,
+//             true,
+//             &[],
+//         )
+//         .unwrap()
+//         .unwrap();
+//         assert_ne!(proof.len(), 0);
+//
+//         let mut proof_reader = ProofReader::new(&proof);
+//         let (proof_token_type, proof, key) =
+// proof_reader.read_verbose_proof().unwrap();
+//
+//         assert_eq!(proof_token_type, ProofTokenType::Merk);
+//         assert_eq!(key, Some(vec![]));
+//
+//         let (root_hash, result_set) = execute_proof(&proof, &query, None,
+// true)             .unwrap()
+//             .unwrap();
+//         assert_eq!(root_hash, expected_root_hash);
+//         assert_eq!(result_set.result_set.len(), 3);
+//     }
+//
+//     #[test]
+//     fn test_reading_verbose_proof_at_key() {
+//         // going to generate an array of multiple proofs with different keys
+//         let db = make_deep_tree();
+//         let mut proofs = vec![];
+//
+//         let mut query = Query::new();
+//         query.insert_all();
+//
+//         // insert all under inner tree
+//         let path = vec![TEST_LEAF, b"innertree"];
+//
+//         let batch = StorageBatch::new();
+//
+//         let merk = db
+//             .open_non_transactional_merk_at_path(path.as_slice().into(),
+// Some(&batch))             .unwrap()
+//             .unwrap();
+//         let inner_tree_root_hash = merk.root_hash().unwrap();
+//         db.generate_and_store_merk_proof(
+//             &path.as_slice().into(),
+//             &merk,
+//             &query,
+//             None,
+//             ProofTokenType::Merk,
+//             &mut proofs,
+//             true,
+//             path.iter().last().unwrap_or(&(&[][..])),
+//         )
+//         .unwrap()
+//         .unwrap();
+//
+//         // insert all under innertree4
+//         let path = vec![TEST_LEAF, b"innertree4"];
+//         let merk = db
+//             .open_non_transactional_merk_at_path(path.as_slice().into(),
+// Some(&batch))             .unwrap()
+//             .unwrap();
+//         let inner_tree_4_root_hash = merk.root_hash().unwrap();
+//         db.generate_and_store_merk_proof(
+//             &path.as_slice().into(),
+//             &merk,
+//             &query,
+//             None,
+//             ProofTokenType::Merk,
+//             &mut proofs,
+//             true,
+//             path.iter().last().unwrap_or(&(&[][..])),
+//         )
+//         .unwrap()
+//         .unwrap();
+//
+//         // insert all for deeper_1
+//         let path: Vec<&[u8]> = vec![b"deep_leaf", b"deep_node_1",
+// b"deeper_1"];         let merk = db
+//             .open_non_transactional_merk_at_path(path.as_slice().into(),
+// Some(&batch))             .unwrap()
+//             .unwrap();
+//         let deeper_1_root_hash = merk.root_hash().unwrap();
+//         db.generate_and_store_merk_proof(
+//             &path.as_slice().into(),
+//             &merk,
+//             &query,
+//             None,
+//             ProofTokenType::Merk,
+//             &mut proofs,
+//             true,
+//             path.iter().last().unwrap_or(&(&[][..])),
+//         )
+//         .unwrap()
+//         .unwrap();
+//
+//         // read the proof at innertree
+//         let contextual_proof = proofs.clone();
+//         let mut proof_reader = ProofReader::new(&contextual_proof);
+//         let (proof_token_type, proof) = proof_reader
+//             .read_verbose_proof_at_key(b"innertree")
+//             .unwrap();
+//
+//         assert_eq!(proof_token_type, ProofTokenType::Merk);
+//
+//         let (root_hash, result_set) = execute_proof(&proof, &query, None,
+// true)             .unwrap()
+//             .unwrap();
+//         assert_eq!(root_hash, inner_tree_root_hash);
+//         assert_eq!(result_set.result_set.len(), 3);
+//
+//         // read the proof at innertree4
+//         let contextual_proof = proofs.clone();
+//         let mut proof_reader = ProofReader::new(&contextual_proof);
+//         let (proof_token_type, proof) = proof_reader
+//             .read_verbose_proof_at_key(b"innertree4")
+//             .unwrap();
+//
+//         assert_eq!(proof_token_type, ProofTokenType::Merk);
+//
+//         let (root_hash, result_set) = execute_proof(&proof, &query, None,
+// true)             .unwrap()
+//             .unwrap();
+//         assert_eq!(root_hash, inner_tree_4_root_hash);
+//         assert_eq!(result_set.result_set.len(), 2);
+//
+//         // read the proof at deeper_1
+//         let contextual_proof = proofs.clone();
+//         let mut proof_reader = ProofReader::new(&contextual_proof);
+//         let (proof_token_type, proof) =
+//             proof_reader.read_verbose_proof_at_key(b"deeper_1").unwrap();
+//
+//         assert_eq!(proof_token_type, ProofTokenType::Merk);
+//
+//         let (root_hash, result_set) = execute_proof(&proof, &query, None,
+// true)             .unwrap()
+//             .unwrap();
+//         assert_eq!(root_hash, deeper_1_root_hash);
+//         assert_eq!(result_set.result_set.len(), 3);
+//
+//         // read the proof at an invalid key
+//         let contextual_proof = proofs.clone();
+//         let mut proof_reader = ProofReader::new(&contextual_proof);
+//         let reading_result =
+// proof_reader.read_verbose_proof_at_key(b"unknown_key");         assert!
+// (reading_result.is_err())     }
+// }

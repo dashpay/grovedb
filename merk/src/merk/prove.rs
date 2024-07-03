@@ -97,6 +97,38 @@ where
                 .map_ok(|(proof, _, limit, ..)| (proof, limit))
         })
     }
+
+    /// Creates a Merkle proof for the list of queried keys. For each key in
+    /// the query, if the key is found in the store then the value will be
+    /// proven to be in the tree. For each key in the query that does not
+    /// exist in the tree, its absence will be proven by including
+    /// boundary keys.
+    /// The proof returned is in an encoded format which can be verified with
+    /// `merk::verify`.
+    ///
+    /// This is unsafe because the keys in `query` must be sorted and unique -
+    /// if they are not, there will be undefined behavior. For a safe version
+    /// of this method which checks to ensure the batch is sorted and
+    /// unique, see `prove`.
+    pub fn prove_unchecked_query_items(
+        &self,
+        query_items: &[QueryItem],
+        limit: Option<u16>,
+        left_to_right: bool,
+    ) -> CostResult<Proof, Error> {
+        self.use_tree_mut(|maybe_tree| {
+            maybe_tree
+                .ok_or(Error::CorruptedCodeExecution(
+                    "Cannot create proof for empty tree",
+                ))
+                .wrap_with_cost(Default::default())
+                .flat_map_ok(|tree| {
+                    let mut ref_walker = RefWalker::new(tree, self.source());
+                    ref_walker.create_proof(query_items, limit, left_to_right)
+                })
+                .map_ok(|(proof, _, limit, ..)| (proof, limit))
+        })
+    }
 }
 
 type Proof = (LinkedList<ProofOp>, Option<u16>);
@@ -112,10 +144,7 @@ pub struct ProofConstructionResult {
 impl ProofConstructionResult {
     /// New ProofConstructionResult
     pub fn new(proof: Vec<u8>, limit: Option<u16>) -> Self {
-        Self {
-            proof,
-            limit,
-        }
+        Self { proof, limit }
     }
 }
 
@@ -130,9 +159,6 @@ pub struct ProofWithoutEncodingResult {
 impl ProofWithoutEncodingResult {
     /// New ProofWithoutEncodingResult
     pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>) -> Self {
-        Self {
-            proof,
-            limit,
-        }
+        Self { proof, limit }
     }
 }
