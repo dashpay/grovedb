@@ -32,6 +32,7 @@
 //  that supports multiple implementations for verbose and non-verbose
 // generation
 
+use std::collections::BTreeMap;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
@@ -41,6 +42,7 @@ use grovedb_merk::{
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
+use grovedb_merk::proofs::query::{Key, Path};
 use grovedb_path::SubtreePath;
 use grovedb_storage::StorageContext;
 
@@ -54,7 +56,7 @@ use crate::{
     versioning::{prepend_version_to_bytes, PROOF_VERSION},
     Element, Error, GroveDb, PathQuery, Query,
 };
-use crate::query_result_type::QueryResultType;
+use crate::query_result_type::{BTreeMapLevelResult, QueryResultType};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProveOptions {
@@ -162,8 +164,10 @@ impl GroveDb {
             let result =             cost_return_on_error!(
                 &mut cost,
                 self.query(path_query, false, true, false, QueryResultType::QueryPathKeyElementTrioResultType, None)).0;
-            Some(result.to_path_to_key_elements_btree_map())
+            Some(result.to_btree_map_level_results())
         };
+
+        println!("precomputed results are {:?}", precomputed_result_map);
 
         cost_return_on_error!(
             &mut cost,
@@ -173,7 +177,8 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 true,
-                is_verbose
+                is_verbose,
+                &precomputed_result_map,
             )
         );
         cost_return_on_error!(
@@ -194,6 +199,7 @@ impl GroveDb {
         current_limit: &mut Option<u16>,
         is_first_call: bool,
         is_verbose: bool,
+        precomputed_results: &Option<BTreeMapLevelResult>
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let mut to_add_to_result_set: u16 = 0;
@@ -209,6 +215,8 @@ impl GroveDb {
             );
             return Ok(()).wrap_with_cost(cost);
         }
+
+        let precomputed_items_count = precomputed_results.as_ref().map(|level_results| level_results.len_of_values_at_path(path.as_slice()));
 
         let reached_limit = current_limit.map_or(false, |limit| limit == 0);
         if reached_limit {
@@ -232,7 +240,6 @@ impl GroveDb {
 
         let mut is_leaf_tree = true;
 
-        let mut offset_inc = 0;
         let mut limit_inc = 0;
 
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
@@ -244,7 +251,6 @@ impl GroveDb {
             let mut encountered_absence = false;
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
-            println!("Element is {:?}", element);
             match element {
                 Element::Tree(root_key, _) | Element::SumTree(root_key, ..) => {
                     let (mut subquery_path, subquery_value) =
@@ -264,6 +270,11 @@ impl GroveDb {
 
                     // if the element is a non-empty tree then current tree is not a leaf tree
                     if is_leaf_tree {
+                        let proof_token_type = if precomputed_items_count.is_some() {
+                            ProofTokenType::SizedMerk
+                        } else {
+                            ProofTokenType::Merk
+                        };
                         is_leaf_tree = false;
                         cost_return_on_error!(
                             &mut cost,
@@ -271,8 +282,8 @@ impl GroveDb {
                                 &path.as_slice().into(),
                                 &subtree,
                                 &query.query.query,
-                                None,
-                                ProofTokenType::Merk,
+                                precomputed_items_count,
+                                proof_token_type,
                                 proofs,
                                 is_verbose,
                                 path.iter().last().unwrap_or(&Default::default())
@@ -417,6 +428,7 @@ impl GroveDb {
                             current_limit,
                             false,
                             is_verbose,
+                            precomputed_results,
                         )
                     );
 

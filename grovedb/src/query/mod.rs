@@ -28,6 +28,7 @@
 
 //! Queries
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -266,6 +267,93 @@ impl PathQuery {
                     subquery_path: Some(remainder.to_vec()),
                     subquery: Some(Box::new(self.query.query.clone())),
                 })
+            }
+        }
+    }
+    pub fn query_items_at_path<'a>(&'a self, path: &[&[u8]]) -> Option<(Cow<'a, Vec<QueryItem>>, bool)> {
+        fn recursive_query_items<'b>(query: &'b Query, path: &[&[u8]]) -> Option<(Cow<'b, Vec<QueryItem>>, bool)> {
+            if path.is_empty() {
+                return Some((Cow::Borrowed(&query.items), query.left_to_right));
+            }
+
+            let key = path[0];
+
+            if let Some(conditional_branches) = &query.conditional_subquery_branches {
+                for (query_item, subquery_branch) in conditional_branches {
+                    if query_item.contains(key) {
+                        if let Some(subquery_path) = &subquery_branch.subquery_path {
+                            if path.len() <= subquery_path.len() {
+                                if path.iter().zip(subquery_path).all(|(a, b)| *a == b.as_slice()) {
+                                    return if path.len() == subquery_path.len() {
+                                        if let Some(subquery) = &subquery_branch.subquery {
+                                            Some((Cow::Borrowed(&subquery.items), subquery.left_to_right))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        Some((Cow::Owned(vec![QueryItem::Key(subquery_path[path.len()].clone())]), true))
+                                    }
+                                }
+                            }
+                        }
+
+                        return if let Some(subquery) = &subquery_branch.subquery {
+                            recursive_query_items(subquery, &path[1..])
+                        } else {
+                            Some((Cow::Owned(vec![QueryItem::Key(key.to_vec())]), true))
+                        }
+                    }
+                }
+            }
+
+            if let Some(subquery_path) = &query.default_subquery_branch.subquery_path {
+                if path.len() <= subquery_path.len() {
+                    if path.iter().zip(subquery_path).all(|(a, b)| *a == b.as_slice()) {
+                        return if path.len() == subquery_path.len() {
+                            if let Some(subquery) = &query.default_subquery_branch.subquery {
+                                Some((Cow::Borrowed(&subquery.items), subquery.left_to_right))
+                            } else {
+                                None
+                            }
+                        } else {
+                            Some((Cow::Owned(vec![QueryItem::Key(subquery_path[path.len()].clone())]), true))
+                        }
+                    }
+                } else if path.iter().take(subquery_path.len()).zip(subquery_path).all(|(a, b)| *a == b.as_slice()) {
+                    if let Some(subquery) = &query.default_subquery_branch.subquery {
+                        return recursive_query_items(subquery, &path[subquery_path.len()..]);
+                    }
+                }
+            } else if let Some(subquery) = &query.default_subquery_branch.subquery {
+                return recursive_query_items(subquery, &path[1..]);
+            }
+
+            None
+        }
+
+        let self_path_len = self.path.len();
+        let given_path_len = path.len();
+
+        match given_path_len.cmp(&self_path_len) {
+            Ordering::Less => {
+                if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
+                    Some((Cow::Owned(vec![QueryItem::Key(self.path[given_path_len].clone())]), true))
+                } else {
+                    None
+                }
+            }
+            Ordering::Equal => {
+                if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
+                    Some((Cow::Borrowed(&self.query.query.items), self.query.query.left_to_right))
+                } else {
+                    None
+                }
+            }
+            Ordering::Greater => {
+                if !self.path.iter().zip(path).all(|(a, b)| a.as_slice() == *b) {
+                    return None;
+                }
+                recursive_query_items(&self.query.query, &path[self_path_len..])
             }
         }
     }

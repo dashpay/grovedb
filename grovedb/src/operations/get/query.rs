@@ -45,7 +45,7 @@ use crate::{
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
-use crate::operations::proof::ProveOptions;
+use crate::operations::proof_v2::ProveOptions;
 
 #[cfg(feature = "full")]
 #[derive(Debug, Eq, PartialEq, Clone)]

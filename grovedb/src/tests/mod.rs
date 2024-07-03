@@ -50,6 +50,7 @@ use crate::{
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
     reference_path::ReferencePathType, tests::common::compare_result_tuples,
 };
+use crate::operations::proof_v2::ProveOptions;
 use crate::query_result_type::QueryResultType;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
@@ -2245,7 +2246,7 @@ fn test_path_query_proof_with_range_subquery_and_limit_with_sum_trees() {
     assert_eq!(key_elements, vec![(vec![97], Element::new_item("storage".as_bytes().to_vec())), (vec![49], Element::SumTree(Some(vec![0;32]), 2, None)), (vec![48], Element::new_item("v1".as_bytes().to_vec()))]);
 
     // Generate proof
-    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, Some(ProveOptions { is_verbose: false, multilevel_results: true })).unwrap().unwrap();
 
     // Verify proof
     let (hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query).expect("proof verification failed");

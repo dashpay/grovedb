@@ -42,7 +42,7 @@ use crate::{
     },
     Element, GroveDb, PathQuery, SizedQuery,
 };
-use crate::operations::proof::ProveOptions;
+use crate::operations::proof_v2::ProveOptions;
 
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
