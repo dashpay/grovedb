@@ -86,6 +86,57 @@ pub enum ReferencePathType {
     SiblingReference(Vec<u8>),
 }
 
+// Helper function to display paths
+fn display_path(path: &Vec<Vec<u8>>) -> String {
+    path.iter()
+        .map(|segment| hex::encode(segment))
+        .collect::<Vec<String>>()
+        .join("/")
+}
+
+impl fmt::Display for ReferencePathType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                write!(f, "AbsolutePathReference({})", display_path(path))
+            }
+            ReferencePathType::UpstreamRootHeightReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamRootHeightReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamRootHeightWithParentPathAdditionReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::UpstreamFromElementHeightReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamFromElementHeightReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::CousinReference(key) => {
+                write!(f, "CousinReference({})", hex::encode(key))
+            }
+            ReferencePathType::RemovedCousinReference(path) => {
+                write!(f, "RemovedCousinReference({})", display_path(path))
+            }
+            ReferencePathType::SiblingReference(key) => {
+                write!(f, "SiblingReference({})", hex::encode(key))
+            }
+        }
+    }
+}
+
 #[cfg(any(feature = "full", feature = "verify"))]
 impl ReferencePathType {
     /// Given the reference path type and the current qualified path (path+key),

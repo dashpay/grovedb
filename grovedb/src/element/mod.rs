@@ -111,6 +111,73 @@ pub enum Element {
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
+impl fmt::Display for Element {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Element::Item(data, flags) => {
+                write!(
+                    f,
+                    "Item({}{})",
+                    hex_to_ascii(data),
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::Reference(path, max_hop, flags) => {
+                write!(
+                    f,
+                    "Reference({}, max_hop: {}{})",
+                    path,
+                    max_hop.map_or("None".to_string(), |h| h.to_string()),
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::Tree(root_key, flags) => {
+                write!(
+                    f,
+                    "Tree({}{})",
+                    root_key
+                        .as_ref()
+                        .map_or("None".to_string(), |k| hex::encode(k)),
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::SumItem(sum_value, flags) => {
+                write!(
+                    f,
+                    "SumItem({}{}",
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::SumTree(root_key, sum_value, flags) => {
+                write!(
+                    f,
+                    "SumTree({}, {}{}",
+                    root_key
+                        .as_ref()
+                        .map_or("None".to_string(), |k| hex::encode(k)),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+        }
+    }
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
+}
+
 impl Element {
     pub fn type_str(&self) -> &str {
         match self {

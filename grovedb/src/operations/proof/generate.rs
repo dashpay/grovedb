@@ -1,6 +1,6 @@
 //! Generate proof operations
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use bincode::{Decode, Encode};
 use derive_more::From;
@@ -12,7 +12,7 @@ use grovedb_merk::{
     proofs::{
         encode_into,
         query::{Key, QueryItem},
-        Node, Op,
+        Decoder, Node, Op, Tree,
     },
     tree::value_hash,
     Merk, ProofWithoutEncodingResult,
@@ -57,6 +57,116 @@ pub struct GroveDBProofV0 {
     pub root_layer: LayerProof,
 }
 
+impl fmt::Display for LayerProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "LayerProof {{")?;
+        writeln!(f, "  merk_proof: {}", decode_merk_proof(&self.merk_proof))?;
+        if !self.lower_layers.is_empty() {
+            writeln!(f, "  lower_layers: {{")?;
+            for (key, layer_proof) in &self.lower_layers {
+                writeln!(f, "    {} => {{", hex_to_ascii(key))?;
+                for line in format!("{}", layer_proof).lines() {
+                    writeln!(f, "      {}", line)?;
+                }
+                writeln!(f, "    }}")?;
+            }
+            writeln!(f, "  }}")?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl fmt::Display for GroveDBProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GroveDBProof::V0(proof) => write!(f, "{}", proof),
+        }
+    }
+}
+
+impl fmt::Display for GroveDBProofV0 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "GroveDBProofV0 {{")?;
+        for line in format!("{}", self.root_layer).lines() {
+            writeln!(f, "  {}", line)?;
+        }
+        write!(f, "}}")
+    }
+}
+
+fn decode_merk_proof(proof: &[u8]) -> String {
+    let mut result = String::new();
+    let ops = Decoder::new(proof);
+
+    for (i, op) in ops.enumerate() {
+        match op {
+            Ok(op) => {
+                result.push_str(&format!("\n    {}: {}", i, op_to_string(&op)));
+            }
+            Err(e) => {
+                result.push_str(&format!("\n    {}: Error decoding op: {}", i, e));
+            }
+        }
+    }
+
+    result
+}
+
+fn op_to_string(op: &Op) -> String {
+    match op {
+        Op::Push(node) => format!("Push({})", node_to_string(node)),
+        Op::PushInverted(node) => format!("PushInverted({})", node_to_string(node)),
+        Op::Parent => "Parent".to_string(),
+        Op::Child => "Child".to_string(),
+        Op::ParentInverted => "ParentInverted".to_string(),
+        Op::ChildInverted => "ChildInverted".to_string(),
+    }
+}
+
+fn node_to_string(node: &Node) -> String {
+    match node {
+        Node::Hash(hash) => format!("Hash(HASH[{}])", hex::encode(hash)),
+        Node::KVHash(kv_hash) => format!("KVHash(HASH[{}])", hex::encode(kv_hash)),
+        Node::KV(key, value) => {
+            format!("KV({}, {})", hex::encode(key), element_hex_to_ascii(value))
+        }
+        Node::KVValueHash(key, value, value_hash) => format!(
+            "KVValueHash({}, {}, HASH[{}])",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value),
+            hex::encode(value_hash)
+        ),
+        Node::KVDigest(key, value_hash) => format!(
+            "KVDigest({}, HASH[{}])",
+            hex_to_ascii(key),
+            hex::encode(value_hash)
+        ),
+        Node::KVRefValueHash(key, value, value_hash) => format!(
+            "KVRefValueHash({}, {}, HASH[{}])",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value),
+            hex::encode(value_hash)
+        ),
+        Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => format!(
+            "KVValueHashFeatureType({}, {}, HASH[{}], {:?})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value),
+            hex::encode(value_hash),
+            feature_type
+        ),
+    }
+}
+
+fn element_hex_to_ascii(hex_value: &[u8]) -> String {
+    Element::deserialize(hex_value)
+        .map(|e| e.to_string())
+        .unwrap_or_else(|_| hex::encode(hex_value))
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
+}
+
 impl GroveDb {
     /// Prove one or more path queries.
     /// If we have more than one path query, we merge into a single path query
@@ -95,6 +205,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let proof =
             cost_return_on_error!(&mut cost, self.prove_internal(path_query, prove_options));
+        println!("constructed proof is {}", proof);
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
@@ -138,7 +249,7 @@ impl GroveDb {
         .0
         .to_btree_map_level_results();
 
-        println!("precomputed results are {:?}", precomputed_result_map);
+        println!("precomputed results are {}", precomputed_result_map);
 
         let root_layer = cost_return_on_error!(
             &mut cost,

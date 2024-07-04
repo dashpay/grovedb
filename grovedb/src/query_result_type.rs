@@ -30,6 +30,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt,
     vec::IntoIter,
 };
 
@@ -65,6 +66,52 @@ pub enum BTreeMapLevelResultOrItem {
 #[derive(Debug, Clone)]
 pub struct BTreeMapLevelResult {
     pub key_values: BTreeMap<Key, BTreeMapLevelResultOrItem>,
+}
+
+impl fmt::Display for BTreeMapLevelResultOrItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BTreeMapLevelResultOrItem::BTreeMapLevelResult(result) => {
+                write!(f, "{}", result)
+            }
+            BTreeMapLevelResultOrItem::ResultItem(element) => {
+                write!(f, "{}", element)
+            }
+        }
+    }
+}
+
+impl fmt::Display for BTreeMapLevelResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "BTreeMapLevelResult {{")?;
+        self.fmt_inner(f, 1)?;
+        write!(f, "}}")
+    }
+}
+
+impl BTreeMapLevelResult {
+    fn fmt_inner(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
+        for (key, value) in &self.key_values {
+            write!(f, "{:indent$}", "", indent = indent * 2)?;
+            write!(f, "{}: ", hex_to_ascii(key))?;
+            match value {
+                BTreeMapLevelResultOrItem::BTreeMapLevelResult(result) => {
+                    writeln!(f, "BTreeMapLevelResult {{")?;
+                    result.fmt_inner(f, indent + 1)?;
+                    write!(f, "{:indent$}}}", "", indent = indent * 2)?;
+                }
+                BTreeMapLevelResultOrItem::ResultItem(element) => {
+                    write!(f, "{}", element)?;
+                }
+            }
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
 }
 
 impl BTreeMapLevelResult {

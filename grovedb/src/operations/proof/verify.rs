@@ -1,6 +1,10 @@
 use std::collections::BTreeSet;
 
-use grovedb_merk::{execute_proof, proofs::Query, tree::value_hash};
+use grovedb_merk::{
+    execute_proof,
+    proofs::Query,
+    tree::{combine_hash, value_hash},
+};
 
 use crate::{
     operations::proof::{
@@ -85,8 +89,15 @@ impl GroveDb {
         is_subset: bool,
     ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
         let mut result = Vec::new();
-        let root_hash =
-            Self::verify_layer_proof_raw(&proof.root_layer, query, &[], &mut result, is_subset)?;
+        let mut limit = query.query.limit;
+        let root_hash = Self::verify_layer_proof_raw(
+            &proof.root_layer,
+            query,
+            &mut limit,
+            &[],
+            &mut result,
+            is_subset,
+        )?;
         Ok((root_hash, result))
     }
 
@@ -157,6 +168,7 @@ impl GroveDb {
     fn verify_layer_proof_raw(
         layer_proof: &LayerProof,
         query: &PathQuery,
+        limit_left: &mut Option<u16>,
         current_path: &[&[u8]],
         result: &mut ProvedPathKeyValues,
         is_subset: bool,
@@ -175,7 +187,7 @@ impl GroveDb {
         let (root_hash, merk_result) = execute_proof(
             &layer_proof.merk_proof,
             &level_query,
-            Some(layer_proof.lower_layers.len() as u16),
+            *limit_left,
             left_to_right,
         )
         .unwrap()
@@ -190,15 +202,44 @@ impl GroveDb {
             let mut path = current_path.to_vec();
             let key = &proved_key_value.key;
             let value = &proved_key_value.value;
+            let hash = &proved_key_value.proof;
             path.push(key);
 
             verified_keys.insert(key.clone());
 
             if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
-                let lower_hash =
-                    Self::verify_layer_proof_raw(lower_layer, query, &path, result, is_subset)?;
-                if lower_hash != value_hash(value).value {
-                    return Err(Error::InvalidProof("Mismatch in lower layer hash".into()));
+                let element = Element::deserialize(value)?;
+                match element {
+                    Element::Tree(Some(v), _) | Element::SumTree(Some(v), ..) => {
+                        let lower_hash = Self::verify_layer_proof_raw(
+                            lower_layer,
+                            query,
+                            limit_left,
+                            &path,
+                            result,
+                            is_subset,
+                        )?;
+                        let combined_root_hash =
+                            combine_hash(value_hash(value).value(), &lower_hash)
+                                .value()
+                                .to_owned();
+                        if hash != &combined_root_hash {
+                            return Err(Error::InvalidProof(format!(
+                                "Mismatch in lower layer hash, expected {}, got {}",
+                                hex::encode(hash),
+                                hex::encode(combined_root_hash)
+                            )));
+                        }
+                    }
+                    Element::Tree(None, _)
+                    | Element::SumTree(None, ..)
+                    | Element::SumItem(..)
+                    | Element::Item(..)
+                    | Element::Reference(..) => {
+                        return Err(Error::InvalidProof(
+                            "Proof has lower layer for a non Tree".into(),
+                        ));
+                    }
                 }
             } else {
                 let path_key_value = ProvedPathKeyValue::from_proved_key_value(

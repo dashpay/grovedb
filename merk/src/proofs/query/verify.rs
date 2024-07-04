@@ -1,4 +1,4 @@
-use std::collections::LinkedList;
+use std::{collections::LinkedList, fmt};
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
@@ -60,6 +60,7 @@ pub fn execute_proof(
     let mut last_push = None;
     let mut query = query.directional_iter(left_to_right).peekable();
     let mut in_range = false;
+    let original_limit = limit;
     let mut current_limit = limit;
 
     let ops = Decoder::new(bytes);
@@ -192,9 +193,10 @@ pub fn execute_proof(
                     if let Some(val) = value {
                         if let Some(limit) = current_limit {
                             if limit == 0 {
-                                return Err(Error::InvalidProofError(
-                                    "Proof returns more data than limit".to_string(),
-                                ));
+                                return Err(Error::InvalidProofError(format!(
+                                    "Proof returns more data than limit {:?}",
+                                    original_limit
+                                )));
                             } else {
                                 current_limit = Some(limit - 1);
                                 if current_limit == Some(0) {
@@ -203,7 +205,7 @@ pub fn execute_proof(
                             }
                         }
                         println!(
-                            "pushing {:?}",
+                            "pushing {}",
                             ProvedKeyValue {
                                 key: key.clone(),
                                 value: val.clone(),
@@ -302,6 +304,19 @@ pub struct ProvedKeyValue {
     pub value: Vec<u8>,
     /// Proof
     pub proof: CryptoHash,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for ProvedKeyValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ProvedKeyValue {{ key: {}, value: {}, proof: {} }}",
+            String::from_utf8(self.key.clone()).unwrap_or_else(|_| hex::encode(&self.key)),
+            hex::encode(&self.value),
+            hex::encode(self.proof)
+        )
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
