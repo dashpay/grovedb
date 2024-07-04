@@ -85,6 +85,10 @@ pub enum Error {
     /// Corrupted data
     CorruptedData(String),
 
+    #[error("data storage error: {0}")]
+    /// Corrupted storage
+    CorruptedStorage(String),
+
     #[error("invalid code execution error: {0}")]
     /// Invalid code execution
     InvalidCodeExecution(&'static str),

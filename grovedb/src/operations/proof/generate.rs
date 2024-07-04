@@ -1,6 +1,9 @@
 //! Generate proof operations
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use bincode::{Decode, Encode};
 use derive_more::From;
@@ -253,7 +256,7 @@ impl GroveDb {
 
         let root_layer = cost_return_on_error!(
             &mut cost,
-            self.prove_subqueries(vec![], path_query, precomputed_result_map,)
+            self.prove_subqueries(vec![], path_query, Some(precomputed_result_map))
         );
 
         Ok(GroveDBProofV0 { root_layer }.into()).wrap_with_cost(cost)
@@ -265,7 +268,7 @@ impl GroveDb {
         &self,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
-        layer_precomputed_results: BTreeMapLevelResult,
+        mut layer_precomputed_results: Option<BTreeMapLevelResult>,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
 
@@ -281,39 +284,69 @@ impl GroveDb {
             self.open_non_transactional_merk_at_path(path.as_slice().into(), None)
         );
 
-        let limit = layer_precomputed_results.key_values.len();
+        let mut items_to_prove: BTreeSet<Vec<u8>> = layer_precomputed_results
+            .as_ref()
+            .map_or(BTreeSet::new(), |map| {
+                map.key_values.keys().cloned().collect()
+            });
 
-        let merk_proof = cost_return_on_error!(
+        for query_item in query_at_path.as_slice() {
+            match query_item {
+                QueryItem::Key(key) => {
+                    items_to_prove.insert(key.clone());
+                }
+                _ => {}
+            }
+        }
+
+        let (merk_proof, sub_level_keys) = cost_return_on_error!(
             &mut cost,
             self.generate_merk_proof(
                 &path.as_slice().into(),
                 &subtree,
                 &query_at_path,
                 left_to_right,
-                Some(limit as u16),
+                Some(items_to_prove.len() as u16),
             )
         );
 
         let lower_layers = cost_return_on_error_no_add!(
             &cost,
-            layer_precomputed_results
-                .key_values
+            sub_level_keys
                 .into_iter()
-                .filter_map(|(key, value)| {
-                    match value {
-                        BTreeMapLevelResultOrItem::BTreeMapLevelResult(layer) => {
-                            let mut lower_path = path.clone();
-                            lower_path.push(key.as_slice());
-                            match self
-                                .prove_subqueries(lower_path, path_query, layer)
-                                .unwrap_add_cost(&mut cost)
-                            {
-                                Ok(layer_proof) => Some(Ok((key, layer_proof))),
-                                Err(e) => Some(Err(e)),
-                            }
-                        }
-                        BTreeMapLevelResultOrItem::ResultItem(_) => None,
+                .filter_map(|(key)| {
+                    let mut lower_path = path.clone();
+                    lower_path.push(key.as_slice());
+                    let mut early_exit = false;
+                    let lower_known_layer: Option<BTreeMapLevelResult> =
+                        match layer_precomputed_results
+                            .as_mut()
+                            .and_then(|mut layer_precomputed_results| {
+                                layer_precomputed_results.key_values.remove(&key).and_then(
+                                    |result_or_item| match result_or_item {
+                                        BTreeMapLevelResultOrItem::BTreeMapLevelResult(value) => {
+                                            Some(Ok(value))
+                                        }
+                                        _ => {
+                                            early_exit = true;
+                                            None
+                                        }
+                                    },
+                                )
+                            })
+                            .transpose()
+                        {
+                            Ok(lower_known_layer) => lower_known_layer,
+                            Err(e) => return Some(Err(e)),
+                        };
+                    if early_exit {
+                        return None;
                     }
+                    Some(
+                        self.prove_subqueries(lower_path, path_query, lower_known_layer)
+                            .unwrap_add_cost(&mut cost)
+                            .map(|layer_proof| (key, layer_proof)),
+                    )
                 })
                 .collect::<Result<BTreeMap<Key, LayerProof>, Error>>()
         );
@@ -334,7 +367,7 @@ impl GroveDb {
         query_items: &Vec<QueryItem>,
         left_to_right: bool,
         limit: Option<u16>,
-    ) -> CostResult<Vec<u8>, Error>
+    ) -> CostResult<(Vec<u8>, Vec<Vec<u8>>), Error>
     where
         S: StorageContext<'a> + 'a,
         B: AsRef<[u8]>,
@@ -350,7 +383,7 @@ impl GroveDb {
                 .map_err(|_e| Error::InternalError("failed to generate proof"))
         );
 
-        cost_return_on_error!(
+        let tree_keys = cost_return_on_error!(
             &mut cost,
             self.post_process_merk_proof(path, &mut proof_result)
         );
@@ -358,7 +391,7 @@ impl GroveDb {
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
-        Ok(proof_bytes).wrap_with_cost(cost)
+        Ok((proof_bytes, tree_keys)).wrap_with_cost(cost)
     }
 
     /// Converts Items to Node::KV from Node::KVValueHash
@@ -368,9 +401,10 @@ impl GroveDb {
         &self,
         path: &SubtreePath<B>,
         proof_result: &mut ProofWithoutEncodingResult,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<Vec<Key>, Error> {
         let mut cost = OperationCost::default();
 
+        let mut sub_level_keys = vec![];
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
@@ -414,6 +448,9 @@ impl GroveDb {
                             Ok(Element::Item(..)) => {
                                 *node = Node::KV(key.to_owned(), value.to_owned())
                             }
+                            Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => {
+                                sub_level_keys.push(key.clone())
+                            }
                             _ => continue,
                         }
                     }
@@ -422,7 +459,7 @@ impl GroveDb {
                 _ => continue,
             }
         }
-        Ok(()).wrap_with_cost(cost)
+        Ok(sub_level_keys).wrap_with_cost(cost)
     }
 }
 // #[cfg(test)]
