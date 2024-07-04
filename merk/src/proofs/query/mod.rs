@@ -44,7 +44,7 @@ mod verify;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::cmp::Ordering;
-use std::{collections::HashSet, ops::RangeFull};
+use std::{collections::HashSet, fmt, ops::RangeFull};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
@@ -107,6 +107,53 @@ pub struct Query {
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     /// Left to right?
     pub left_to_right: bool,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for SubqueryBranch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SubqueryBranch {{ ")?;
+        if let Some(path) = &self.subquery_path {
+            write!(f, "subquery_path: [")?;
+            for (i, element) in path.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?
+                }
+                write!(f, "{}", hex::encode(element))?;
+            }
+            write!(f, "], ")?;
+        }
+        if let Some(subquery) = &self.subquery {
+            write!(f, "subquery: {} ", subquery)?;
+        }
+        write!(f, "}}")
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for Query {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Query {{")?;
+        writeln!(f, "  items: [")?;
+        for item in &self.items {
+            writeln!(f, "    {},", item)?;
+        }
+        writeln!(f, "  ],")?;
+        writeln!(
+            f,
+            "  default_subquery_branch: {},",
+            self.default_subquery_branch
+        )?;
+        if let Some(conditional_branches) = &self.conditional_subquery_branches {
+            writeln!(f, "  conditional_subquery_branches: {{")?;
+            for (item, branch) in conditional_branches {
+                writeln!(f, "    {}: {},", item, branch)?;
+            }
+            writeln!(f, "  }},")?;
+        }
+        writeln!(f, "  left_to_right: {},", self.left_to_right)?;
+        write!(f, "}}")
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]

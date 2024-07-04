@@ -16,7 +16,7 @@ pub enum Error {
     MissingReference(String),
     #[error("internal error: {0}")]
     /// Internal error
-    InternalError(&'static str),
+    InternalError(String),
     #[error("invalid proof: {0}")]
     /// Invalid proof
     InvalidProof(String),
@@ -62,7 +62,7 @@ pub enum Error {
     /// The corrupted path represents a consistency error in internal groveDB
     /// logic
     #[error("corrupted path: {0}")]
-    CorruptedPath(&'static str),
+    CorruptedPath(String),
 
     // Query errors
     #[error("invalid query: {0}")]

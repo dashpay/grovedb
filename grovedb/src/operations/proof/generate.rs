@@ -31,15 +31,13 @@ use crate::{
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProveOptions {
-    pub is_verbose: bool,
-    pub multilevel_results: bool,
+    pub decrease_limit_on_empty_sub_query_result: bool,
 }
 
 impl Default for ProveOptions {
     fn default() -> Self {
         ProveOptions {
-            is_verbose: false,
-            multilevel_results: false,
+            decrease_limit_on_empty_sub_query_result: true,
         }
     }
 }
@@ -131,7 +129,7 @@ fn node_to_string(node: &Node) -> String {
         Node::Hash(hash) => format!("Hash(HASH[{}])", hex::encode(hash)),
         Node::KVHash(kv_hash) => format!("KVHash(HASH[{}])", hex::encode(kv_hash)),
         Node::KV(key, value) => {
-            format!("KV({}, {})", hex::encode(key), element_hex_to_ascii(value))
+            format!("KV({}, {})", hex_to_ascii(key), element_hex_to_ascii(value))
         }
         Node::KVValueHash(key, value, value_hash) => format!(
             "KVValueHash({}, {}, HASH[{}])",
@@ -228,6 +226,8 @@ impl GroveDb {
     ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
 
+        let prove_options = prove_options.unwrap_or_default();
+
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
             return Err(Error::InvalidQuery(
                 "proved path queries can not have offsets",
@@ -237,6 +237,21 @@ impl GroveDb {
 
         // we want to query raw because we want the references to not be resolved at
         // this point
+
+        let values = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                path_query,
+                false,
+                true,
+                false,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None
+            )
+        )
+        .0;
+
+        println!("values are {}", values);
 
         let precomputed_result_map = cost_return_on_error!(
             &mut cost,
@@ -254,9 +269,17 @@ impl GroveDb {
 
         println!("precomputed results are {}", precomputed_result_map);
 
+        let mut limit = path_query.query.limit;
+
         let root_layer = cost_return_on_error!(
             &mut cost,
-            self.prove_subqueries(vec![], path_query, Some(precomputed_result_map))
+            self.prove_subqueries(
+                vec![],
+                path_query,
+                &mut limit,
+                Some(precomputed_result_map),
+                &prove_options
+            )
         );
 
         Ok(GroveDBProofV0 { root_layer }.into()).wrap_with_cost(cost)
@@ -268,15 +291,21 @@ impl GroveDb {
         &self,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
+        overall_limit: &mut Option<u16>,
         mut layer_precomputed_results: Option<BTreeMapLevelResult>,
+        prove_options: &ProveOptions,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
 
-        let (query_at_path, left_to_right) = cost_return_on_error_no_add!(
+        let (query_at_path, left_to_right, has_subqueries) = cost_return_on_error_no_add!(
             &cost,
             path_query
                 .query_items_at_path(path.as_slice())
-                .ok_or(Error::CorruptedPath("path should be part of path_query"))
+                .ok_or(Error::CorruptedPath(format!(
+                    "prove subqueries: path {} should be part of path_query {}",
+                    path.iter().map(hex::encode).collect::<Vec<_>>().join("/"),
+                    path_query
+                )))
         );
 
         let subtree = cost_return_on_error!(
@@ -284,37 +313,81 @@ impl GroveDb {
             self.open_non_transactional_merk_at_path(path.as_slice().into(), None)
         );
 
-        let mut items_to_prove: BTreeSet<Vec<u8>> = layer_precomputed_results
-            .as_ref()
-            .map_or(BTreeSet::new(), |map| {
-                map.key_values.keys().cloned().collect()
-            });
+        // let mut items_to_prove: BTreeSet<Vec<u8>> = layer_precomputed_results
+        //     .as_ref()
+        //     .map_or(BTreeSet::new(), |map| {
+        //         map.key_values.keys().cloned().collect()
+        //     });
+        //
+        // for query_item in query_at_path.as_slice() {
+        //     match query_item {
+        //         QueryItem::Key(key) => {
+        //             items_to_prove.insert(key.clone());
+        //         }
+        //         _ => {}
+        //     }
+        // }
 
-        for query_item in query_at_path.as_slice() {
-            match query_item {
-                QueryItem::Key(key) => {
-                    items_to_prove.insert(key.clone());
-                }
-                _ => {}
-            }
-        }
+        let limit = if path.len() < path_query.path.len() {
+            // There is no need for a limit because we are only asking for a single item
+            None
+        } else {
+            *overall_limit
+        };
 
-        let (merk_proof, sub_level_keys) = cost_return_on_error!(
+        let (merk_proof, sub_level_keys, results_found) = cost_return_on_error!(
             &mut cost,
             self.generate_merk_proof(
                 &path.as_slice().into(),
                 &subtree,
                 &query_at_path,
                 left_to_right,
-                Some(items_to_prove.len() as u16),
+                has_subqueries,
+                limit,
             )
+        );
+
+        if prove_options.decrease_limit_on_empty_sub_query_result
+            && sub_level_keys.is_empty()
+            && results_found == 0
+        {
+            // In this case we should reduce by 1 to prevent attacks on proofs
+            overall_limit.as_mut().map(|limit| *limit -= 1);
+        } else if results_found > 0 {
+            overall_limit.as_mut().map(|limit| *limit -= results_found);
+        };
+
+        println!(
+            "generated merk proof at level path level [{}] sub level keys found are [{}], limit \
+             is {:?}, results found were {}, has subqueries {}, {}",
+            path.iter()
+                .map(|a| hex_to_ascii(*a))
+                .collect::<Vec<_>>()
+                .join("/"),
+            sub_level_keys
+                .iter()
+                .map(|a| hex_to_ascii(a))
+                .collect::<Vec<_>>()
+                .join(", "),
+            overall_limit,
+            results_found,
+            has_subqueries,
+            if left_to_right {
+                "left to right"
+            } else {
+                "right to left"
+            }
         );
 
         let lower_layers = cost_return_on_error_no_add!(
             &cost,
             sub_level_keys
                 .into_iter()
-                .filter_map(|(key)| {
+                .map_while(|(key)| {
+                    // Check if we should stop after processing this key
+                    if *overall_limit == Some(0) {
+                        return None;
+                    }
                     let mut lower_path = path.clone();
                     lower_path.push(key.as_slice());
                     let mut early_exit = false;
@@ -337,17 +410,25 @@ impl GroveDb {
                             .transpose()
                         {
                             Ok(lower_known_layer) => lower_known_layer,
-                            Err(e) => return Some(Err(e)),
+                            Err(e) => return Some(Some(Err(e))),
                         };
                     if early_exit {
-                        return None;
+                        return Some(None);
                     }
-                    Some(
-                        self.prove_subqueries(lower_path, path_query, lower_known_layer)
-                            .unwrap_add_cost(&mut cost)
-                            .map(|layer_proof| (key, layer_proof)),
-                    )
+                    let result = self
+                        .prove_subqueries(
+                            lower_path,
+                            path_query,
+                            overall_limit,
+                            lower_known_layer,
+                            prove_options,
+                        )
+                        .unwrap_add_cost(&mut cost)
+                        .map(|layer_proof| (key, layer_proof));
+
+                    Some(Some(result))
                 })
+                .filter_map(|a| a)
                 .collect::<Result<BTreeMap<Key, LayerProof>, Error>>()
         );
 
@@ -366,8 +447,9 @@ impl GroveDb {
         subtree: &'a Merk<S>,
         query_items: &Vec<QueryItem>,
         left_to_right: bool,
+        has_any_subquery: bool,
         limit: Option<u16>,
-    ) -> CostResult<(Vec<u8>, Vec<Vec<u8>>), Error>
+    ) -> CostResult<(Vec<u8>, Vec<Vec<u8>>, u16), Error>
     where
         S: StorageContext<'a> + 'a,
         B: AsRef<[u8]>,
@@ -380,18 +462,26 @@ impl GroveDb {
                 .prove_unchecked_query_items(query_items, limit, left_to_right)
                 .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
                 .unwrap()
-                .map_err(|_e| Error::InternalError("failed to generate proof"))
+                .map_err(|e| Error::InternalError(format!(
+                    "failed to generate proof for query_items [{}] error is : {}",
+                    query_items
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    e
+                )))
         );
 
-        let tree_keys = cost_return_on_error!(
+        let (tree_keys, results_found) = cost_return_on_error!(
             &mut cost,
-            self.post_process_merk_proof(path, &mut proof_result)
+            self.post_process_merk_proof(path, has_any_subquery, &mut proof_result)
         );
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
-        Ok((proof_bytes, tree_keys)).wrap_with_cost(cost)
+        Ok((proof_bytes, tree_keys, results_found)).wrap_with_cost(cost)
     }
 
     /// Converts Items to Node::KV from Node::KVValueHash
@@ -400,11 +490,14 @@ impl GroveDb {
     fn post_process_merk_proof<B: AsRef<[u8]>>(
         &self,
         path: &SubtreePath<B>,
+        has_any_subquery: bool,
         proof_result: &mut ProofWithoutEncodingResult,
-    ) -> CostResult<Vec<Key>, Error> {
+    ) -> CostResult<(Vec<Key>, u16), Error> {
         let mut cost = OperationCost::default();
+        let mut results_found = 0;
 
         let mut sub_level_keys = vec![];
+
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
@@ -443,13 +536,36 @@ impl GroveDb {
                                     key.to_owned(),
                                     serialized_referenced_elem.expect("confirmed ok above"),
                                     value_hash(value).unwrap_add_cost(&mut cost),
-                                )
+                                );
+                                results_found += 1;
                             }
                             Ok(Element::Item(..)) => {
-                                *node = Node::KV(key.to_owned(), value.to_owned())
+                                println!("found {}", hex_to_ascii(key));
+                                *node = Node::KV(key.to_owned(), value.to_owned());
+                                results_found += 1;
                             }
-                            Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => {
-                                sub_level_keys.push(key.clone())
+                            Ok(Element::Tree(Some(_), _)) => {
+                                println!("found tree {}", hex_to_ascii(key));
+                                // We only want to check in sub nodes for the proof if the tree has
+                                // elements
+                                sub_level_keys.push(key.clone());
+                            }
+                            Ok(Element::SumTree(Some(_), ..)) => {
+                                // We only want to check in sub nodes for the proof if the tree has
+                                // elements
+                                sub_level_keys.push(key.clone());
+                                if !has_any_subquery {
+                                    results_found += 1; // if there is no
+                                                        // subquery we return
+                                                        // Empty trees
+                                }
+                            }
+                            Ok(Element::Tree(None, _)) | Ok(Element::SumTree(None, ..)) => {
+                                if !has_any_subquery {
+                                    results_found += 1; // if there is no
+                                                        // subquery we return
+                                                        // Empty trees
+                                }
                             }
                             _ => continue,
                         }
@@ -459,7 +575,8 @@ impl GroveDb {
                 _ => continue,
             }
         }
-        Ok(sub_level_keys).wrap_with_cost(cost)
+
+        Ok((sub_level_keys, results_found)).wrap_with_cost(cost)
     }
 }
 // #[cfg(test)]

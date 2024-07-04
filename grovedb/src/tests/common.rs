@@ -48,7 +48,7 @@ fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error
     let elem = Element::deserialize(raw_bytes)?;
     match elem {
         Element::Item(item, _) => Ok(item),
-        _ => Err(Error::CorruptedPath("expected only item type")),
+        _ => Err(Error::CorruptedPath("expected only item type".to_string())),
     }
 }
 

@@ -1000,7 +1000,7 @@ where
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
         merk.set_base_root_key(root_key)
             .add_cost(cost)
-            .map_err(|_| Error::InternalError("unable to set base root key"))
+            .map_err(|_| Error::InternalError("unable to set base root key".to_string()))
     }
 
     fn execute_ops_on_path(
@@ -1804,7 +1804,7 @@ impl GroveDb {
                     .add_cost(cost)
                 } else {
                     Err(Error::CorruptedPath(
-                        "cannot open a subtree as parent exists but is not a tree",
+                        "cannot open a subtree as parent exists but is not a tree".to_string(),
                     ))
                     .wrap_with_cost(OperationCost::default())
                 }

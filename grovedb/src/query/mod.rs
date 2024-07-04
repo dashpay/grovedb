@@ -1,34 +1,6 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Queries
 
-use std::{borrow::Cow, cmp::Ordering};
+use std::{borrow::Cow, cmp::Ordering, fmt};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
@@ -55,6 +27,30 @@ pub struct PathQuery {
     pub query: SizedQuery,
 }
 
+/// Do we go from left to right
+pub type LeftToRight = bool;
+
+/// Do we have subqueries
+pub type HasSubqueries = bool;
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for PathQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PathQuery {{ path: [")?;
+        for (i, path_element) in self.path.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", hex_to_ascii(path_element))?;
+        }
+        write!(f, "], query: {} }}", self.query)
+    }
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
+}
+
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
 /// Holds a query to apply to a tree and an optional limit/offset value.
@@ -66,6 +62,20 @@ pub struct SizedQuery {
     pub limit: Option<u16>,
     /// Offset
     pub offset: Option<u16>,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for SizedQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SizedQuery {{ query: {}", self.query)?;
+        if let Some(limit) = self.limit {
+            write!(f, ", limit: {}", limit)?;
+        }
+        if let Some(offset) = self.offset {
+            write!(f, ", offset: {}", offset)?;
+        }
+        write!(f, " }}")
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -273,32 +283,38 @@ impl PathQuery {
     pub fn query_items_at_path<'a>(
         &'a self,
         path: &[&[u8]],
-    ) -> Option<(Cow<'a, Vec<QueryItem>>, bool)> {
+    ) -> Option<(Cow<'a, Vec<QueryItem>>, LeftToRight, HasSubqueries)> {
         fn recursive_query_items<'b>(
             query: &'b Query,
             path: &[&[u8]],
-        ) -> Option<(Cow<'b, Vec<QueryItem>>, bool)> {
+        ) -> Option<(Cow<'b, Vec<QueryItem>>, LeftToRight, HasSubqueries)> {
             if path.is_empty() {
-                return Some((Cow::Borrowed(&query.items), query.left_to_right));
+                return Some((
+                    Cow::Borrowed(&query.items),
+                    query.left_to_right,
+                    query.has_subquery(),
+                ));
             }
 
             let key = path[0];
+            let path_after_top_removed = &path[1..];
 
             if let Some(conditional_branches) = &query.conditional_subquery_branches {
                 for (query_item, subquery_branch) in conditional_branches {
                     if query_item.contains(key) {
                         if let Some(subquery_path) = &subquery_branch.subquery_path {
-                            if path.len() <= subquery_path.len() {
-                                if path
+                            if path_after_top_removed.len() <= subquery_path.len() {
+                                if path_after_top_removed
                                     .iter()
                                     .zip(subquery_path)
                                     .all(|(a, b)| *a == b.as_slice())
                                 {
-                                    return if path.len() == subquery_path.len() {
+                                    return if path_after_top_removed.len() == subquery_path.len() {
                                         if let Some(subquery) = &subquery_branch.subquery {
                                             Some((
                                                 Cow::Borrowed(&subquery.items),
                                                 subquery.left_to_right,
+                                                subquery.has_subquery(),
                                             ))
                                         } else {
                                             None
@@ -306,9 +322,10 @@ impl PathQuery {
                                     } else {
                                         Some((
                                             Cow::Owned(vec![QueryItem::Key(
-                                                subquery_path[path.len()].clone(),
+                                                subquery_path[path_after_top_removed.len()].clone(),
                                             )]),
                                             true,
+                                            false,
                                         ))
                                     };
                                 }
@@ -318,33 +335,40 @@ impl PathQuery {
                         return if let Some(subquery) = &subquery_branch.subquery {
                             recursive_query_items(subquery, &path[1..])
                         } else {
-                            Some((Cow::Owned(vec![QueryItem::Key(key.to_vec())]), true))
+                            Some((Cow::Owned(vec![QueryItem::Key(key.to_vec())]), true, false))
                         };
                     }
                 }
             }
 
             if let Some(subquery_path) = &query.default_subquery_branch.subquery_path {
-                if path.len() <= subquery_path.len() {
-                    if path
+                if path_after_top_removed.len() <= subquery_path.len() {
+                    if path_after_top_removed
                         .iter()
                         .zip(subquery_path)
                         .all(|(a, b)| *a == b.as_slice())
                     {
-                        return if path.len() == subquery_path.len() {
+                        return if path_after_top_removed.len() == subquery_path.len() {
                             if let Some(subquery) = &query.default_subquery_branch.subquery {
-                                Some((Cow::Borrowed(&subquery.items), subquery.left_to_right))
+                                Some((
+                                    Cow::Borrowed(&subquery.items),
+                                    subquery.left_to_right,
+                                    subquery.has_subquery(),
+                                ))
                             } else {
                                 None
                             }
                         } else {
                             Some((
-                                Cow::Owned(vec![QueryItem::Key(subquery_path[path.len()].clone())]),
+                                Cow::Owned(vec![QueryItem::Key(
+                                    subquery_path[path_after_top_removed.len()].clone(),
+                                )]),
                                 true,
+                                false,
                             ))
                         };
                     }
-                } else if path
+                } else if path_after_top_removed
                     .iter()
                     .take(subquery_path.len())
                     .zip(subquery_path)
@@ -355,7 +379,7 @@ impl PathQuery {
                     }
                 }
             } else if let Some(subquery) = &query.default_subquery_branch.subquery {
-                return recursive_query_items(subquery, &path[1..]);
+                return recursive_query_items(subquery, path_after_top_removed);
             }
 
             None
@@ -370,6 +394,7 @@ impl PathQuery {
                     Some((
                         Cow::Owned(vec![QueryItem::Key(self.path[given_path_len].clone())]),
                         true,
+                        false,
                     ))
                 } else {
                     None
@@ -380,6 +405,7 @@ impl PathQuery {
                     Some((
                         Cow::Borrowed(&self.query.query.items),
                         self.query.query.left_to_right,
+                        self.query.query.has_subquery(),
                     ))
                 } else {
                     None

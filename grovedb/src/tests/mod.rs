@@ -2230,16 +2230,7 @@ mod tests {
         );
 
         // Generate proof
-        let proof = db
-            .prove_query(
-                &path_query,
-                Some(ProveOptions {
-                    is_verbose: false,
-                    multilevel_results: true,
-                }),
-            )
-            .unwrap()
-            .unwrap();
+        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
 
         // Verify proof
         let (hash, result_set) =
@@ -2274,6 +2265,30 @@ mod tests {
     #[test]
     fn test_path_query_proofs_with_direction() {
         let temp_db = make_deep_tree();
+
+        // root
+        //     deep_leaf
+        //          deep_node_1
+        //              deeper_1
+        //                  k1,v1
+        //                  k2,v2
+        //                  k3,v3
+        //              deeper_2
+        //                  k4,v4
+        //                  k5,v5
+        //                  k6,v6
+        //          deep_node_2
+        //              deeper_3
+        //                  k7,v7
+        //                  k8,v8
+        //                  k9,v9
+        //              deeper_4
+        //                  k10,v10
+        //                  k11,v11
+        //              deeper_5
+        //                  k12,v12
+        //                  k13,v13
+        //                  k14,v14
 
         let mut query = Query::new_with_direction(false);
         query.insert_all();

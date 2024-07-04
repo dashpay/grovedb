@@ -2379,16 +2379,7 @@ fn test_subset_proof_verification() {
     );
 
     // prove verbose
-    let verbose_proof = db
-        .prove_query(
-            &path_query,
-            Some(ProveOptions {
-                is_verbose: true,
-                multilevel_results: false,
-            }),
-        )
-        .unwrap()
-        .unwrap();
+    let verbose_proof = db.prove_query(&path_query, None).unwrap().unwrap();
     assert!(verbose_proof.len() > proof.len());
 
     // subset path query

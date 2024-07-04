@@ -180,7 +180,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
         None => Err(Error::CorruptedPath(
-            "qualified path should always have an element",
+            "qualified path should always have an element".to_string(),
         )),
         Some((key, path)) => {
             path_from_reference_path_type(reference_path_type, path, Some(key.as_ref()))

@@ -5,6 +5,7 @@ mod merge;
 use std::{
     cmp,
     cmp::Ordering,
+    fmt,
     hash::Hash,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
@@ -31,6 +32,54 @@ pub enum QueryItem {
     RangeAfter(RangeFrom<Vec<u8>>),
     RangeAfterTo(Range<Vec<u8>>),
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for QueryItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QueryItem::Key(key) => write!(f, "Key({})", hex_to_ascii(key)),
+            QueryItem::Range(range) => write!(
+                f,
+                "Range({} .. {})",
+                hex_to_ascii(&range.start),
+                hex_to_ascii(&range.end)
+            ),
+            QueryItem::RangeInclusive(range) => write!(
+                f,
+                "RangeInclusive({} ..= {})",
+                hex_to_ascii(range.start()),
+                hex_to_ascii(range.end())
+            ),
+            QueryItem::RangeFull(_) => write!(f, "RangeFull"),
+            QueryItem::RangeFrom(range) => {
+                write!(f, "RangeFrom({} ..)", hex_to_ascii(&range.start))
+            }
+            QueryItem::RangeTo(range) => write!(f, "RangeTo(.. {})", hex_to_ascii(&range.end)),
+            QueryItem::RangeToInclusive(range) => {
+                write!(f, "RangeToInclusive(..= {})", hex_to_ascii(&range.end))
+            }
+            QueryItem::RangeAfter(range) => {
+                write!(f, "RangeAfter({} <..)", hex_to_ascii(&range.start))
+            }
+            QueryItem::RangeAfterTo(range) => write!(
+                f,
+                "RangeAfterTo({} <.. {})",
+                hex_to_ascii(&range.start),
+                hex_to_ascii(&range.end)
+            ),
+            QueryItem::RangeAfterToInclusive(range) => write!(
+                f,
+                "RangeAfterToInclusive({} <..= {})",
+                hex_to_ascii(range.start()),
+                hex_to_ascii(range.end())
+            ),
+        }
+    }
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -295,11 +344,13 @@ impl QueryItem {
                     iter.seek(end).flat_map(|_| iter.prev())
                 }
             }
-            QueryItem::RangeInclusive(range_inclusive) => iter.seek(if left_to_right {
-                range_inclusive.start()
-            } else {
-                range_inclusive.end()
-            }),
+            QueryItem::RangeInclusive(range_inclusive) => {
+                if left_to_right {
+                    iter.seek(range_inclusive.start())
+                } else {
+                    iter.seek_for_prev(range_inclusive.end())
+                }
+            }
             QueryItem::RangeFull(..) => {
                 if left_to_right {
                     iter.seek_to_first()

@@ -108,9 +108,18 @@ impl GroveDb {
         result: &mut Vec<PathKeyOptionalElementTrio>,
         is_subset: bool,
     ) -> Result<[u8; 32], Error> {
-        let (query_items, left_to_right) = query
-            .query_items_at_path(current_path)
-            .ok_or(Error::CorruptedPath("path should be part of path_query"))?;
+        let (query_items, left_to_right, _) =
+            query
+                .query_items_at_path(current_path)
+                .ok_or(Error::CorruptedPath(format!(
+                    "verify: path {} should be part of path_query {}",
+                    current_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    query
+                )))?;
 
         let level_query = Query {
             items: query_items.to_vec(),
@@ -173,9 +182,19 @@ impl GroveDb {
         result: &mut ProvedPathKeyValues,
         is_subset: bool,
     ) -> Result<[u8; 32], Error> {
-        let (query_items, left_to_right) = query
-            .query_items_at_path(current_path)
-            .ok_or(Error::CorruptedPath("path should be part of path_query"))?;
+        let in_path_proving = current_path.len() < query.path.len();
+        let (query_items, left_to_right, _) =
+            query
+                .query_items_at_path(current_path)
+                .ok_or(Error::CorruptedPath(format!(
+                    "verify raw: path {} should be part of path_query {}",
+                    current_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    query
+                )))?;
 
         let level_query = Query {
             items: query_items.to_vec(),
@@ -202,13 +221,13 @@ impl GroveDb {
             let mut path = current_path.to_vec();
             let key = &proved_key_value.key;
             let value = &proved_key_value.value;
+            let element = Element::deserialize(value)?;
             let hash = &proved_key_value.proof;
             path.push(key);
 
             verified_keys.insert(key.clone());
 
             if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
-                let element = Element::deserialize(value)?;
                 match element {
                     Element::Tree(Some(v), _) | Element::SumTree(Some(v), ..) => {
                         let lower_hash = Self::verify_layer_proof_raw(
@@ -241,7 +260,7 @@ impl GroveDb {
                         ));
                     }
                 }
-            } else {
+            } else if !in_path_proving {
                 let path_key_value = ProvedPathKeyValue::from_proved_key_value(
                     path.iter().map(|p| p.to_vec()).collect(),
                     proved_key_value,
