@@ -1519,7 +1519,7 @@ mod tests {
         04711010a696e6e65727472656532850198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01b\
         b979cbe4a51e0b2f08d06046b6579340009000676616c75653100bf2f052b01c2bb83ff3a40504\
         d42b5b9141c582a3e0c98679189b33a24478a6f1006046b6579350009000676616c75653400f08\
-        4ffdbc429a89c9b6620e7224d73c2ee505eb7e6fb5eb574e1a8dc8b0d08841100"
+        4ffdbc429a89c9b6620e7224d73c2ee505eb7e6fb5eb574e1a8dc8b0d0884110001"
         );
         let (hash, result_set) =
             GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
@@ -1650,7 +1650,7 @@ mod tests {
         b657932004910536da659a3dbdbcf68c4a6630e72de4ba20cfc60b08b3dd45b4225a599b60109696e6\
         e6572747265655503046b6579310009000676616c7565310002018655e18e4555b0b65bbcec64c749d\
         b6b9ad84231969fb4fbe769a3093d10f2100198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01b\
-        b979cbe4a51e0b2f08d1100"
+        b979cbe4a51e0b2f08d110001"
         );
         let (hash, result_set) =
             GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
@@ -2105,7 +2105,8 @@ mod tests {
 
         let path_query = PathQuery::new(
             vec![DEEP_LEAF.to_vec()],
-            SizedQuery::new(query, Some(3), None),
+            SizedQuery::new(query, Some(6), None), /* we need to add a bigger limit because of
+                                                    * empty proved sub trees */
         );
         let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
         let (hash, result_set) =
@@ -2313,7 +2314,8 @@ mod tests {
 
         let path_query = PathQuery::new(
             vec![DEEP_LEAF.to_vec()],
-            SizedQuery::new(query, Some(4), None),
+            SizedQuery::new(query, Some(7), None), /* we need 7 because of intermediate empty
+                                                    * trees in proofs */
         );
         let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
         let (hash, result_set) =

@@ -29,9 +29,19 @@ use crate::{
     Element, Error, GroveDb, PathQuery,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct ProveOptions {
     pub decrease_limit_on_empty_sub_query_result: bool,
+}
+
+impl fmt::Display for ProveOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ProveOptions {{ decrease_limit_on_empty_sub_query_result: {} }}",
+            self.decrease_limit_on_empty_sub_query_result
+        )
+    }
 }
 
 impl Default for ProveOptions {
@@ -56,6 +66,7 @@ pub enum GroveDBProof {
 #[derive(Encode, Decode)]
 pub struct GroveDBProofV0 {
     pub root_layer: LayerProof,
+    pub prove_options: ProveOptions,
 }
 
 impl fmt::Display for LayerProof {
@@ -273,16 +284,15 @@ impl GroveDb {
 
         let root_layer = cost_return_on_error!(
             &mut cost,
-            self.prove_subqueries(
-                vec![],
-                path_query,
-                &mut limit,
-                Some(precomputed_result_map),
-                &prove_options
-            )
+            self.prove_subqueries(vec![], path_query, &mut limit, &prove_options)
         );
 
-        Ok(GroveDBProofV0 { root_layer }.into()).wrap_with_cost(cost)
+        Ok(GroveDBProofV0 {
+            root_layer,
+            prove_options,
+        }
+        .into())
+        .wrap_with_cost(cost)
     }
 
     /// Perform a pre-order traversal of the tree based on the provided
@@ -292,7 +302,6 @@ impl GroveDb {
         path: Vec<&[u8]>,
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
-        mut layer_precomputed_results: Option<BTreeMapLevelResult>,
         prove_options: &ProveOptions,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
@@ -335,42 +344,18 @@ impl GroveDb {
             *overall_limit
         };
 
-        let (merk_proof, sub_level_keys, results_found) = cost_return_on_error!(
+        let mut merk_proof = cost_return_on_error!(
             &mut cost,
-            self.generate_merk_proof(
-                &path.as_slice().into(),
-                &subtree,
-                &query_at_path,
-                left_to_right,
-                has_subqueries,
-                limit,
-            )
+            self.generate_merk_proof(&subtree, &query_at_path, left_to_right, limit,)
         );
 
-        if prove_options.decrease_limit_on_empty_sub_query_result
-            && sub_level_keys.is_empty()
-            && results_found == 0
-        {
-            // In this case we should reduce by 1 to prevent attacks on proofs
-            overall_limit.as_mut().map(|limit| *limit -= 1);
-        } else if results_found > 0 {
-            overall_limit.as_mut().map(|limit| *limit -= results_found);
-        };
-
         println!(
-            "generated merk proof at level path level [{}] sub level keys found are [{}], limit \
-             is {:?}, results found were {}, has subqueries {}, {}",
+            "generated merk proof at level path level [{}], limit is {:?}, has subqueries {}, {}",
             path.iter()
                 .map(|a| hex_to_ascii(*a))
                 .collect::<Vec<_>>()
                 .join("/"),
-            sub_level_keys
-                .iter()
-                .map(|a| hex_to_ascii(a))
-                .collect::<Vec<_>>()
-                .join(", "),
             overall_limit,
-            results_found,
             has_subqueries,
             if left_to_right {
                 "left to right"
@@ -379,61 +364,148 @@ impl GroveDb {
             }
         );
 
-        let lower_layers = cost_return_on_error_no_add!(
-            &cost,
-            sub_level_keys
-                .into_iter()
-                .map_while(|(key)| {
-                    // Check if we should stop after processing this key
-                    if *overall_limit == Some(0) {
-                        return None;
-                    }
-                    let mut lower_path = path.clone();
-                    lower_path.push(key.as_slice());
-                    let mut early_exit = false;
-                    let lower_known_layer: Option<BTreeMapLevelResult> =
-                        match layer_precomputed_results
-                            .as_mut()
-                            .and_then(|mut layer_precomputed_results| {
-                                layer_precomputed_results.key_values.remove(&key).and_then(
-                                    |result_or_item| match result_or_item {
-                                        BTreeMapLevelResultOrItem::BTreeMapLevelResult(value) => {
-                                            Some(Ok(value))
-                                        }
-                                        _ => {
-                                            early_exit = true;
-                                            None
-                                        }
-                                    },
-                                )
-                            })
-                            .transpose()
-                        {
-                            Ok(lower_known_layer) => lower_known_layer,
-                            Err(e) => return Some(Some(Err(e))),
-                        };
-                    if early_exit {
-                        return Some(None);
-                    }
-                    let result = self
-                        .prove_subqueries(
-                            lower_path,
-                            path_query,
-                            overall_limit,
-                            lower_known_layer,
-                            prove_options,
-                        )
-                        .unwrap_add_cost(&mut cost)
-                        .map(|layer_proof| (key, layer_proof));
+        let mut lower_layers = BTreeMap::new();
 
-                    Some(Some(result))
-                })
-                .filter_map(|a| a)
-                .collect::<Result<BTreeMap<Key, LayerProof>, Error>>()
-        );
+        let mut has_a_result_at_level = false;
+        let mut done_with_results = false;
+
+        for op in merk_proof.proof.iter_mut() {
+            done_with_results |= overall_limit == &Some(0);
+            match op {
+                Op::Push(node) | Op::PushInverted(node) => match node {
+                    Node::KV(key, value) | Node::KVValueHash(key, value, ..)
+                        if !done_with_results =>
+                    {
+                        let elem = Element::deserialize(value);
+                        match elem {
+                            Ok(Element::Reference(reference_path, ..)) => {
+                                let absolute_path = cost_return_on_error!(
+                                    &mut cost,
+                                    path_from_reference_path_type(
+                                        reference_path,
+                                        &path.to_vec(),
+                                        Some(key.as_slice())
+                                    )
+                                    .wrap_with_cost(OperationCost::default())
+                                );
+
+                                let referenced_elem = cost_return_on_error!(
+                                    &mut cost,
+                                    self.follow_reference(
+                                        absolute_path.as_slice().into(),
+                                        true,
+                                        None
+                                    )
+                                );
+
+                                let serialized_referenced_elem = referenced_elem.serialize();
+                                if serialized_referenced_elem.is_err() {
+                                    return Err(Error::CorruptedData(String::from(
+                                        "unable to serialize element",
+                                    )))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                *node = Node::KVRefValueHash(
+                                    key.to_owned(),
+                                    serialized_referenced_elem.expect("confirmed ok above"),
+                                    value_hash(value).unwrap_add_cost(&mut cost),
+                                );
+                                overall_limit.as_mut().map(|limit| *limit -= 1);
+                                has_a_result_at_level |= true;
+                            }
+                            Ok(Element::Item(..)) if !done_with_results => {
+                                println!("found {}", hex_to_ascii(key));
+                                *node = Node::KV(key.to_owned(), value.to_owned());
+                                overall_limit.as_mut().map(|limit| *limit -= 1);
+                                has_a_result_at_level |= true;
+                            }
+                            Ok(Element::Tree(Some(_), _)) if !done_with_results => {
+                                println!("found tree {}", hex_to_ascii(key));
+                                // We only want to check in sub nodes for the proof if the tree has
+                                // elements
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                    )
+                                );
+
+                                if previous_limit != *overall_limit {
+                                    // a lower layer updated the limit, don't subtract 1 at this
+                                    // level
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+                            Ok(Element::SumTree(Some(_), ..)) if !done_with_results => {
+                                // We only want to check in sub nodes for the proof if the tree has
+                                // elements
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                    )
+                                );
+                                lower_layers.insert(key.clone(), layer_proof);
+                                if !has_subqueries {
+                                    overall_limit.as_mut().map(|limit| *limit -= 1);
+                                    has_a_result_at_level |= true;
+                                }
+                            }
+                            Ok(Element::Tree(None, _)) | Ok(Element::SumTree(None, ..))
+                                if !done_with_results =>
+                            {
+                                if !has_subqueries {
+                                    overall_limit.as_mut().map(|limit| *limit -= 1);
+                                    has_a_result_at_level |= true;
+                                }
+                            }
+                            // todo: transform the unused trees into a Hash or KVHash to make proof
+                            // smaller Ok(Element::Tree(..)) if
+                            // done_with_results => {     *node =
+                            // Node::Hash()     // we are done with the
+                            // results, we can modify the proof to alter
+                            // }
+                            _ => continue,
+                        }
+                    }
+                    _ => continue,
+                },
+                _ => continue,
+            }
+        }
+
+        if !has_a_result_at_level && !done_with_results {
+            println!(
+                "no results at level {}",
+                path.iter()
+                    .map(|a| hex_to_ascii(*a))
+                    .collect::<Vec<_>>()
+                    .join("/")
+            );
+            overall_limit.as_mut().map(|limit| *limit -= 1);
+        }
+
+        let mut serialized_merk_proof = Vec::with_capacity(1024);
+        encode_into(merk_proof.proof.iter(), &mut serialized_merk_proof);
 
         Ok(LayerProof {
-            merk_proof,
+            merk_proof: serialized_merk_proof,
             lower_layers,
         })
         .wrap_with_cost(cost)
@@ -441,28 +513,21 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_merk_proof<'a, S, B>(
+    fn generate_merk_proof<'a, S>(
         &self,
-        path: &SubtreePath<B>,
         subtree: &'a Merk<S>,
         query_items: &Vec<QueryItem>,
         left_to_right: bool,
-        has_any_subquery: bool,
         limit: Option<u16>,
-    ) -> CostResult<(Vec<u8>, Vec<Vec<u8>>, u16), Error>
+    ) -> CostResult<ProofWithoutEncodingResult, Error>
     where
         S: StorageContext<'a> + 'a,
-        B: AsRef<[u8]>,
     {
-        let mut cost = OperationCost::default();
-
-        let mut proof_result = cost_return_on_error_no_add!(
-            &cost,
-            subtree
-                .prove_unchecked_query_items(query_items, limit, left_to_right)
-                .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
-                .unwrap()
-                .map_err(|e| Error::InternalError(format!(
+        subtree
+            .prove_unchecked_query_items(query_items, limit, left_to_right)
+            .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
+            .map_err(|e| {
+                Error::InternalError(format!(
                     "failed to generate proof for query_items [{}] error is : {}",
                     query_items
                         .iter()
@@ -470,18 +535,8 @@ impl GroveDb {
                         .collect::<Vec<_>>()
                         .join(", "),
                     e
-                )))
-        );
-
-        let (tree_keys, results_found) = cost_return_on_error!(
-            &mut cost,
-            self.post_process_merk_proof(path, has_any_subquery, &mut proof_result)
-        );
-
-        let mut proof_bytes = Vec::with_capacity(128);
-        encode_into(proof_result.proof.iter(), &mut proof_bytes);
-
-        Ok((proof_bytes, tree_keys, results_found)).wrap_with_cost(cost)
+                ))
+            })
     }
 
     /// Converts Items to Node::KV from Node::KVValueHash

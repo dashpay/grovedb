@@ -338,6 +338,20 @@ pub struct ProofVerificationResult {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for ProofVerificationResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "ProofVerificationResult {{")?;
+        writeln!(f, "  result_set: [")?;
+        for (index, proved_key_value) in self.result_set.iter().enumerate() {
+            writeln!(f, "    {}: {},", index, proved_key_value)?;
+        }
+        writeln!(f, "  ],")?;
+        writeln!(f, "  limit: {:?}", self.limit)?;
+        write!(f, "}}")
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Verifies the encoded proof with the given query and expected hash
 pub fn verify_query(
     bytes: &[u8],

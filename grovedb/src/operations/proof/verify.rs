@@ -10,6 +10,7 @@ use crate::{
     operations::proof::{
         generate::{GroveDBProof, GroveDBProofV0, LayerProof},
         util::{ProvedPathKeyValue, ProvedPathKeyValues},
+        ProveOptions,
     },
     query_result_type::PathKeyOptionalElementTrio,
     Element, Error, GroveDb, PathQuery,
@@ -66,8 +67,14 @@ impl GroveDb {
         is_subset: bool,
     ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
         let mut result = Vec::new();
-        let root_hash =
-            Self::verify_layer_proof(&proof.root_layer, query, &[], &mut result, is_subset)?;
+        let root_hash = Self::verify_layer_proof(
+            &proof.root_layer,
+            &proof.prove_options,
+            query,
+            &[],
+            &mut result,
+            is_subset,
+        )?;
         Ok((root_hash, result))
     }
 
@@ -92,6 +99,7 @@ impl GroveDb {
         let mut limit = query.query.limit;
         let root_hash = Self::verify_layer_proof_raw(
             &proof.root_layer,
+            &proof.prove_options,
             query,
             &mut limit,
             &[],
@@ -103,6 +111,7 @@ impl GroveDb {
 
     fn verify_layer_proof(
         layer_proof: &LayerProof,
+        prove_options: &ProveOptions,
         query: &PathQuery,
         current_path: &[&[u8]],
         result: &mut Vec<PathKeyOptionalElementTrio>,
@@ -151,8 +160,14 @@ impl GroveDb {
             verified_keys.insert(key.clone());
 
             if let Some(lower_layer) = layer_proof.lower_layers.get(&key) {
-                let lower_hash =
-                    Self::verify_layer_proof(lower_layer, query, &path, result, is_subset)?;
+                let lower_hash = Self::verify_layer_proof(
+                    lower_layer,
+                    prove_options,
+                    query,
+                    &path,
+                    result,
+                    is_subset,
+                )?;
                 if lower_hash != value_hash(&value).value {
                     return Err(Error::InvalidProof("Mismatch in lower layer hash".into()));
                 }
@@ -176,6 +191,7 @@ impl GroveDb {
 
     fn verify_layer_proof_raw(
         layer_proof: &LayerProof,
+        prove_options: &ProveOptions,
         query: &PathQuery,
         limit_left: &mut Option<u16>,
         current_path: &[&[u8]],
@@ -215,64 +231,77 @@ impl GroveDb {
             Error::InvalidProof(format!("invalid proof verification parameters: {}", e))
         })?;
 
+        println!("merk result is {}", merk_result);
+
         let mut verified_keys = BTreeSet::new();
 
-        for proved_key_value in merk_result.result_set {
-            let mut path = current_path.to_vec();
-            let key = &proved_key_value.key;
-            let value = &proved_key_value.value;
-            let element = Element::deserialize(value)?;
-            let hash = &proved_key_value.proof;
-            path.push(key);
+        if merk_result.result_set.is_empty() {
+            limit_left.as_mut().map(|limit| *limit -= 1);
+        } else {
+            for proved_key_value in merk_result.result_set {
+                let mut path = current_path.to_vec();
+                let key = &proved_key_value.key;
+                let value = &proved_key_value.value;
+                let element = Element::deserialize(value)?;
+                let hash = &proved_key_value.proof;
+                path.push(key);
 
-            verified_keys.insert(key.clone());
+                verified_keys.insert(key.clone());
 
-            if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
-                match element {
-                    Element::Tree(Some(v), _) | Element::SumTree(Some(v), ..) => {
-                        let lower_hash = Self::verify_layer_proof_raw(
-                            lower_layer,
-                            query,
-                            limit_left,
-                            &path,
-                            result,
-                            is_subset,
-                        )?;
-                        let combined_root_hash =
-                            combine_hash(value_hash(value).value(), &lower_hash)
-                                .value()
-                                .to_owned();
-                        if hash != &combined_root_hash {
-                            return Err(Error::InvalidProof(format!(
-                                "Mismatch in lower layer hash, expected {}, got {}",
-                                hex::encode(hash),
-                                hex::encode(combined_root_hash)
-                            )));
+                if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
+                    match element {
+                        Element::Tree(Some(v), _) | Element::SumTree(Some(v), ..) => {
+                            let lower_hash = Self::verify_layer_proof_raw(
+                                lower_layer,
+                                prove_options,
+                                query,
+                                limit_left,
+                                &path,
+                                result,
+                                is_subset,
+                            )?;
+                            let combined_root_hash =
+                                combine_hash(value_hash(value).value(), &lower_hash)
+                                    .value()
+                                    .to_owned();
+                            if hash != &combined_root_hash {
+                                return Err(Error::InvalidProof(format!(
+                                    "Mismatch in lower layer hash, expected {}, got {}",
+                                    hex::encode(hash),
+                                    hex::encode(combined_root_hash)
+                                )));
+                            }
+                            if limit_left == &Some(0) {
+                                break;
+                            }
+                        }
+                        Element::Tree(None, _)
+                        | Element::SumTree(None, ..)
+                        | Element::SumItem(..)
+                        | Element::Item(..)
+                        | Element::Reference(..) => {
+                            return Err(Error::InvalidProof(
+                                "Proof has lower layer for a non Tree".into(),
+                            ));
                         }
                     }
-                    Element::Tree(None, _)
-                    | Element::SumTree(None, ..)
-                    | Element::SumItem(..)
-                    | Element::Item(..)
-                    | Element::Reference(..) => {
-                        return Err(Error::InvalidProof(
-                            "Proof has lower layer for a non Tree".into(),
-                        ));
+                } else if !in_path_proving {
+                    let path_key_value = ProvedPathKeyValue::from_proved_key_value(
+                        path.iter().map(|p| p.to_vec()).collect(),
+                        proved_key_value,
+                    );
+                    limit_left.as_mut().map(|limit| *limit -= 1);
+                    if limit_left == &Some(0) {
+                        break;
                     }
+                    println!(
+                        "pushing {} limit left after is {:?}",
+                        &path_key_value, limit_left
+                    );
+                    result.push(path_key_value);
                 }
-            } else if !in_path_proving {
-                let path_key_value = ProvedPathKeyValue::from_proved_key_value(
-                    path.iter().map(|p| p.to_vec()).collect(),
-                    proved_key_value,
-                );
-                result.push(path_key_value);
             }
         }
-
-        // if !is_subset {
-        //     // Verify completeness only if not doing subset verification
-        //     self.verify_completeness(&query_items, &merk_result.result_set,
-        // current_path)?; }
 
         Ok(root_hash)
     }

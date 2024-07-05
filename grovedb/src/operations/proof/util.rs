@@ -11,6 +11,8 @@ use grovedb_merk::{
 #[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader};
 
+use crate::Element;
+
 #[cfg(any(feature = "full", feature = "verify"))]
 pub type ProvedKeyValues = Vec<ProvedKeyValue>;
 
@@ -29,6 +31,36 @@ pub struct ProvedPathKeyValue {
     pub value: Vec<u8>,
     /// Proof
     pub proof: CryptoHash,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for ProvedPathKeyValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ProvedPathKeyValue {{\n")?;
+        write!(
+            f,
+            "  path: [{}],\n",
+            self.path
+                .iter()
+                .map(|p| hex_to_ascii(p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        write!(f, "  key: {},\n", hex_to_ascii(&self.key))?;
+        write!(f, "  value: {},\n", element_hex_to_ascii(&self.value))?;
+        write!(f, "  proof: {}\n", hex::encode(self.proof))?;
+        write!(f, "}}")
+    }
+}
+
+fn element_hex_to_ascii(hex_value: &[u8]) -> String {
+    Element::deserialize(hex_value)
+        .map(|e| e.to_string())
+        .unwrap_or_else(|_| hex::encode(hex_value))
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
 }
 
 impl ProvedPathKeyValue {
