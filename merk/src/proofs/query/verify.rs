@@ -54,6 +54,16 @@ pub fn execute_proof(
     limit: Option<u16>,
     left_to_right: bool,
 ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
+    println!(
+        "executing proof with limit {:?} going {} using query {}",
+        limit,
+        if left_to_right {
+            "left to right"
+        } else {
+            "right to left"
+        },
+        query
+    );
     let mut cost = OperationCost::default();
 
     let mut output = Vec::with_capacity(query.len());

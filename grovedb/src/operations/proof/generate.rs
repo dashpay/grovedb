@@ -306,13 +306,16 @@ impl GroveDb {
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
 
-        let (query_at_path, left_to_right, has_subqueries) = cost_return_on_error_no_add!(
+        let query = cost_return_on_error_no_add!(
             &cost,
             path_query
                 .query_items_at_path(path.as_slice())
                 .ok_or(Error::CorruptedPath(format!(
                     "prove subqueries: path {} should be part of path_query {}",
-                    path.iter().map(hex::encode).collect::<Vec<_>>().join("/"),
+                    path.iter()
+                        .map(|a| hex_to_ascii(*a))
+                        .collect::<Vec<_>>()
+                        .join("/"),
                     path_query
                 )))
         );
@@ -346,18 +349,17 @@ impl GroveDb {
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
-            self.generate_merk_proof(&subtree, &query_at_path, left_to_right, limit,)
+            self.generate_merk_proof(&subtree, &query.items, query.left_to_right, limit)
         );
 
         println!(
-            "generated merk proof at level path level [{}], limit is {:?}, has subqueries {}, {}",
+            "generated merk proof at level path level [{}], limit is {:?}, {}",
             path.iter()
                 .map(|a| hex_to_ascii(*a))
                 .collect::<Vec<_>>()
                 .join("/"),
             overall_limit,
-            has_subqueries,
-            if left_to_right {
+            if query.left_to_right {
                 "left to right"
             } else {
                 "right to left"
@@ -420,7 +422,9 @@ impl GroveDb {
                                 overall_limit.as_mut().map(|limit| *limit -= 1);
                                 has_a_result_at_level |= true;
                             }
-                            Ok(Element::Tree(Some(_), _)) if !done_with_results => {
+                            Ok(Element::Tree(Some(_), _)) | Ok(Element::SumTree(Some(_), ..))
+                                if !done_with_results && query.has_subquery_on_key(key) =>
+                            {
                                 println!("found tree {}", hex_to_ascii(key));
                                 // We only want to check in sub nodes for the proof if the tree has
                                 // elements
@@ -446,34 +450,12 @@ impl GroveDb {
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
-                            Ok(Element::SumTree(Some(_), ..)) if !done_with_results => {
-                                // We only want to check in sub nodes for the proof if the tree has
-                                // elements
-                                let mut lower_path = path.clone();
-                                lower_path.push(key.as_slice());
 
-                                let layer_proof = cost_return_on_error!(
-                                    &mut cost,
-                                    self.prove_subqueries(
-                                        lower_path,
-                                        path_query,
-                                        overall_limit,
-                                        prove_options,
-                                    )
-                                );
-                                lower_layers.insert(key.clone(), layer_proof);
-                                if !has_subqueries {
-                                    overall_limit.as_mut().map(|limit| *limit -= 1);
-                                    has_a_result_at_level |= true;
-                                }
-                            }
-                            Ok(Element::Tree(None, _)) | Ok(Element::SumTree(None, ..))
+                            Ok(Element::Tree(..)) | Ok(Element::SumTree(..))
                                 if !done_with_results =>
                             {
-                                if !has_subqueries {
-                                    overall_limit.as_mut().map(|limit| *limit -= 1);
-                                    has_a_result_at_level |= true;
-                                }
+                                overall_limit.as_mut().map(|limit| *limit -= 1);
+                                has_a_result_at_level |= true;
                             }
                             // todo: transform the unused trees into a Hash or KVHash to make proof
                             // smaller Ok(Element::Tree(..)) if

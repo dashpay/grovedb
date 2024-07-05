@@ -2105,7 +2105,7 @@ mod tests {
 
         let path_query = PathQuery::new(
             vec![DEEP_LEAF.to_vec()],
-            SizedQuery::new(query, Some(6), None), /* we need to add a bigger limit because of
+            SizedQuery::new(query, Some(5), None), /* we need to add a bigger limit because of
                                                     * empty proved sub trees */
         );
         let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
@@ -2314,7 +2314,7 @@ mod tests {
 
         let path_query = PathQuery::new(
             vec![DEEP_LEAF.to_vec()],
-            SizedQuery::new(query, Some(7), None), /* we need 7 because of intermediate empty
+            SizedQuery::new(query, Some(6), None), /* we need 6 because of intermediate empty
                                                     * trees in proofs */
         );
         let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();

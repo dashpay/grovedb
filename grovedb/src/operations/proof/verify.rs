@@ -117,7 +117,7 @@ impl GroveDb {
         result: &mut Vec<PathKeyOptionalElementTrio>,
         is_subset: bool,
     ) -> Result<[u8; 32], Error> {
-        let (query_items, left_to_right, _) =
+        let internal_query =
             query
                 .query_items_at_path(current_path)
                 .ok_or(Error::CorruptedPath(format!(
@@ -131,17 +131,19 @@ impl GroveDb {
                 )))?;
 
         let level_query = Query {
-            items: query_items.to_vec(),
-            default_subquery_branch: Default::default(),
-            conditional_subquery_branches: None,
-            left_to_right,
+            items: internal_query.items.to_vec(),
+            default_subquery_branch: internal_query.default_subquery_branch.into_owned(),
+            conditional_subquery_branches: internal_query
+                .conditional_subquery_branches
+                .map(|a| a.into_owned()),
+            left_to_right: internal_query.left_to_right,
         };
 
         let (root_hash, merk_result) = execute_proof(
             &layer_proof.merk_proof,
             &level_query,
             Some(layer_proof.lower_layers.len() as u16),
-            left_to_right,
+            internal_query.left_to_right,
         )
         .unwrap()
         .map_err(|e| {
@@ -199,7 +201,7 @@ impl GroveDb {
         is_subset: bool,
     ) -> Result<[u8; 32], Error> {
         let in_path_proving = current_path.len() < query.path.len();
-        let (query_items, left_to_right, _) =
+        let internal_query =
             query
                 .query_items_at_path(current_path)
                 .ok_or(Error::CorruptedPath(format!(
@@ -213,17 +215,19 @@ impl GroveDb {
                 )))?;
 
         let level_query = Query {
-            items: query_items.to_vec(),
-            default_subquery_branch: Default::default(),
-            conditional_subquery_branches: None,
-            left_to_right,
+            items: internal_query.items.to_vec(),
+            default_subquery_branch: internal_query.default_subquery_branch.into_owned(),
+            conditional_subquery_branches: internal_query
+                .conditional_subquery_branches
+                .map(|a| a.into_owned()),
+            left_to_right: internal_query.left_to_right,
         };
 
         let (root_hash, merk_result) = execute_proof(
             &layer_proof.merk_proof,
             &level_query,
             *limit_left,
-            left_to_right,
+            internal_query.left_to_right,
         )
         .unwrap()
         .map_err(|e| {
@@ -290,15 +294,16 @@ impl GroveDb {
                         path.iter().map(|p| p.to_vec()).collect(),
                         proved_key_value,
                     );
-                    limit_left.as_mut().map(|limit| *limit -= 1);
-                    if limit_left == &Some(0) {
-                        break;
-                    }
                     println!(
                         "pushing {} limit left after is {:?}",
                         &path_key_value, limit_left
                     );
                     result.push(path_key_value);
+
+                    limit_left.as_mut().map(|limit| *limit -= 1);
+                    if limit_left == &Some(0) {
+                        break;
+                    }
                 }
             }
         }
