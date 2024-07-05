@@ -254,7 +254,7 @@ impl GroveDb {
             self.query_raw(
                 path_query,
                 false,
-                true,
+                prove_options.decrease_limit_on_empty_sub_query_result,
                 false,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None
@@ -269,7 +269,7 @@ impl GroveDb {
             self.query_raw(
                 path_query,
                 false,
-                true,
+                prove_options.decrease_limit_on_empty_sub_query_result,
                 false,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None
@@ -472,7 +472,10 @@ impl GroveDb {
             }
         }
 
-        if !has_a_result_at_level && !done_with_results {
+        if !has_a_result_at_level
+            && !done_with_results
+            && prove_options.decrease_limit_on_empty_sub_query_result
+        {
             println!(
                 "no results at level {}",
                 path.iter()

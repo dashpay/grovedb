@@ -2244,7 +2244,7 @@ mod tests {
 
         // Now test without a limit to compare
         let path_query_no_limit = PathQuery::new(
-            vec![DEEP_LEAF.to_vec(), b"deep_node_2".to_vec()],
+            vec![DEEP_LEAF.to_vec(), b"deep_node_1".to_vec()],
             SizedQuery::new(main_query.clone(), None, None),
         );
 
@@ -2255,7 +2255,7 @@ mod tests {
         match verification_result_no_limit {
             Ok((hash, result_set)) => {
                 assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-                assert_eq!(result_set.len(), 5, "Expected 5 results without limit");
+                assert_eq!(result_set.len(), 29, "Expected 29 results without limit");
             }
             Err(e) => {
                 panic!("Proof verification failed (no limit): {:?}", e);

@@ -419,7 +419,8 @@ pub(crate) struct InternalCowItemsQuery<'a> {
 impl<'a> InternalCowItemsQuery<'a> {
     /// Checks to see if we have a subquery on a specific key
     pub fn has_subquery_on_key(&self, key: &[u8]) -> bool {
-        if self.default_subquery_branch.subquery.is_some()
+        if self.in_path
+            || self.default_subquery_branch.subquery.is_some()
             || self.default_subquery_branch.subquery_path.is_some()
         {
             return true;
