@@ -395,10 +395,15 @@ impl TryFrom<ProvedKeyOptionalValue> for ProvedKeyValue {
 #[cfg(any(feature = "full", feature = "verify"))]
 impl fmt::Display for ProvedKeyOptionalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let key_string = if self.key.len() == 1 && self.key[0] < b"0"[0] {
+            hex::encode(&self.key)
+        } else {
+            String::from_utf8(self.key.clone()).unwrap_or_else(|_| hex::encode(&self.key))
+        };
         write!(
             f,
-            "ProvedKeyValue {{ key: {}, value: {}, proof: {} }}",
-            String::from_utf8(self.key.clone()).unwrap_or_else(|_| hex::encode(&self.key)),
+            "ProvedKeyOptionalValue {{ key: {}, value: {}, proof: {} }}",
+            key_string,
             if let Some(value) = &self.value {
                 hex::encode(value)
             } else {
