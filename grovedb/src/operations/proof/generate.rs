@@ -1,9 +1,6 @@
 //! Generate proof operations
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::{collections::BTreeMap, fmt};
 
 use bincode::{Decode, Encode};
 use derive_more::From;
@@ -15,7 +12,7 @@ use grovedb_merk::{
     proofs::{
         encode_into,
         query::{Key, QueryItem},
-        Decoder, Node, Op, Tree,
+        Decoder, Node, Op,
     },
     tree::value_hash,
     Merk, ProofWithoutEncodingResult,
@@ -24,9 +21,8 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::StorageContext;
 
 use crate::{
-    query_result_type::{BTreeMapLevelResult, BTreeMapLevelResultOrItem, QueryResultType},
-    reference_path::path_from_reference_path_type,
-    Element, Error, GroveDb, PathQuery,
+    query_result_type::QueryResultType, reference_path::path_from_reference_path_type, Element,
+    Error, GroveDb, PathQuery,
 };
 
 #[derive(Debug, Clone, Copy, Encode, Decode)]

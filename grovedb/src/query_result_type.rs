@@ -8,7 +8,10 @@ use std::{
 
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
 
-use crate::{operations::proof::util::ProvedPathKeyValue, Element, Error};
+use crate::{
+    operations::proof::util::{ProvedPathKeyOptionalValue, ProvedPathKeyValue},
+    Element, Error,
+};
 
 #[derive(Copy, Clone)]
 /// Query result type
@@ -518,6 +521,23 @@ impl TryFrom<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
             proved_path_key_value.path,
             proved_path_key_value.key,
             Some(element),
+        ))
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl TryFrom<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio {
+    type Error = Error;
+
+    fn try_from(proved_path_key_value: ProvedPathKeyOptionalValue) -> Result<Self, Self::Error> {
+        let element = proved_path_key_value
+            .value
+            .map(|e| Element::deserialize(e.as_slice()))
+            .transpose()?;
+        Ok((
+            proved_path_key_value.path,
+            proved_path_key_value.key,
+            element,
         ))
     }
 }

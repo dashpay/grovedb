@@ -1,9 +1,14 @@
 //! GroveDB Errors
 
+use std::convert::Infallible;
+
 /// GroveDB Errors
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("infallible")]
+    /// This error can not happen, used for generics
+    Infallible,
     // Input data errors
     #[error("cyclic reference path")]
     /// Cyclic reference
@@ -142,4 +147,16 @@ pub enum Error {
     #[error("merk error: {0}")]
     /// Merk error
     MerkError(grovedb_merk::error::Error),
+}
+
+impl From<Infallible> for Error {
+    fn from(_value: Infallible) -> Self {
+        Self::Infallible
+    }
+}
+
+impl From<grovedb_merk::error::Error> for Error {
+    fn from(value: grovedb_merk::Error) -> Self {
+        Error::MerkError(value)
+    }
 }

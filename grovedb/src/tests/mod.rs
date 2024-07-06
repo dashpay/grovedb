@@ -19,7 +19,6 @@ use tempfile::TempDir;
 use self::common::EMPTY_PATH;
 use super::*;
 use crate::{
-    operations::proof::ProveOptions,
     query_result_type::{QueryResultType, QueryResultType::QueryKeyElementPairResultType},
     reference_path::ReferencePathType,
     tests::common::compare_result_tuples,
