@@ -295,11 +295,13 @@ impl QueryItem {
                     iter.seek(end).flat_map(|_| iter.prev())
                 }
             }
-            QueryItem::RangeInclusive(range_inclusive) => iter.seek(if left_to_right {
-                range_inclusive.start()
-            } else {
-                range_inclusive.end()
-            }),
+            QueryItem::RangeInclusive(range_inclusive) => {
+                if left_to_right {
+                    iter.seek(range_inclusive.start())
+                } else {
+                    iter.seek_for_prev(range_inclusive.end())
+                }
+            }
             QueryItem::RangeFull(..) => {
                 if left_to_right {
                     iter.seek_to_first()
