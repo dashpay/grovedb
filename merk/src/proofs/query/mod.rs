@@ -130,6 +130,29 @@ impl fmt::Display for Query {
     }
 }
 
+macro_rules! compare_result_tuples_not_optional {
+    ($result_set:expr, $expected_result_set:expr) => {
+        assert_eq!(
+            $expected_result_set.len(),
+            $result_set.len(),
+            "Result set lengths do not match"
+        );
+        for i in 0..$expected_result_set.len() {
+            assert_eq!(
+                $expected_result_set[i].0, $result_set[i].key,
+                "Key mismatch at index {}",
+                i
+            );
+            assert_eq!(
+                &$expected_result_set[i].1,
+                $result_set[i].value.as_ref().expect("expected value"),
+                "Value mismatch at index {}",
+                i
+            );
+        }
+    };
+}
+
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Query {
     /// Creates a new query which contains no items.
@@ -791,20 +814,6 @@ mod test {
         TreeFeatureType::BasicMerkNode,
     };
 
-    fn compare_result_tuples_not_optional(
-        result_set: Vec<ProvedKeyOptionalValue>,
-        expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
-    ) {
-        assert_eq!(expected_result_set.len(), result_set.len());
-        for i in 0..expected_result_set.len() {
-            assert_eq!(expected_result_set[i].0, result_set[i].key);
-            assert_eq!(
-                &expected_result_set[i].1,
-                result_set[i].value.as_ref().expect("expected value")
-            );
-        }
-    }
-
     fn make_3_node_tree() -> TreeNode {
         let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode)
             .unwrap()
@@ -1145,9 +1154,9 @@ mod test {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Key(vec![5])];
+        let query_items = vec![QueryItem::Key(vec![5])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1185,14 +1194,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![5], vec![5])]);
     }
 
     #[test]
@@ -1200,9 +1209,9 @@ mod test {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Key(vec![3])];
+        let query_items = vec![QueryItem::Key(vec![3])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1240,14 +1249,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![3], vec![3])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![3], vec![3])]);
     }
 
     #[test]
@@ -1255,9 +1264,9 @@ mod test {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Key(vec![3]), QueryItem::Key(vec![7])];
+        let query_items = vec![QueryItem::Key(vec![3]), QueryItem::Key(vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1299,16 +1308,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![3], vec![3]), (vec![7], vec![7])],
+            vec![(vec![3], vec![3]), (vec![7], vec![7])]
         );
     }
 
@@ -1317,13 +1326,13 @@ mod test {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![
+        let query_items = vec![
             QueryItem::Key(vec![3]),
             QueryItem::Key(vec![5]),
             QueryItem::Key(vec![7]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1369,16 +1378,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7])],
+            vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7])]
         );
     }
 
@@ -1387,9 +1396,9 @@ mod test {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Key(vec![8])];
+        let query_items = vec![QueryItem::Key(vec![8])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1426,14 +1435,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
+        compare_result_tuples_not_optional!(res.result_set, Vec::<(Vec<u8>, Vec<u8>)>::new());
     }
 
     #[test]
@@ -1441,9 +1450,9 @@ mod test {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Key(vec![6])];
+        let query_items = vec![QueryItem::Key(vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1483,14 +1492,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
+        compare_result_tuples_not_optional!(res.result_set, Vec::<(Vec<u8>, Vec<u8>)>::new());
     }
 
     #[test]
@@ -1570,14 +1579,14 @@ mod test {
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![
+        let query_items = vec![
             QueryItem::Key(vec![1]),
             QueryItem::Key(vec![2]),
             QueryItem::Key(vec![3]),
             QueryItem::Key(vec![4]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1671,21 +1680,21 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![1], vec![1]),
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
-            ],
+            ]
         );
     }
 
@@ -1737,11 +1746,11 @@ mod test {
         let mut tree = make_tree_seq(10);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Range(
+        let query_items = vec![QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1818,128 +1827,50 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-            ],
+            ]
         );
         assert_eq!(res.limit, None);
-
-        // skip 1 element
-        let mut tree = make_tree_seq(10);
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::Range(
-            vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
-        )];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
-        );
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_tree_seq(10);
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::Range(
-            vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
-        )];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
-
-        // skip all elements
-        let mut tree = make_tree_seq(10);
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::Range(
-            vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
-        )];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right to left test
         let mut tree = make_tree_seq(10);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Range(
+        let query_items = vec![QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new_with_direction(false);
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
-            ],
+            ]
         );
     }
 
@@ -1948,11 +1879,11 @@ mod test {
         let mut tree = make_tree_seq(10);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeInclusive(
+        let query_items = vec![QueryItem::RangeInclusive(
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2030,120 +1961,39 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
-            ],
+            ]
         );
         assert_eq!(res.limit, None);
-
-        // skip 1 element
-        let mut tree = make_tree_seq(10);
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeInclusive(
-            vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
-        )];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
-        );
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_tree_seq(10);
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeInclusive(
-            vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
-        )];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])],
-        );
-        assert_eq!(res.limit, Some(0));
-
-        // skip all elements
-        let mut tree = make_tree_seq(10);
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeInclusive(
-            vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
-        )];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right_to_left proof
         let mut tree = make_tree_seq(10);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeInclusive(
+        let query_items = vec![QueryItem::RangeInclusive(
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
@@ -2151,42 +2001,14 @@ mod test {
             .unwrap()
             .unwrap();
 
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
-            ],
+            ]
         );
-
-        let mut tree = make_tree_seq(10);
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeInclusive(
-            vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
-        )];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])],
-        );
-        assert_eq!(res.limit, None);
     }
 
     #[test]
@@ -2194,9 +2016,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2250,16 +2072,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
         );
         assert_eq!(res.limit, None);
 
@@ -2267,15 +2089,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::Key(vec![5])];
+        let equivalent_query_items = vec![QueryItem::Key(vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2285,33 +2107,33 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
+            .create_full_proof(query_items.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![
+        let equivalent_query_items = vec![
             QueryItem::Key(vec![5]),
             QueryItem::Key(vec![6]),
             QueryItem::Key(vec![7]),
         ];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2321,16 +2143,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7])],
+            vec![(vec![5], vec![5]), (vec![7], vec![7])]
         );
         assert_eq!(res.limit, Some(0));
 
@@ -2338,15 +2160,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), true)
+            .create_full_proof(query_items.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let equivalent_query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2356,95 +2178,26 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(100), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
         );
         assert_eq!(res.limit, Some(97));
-
-        // skip 1 element
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![7], vec![7])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![8], vec![8])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip all elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right_to_left test
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2453,44 +2206,17 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
+            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])]
         );
-
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
-        let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), false)
-            .unwrap()
-            .expect("create_proof errored");
-
-        assert_eq!(absence, (true, false));
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(2), false, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![(vec![7], vec![7]), (vec![5], vec![5])],
-        );
-        assert_eq!(res.limit, Some(0));
     }
 
     #[test]
@@ -2498,9 +2224,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2577,21 +2303,21 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ],
+            ]
         );
         assert_eq!(res.limit, None);
 
@@ -2599,15 +2325,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
+        let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2617,29 +2343,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
+            .create_full_proof(query_items.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
+        let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2649,16 +2375,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3])],
+            vec![(vec![2], vec![2]), (vec![3], vec![3])]
         );
         assert_eq!(res.limit, Some(0));
 
@@ -2666,15 +2392,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), true)
+            .create_full_proof(query_items.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let equivalent_query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2684,100 +2410,31 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(100), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ],
+            ]
         );
         assert_eq!(res.limit, Some(96));
-
-        // skip 1 element
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![3], vec![3])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip all elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2786,29 +2443,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ],
+            ]
         );
 
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), false)
+            .create_full_proof(query_items.as_slice(), Some(2), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2817,16 +2474,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4])],
+            vec![(vec![5], vec![5]), (vec![4], vec![4])]
         );
         assert_eq!(res.limit, Some(0));
     }
@@ -2836,9 +2493,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2915,21 +2572,21 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ],
+            ]
         );
         assert_eq!(res.limit, None);
 
@@ -2937,15 +2594,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
+        let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2955,29 +2612,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
+            .create_full_proof(query_items.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
+        let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2987,16 +2644,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3])],
+            vec![(vec![2], vec![2]), (vec![3], vec![3])]
         );
         assert_eq!(res.limit, Some(0));
 
@@ -3004,15 +2661,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), true)
+            .create_full_proof(query_items.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3022,100 +2679,31 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(100), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ],
+            ]
         );
         assert_eq!(res.limit, Some(96));
-
-        // skip 1 element
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![3], vec![3])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip all elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3124,29 +2712,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ],
+            ]
         );
 
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), false)
+            .create_full_proof(query_items.as_slice(), Some(1), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3155,132 +2743,132 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
     }
 
     #[test]
     fn range_after_proof() {
-        // let mut tree = make_6_node_tree();
-        // let mut walker = RefWalker::new(&mut tree, PanicSource {});
-        //
-        // let queryitems = vec![RangeAfter(vec![3]..)];
-        // let (proof, absence, ..) = walker
-        //     .create_full_proof(queryitems.as_slice(), None, true)
-        //     .unwrap()
-        //     .expect("create_proof errored");
-        //
-        // let mut iter = proof.iter();
-        // assert_eq!(
-        //     iter.next(),
-        //     Some(&Op::Push(Node::Hash([
-        //         121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124,
-        // 91, 233, 201, 4,         241, 127, 41, 198, 197, 228, 19, 190, 36,
-        // 173, 183, 73, 104, 30     ])))
-        // );
-        // assert_eq!(
-        //     iter.next(),
-        //     Some(&Op::Push(Node::KVDigest(
-        //         vec![3],
-        //         [
-        //             210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139,
-        // 153, 104, 205,             4, 107, 218, 102, 84, 170, 189, 186, 36,
-        // 48, 176, 169, 129, 231, 144         ]
-        //     )))
-        // );
-        // assert_eq!(iter.next(), Some(&Op::Parent));
-        // assert_eq!(
-        //     iter.next(),
-        //     Some(&Op::Push(Node::KVValueHash(
-        //         vec![4],
-        //         vec![4],
-        //         [
-        //             198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82,
-        // 205, 89, 51,             227, 215, 139, 195, 237, 202, 159, 191, 209,
-        // 172, 156, 38, 239, 192         ]
-        //     )))
-        // );
-        // assert_eq!(iter.next(), Some(&Op::Child));
-        // assert_eq!(
-        //     iter.next(),
-        //     Some(&Op::Push(Node::KVValueHash(
-        //         vec![5],
-        //         vec![5],
-        //         [
-        //             116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122,
-        // 48, 45, 180, 21,             158, 223, 88, 148, 181, 149, 189, 65,
-        // 121, 19, 81, 118, 11, 106         ]
-        //     )))
-        // );
-        // assert_eq!(iter.next(), Some(&Op::Parent));
-        // assert_eq!(
-        //     iter.next(),
-        //     Some(&Op::Push(Node::KVValueHash(
-        //         vec![7],
-        //         vec![7],
-        //         [
-        //             63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233,
-        // 219, 89, 102,             51, 109, 115, 127, 3, 152, 236, 147, 183,
-        // 100, 81, 123, 109, 244, 0         ]
-        //     )))
-        // );
-        // assert_eq!(
-        //     iter.next(),
-        //     Some(&Op::Push(Node::KVValueHash(
-        //         vec![8],
-        //         vec![8],
-        //         [
-        //             205, 24, 196, 78, 21, 130, 132, 58, 44, 29, 21, 175, 68, 254,
-        // 158, 189, 49,             158, 250, 151, 137, 22, 160, 107, 216, 238,
-        // 129, 230, 199, 251, 197, 51         ]
-        //     )))
-        // );
-        // assert_eq!(iter.next(), Some(&Op::Parent));
-        // assert_eq!(iter.next(), Some(&Op::Child));
-        // assert!(iter.next().is_none());
-        // assert_eq!(absence, (false, true));
-        //
-        // let mut bytes = vec![];
-        // encode_into(proof.iter(), &mut bytes);
-        // let mut query = Query::new();
-        // for item in queryitems {
-        //     query.insert_item(item);
-        // }
-        // let res = query
-        //     .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
-        //     .unwrap()
-        //     .unwrap();
-        // compare_result_tuples_not_optional(
-        //     res.result_set,
-        //     vec![
-        //         (vec![4], vec![4]),
-        //         (vec![5], vec![5]),
-        //         (vec![7], vec![7]),
-        //         (vec![8], vec![8]),
-        //     ],
-        // );
-        // assert_eq!(res.limit, None);
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let query_items = vec![RangeAfter(vec![3]..)];
+        let (proof, absence, ..) = walker
+            .create_full_proof(query_items.as_slice(), None, true)
+            .unwrap()
+            .expect("create_proof errored");
+
+        let mut iter = proof.iter();
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::Hash([
+                121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
+                241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30
+            ])))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![8],
+                vec![8],
+                [
+                    205, 24, 196, 78, 21, 130, 132, 58, 44, 29, 21, 175, 68, 254, 158, 189, 49,
+                    158, 250, 151, 137, 22, 160, 107, 216, 238, 129, 230, 199, 251, 197, 51
+                ]
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert!(iter.next().is_none());
+        assert_eq!(absence, (false, true));
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in query_items {
+            query.insert_item(item);
+        }
+        let res = query
+            .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
+        compare_result_tuples_not_optional!(
+            res.result_set,
+            vec![
+                (vec![4], vec![4]),
+                (vec![5], vec![5]),
+                (vec![7], vec![7]),
+                (vec![8], vec![8]),
+            ]
+        );
+        assert_eq!(res.limit, None);
 
         // Limit result set to 1 item
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
+        let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3290,29 +2878,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
+        let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
+            .create_full_proof(query_items.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3322,16 +2910,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5])],
+            vec![(vec![4], vec![4]), (vec![5], vec![5])]
         );
         assert_eq!(res.limit, Some(0));
 
@@ -3339,15 +2927,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
+        let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), true)
+            .create_full_proof(query_items.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
+        let equivalent_query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3357,100 +2945,31 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(100), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
-            ],
+            ]
         );
         assert_eq!(res.limit, Some(96));
-
-        // skip 1 element
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![5], vec![5])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![7], vec![7])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip all elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![RangeAfter(vec![3]..)];
+        let query_items = vec![RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3459,29 +2978,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
                 (vec![7], vec![7]),
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
-            ],
+            ]
         );
 
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![RangeAfter(vec![3]..)];
+        let query_items = vec![RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(3), false)
+            .create_full_proof(query_items.as_slice(), Some(3), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3490,16 +3009,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(3), false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
+            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])]
         );
         assert_eq!(res.limit, Some(0));
     }
@@ -3509,9 +3028,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
+        let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3583,16 +3102,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5])],
+            vec![(vec![4], vec![4]), (vec![5], vec![5])]
         );
         assert_eq!(res.limit, None);
 
@@ -3600,15 +3119,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
+        let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3618,29 +3137,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
+        let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
+            .create_full_proof(query_items.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3650,16 +3169,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5])],
+            vec![(vec![4], vec![4]), (vec![5], vec![5])]
         );
         assert_eq!(res.limit, Some(0));
 
@@ -3667,15 +3186,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
+        let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), true)
+            .create_full_proof(query_items.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3685,95 +3204,26 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(100), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5])],
+            vec![(vec![4], vec![4]), (vec![5], vec![5])]
         );
         assert_eq!(res.limit, Some(98));
-
-        // skip 1 element
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![5], vec![5])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
-
-        // skip all elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right_to_left
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
+        let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3782,24 +3232,24 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4])],
+            vec![(vec![5], vec![5]), (vec![4], vec![4])]
         );
 
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
+        let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(300), false)
+            .create_full_proof(query_items.as_slice(), Some(300), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3808,15 +3258,18 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(300), false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
-        assert_eq!(res.limit, Some(299));
+        compare_result_tuples_not_optional!(
+            res.result_set,
+            vec![(vec![5], vec![5]), (vec![4], vec![4])]
+        );
+        assert_eq!(res.limit, Some(298));
     }
 
     #[test]
@@ -3824,9 +3277,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+        let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3897,16 +3350,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
+            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
         );
         assert_eq!(res.limit, None);
 
@@ -3914,15 +3367,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+        let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3932,29 +3385,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+        let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
+            .create_full_proof(query_items.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3964,16 +3417,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5])],
+            vec![(vec![4], vec![4]), (vec![5], vec![5])]
         );
         assert_eq!(res.limit, Some(0));
 
@@ -3981,15 +3434,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+        let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), true)
+            .create_full_proof(query_items.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+        let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3999,121 +3452,45 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(100), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
+            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
         );
         assert_eq!(res.limit, Some(97));
 
-        // skip 1 element
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![5], vec![5])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![7], vec![7])]);
-        assert_eq!(res.limit, Some(0));
-
-        // skip all elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
-
         // right_to_left proof
-        // let mut tree = make_6_node_tree();
-        // let mut walker = RefWalker::new(&mut tree, PanicSource {});
-        //
-        // let queryitems =
-        // vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
-        // let (proof, absence, ..) = walker
-        //     .create_full_proof(queryitems.as_slice(), None, None, false)
-        //     .unwrap()
-        //     .expect("create_proof errored");
-        //
-        // assert_eq!(absence, (false, false));
-        //
-        // let mut bytes = vec![];
-        // encode_into(proof.iter(), &mut bytes);
-        // let mut query = Query::new();
-        // for item in queryitems {
-        //     query.insert_item(item);
-        // }
-        // let res = verify_query(
-        //     bytes.as_slice(),
-        //     &query,
-        //     None,
-        //     None,
-        //     false,
-        //     tree.hash().unwrap(),
-        // )
-        // .unwrap()
-        // .unwrap();
-        // compare_result_tuples(
-        //     res.result_set,
-        //     vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])],
-        // );
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+        let (proof, absence, ..) = walker
+            .create_full_proof(query_items.as_slice(), None, false)
+            .unwrap()
+            .expect("create_proof errored");
+
+        assert_eq!(absence, (false, false));
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in query_items {
+            query.insert_item(item);
+        }
+        let res = query
+            .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
+            .unwrap()
+            .unwrap();
+        compare_result_tuples_not_optional!(
+            res.result_set,
+            vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])]
+        );
     }
 
     #[test]
@@ -4121,9 +3498,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFull(..)];
+        let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4206,14 +3583,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
@@ -4222,7 +3599,7 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
-            ],
+            ]
         );
         assert_eq!(res.limit, None);
 
@@ -4230,15 +3607,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFull(..)];
+        let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
+        let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4248,29 +3625,29 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFull(..)];
+        let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
+            .create_full_proof(query_items.as_slice(), Some(2), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
+        let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4280,16 +3657,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3])],
+            vec![(vec![2], vec![2]), (vec![3], vec![3])]
         );
         assert_eq!(res.limit, Some(0));
 
@@ -4297,15 +3674,15 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFull(..)];
+        let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), true)
+            .create_full_proof(query_items.as_slice(), Some(100), true)
             .unwrap()
             .expect("create_proof errored");
 
-        let equivalent_queryitems = vec![QueryItem::RangeFull(..)];
+        let equivalent_query_items = vec![QueryItem::RangeFull(..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, true)
+            .create_full_proof(equivalent_query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4315,14 +3692,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(100), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
@@ -4331,92 +3708,17 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
-            ],
+            ]
         );
         assert_eq!(res.limit, Some(94));
-
-        // skip 1 element
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFull(..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(3), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(3), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5])],
-        );
-        assert_eq!(res.limit, Some(0));
-
-        // skip 2 elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFull(..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(2), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5])],
-        );
-        assert_eq!(res.limit, Some(0));
-
-        // skip all elements
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFull(..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![]);
-        assert_eq!(res.limit, Some(1));
 
         // right_to_left proof
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFull(..)];
+        let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4425,14 +3727,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
@@ -4441,15 +3743,15 @@ mod test {
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ],
+            ]
         );
 
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFull(..)];
+        let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), false)
+            .create_full_proof(query_items.as_slice(), Some(2), false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4458,16 +3760,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(2), false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4])],
+            vec![(vec![8], vec![8]), (vec![7], vec![7])]
         );
         assert_eq!(res.limit, Some(0));
     }
@@ -4477,9 +3779,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
+        let query_items = vec![QueryItem::RangeFrom(vec![2]..)];
         let (proof, _, limit) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
+            .create_full_proof(query_items.as_slice(), Some(1), true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4535,91 +3837,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![2], vec![2])]);
-        assert_eq!(res.limit, Some(0));
-    }
-
-    #[test]
-    fn proof_with_offset() {
-        let mut tree = make_6_node_tree();
-        let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-        let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
-        let (proof, ..) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut iter = proof.iter();
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVDigest(
-                vec![2],
-                [
-                    183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190, 166, 110, 16,
-                    139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96, 178
-                ]
-            )))
-        );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVDigest(
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
-        assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![4],
-                vec![4],
-                [
-                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
-                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
-                ]
-            )))
-        );
-        assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVHash([
-                61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44, 165, 68, 87, 7, 52, 238,
-                68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88, 197
-            ])))
-        );
-        assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::Hash([
-                133, 188, 175, 131, 60, 89, 221, 135, 133, 53, 205, 110, 58, 56, 128, 58, 1, 227,
-                75, 122, 83, 20, 125, 44, 149, 44, 62, 130, 252, 134, 105, 200
-            ])))
-        );
-        assert_eq!(iter.next(), Some(&Op::Child));
-        assert!(iter.next().is_none());
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        let mut query = Query::new();
-        for item in queryitems {
-            query.insert_item(item);
-        }
-        let res = query
-            .verify_proof(bytes.as_slice(), Some(1), true, tree.hash().unwrap())
-            .unwrap()
-            .unwrap();
-        compare_result_tuples_not_optional(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples_not_optional!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
     }
 
@@ -4628,9 +3853,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(vec![3]..)];
+        let query_items = vec![QueryItem::RangeFrom(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, false)
+            .create_full_proof(query_items.as_slice(), None, false)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4709,14 +3934,14 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new_with_direction(false);
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, false, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
@@ -4724,7 +3949,7 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
-            ],
+            ]
         );
     }
 
@@ -4733,11 +3958,11 @@ mod test {
         let mut tree = make_tree_seq(10);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::Range(
+        let query_items = vec![QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 6, 5],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4814,19 +4039,19 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-            ],
+            ]
         );
     }
 
@@ -4835,12 +4060,12 @@ mod test {
         let mut tree = make_tree_seq(10);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![
+        let query_items = vec![
             // 7 is not inclusive
             QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(queryitems.as_slice(), None, true)
+            .create_full_proof(query_items.as_slice(), None, true)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4916,16 +4141,16 @@ mod test {
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
-        for item in queryitems {
+        for item in query_items {
             query.insert_item(item);
         }
         let res = query
             .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
             .unwrap()
             .unwrap();
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]
         );
     }
 
@@ -4957,9 +4182,9 @@ mod test {
             .unwrap();
 
         assert_eq!(res.result_set.len(), 1);
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]
         );
 
         // 1..10 prove (2..=5, 7..10) subset (3..=4, 7..=8)
@@ -4983,14 +4208,14 @@ mod test {
             .unwrap();
 
         assert_eq!(res.result_set.len(), 4);
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 8], vec![123; 60]),
-            ],
+            ]
         );
 
         // 1..10 prove (2..=5, 6..10) subset (4..=8)
@@ -5013,7 +4238,7 @@ mod test {
             .unwrap();
 
         assert_eq!(res.result_set.len(), 5);
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
@@ -5021,7 +4246,7 @@ mod test {
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 8], vec![123; 60]),
-            ],
+            ]
         );
 
         // 1..10 prove (1..=3, 2..=5) subset (1..=5)
@@ -5044,7 +4269,7 @@ mod test {
             .unwrap();
 
         assert_eq!(res.result_set.len(), 5);
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 1], vec![123; 60]),
@@ -5052,7 +4277,7 @@ mod test {
                 (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
-            ],
+            ]
         );
 
         // 1..10 prove full (..) limit to 5, subset (1..=5)
@@ -5074,7 +4299,7 @@ mod test {
             .unwrap();
 
         assert_eq!(res.result_set.len(), 5);
-        compare_result_tuples_not_optional(
+        compare_result_tuples_not_optional!(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 1], vec![123; 60]),
@@ -5082,36 +4307,7 @@ mod test {
                 (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
-            ],
-        );
-
-        // 1..10 prove full (..) limit to 5, subset (1..=5)
-        let mut query = Query::new();
-        query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
-        let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, true)
-            .unwrap()
-            .expect("create_proof errored");
-
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-
-        let mut query = Query::new();
-        query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
-        let res = query
-            .verify_proof(bytes.as_slice(), None, true, expected_hash)
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(res.result_set.len(), 4);
-        compare_result_tuples_not_optional(
-            res.result_set,
-            vec![
-                (vec![0, 0, 0, 0, 0, 0, 0, 2], vec![123; 60]),
-                (vec![0, 0, 0, 0, 0, 0, 0, 3], vec![123; 60]),
-                (vec![0, 0, 0, 0, 0, 0, 0, 4], vec![123; 60]),
-                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
-            ],
+            ]
         );
     }
 
@@ -5169,10 +4365,10 @@ mod test {
 
     #[test]
     fn query_from_vec() {
-        let queryitems = vec![QueryItem::Range(
+        let query_items = vec![QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
-        let query = Query::from(queryitems);
+        let query = Query::from(query_items);
 
         let mut expected = Vec::new();
         expected.push(QueryItem::Range(
@@ -5203,8 +4399,8 @@ mod test {
 
     #[test]
     fn query_item_from_vec_u8() {
-        let queryitems: Vec<u8> = vec![42];
-        let query = QueryItem::from(queryitems);
+        let query_items: Vec<u8> = vec![42];
+        let query = QueryItem::from(query_items);
 
         let expected = QueryItem::Key(vec![42]);
         assert_eq!(query, expected);
