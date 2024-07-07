@@ -16,6 +16,8 @@ pub type ProvedKeyOptionalValues = Vec<ProvedKeyOptionalValue>;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub type ProvedPathKeyValues = Vec<ProvedPathKeyValue>;
 
+
+
 #[cfg(any(feature = "full", feature = "verify"))]
 pub type ProvedPathKeyOptionalValues = Vec<ProvedPathKeyOptionalValue>;
 

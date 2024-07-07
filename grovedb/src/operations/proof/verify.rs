@@ -282,9 +282,9 @@ impl GroveDb {
                                 ));
                             }
                         }
-                    } else if options.include_empty_trees_in_result
+                    } else if !in_path && (options.include_empty_trees_in_result
                         || !matches!(element, Element::Tree(None, _))
-                        || !level_query.has_subquery_or_subquery_path_on_key(key, in_path)
+                        || !level_query.has_subquery_or_subquery_path_on_key(key, in_path))
                     {
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
