@@ -134,6 +134,12 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree but not a sum tree
+    pub fn is_basic_tree(&self) -> bool {
+        matches!(self, Element::Tree(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
     pub fn is_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))

@@ -9,7 +9,9 @@ use std::{
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
 
 use crate::{
-    operations::proof::util::{ProvedPathKeyOptionalValue, ProvedPathKeyValue},
+    operations::proof::util::{
+        hex_to_ascii, path_hex_to_ascii, ProvedPathKeyOptionalValue, ProvedPathKeyValue,
+    },
     Element, Error,
 };
 
@@ -106,14 +108,6 @@ impl BTreeMapLevelResult {
             writeln!(f)?;
         }
         Ok(())
-    }
-}
-
-fn hex_to_ascii(hex_value: &[u8]) -> String {
-    if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
-        hex::encode(&hex_value)
-    } else {
-        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(&hex_value))
     }
 }
 
@@ -462,10 +456,7 @@ impl fmt::Display for QueryResultElement {
                 write!(
                     f,
                     "PathKeyElementTrioResultItem(path: {}, key: {}, element: {})",
-                    path.iter()
-                        .map(|p| hex_to_ascii(p))
-                        .collect::<Vec<_>>()
-                        .join("/"),
+                    path_hex_to_ascii(path),
                     hex_to_ascii(key),
                     element
                 )

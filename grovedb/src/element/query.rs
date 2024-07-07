@@ -45,7 +45,6 @@ use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
-use crate::query_result_type::Path;
 #[cfg(feature = "full")]
 use crate::{
     element::helpers::raw_decode,
@@ -59,6 +58,7 @@ use crate::{
     util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
+use crate::{operations::proof::util::hex_to_ascii, query_result_type::Path};
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, SizedQuery};
 
@@ -243,14 +243,6 @@ where
         writeln!(f, "  limit: {:?}", self.limit)?;
         writeln!(f, "  offset: {:?}", self.offset)?;
         write!(f, "}}")
-    }
-}
-
-fn hex_to_ascii(hex_value: &[u8]) -> String {
-    if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
-        hex::encode(&hex_value)
-    } else {
-        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(&hex_value))
     }
 }
 

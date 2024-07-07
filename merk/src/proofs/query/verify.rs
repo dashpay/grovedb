@@ -41,6 +41,7 @@ pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
 pub struct VerifyOptions {
     pub absence_proofs_for_non_existing_searched_keys: bool,
     pub verify_proof_succinctness: bool,
+    pub include_empty_trees_in_result: bool,
 }
 
 impl Default for VerifyOptions {
@@ -48,6 +49,7 @@ impl Default for VerifyOptions {
         VerifyOptions {
             absence_proofs_for_non_existing_searched_keys: true,
             verify_proof_succinctness: true,
+            include_empty_trees_in_result: false,
         }
     }
 }

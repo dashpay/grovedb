@@ -17,6 +17,7 @@ use grovedb_storage::RawIterator;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::error::Error;
+use crate::proofs::hex_to_ascii;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
@@ -75,14 +76,6 @@ impl fmt::Display for QueryItem {
                 hex_to_ascii(range.end())
             ),
         }
-    }
-}
-
-fn hex_to_ascii(hex_value: &[u8]) -> String {
-    if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
-        hex::encode(&hex_value)
-    } else {
-        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(&hex_value))
     }
 }
 

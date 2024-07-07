@@ -21,8 +21,10 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::StorageContext;
 
 use crate::{
-    query_result_type::QueryResultType, reference_path::path_from_reference_path_type, Element,
-    Error, GroveDb, PathQuery,
+    operations::proof::util::{element_hex_to_ascii, hex_to_ascii},
+    query_result_type::QueryResultType,
+    reference_path::path_from_reference_path_type,
+    Element, Error, GroveDb, PathQuery,
 };
 
 #[derive(Debug, Clone, Copy, Encode, Decode)]
@@ -162,20 +164,6 @@ fn node_to_string(node: &Node) -> String {
             hex::encode(value_hash),
             feature_type
         ),
-    }
-}
-
-fn element_hex_to_ascii(hex_value: &[u8]) -> String {
-    Element::deserialize(hex_value)
-        .map(|e| e.to_string())
-        .unwrap_or_else(|_| hex::encode(hex_value))
-}
-
-fn hex_to_ascii(hex_value: &[u8]) -> String {
-    if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
-        hex::encode(&hex_value)
-    } else {
-        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(&hex_value))
     }
 }
 

@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, fmt::Formatter};
 
 use grovedb_merk::{
     proofs::query::{Key, Path, ProvedKeyOptionalValue, ProvedKeyValue},
@@ -72,7 +72,7 @@ pub struct ProvedPathKeyValue {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-impl fmt::Display for crate::operations::proof::util::ProvedPathKeyValue {
+impl fmt::Display for ProvedPathKeyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ProvedPathKeyValue {{\n")?;
         write!(
@@ -133,29 +133,6 @@ impl TryFrom<ProvedPathKeyOptionalValue> for ProvedPathKeyValue {
             value,
             proof,
         })
-    }
-}
-
-fn optional_element_hex_to_ascii(hex_value: Option<&Vec<u8>>) -> String {
-    match hex_value {
-        None => "None".to_string(),
-        Some(hex_value) => Element::deserialize(hex_value)
-            .map(|e| e.to_string())
-            .unwrap_or_else(|_| hex::encode(hex_value)),
-    }
-}
-
-fn element_hex_to_ascii(hex_value: &[u8]) -> String {
-    Element::deserialize(hex_value)
-        .map(|e| e.to_string())
-        .unwrap_or_else(|_| hex::encode(hex_value))
-}
-
-fn hex_to_ascii(hex_value: &[u8]) -> String {
-    if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
-        hex::encode(&hex_value)
-    } else {
-        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(&hex_value))
     }
 }
 
@@ -266,7 +243,7 @@ mod tests {
         ];
         let proved_path_key_values =
             ProvedPathKeyOptionalValue::from_proved_key_values(path.clone(), proved_key_values);
-        assert_eq!(proved_path_key_values.len(), 3);
+        assert_eq!(proved_path_key_values.len(), 4);
         assert_eq!(
             proved_path_key_values[0],
             ProvedPathKeyOptionalValue {
@@ -296,7 +273,7 @@ mod tests {
         );
 
         assert_eq!(
-            proved_path_key_values[2],
+            proved_path_key_values[3],
             ProvedPathKeyOptionalValue {
                 path,
                 key: b"d".to_vec(),
@@ -305,4 +282,49 @@ mod tests {
             }
         );
     }
+}
+
+pub fn hex_to_ascii(hex_value: &[u8]) -> String {
+    // Define the set of allowed characters
+    const ALLOWED_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                                  abcdefghijklmnopqrstuvwxyz\
+                                  0123456789_-/\\[]@";
+
+    // Check if all characters in hex_value are allowed
+    if hex_value.iter().all(|&c| ALLOWED_CHARS.contains(&c)) {
+        // Try to convert to UTF-8
+        String::from_utf8(hex_value.to_vec())
+            .unwrap_or_else(|_| format!("0x{}", hex::encode(&hex_value)))
+    } else {
+        // Hex encode and prepend "0x"
+        format!("0x{}", hex::encode(&hex_value))
+    }
+}
+
+pub fn path_hex_to_ascii(path: &Path) -> String {
+    path.into_iter()
+        .map(|e| hex_to_ascii(e.as_slice()))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+pub fn path_as_slices_hex_to_ascii(path: &[&[u8]]) -> String {
+    path.into_iter()
+        .map(|e| hex_to_ascii(*e))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+pub fn optional_element_hex_to_ascii(hex_value: Option<&Vec<u8>>) -> String {
+    match hex_value {
+        None => "None".to_string(),
+        Some(hex_value) => Element::deserialize(hex_value)
+            .map(|e| e.to_string())
+            .unwrap_or_else(|_| hex::encode(hex_value)),
+    }
+}
+
+pub fn element_hex_to_ascii(hex_value: &[u8]) -> String {
+    Element::deserialize(hex_value)
+        .map(|e| e.to_string())
+        .unwrap_or_else(|_| hex::encode(hex_value))
 }

@@ -1,14 +1,21 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb_merk::{
-    proofs::{query::VerifyOptions, Query},
+    proofs::{
+        query::{PathKey, VerifyOptions},
+        Query,
+    },
     tree::{combine_hash, value_hash},
+    CryptoHash,
 };
 
 use crate::{
     operations::proof::{
         generate::{GroveDBProof, GroveDBProofV0, LayerProof},
-        util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
+        util::{
+            hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
+            ProvedPathKeyOptionalValue, ProvedPathKeyValues,
+        },
         ProveOptions,
     },
     query_result_type::PathKeyOptionalElementTrio,
@@ -20,7 +27,21 @@ impl GroveDb {
         proof: &[u8],
         query: &PathQuery,
         options: VerifyOptions,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+        if options.absence_proofs_for_non_existing_searched_keys {
+            // must have a limit
+            query.query.limit.ok_or(Error::NotSupported(
+                "limits must be set in verify_query_with_absence_proof".to_string(),
+            ))? as usize;
+        }
+
+        // must have no offset
+        if query.query.offset.is_some() {
+            return Err(Error::NotSupported(
+                "offsets in path queries are not supported for proofs".to_string(),
+            ));
+        }
+
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
@@ -36,7 +57,7 @@ impl GroveDb {
     pub fn verify_query_raw(
         proof: &[u8],
         query: &PathQuery,
-    ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
+    ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
@@ -50,6 +71,7 @@ impl GroveDb {
             VerifyOptions {
                 absence_proofs_for_non_existing_searched_keys: false,
                 verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
             },
         )?;
 
@@ -60,7 +82,7 @@ impl GroveDb {
         proof: &GroveDBProof,
         query: &PathQuery,
         options: VerifyOptions,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         match proof {
             GroveDBProof::V0(proof_v0) => Self::verify_proof_internal_v0(proof_v0, query, options),
         }
@@ -70,7 +92,7 @@ impl GroveDb {
         proof: &GroveDBProofV0,
         query: &PathQuery,
         options: VerifyOptions,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let root_hash = Self::verify_layer_proof(
@@ -82,6 +104,42 @@ impl GroveDb {
             &mut result,
             &options,
         )?;
+
+        if options.absence_proofs_for_non_existing_searched_keys {
+            // must have a limit
+            let max_results = query.query.limit.ok_or(Error::NotSupported(
+                "limits must be set in verify_query_with_absence_proof".to_string(),
+            ))? as usize;
+
+            let terminal_keys = query.terminal_keys(max_results)?;
+
+            // convert the result set to a btree map
+            let mut result_set_as_map: BTreeMap<PathKey, Option<Element>> = result
+                .into_iter()
+                .map(|(path, key, element)| ((path, key), element))
+                .collect();
+
+            println!(
+                "t{:?}, r{:?}",
+                terminal_keys
+                    .iter()
+                    .map(|(path, key)| (path_hex_to_ascii(path), hex_to_ascii(key)))
+                    .collect::<Vec<_>>(),
+                result_set_as_map
+                    .iter()
+                    .map(|((path, key), e)| ((path_hex_to_ascii(path), hex_to_ascii(key)), e))
+                    .collect::<BTreeMap<_, _>>()
+            );
+
+            result = terminal_keys
+                .into_iter()
+                .map(|terminal_key| {
+                    let element = result_set_as_map.remove(&terminal_key).flatten();
+                    (terminal_key.0, terminal_key.1, element)
+                })
+                .collect();
+        }
+
         Ok((root_hash, result))
     }
 
@@ -89,7 +147,7 @@ impl GroveDb {
         proof: &GroveDBProof,
         query: &PathQuery,
         options: VerifyOptions,
-    ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
+    ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_raw_internal_v0(proof_v0, query, options)
@@ -101,7 +159,7 @@ impl GroveDb {
         proof: &GroveDBProofV0,
         query: &PathQuery,
         options: VerifyOptions,
-    ) -> Result<([u8; 32], ProvedPathKeyValues), Error> {
+    ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let root_hash = Self::verify_layer_proof(
@@ -116,89 +174,6 @@ impl GroveDb {
         Ok((root_hash, result))
     }
 
-    // fn verify_layer_proof(
-    //     layer_proof: &LayerProof,
-    //     prove_options: &ProveOptions,
-    //     query: &PathQuery,
-    //     current_path: &[&[u8]],
-    //     result: &mut Vec<PathKeyOptionalElementTrio>,
-    //     options: &VerifyOptions,
-    // ) -> Result<[u8; 32], Error> {
-    //     let internal_query =
-    //         query
-    //             .query_items_at_path(current_path)
-    //             .ok_or(Error::CorruptedPath(format!(
-    //                 "verify: path {} should be part of path_query {}",
-    //                 current_path
-    //                     .iter()
-    //                     .map(hex::encode)
-    //                     .collect::<Vec<_>>()
-    //                     .join("/"),
-    //                 query
-    //             )))?;
-    //
-    //     let level_query = Query {
-    //         items: internal_query.items.to_vec(),
-    //         default_subquery_branch:
-    // internal_query.default_subquery_branch.into_owned(),
-    //         conditional_subquery_branches: internal_query
-    //             .conditional_subquery_branches
-    //             .map(|a| a.into_owned()),
-    //         left_to_right: internal_query.left_to_right,
-    //     };
-    //
-    //     let (root_hash, merk_result) = execute_proof(
-    //         &layer_proof.merk_proof,
-    //         &level_query,
-    //         Some(layer_proof.lower_layers.len() as u16),
-    //         internal_query.left_to_right,
-    //     )
-    //     .unwrap()
-    //     .map_err(|e| {
-    //         eprintln!("{e}");
-    //         Error::InvalidProof(format!("invalid proof verification parameters:
-    // {}", e))     })?;
-    //
-    //     let mut verified_keys = BTreeSet::new();
-    //
-    //     for proved_key_value in merk_result.result_set {
-    //         let mut path = current_path.to_vec();
-    //         let key = proved_key_value.key;
-    //         let value = proved_key_value.value;
-    //         path.push(&key);
-    //
-    //         verified_keys.insert(key.clone());
-    //
-    //         if let Some(lower_layer) = layer_proof.lower_layers.get(&key) {
-    //             let lower_hash = Self::verify_layer_proof(
-    //                 lower_layer,
-    //                 prove_options,
-    //                 query,
-    //                 &path,
-    //                 result,
-    //                 options,
-    //             )?;
-    //             if lower_hash != value_hash(&value).value {
-    //                 return Err(Error::InvalidProof("Mismatch in lower layer
-    // hash".into()));             }
-    //         } else {
-    //             let element = Element::deserialize(&value)?;
-    //             result.push((
-    //                 path.iter().map(|p| p.to_vec()).collect(),
-    //                 key,
-    //                 Some(element),
-    //             ));
-    //         }
-    //     }
-    //
-    //     // if !is_subset {
-    //     //     // Verify completeness only if not doing subset verification
-    //     //     self.verify_completeness(&query_items, &merk_result.result_set,
-    //     // current_path)?; }
-    //
-    //     Ok(root_hash)
-    // }
-
     fn verify_layer_proof<T>(
         layer_proof: &LayerProof,
         prove_options: &ProveOptions,
@@ -207,7 +182,7 @@ impl GroveDb {
         current_path: &[&[u8]],
         result: &mut Vec<T>,
         options: &VerifyOptions,
-    ) -> Result<[u8; 32], Error>
+    ) -> Result<CryptoHash, Error>
     where
         T: TryFrom<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFrom<ProvedPathKeyOptionalValue>>::Error>,
@@ -247,7 +222,11 @@ impl GroveDb {
                 Error::InvalidProof(format!("invalid proof verification parameters: {}", e))
             })?;
 
-        println!("merk result is {}", merk_result);
+        println!(
+            "current path {} merk result is {}",
+            path_as_slices_hex_to_ascii(current_path),
+            merk_result
+        );
 
         let mut verified_keys = BTreeSet::new();
 
@@ -261,13 +240,12 @@ impl GroveDb {
                 if let Some(value_bytes) = &proved_key_value.value {
                     let element = Element::deserialize(value_bytes)?;
 
-                    path.push(key);
-
                     verified_keys.insert(key.clone());
 
                     if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
                         match element {
                             Element::Tree(Some(_), _) | Element::SumTree(Some(_), ..) => {
+                                path.push(key);
                                 let lower_hash = Self::verify_layer_proof(
                                     lower_layer,
                                     prove_options,
@@ -303,20 +281,24 @@ impl GroveDb {
                             }
                         }
                     } else if !in_path_proving {
-                        let path_key_optional_value =
-                            ProvedPathKeyOptionalValue::from_proved_key_value(
-                                path.iter().map(|p| p.to_vec()).collect(),
-                                proved_key_value,
+                        if options.include_empty_trees_in_result
+                            || !matches!(element, Element::Tree(None, _))
+                        {
+                            let path_key_optional_value =
+                                ProvedPathKeyOptionalValue::from_proved_key_value(
+                                    path.iter().map(|p| p.to_vec()).collect(),
+                                    proved_key_value,
+                                );
+                            println!(
+                                "pushing {} limit left after is {:?}",
+                                &path_key_optional_value, limit_left
                             );
-                        println!(
-                            "pushing {} limit left after is {:?}",
-                            &path_key_optional_value, limit_left
-                        );
-                        result.push(path_key_optional_value.try_into()?);
+                            result.push(path_key_optional_value.try_into()?);
 
-                        limit_left.as_mut().map(|limit| *limit -= 1);
-                        if limit_left == &Some(0) {
-                            break;
+                            limit_left.as_mut().map(|limit| *limit -= 1);
+                            if limit_left == &Some(0) {
+                                break;
+                            }
                         }
                     }
                 }
@@ -458,13 +440,14 @@ impl GroveDb {
     pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
             query,
             VerifyOptions {
                 absence_proofs_for_non_existing_searched_keys: false,
                 verify_proof_succinctness: true,
+                include_empty_trees_in_result: false,
             },
         )
     }
@@ -472,13 +455,14 @@ impl GroveDb {
     pub fn verify_subset_query(
         proof: &[u8],
         query: &PathQuery,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
             query,
             VerifyOptions {
                 absence_proofs_for_non_existing_searched_keys: false,
                 verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
             },
         )
     }
@@ -486,13 +470,14 @@ impl GroveDb {
     pub fn verify_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
             query,
             VerifyOptions {
                 absence_proofs_for_non_existing_searched_keys: true,
                 verify_proof_succinctness: true,
+                include_empty_trees_in_result: false,
             },
         )
     }
@@ -500,14 +485,53 @@ impl GroveDb {
     pub fn verify_subset_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
-    ) -> Result<([u8; 32], Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
             query,
             VerifyOptions {
                 absence_proofs_for_non_existing_searched_keys: true,
                 verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
             },
         )
+    }
+
+    /// Verify subset proof with a chain of path query functions.
+    /// After subset verification with the first path query, the result if
+    /// passed to the next path query generation function which generates a
+    /// new path query Apply the new path query, and pass the result to the
+    /// next ... This is useful for verifying proofs with multiple path
+    /// queries that depend on one another.
+    pub fn verify_query_with_chained_path_queries<C>(
+        proof: &[u8],
+        first_query: &PathQuery,
+        chained_path_queries: Vec<C>,
+    ) -> Result<(CryptoHash, Vec<Vec<PathKeyOptionalElementTrio>>), Error>
+    where
+        C: Fn(Vec<PathKeyOptionalElementTrio>) -> Option<PathQuery>,
+    {
+        let mut results = vec![];
+
+        let (last_root_hash, elements) = Self::verify_subset_query(proof, first_query)?;
+        results.push(elements);
+
+        // we should iterate over each chained path queries
+        for path_query_generator in chained_path_queries {
+            let new_path_query = path_query_generator(results[results.len() - 1].clone()).ok_or(
+                Error::InvalidInput("one of the path query generators returns no path query"),
+            )?;
+            let (new_root_hash, new_elements) = Self::verify_subset_query(proof, &new_path_query)?;
+            if new_root_hash != last_root_hash {
+                return Err(Error::InvalidProof(format!(
+                    "root hash for different path queries do no match, first is {}, this one is {}",
+                    hex::encode(last_root_hash),
+                    hex::encode(new_root_hash)
+                )));
+            }
+            results.push(new_elements);
+        }
+
+        Ok((last_root_hash, results))
     }
 }
