@@ -413,7 +413,7 @@ impl GroveDb {
                             Ok(Element::Tree(Some(_), _)) | Ok(Element::SumTree(Some(_), ..))
                                 if !done_with_results && query.has_subquery_on_key(key) =>
                             {
-                                println!("found tree {}", hex_to_ascii(key));
+                                println!("found tree {}, query is {:?}", hex_to_ascii(key), query);
                                 // We only want to check in sub nodes for the proof if the tree has
                                 // elements
                                 let mut lower_path = path.clone();
@@ -442,6 +442,11 @@ impl GroveDb {
                             Ok(Element::Tree(..)) | Ok(Element::SumTree(..))
                                 if !done_with_results =>
                             {
+                                println!(
+                                    "found tree {}, no subquery query is {:?}",
+                                    hex_to_ascii(key),
+                                    query
+                                );
                                 overall_limit.as_mut().map(|limit| *limit -= 1);
                                 has_a_result_at_level |= true;
                             }

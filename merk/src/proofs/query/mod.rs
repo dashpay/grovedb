@@ -208,6 +208,37 @@ impl Query {
         }
     }
 
+    pub fn has_subquery_on_key(&self, key: &[u8], in_path: bool) -> bool {
+        if in_path || self.default_subquery_branch.subquery.is_some() {
+            return true;
+        }
+        if let Some(conditional_subquery_branches) = self.conditional_subquery_branches.as_ref() {
+            for (query_item, subquery) in conditional_subquery_branches {
+                if query_item.contains(key) {
+                    return subquery.subquery.is_some();
+                }
+            }
+        }
+        return false;
+    }
+
+    pub fn has_subquery_or_subquery_path_on_key(&self, key: &[u8], in_path: bool) -> bool {
+        if in_path
+            || self.default_subquery_branch.subquery.is_some()
+            || self.default_subquery_branch.subquery_path.is_some()
+        {
+            return true;
+        }
+        if let Some(conditional_subquery_branches) = self.conditional_subquery_branches.as_ref() {
+            for query_item in conditional_subquery_branches.keys() {
+                if query_item.contains(key) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /// Pushes terminal key paths and keys to `result`, no more than
     /// `max_results`. Returns the number of terminal keys added.
     ///

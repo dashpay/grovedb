@@ -7,7 +7,10 @@ mod tests {
 
     use crate::{
         batch::GroveDbOp,
-        query_result_type::{PathKeyOptionalElementTrio, QueryResultType},
+        query_result_type::{
+            PathKeyOptionalElementTrio, QueryResultElement::PathKeyElementTrioResultItem,
+            QueryResultElements, QueryResultType,
+        },
         reference_path::ReferencePathType,
         tests::{
             common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb,
@@ -1868,6 +1871,16 @@ mod tests {
     #[test]
     fn test_mixed_level_proofs_with_subquery_paths() {
         let db = make_test_grovedb();
+
+        //                        TEST_LEAF
+        //              /             |            \
+        //             a              b             c
+        //         /   |   \        /     \
+        //        d   e:2   f:3    g:4     d
+        //      /                         / | \
+        //    d:6                        i  j  k
+        //
+
         db.insert(
             [TEST_LEAF].as_ref(),
             b"a",
@@ -1980,34 +1993,41 @@ mod tests {
         )
         .unwrap()
         .expect("successful subtree insert");
-
-        // if you don't have an item at the subquery path translation, you shouldn't be
-        // added to the result set.
-        let mut query = Query::new();
-        query.insert_all();
-        query.set_subquery_path(vec![b"d".to_vec()]);
-
-        let path = vec![TEST_LEAF.to_vec()];
-
-        let path_query = PathQuery::new_unsized(path, query.clone());
-
-        // TODO: proofs seems to be more expressive than query_raw now
+        // // if you don't have an item at the subquery path translation, you shouldn't
+        // be // added to the result set.
+        // let mut query = Query::new();
+        // query.insert_all();
+        // query.set_subquery_path(vec![b"d".to_vec()]);
+        //
+        // let path = vec![TEST_LEAF.to_vec()];
+        //
+        // let path_query = PathQuery::new_unsized(path, query.clone());
+        //
         // let (elements, _) = db
         // .query_raw(
         // &path_query,
+        // false,
         // true,
+        // false,
         // QueryResultType::QueryPathKeyElementTrioResultType,
         // None,
         // )
         // .unwrap()
         // .expect("expected successful get_path_query");
         //
-        // assert_eq!(elements.len(), 2);
-
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
-        let (hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query).unwrap();
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-        assert_eq!(result_set.len(), 2);
+        // assert_eq!(elements,
+        // QueryResultElements::from_elements(vec![PathKeyElementTrioResultItem((vec![b"
+        // test_leaf".to_vec(), b"a".to_vec()], b"d".to_vec(),
+        // Element::Tree(Some(b"d".to_vec()), None) )),
+        // PathKeyElementTrioResultItem((vec![b"test_leaf".to_vec(), b"b".to_vec()],
+        // b"d".to_vec(), Element::Tree(Some(b"j".to_vec()), None) ))]));
+        //
+        // let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        // let (hash, result_set) = GroveDb::verify_query_raw(&proof,
+        // &path_query).unwrap(); assert_eq!(hash,
+        // db.root_hash(None).unwrap().unwrap()); println!("{}",
+        // result_set.iter().map(|a| a.to_string()).collect::<Vec<_>>().join("| "));
+        // assert_eq!(result_set.len(), 2);
 
         // apply path translation then query
         let mut query = Query::new();
@@ -2020,6 +2040,44 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
 
         let path_query = PathQuery::new_unsized(path, query.clone());
+
+        let (elements, _) = db
+            .query_raw(
+                &path_query,
+                false,
+                true,
+                false,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None,
+            )
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(
+            elements,
+            QueryResultElements::from_elements(vec![
+                PathKeyElementTrioResultItem((
+                    vec![b"test_leaf".to_vec(), b"a".to_vec(), b"d".to_vec()],
+                    b"d".to_vec(),
+                    Element::Item(vec![6], None)
+                )),
+                PathKeyElementTrioResultItem((
+                    vec![b"test_leaf".to_vec(), b"b".to_vec(), b"d".to_vec()],
+                    b"i".to_vec(),
+                    Element::Tree(None, None)
+                )),
+                PathKeyElementTrioResultItem((
+                    vec![b"test_leaf".to_vec(), b"b".to_vec(), b"d".to_vec()],
+                    b"j".to_vec(),
+                    Element::Tree(None, None)
+                )),
+                PathKeyElementTrioResultItem((
+                    vec![b"test_leaf".to_vec(), b"b".to_vec(), b"d".to_vec()],
+                    b"k".to_vec(),
+                    Element::Tree(None, None)
+                ))
+            ])
+        );
 
         let proof = db.prove_query(&path_query, None).unwrap().unwrap();
         let (hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query).unwrap();

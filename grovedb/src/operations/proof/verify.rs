@@ -187,7 +187,6 @@ impl GroveDb {
         T: TryFrom<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFrom<ProvedPathKeyOptionalValue>>::Error>,
     {
-        let in_path_proving = current_path.len() < query.path.len();
         let internal_query =
             query
                 .query_items_at_path(current_path)
@@ -200,6 +199,8 @@ impl GroveDb {
                         .join("/"),
                     query
                 )))?;
+
+        let in_path = internal_query.in_path;
 
         let level_query = Query {
             items: internal_query.items.to_vec(),
@@ -243,6 +244,7 @@ impl GroveDb {
                     verified_keys.insert(key.clone());
 
                     if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
+                        println!("lower layer had key {}", hex_to_ascii(key));
                         match element {
                             Element::Tree(Some(_), _) | Element::SumTree(Some(_), ..) => {
                                 path.push(key);
@@ -280,27 +282,32 @@ impl GroveDb {
                                 ));
                             }
                         }
-                    } else if !in_path_proving {
-                        if options.include_empty_trees_in_result
-                            || !matches!(element, Element::Tree(None, _))
-                        {
-                            let path_key_optional_value =
-                                ProvedPathKeyOptionalValue::from_proved_key_value(
-                                    path.iter().map(|p| p.to_vec()).collect(),
-                                    proved_key_value,
-                                );
-                            println!(
-                                "pushing {} limit left after is {:?}",
-                                &path_key_optional_value, limit_left
+                    } else if options.include_empty_trees_in_result
+                        || !matches!(element, Element::Tree(None, _))
+                        || !level_query.has_subquery_or_subquery_path_on_key(key, in_path)
+                    {
+                        let path_key_optional_value =
+                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                path.iter().map(|p| p.to_vec()).collect(),
+                                proved_key_value,
                             );
-                            result.push(path_key_optional_value.try_into()?);
+                        println!(
+                            "pushing {} limit left after is {:?}",
+                            &path_key_optional_value, limit_left
+                        );
+                        result.push(path_key_optional_value.try_into()?);
 
-                            limit_left.as_mut().map(|limit| *limit -= 1);
-                            if limit_left == &Some(0) {
-                                break;
-                            }
+                        limit_left.as_mut().map(|limit| *limit -= 1);
+                        if limit_left == &Some(0) {
+                            break;
                         }
                     }
+                } else {
+                    println!(
+                        "we have subquery on key {}: {}",
+                        hex_to_ascii(key),
+                        level_query
+                    )
                 }
             }
         }

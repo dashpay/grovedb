@@ -4,7 +4,7 @@ use std::{borrow::Cow, cmp::Ordering, fmt};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
-use grovedb_merk::proofs::query::SubqueryBranch;
+use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
 use indexmap::IndexMap;
@@ -306,11 +306,21 @@ impl PathQuery {
                                         } else {
                                             None
                                         }
+                                    } else if path_after_top_removed.len() == 0 {
+                                        // we are at the terminal of the path
+                                        // we include subqueries as this can be useful in
+                                        // verification
+
+                                        let key =
+                                            subquery_path[path_after_top_removed.len()].clone();
+                                        if query.has_subquery_or_subquery_path_on_key(&key, false) {
+                                            Some(InternalCowItemsQuery::from_key_when_in_terminal_path(key, query))
+                                        } else {
+                                            Some(InternalCowItemsQuery::from_key_when_at_terminal_path_with_no_subquery(key))
+                                        }
                                     } else {
-                                        Some(InternalCowItemsQuery::from_items_when_in_path(
-                                            Cow::Owned(vec![QueryItem::Key(
-                                                subquery_path[path_after_top_removed.len()].clone(),
-                                            )]),
+                                        Some(InternalCowItemsQuery::from_key_when_in_path(
+                                            subquery_path[path_after_top_removed.len()].clone(),
                                         ))
                                     };
                                 }
@@ -320,9 +330,7 @@ impl PathQuery {
                         return if let Some(subquery) = &subquery_branch.subquery {
                             recursive_query_items(subquery, &path[1..])
                         } else {
-                            Some(InternalCowItemsQuery::from_items_when_in_path(Cow::Owned(
-                                vec![QueryItem::Key(key.to_vec())],
-                            )))
+                            Some(InternalCowItemsQuery::from_query(query))
                         };
                     }
                 }
@@ -341,12 +349,21 @@ impl PathQuery {
                             } else {
                                 None
                             }
+                        } else if path_after_top_removed.len() == 0 {
+                            // we are at the terminal of the path
+                            // we include subqueries as this can be useful in verification
+                            let key = subquery_path[path_after_top_removed.len()].clone();
+                            if query.has_subquery_or_subquery_path_on_key(&key, false) {
+                                Some(InternalCowItemsQuery::from_key_when_in_terminal_path(
+                                    key, query,
+                                ))
+                            } else {
+                                Some(InternalCowItemsQuery::from_key_when_at_terminal_path_with_no_subquery(key))
+                            }
                         } else {
-                            Some(InternalCowItemsQuery::from_items_when_in_path(Cow::Owned(
-                                vec![QueryItem::Key(
-                                    subquery_path[path_after_top_removed.len()].clone(),
-                                )],
-                            )))
+                            Some(InternalCowItemsQuery::from_key_when_in_path(
+                                subquery_path[path_after_top_removed.len()].clone(),
+                            ))
                         };
                     }
                 } else if path_after_top_removed
@@ -372,9 +389,9 @@ impl PathQuery {
         match given_path_len.cmp(&self_path_len) {
             Ordering::Less => {
                 if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
-                    Some(InternalCowItemsQuery::from_items_when_in_path(Cow::Owned(
-                        vec![QueryItem::Key(self.path[given_path_len].clone())],
-                    )))
+                    Some(InternalCowItemsQuery::from_key_when_in_path(
+                        self.path[given_path_len].clone(),
+                    ))
                 } else {
                     None
                 }
@@ -432,9 +449,35 @@ impl<'a> InternalCowItemsQuery<'a> {
         return false;
     }
 
-    pub fn from_items_when_in_path(items: Cow<Vec<QueryItem>>) -> InternalCowItemsQuery {
+    pub fn from_key_when_in_terminal_path(key: Vec<u8>, query: &Query) -> InternalCowItemsQuery {
+        println!("from_key_when_in_terminal_path {}", query);
         InternalCowItemsQuery {
-            items,
+            items: Cow::Owned(vec![QueryItem::Key(key)]),
+            default_subquery_branch: Cow::Borrowed(&query.default_subquery_branch),
+            conditional_subquery_branches: query
+                .conditional_subquery_branches
+                .as_ref()
+                .map(|conditional_subquery_branches| Cow::Borrowed(conditional_subquery_branches)),
+            left_to_right: true,
+            in_path: false,
+        }
+    }
+
+    pub fn from_key_when_at_terminal_path_with_no_subquery(
+        key: Vec<u8>,
+    ) -> InternalCowItemsQuery<'a> {
+        InternalCowItemsQuery {
+            items: Cow::Owned(vec![QueryItem::Key(key)]),
+            default_subquery_branch: Default::default(),
+            conditional_subquery_branches: None,
+            left_to_right: true,
+            in_path: false,
+        }
+    }
+
+    pub fn from_key_when_in_path(key: Vec<u8>) -> InternalCowItemsQuery<'a> {
+        InternalCowItemsQuery {
+            items: Cow::Owned(vec![QueryItem::Key(key)]),
             default_subquery_branch: Default::default(),
             conditional_subquery_branches: None,
             left_to_right: true,

@@ -41,7 +41,7 @@ impl fmt::Display for QueryResultType {
 }
 
 /// Query result elements
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct QueryResultElements {
     /// Elements
     pub elements: Vec<QueryResultElement>,
@@ -428,7 +428,7 @@ impl Default for QueryResultElements {
 }
 
 /// Query result element
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum QueryResultElement {
     /// Element result item
     ElementResultItem(Element),
