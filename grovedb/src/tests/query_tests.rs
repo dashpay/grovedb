@@ -561,9 +561,11 @@ mod tests {
 
         let subquery = Query::new();
 
+        // This conditional subquery expresses that we do not want to get values in ""
+        // tree
         query.add_conditional_subquery(
             QueryItem::Key(b"".to_vec()),
-            Some(vec![b"\0".to_vec()]),
+            Some(vec![b"\0".to_vec()]), // We want to go into 0 but we don't want to get anything
             Some(subquery),
         );
 

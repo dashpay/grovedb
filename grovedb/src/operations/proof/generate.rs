@@ -406,7 +406,7 @@ impl GroveDb {
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
-                                println!("found tree {}, query is {:?}", hex_to_ascii(key), query);
+                                println!("found tree {}, query is {}", hex_to_ascii(key), query);
                                 // We only want to check in sub nodes for the proof if the tree has
                                 // elements
                                 let mut lower_path = path.clone();

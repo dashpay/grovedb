@@ -312,8 +312,7 @@ impl PathQuery {
                                         }
                                     } else {
                                         let last_path_item = path.len() == subquery_path.len();
-                                        let has_subquery =
-                                            query.default_subquery_branch.subquery.is_some();
+                                        let has_subquery = subquery_branch.subquery.is_some();
                                         Some(InternalCowItemsQuery::from_key_when_in_path(
                                             &subquery_path[path_after_top_removed.len()],
                                             last_path_item,
@@ -422,6 +421,23 @@ pub(crate) enum HasSubquery<'a> {
     Conditionally(Cow<'a, IndexMap<QueryItem, SubqueryBranch>>),
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
+impl<'a> fmt::Display for HasSubquery<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HasSubquery::NoSubquery => write!(f, "NoSubquery"),
+            HasSubquery::Always => write!(f, "Always"),
+            HasSubquery::Conditionally(map) => {
+                writeln!(f, "Conditionally {{")?;
+                for (query_item, subquery_branch) in map.iter() {
+                    writeln!(f, "  {query_item}: {subquery_branch},")?;
+                }
+                write!(f, "}}")
+            }
+        }
+    }
+}
+
 impl<'a> HasSubquery<'a> {
     /// Checks to see if we have a subquery on a specific key
     pub fn has_subquery_on_key(&self, key: &[u8]) -> bool {
@@ -448,6 +464,25 @@ pub(crate) struct InternalCowItemsQuery<'a> {
     pub left_to_right: bool,
     /// In the path of the path_query, or in a subquery path
     pub in_path: Option<Cow<'a, Key>>,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl<'a> fmt::Display for InternalCowItemsQuery<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "InternalCowItemsQuery {{")?;
+        writeln!(f, "  items: [")?;
+        for item in self.items.iter() {
+            writeln!(f, "    {item},")?;
+        }
+        writeln!(f, "  ]")?;
+        writeln!(f, "  has_subquery: {}", self.has_subquery)?;
+        writeln!(f, "  left_to_right: {}", self.left_to_right)?;
+        match &self.in_path {
+            Some(path) => writeln!(f, "  in_path: Some({})", hex_to_ascii(&path)),
+            None => writeln!(f, "  in_path: None"),
+        }?;
+        write!(f, "}}")
+    }
 }
 
 impl<'a> InternalCowItemsQuery<'a> {
@@ -521,6 +556,7 @@ mod tests {
         query::{query_item::QueryItem, SubqueryBranch},
         Query,
     };
+    use indexmap::IndexMap;
 
     use crate::{
         query::{HasSubquery, InternalCowItemsQuery},
@@ -1348,6 +1384,56 @@ mod tests {
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
                     in_path: None, // There should be no path because we are at the end of the path
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_conditional_subquery_refusing_elements() {
+        let empty_vec: Vec<u8> = vec![];
+        let zero_vec: Vec<u8> = vec![0];
+
+        let mut conditional_subquery_branches = IndexMap::new();
+        conditional_subquery_branches.insert(
+            QueryItem::Key(b"".to_vec()),
+            SubqueryBranch {
+                subquery_path: Some(vec![zero_vec.clone()]),
+                subquery: Some(Query::new().into()),
+            },
+        );
+
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![zero_vec.clone()]),
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: Some(conditional_subquery_branches),
+                },
+                limit: Some(100),
+                offset: None,
+            },
+        };
+
+        {
+            let path = vec![TEST_LEAF, empty_vec.as_slice()];
+
+            let second = path_query
+                .query_items_at_path(&path)
+                .expect("expected query items");
+
+            assert_eq!(
+                second,
+                InternalCowItemsQuery {
+                    items: Cow::Owned(vec![QueryItem::Key(zero_vec.clone())]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: Some(Cow::Borrowed(&zero_vec)),
                 }
             );
         }
