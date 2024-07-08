@@ -3,23 +3,28 @@ fn main() {
     use std::{
         env,
         path::PathBuf,
-        process::{Command, ExitStatus},
+        process::{Command, ExitStatus, Output},
     };
 
     let out_dir = PathBuf::from(&env::var_os("OUT_DIR").unwrap());
 
-    if !Command::new("trunk")
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = Command::new("trunk")
         .arg("build")
         .arg("--release")
         .arg("--dist")
         .arg(&out_dir)
         .arg("grovedbg/index.html")
-        .status()
-        .as_ref()
-        .map(ExitStatus::success)
-        .unwrap_or(false)
-    {
-        panic!("Error running `trunk build --release`");
+        .output()
+        .expect("cannot start trunk process");
+
+    if !status.success() {
+        let stdout_msg = String::from_utf8_lossy(&stdout);
+        let stderr_msg = String::from_utf8_lossy(&stderr);
+        panic!("Error running `trunk build --release`\n{stdout_msg}\n{stderr_msg}");
     }
 
     let zip_file = out_dir.join("grovedbg.zip");
