@@ -2136,10 +2136,9 @@ mod tests {
             SizedQuery::new(query, Some(0), Some(0)),
         );
 
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
-        let (hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query).unwrap();
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-        assert_eq!(result_set.len(), 0);
+        db.prove_query(&path_query, None)
+            .unwrap()
+            .expect_err("expected error when trying to prove with limit 0");
     }
 
     #[test]

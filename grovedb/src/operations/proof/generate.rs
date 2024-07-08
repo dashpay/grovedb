@@ -234,6 +234,13 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        if path_query.query.limit == Some(0) {
+            return Err(Error::InvalidQuery(
+                "proved path queries can not be for limit 0",
+            ))
+            .wrap_with_cost(cost);
+        }
+
         // we want to query raw because we want the references to not be resolved at
         // this point
 
@@ -411,7 +418,8 @@ impl GroveDb {
                                 has_a_result_at_level |= true;
                             }
                             Ok(Element::Tree(Some(_), _)) | Ok(Element::SumTree(Some(_), ..))
-                                if !done_with_results && query.has_subquery_on_key(key) =>
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 println!("found tree {}, query is {:?}", hex_to_ascii(key), query);
                                 // We only want to check in sub nodes for the proof if the tree has

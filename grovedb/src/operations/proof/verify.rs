@@ -13,7 +13,7 @@ use crate::{
     operations::proof::{
         generate::{GroveDBProof, GroveDBProofV0, LayerProof},
         util::{
-            hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
+            element_hex_to_ascii, hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
             ProvedPathKeyOptionalValue, ProvedPathKeyValues,
         },
         ProveOptions,
@@ -200,15 +200,10 @@ impl GroveDb {
                     query
                 )))?;
 
-        let in_path = internal_query.in_path;
-
         let level_query = Query {
             items: internal_query.items.to_vec(),
-            default_subquery_branch: internal_query.default_subquery_branch.into_owned(),
-            conditional_subquery_branches: internal_query
-                .conditional_subquery_branches
-                .map(|a| a.into_owned()),
             left_to_right: internal_query.left_to_right,
+            ..Default::default()
         };
 
         let (root_hash, merk_result) = level_query
@@ -282,9 +277,9 @@ impl GroveDb {
                                 ));
                             }
                         }
-                    } else if !in_path && (options.include_empty_trees_in_result
-                        || !matches!(element, Element::Tree(None, _))
-                        || !level_query.has_subquery_or_subquery_path_on_key(key, in_path))
+                    } else if !internal_query.has_subquery_on_key(key)
+                        && (options.include_empty_trees_in_result
+                            || !matches!(element, Element::Tree(None, _)))
                     {
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
@@ -301,13 +296,14 @@ impl GroveDb {
                         if limit_left == &Some(0) {
                             break;
                         }
+                    } else {
+                        println!(
+                            "we have subquery on key {} with value {}: {}",
+                            hex_to_ascii(key),
+                            element,
+                            level_query
+                        )
                     }
-                } else {
-                    println!(
-                        "we have subquery on key {}: {}",
-                        hex_to_ascii(key),
-                        level_query
-                    )
                 }
             }
         }
