@@ -155,7 +155,7 @@ impl GroveDb {
                 while let Some((key, value)) =
                     cost_return_on_error!(&mut cost, raw_iter.next_element())
                 {
-                    if value.is_tree() {
+                    if value.is_any_tree() {
                         let mut sub_path = q.clone();
                         sub_path.push(key.to_vec());
                         queue.push(sub_path.clone());

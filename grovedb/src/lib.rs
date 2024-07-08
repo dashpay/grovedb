@@ -894,7 +894,7 @@ impl GroveDb {
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value)?;
-            if element.is_tree() {
+            if element.is_any_tree() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,
@@ -924,7 +924,7 @@ impl GroveDb {
                     );
                 }
                 issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch)?);
-            } else if element.is_item() {
+            } else if element.is_any_item() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,
@@ -964,7 +964,7 @@ impl GroveDb {
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value)?;
-            if element.is_tree() {
+            if element.is_any_tree() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,
@@ -999,7 +999,7 @@ impl GroveDb {
                     batch,
                     transaction,
                 )?);
-            } else if element.is_item() {
+            } else if element.is_any_item() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,

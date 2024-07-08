@@ -141,7 +141,7 @@ impl Element {
 
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
-    pub fn is_tree(&self) -> bool {
+    pub fn is_any_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
@@ -153,8 +153,14 @@ impl Element {
 
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is an item
-    pub fn is_item(&self) -> bool {
+    pub fn is_any_item(&self) -> bool {
         matches!(self, Element::Item(..) | Element::SumItem(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is an item
+    pub fn is_basic_item(&self) -> bool {
+        matches!(self, Element::Item(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]

@@ -192,7 +192,7 @@ where {
                             )
                             .unwrap_add_cost(cost)?;
 
-                        if maybe_item.is_item() {
+                        if maybe_item.is_any_item() {
                             Ok(maybe_item)
                         } else {
                             Err(Error::InvalidQuery("the reference must result in an item"))

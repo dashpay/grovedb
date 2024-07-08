@@ -1567,6 +1567,15 @@ mod tests {
     #[test]
     fn test_mixed_level_proofs() {
         let db = make_test_grovedb();
+
+        //                              TEST_LEAF
+        //               /          |              |            \
+        //              key1       key2 : [1]     key3         key4 : (Ref -> Key2)
+        //            /   |   \
+        //           k1   k2   k3
+        //          /    /    /
+        //         2    3    4
+
         db.insert(
             [TEST_LEAF].as_ref(),
             b"key1",
@@ -1652,6 +1661,14 @@ mod tests {
         let proof = db.prove_query(&path_query, None).unwrap().unwrap();
         let (hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query).unwrap();
         assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        println!(
+            "{}",
+            result_set
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<String>>()
+                .join(" | ")
+        );
         assert_eq!(result_set.len(), 5);
         compare_result_sets(&elements, &result_set);
 

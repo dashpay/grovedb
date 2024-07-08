@@ -449,7 +449,7 @@ impl Element {
             decrease_limit_on_range_with_no_sub_elements,
             ..
         } = query_options;
-        if element.is_tree() {
+        if element.is_any_tree() {
             let mut path_vec = path.to_vec();
             let key = cost_return_on_error_no_add!(
                 &cost,
