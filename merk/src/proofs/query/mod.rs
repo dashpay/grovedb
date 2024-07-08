@@ -41,6 +41,7 @@ use {super::Op, std::collections::LinkedList};
 use super::Node;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::error::Error;
+use crate::proofs::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
@@ -89,16 +90,20 @@ impl fmt::Display for SubqueryBranch {
         write!(f, "SubqueryBranch {{ ")?;
         if let Some(path) = &self.subquery_path {
             write!(f, "subquery_path: [")?;
-            for (i, element) in path.iter().enumerate() {
+            for (i, path_part) in path.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?
                 }
-                write!(f, "{}", hex::encode(element))?;
+                write!(f, "{}", hex_to_ascii(path_part))?;
             }
             write!(f, "], ")?;
+        } else {
+            write!(f, "subquery_path: None ")?;
         }
         if let Some(subquery) = &self.subquery {
             write!(f, "subquery: {} ", subquery)?;
+        } else {
+            write!(f, "subquery: None ")?;
         }
         write!(f, "}}")
     }

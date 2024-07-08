@@ -320,21 +320,6 @@ impl GroveDb {
             self.open_non_transactional_merk_at_path(path.as_slice().into(), None)
         );
 
-        // let mut items_to_prove: BTreeSet<Vec<u8>> = layer_precomputed_results
-        //     .as_ref()
-        //     .map_or(BTreeSet::new(), |map| {
-        //         map.key_values.keys().cloned().collect()
-        //     });
-        //
-        // for query_item in query_at_path.as_slice() {
-        //     match query_item {
-        //         QueryItem::Key(key) => {
-        //             items_to_prove.insert(key.clone());
-        //         }
-        //         _ => {}
-        //     }
-        // }
-
         let limit = if path.len() < path_query.path.len() {
             // There is no need for a limit because we are only asking for a single item
             None
