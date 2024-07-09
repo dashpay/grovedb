@@ -144,7 +144,7 @@ impl GroveDb {
                                 "path: {} key: {} element: {}",
                                 path_hex_to_ascii(path),
                                 hex_to_ascii(key),
-                                e
+                                element_string,
                             )
                         })
                         .collect::<Vec<_>>()
