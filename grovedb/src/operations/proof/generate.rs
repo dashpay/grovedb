@@ -170,7 +170,7 @@ impl GroveDb {
                 .ok_or(Error::CorruptedPath(format!(
                     "prove subqueries: path {} should be part of path_query {}",
                     path.iter()
-                        .map(|a| hex_to_ascii(*a))
+                        .map(|a| hex_to_ascii(a))
                         .collect::<Vec<_>>()
                         .join("/"),
                     path_query
@@ -199,7 +199,7 @@ impl GroveDb {
             println!(
                 "generated merk proof at level path level [{}], limit is {:?}, {}",
                 path.iter()
-                    .map(|a| hex_to_ascii(*a))
+                    .map(|a| hex_to_ascii(a))
                     .collect::<Vec<_>>()
                     .join("/"),
                 overall_limit,
@@ -258,7 +258,9 @@ impl GroveDb {
                                     serialized_referenced_elem.expect("confirmed ok above"),
                                     value_hash(value).unwrap_add_cost(&mut cost),
                                 );
-                                overall_limit.as_mut().map(|limit| *limit -= 1);
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
                                 has_a_result_at_level |= true;
                             }
                             Ok(Element::Item(..)) if !done_with_results => {
@@ -267,7 +269,9 @@ impl GroveDb {
                                     println!("found {}", hex_to_ascii(key));
                                 }
                                 *node = Node::KV(key.to_owned(), value.to_owned());
-                                overall_limit.as_mut().map(|limit| *limit -= 1);
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
                                 has_a_result_at_level |= true;
                             }
                             Ok(Element::Tree(Some(_), _)) | Ok(Element::SumTree(Some(_), ..))
@@ -318,7 +322,9 @@ impl GroveDb {
                                         query
                                     );
                                 }
-                                overall_limit.as_mut().map(|limit| *limit -= 1);
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
                                 has_a_result_at_level |= true;
                             }
                             // todo: transform the unused trees into a Hash or KVHash to make proof
@@ -345,12 +351,14 @@ impl GroveDb {
                 println!(
                     "no results at level {}",
                     path.iter()
-                        .map(|a| hex_to_ascii(*a))
+                        .map(|a| hex_to_ascii(a))
                         .collect::<Vec<_>>()
                         .join("/")
                 );
             }
-            overall_limit.as_mut().map(|limit| *limit -= 1);
+            if let Some(limit) = overall_limit.as_mut() {
+                *limit -= 1;
+            }
         }
 
         let mut serialized_merk_proof = Vec::with_capacity(1024);
@@ -368,7 +376,7 @@ impl GroveDb {
     fn generate_merk_proof<'a, S>(
         &self,
         subtree: &'a Merk<S>,
-        query_items: &Vec<QueryItem>,
+        query_items: &[QueryItem],
         left_to_right: bool,
         limit: Option<u16>,
     ) -> CostResult<ProofWithoutEncodingResult, Error>
