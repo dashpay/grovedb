@@ -320,14 +320,24 @@ impl PathQuery {
                                         ))
                                     };
                                 }
+                            } else if path_after_top_removed
+                                .iter()
+                                .take(subquery_path.len())
+                                .zip(subquery_path)
+                                .all(|(a, b)| *a == b.as_slice())
+                            {
+                                if let Some(subquery) = &subquery_branch.subquery {
+                                    return recursive_query_items(
+                                        subquery,
+                                        &path_after_top_removed[subquery_path.len()..],
+                                    );
+                                }
                             }
+                        } else if let Some(subquery) = &subquery_branch.subquery {
+                            return recursive_query_items(subquery, path_after_top_removed);
                         }
 
-                        return if let Some(subquery) = &subquery_branch.subquery {
-                            recursive_query_items(subquery, &path[1..])
-                        } else {
-                            Some(InternalCowItemsQuery::from_query(query))
-                        };
+                        return None;
                     }
                 }
             }
@@ -559,7 +569,7 @@ mod tests {
     use indexmap::IndexMap;
 
     use crate::{
-        query::{HasSubquery, InternalCowItemsQuery},
+        query::{HasSubquery, HasSubquery::NoSubquery, InternalCowItemsQuery},
         query_result_type::QueryResultType,
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
@@ -1437,5 +1447,211 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn test_complex_path_query_with_conditional_subqueries() {
+        let identity_id =
+            hex::decode("8b8948a6801501bbe0431e3d994dcf71cf5a2a0939fe51b0e600076199aba4fb")
+                .unwrap();
+
+        let key_20 = vec![20u8];
+
+        let key_80 = vec![80u8];
+
+        let inner_conditional_subquery_branches = IndexMap::from([(
+            QueryItem::Key(vec![80]),
+            SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                })),
+            },
+        )]);
+
+        let conditional_subquery_branches = IndexMap::from([
+            (
+                QueryItem::Key(vec![]),
+                SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(Box::new(Query {
+                        items: vec![QueryItem::Key(identity_id.to_vec())],
+                        default_subquery_branch: SubqueryBranch {
+                            subquery_path: None,
+                            subquery: None,
+                        },
+                        left_to_right: true,
+                        conditional_subquery_branches: None,
+                    })),
+                },
+            ),
+            (
+                QueryItem::Key(vec![20]),
+                SubqueryBranch {
+                    subquery_path: Some(vec![identity_id.to_vec()]),
+                    subquery: Some(Box::new(Query {
+                        items: vec![QueryItem::Key(vec![80]), QueryItem::Key(vec![0xc0])],
+                        default_subquery_branch: SubqueryBranch {
+                            subquery_path: None,
+                            subquery: None,
+                        },
+                        conditional_subquery_branches: Some(
+                            inner_conditional_subquery_branches.clone(),
+                        ),
+                        left_to_right: true,
+                    })),
+                },
+            ),
+        ]);
+
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(vec![20]), QueryItem::Key(vec![96])],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    conditional_subquery_branches: Some(conditional_subquery_branches.clone()),
+                    left_to_right: true,
+                },
+                limit: Some(100),
+                offset: None,
+            },
+        };
+
+        // {
+        //     let path = vec![];
+        //     let first = path_query
+        //         .query_items_at_path(&path)
+        //         .expect("expected query items");
+        //
+        //     assert_eq!(
+        //         first,
+        //         InternalCowItemsQuery {
+        //             items: Cow::Owned(vec![
+        //                 QueryItem::Key(vec![20]),
+        //                 QueryItem::Key(vec![96]),
+        //             ]),
+        //             has_subquery:
+        // HasSubquery::Conditionally(Cow::Borrowed(&conditional_subquery_branches)),
+        //             left_to_right: true,
+        //             in_path: None,
+        //         }
+        //     );
+        // }
+        //
+        // {
+        //     let path = vec![key_20.as_slice()];
+        //     let query = path_query
+        //         .query_items_at_path(&path)
+        //         .expect("expected query items");
+        //
+        //     assert_eq!(
+        //         query,
+        //         InternalCowItemsQuery {
+        //             items: Cow::Owned(vec![
+        //                 QueryItem::Key(identity_id.clone()),
+        //             ]),
+        //             has_subquery: NoSubquery,
+        //             left_to_right: true,
+        //             in_path: Some(Cow::Borrowed(&identity_id)),
+        //         }
+        //     );
+        // }
+        //
+        // {
+        //     let path = vec![key_20.as_slice(), identity_id.as_slice()];
+        //     let query = path_query
+        //         .query_items_at_path(&path)
+        //         .expect("expected query items");
+        //
+        //     assert_eq!(
+        //         query,
+        //         InternalCowItemsQuery {
+        //             items: Cow::Owned(vec![
+        //                 QueryItem::Key(vec![80]),
+        //                 QueryItem::Key(vec![0xc0]),
+        //             ]),
+        //             has_subquery:
+        // HasSubquery::Conditionally(Cow::Borrowed(&
+        // inner_conditional_subquery_branches)),             left_to_right:
+        // true,             in_path: None,
+        //         }
+        //     );
+        // }
+
+        {
+            let path = vec![key_20.as_slice(), identity_id.as_slice(), key_80.as_slice()];
+            let query = path_query
+                .query_items_at_path(&path)
+                .expect("expected query items");
+
+            assert_eq!(
+                query,
+                InternalCowItemsQuery {
+                    items: Cow::Owned(vec![QueryItem::RangeFull(RangeFull)]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+        // {
+        //     let path = vec![
+        //         vec![20],
+        //     ];
+        //
+        //     let second = path_query
+        //         .query
+        //         .query
+        //         .query_items_at_path(&path)
+        //         .expect("expected query items");
+        //
+        //     assert_eq!(
+        //         second,
+        //         InternalCowItemsQuery {
+        //             items: Cow::Owned(vec![
+        //                 QueryItem::Key(vec![80]),
+        //                 QueryItem::Key(vec![0xc0]),
+        //             ]),
+        //             has_subquery: HasSubquery::Always,
+        //             left_to_right: true,
+        //             in_path: Some(Cow::Borrowed(&vec![20])),
+        //         }
+        //     );
+        // }
+        //
+        // {
+        //     let path = vec![
+        //         vec![20],
+        //         vec![80],
+        //     ];
+        //
+        //     let third = path_query
+        //         .query
+        //         .query
+        //         .query_items_at_path(&path)
+        //         .expect("expected query items");
+        //
+        //     assert_eq!(
+        //         third,
+        //         InternalCowItemsQuery {
+        //             items: Cow::Owned(vec![
+        //                 QueryItem::RangeFull,
+        //             ]),
+        //             has_subquery: HasSubquery::Always,
+        //             left_to_right: true,
+        //             in_path: Some(Cow::Borrowed(&vec![80])),
+        //         }
+        //     );
+        // }
     }
 }
