@@ -73,16 +73,19 @@ impl Query {
         limit: Option<u16>,
         left_to_right: bool,
     ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
-        println!(
-            "executing proof with limit {:?} going {} using query {}",
-            limit,
-            if left_to_right {
-                "left to right"
-            } else {
-                "right to left"
-            },
-            self
-        );
+        #[cfg(feature = "proof_debug")]
+        {
+            println!(
+                "executing proof with limit {:?} going {} using query {}",
+                limit,
+                if left_to_right {
+                    "left to right"
+                } else {
+                    "right to left"
+                },
+                self
+            );
+        }
         let mut cost = OperationCost::default();
 
         let mut output = Vec::with_capacity(self.len());
@@ -235,14 +238,17 @@ impl Query {
                                     }
                                 }
                             }
-                            println!(
-                                "pushing {}",
-                                ProvedKeyOptionalValue {
-                                    key: key.clone(),
-                                    value: Some(val.clone()),
-                                    proof: value_hash,
-                                }
-                            );
+                            #[cfg(feature = "proof_debug")]
+                            {
+                                println!(
+                                    "pushing {}",
+                                    ProvedKeyOptionalValue {
+                                        key: key.clone(),
+                                        value: Some(val.clone()),
+                                        proof: value_hash,
+                                    }
+                                );
+                            }
                             // add data to output
                             output.push(ProvedKeyOptionalValue {
                                 key: key.clone(),
