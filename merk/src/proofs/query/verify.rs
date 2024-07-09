@@ -44,8 +44,13 @@ pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
 
 #[derive(Copy, Clone, Debug)]
 pub struct VerifyOptions {
+    /// When set to true, this will give back absence proofs for any query items
+    /// that are keys. This means QueryItem::Key(), and not the ranges.
     pub absence_proofs_for_non_existing_searched_keys: bool,
+    /// Verifies that we have all the data. Todo: verify that this works
+    /// properly
     pub verify_proof_succinctness: bool,
+    /// Should return empty trees in the result?
     pub include_empty_trees_in_result: bool,
 }
 

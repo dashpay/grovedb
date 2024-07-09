@@ -15,6 +15,17 @@ use crate::operations::proof::util::{element_hex_to_ascii, hex_to_ascii};
 
 #[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct ProveOptions {
+    /// This tells the proof system to decrease the available limit of the query
+    /// by 1 in the case of empty subtrees. Generally this should be set to
+    /// true. The case where this could be set to false is if there is a
+    /// known structure where we know that there are only a few empty
+    /// subtrees.
+    ///
+    /// !!! Warning !!! Be very careful:
+    /// If this is set to `false` then you must be sure that the sub queries do
+    /// not match many trees, Otherwise you could crash the system as the
+    /// proof system goes through millions of subtrees and eventually runs
+    /// out of memory
     pub decrease_limit_on_empty_sub_query_result: bool,
 }
 
