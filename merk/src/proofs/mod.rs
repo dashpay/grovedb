@@ -126,8 +126,8 @@ impl fmt::Display for Node {
 
 fn hex_to_ascii(hex_value: &[u8]) -> String {
     if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
-        hex::encode(&hex_value)
+        hex::encode(hex_value)
     } else {
-        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(&hex_value))
+        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
     }
 }

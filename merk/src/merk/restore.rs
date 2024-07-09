@@ -711,7 +711,7 @@ mod tests {
         // apply second chunk
         let new_chunk_ids = restorer
             .process_chunk(
-                &traversal_instruction_as_vec_bytes(&vec![LEFT, LEFT]),
+                &traversal_instruction_as_vec_bytes(&[LEFT, LEFT]),
                 chunk,
             )
             .unwrap();
@@ -727,7 +727,7 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(2).unwrap();
         // apply second chunk
         let chunk_process_result = restorer.process_chunk(
-            &traversal_instruction_as_vec_bytes(&vec![LEFT, LEFT]),
+            &traversal_instruction_as_vec_bytes(&[LEFT, LEFT]),
             chunk,
         );
         assert!(chunk_process_result.is_err());
@@ -740,7 +740,7 @@ mod tests {
         // but let's apply it to the wrong place
         let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
         let chunk_process_result = restorer.process_chunk(
-            &traversal_instruction_as_vec_bytes(&vec![LEFT, RIGHT]),
+            &traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]),
             chunk,
         );
         assert!(chunk_process_result.is_err());
@@ -756,7 +756,7 @@ mod tests {
         // apply second chunk
         let new_chunk_ids = restorer
             .process_chunk(
-                &traversal_instruction_as_vec_bytes(&vec![RIGHT, RIGHT]),
+                &traversal_instruction_as_vec_bytes(&[RIGHT, RIGHT]),
                 chunk,
             )
             .unwrap();
@@ -773,7 +773,7 @@ mod tests {
         // apply second chunk
         let new_chunk_ids = restorer
             .process_chunk(
-                &traversal_instruction_as_vec_bytes(&vec![LEFT, RIGHT]),
+                &traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]),
                 chunk,
             )
             .unwrap();
@@ -790,7 +790,7 @@ mod tests {
         // apply second chunk
         let new_chunk_ids = restorer
             .process_chunk(
-                &traversal_instruction_as_vec_bytes(&vec![RIGHT, LEFT]),
+                &traversal_instruction_as_vec_bytes(&[RIGHT, LEFT]),
                 chunk,
             )
             .unwrap();
@@ -1035,7 +1035,7 @@ mod tests {
         // first restore the first chunk
         let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1).unwrap();
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&vec![]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[]), chunk)
             .expect("should process chunk");
         assert_eq!(new_chunk_ids.len(), 4);
         assert_eq!(next_chunk_index, Some(2));
@@ -1273,7 +1273,7 @@ mod tests {
         // first restore the first chunk
         let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1).unwrap();
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&vec![]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[]), chunk)
             .expect("should process chunk");
         assert_eq!(new_chunk_ids.len(), 4);
         assert_eq!(next_chunk_index, Some(2));

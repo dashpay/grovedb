@@ -573,11 +573,11 @@ mod test {
 
     #[test]
     fn test_traversal_instruction_as_string() {
-        assert_eq!(traversal_instruction_as_vec_bytes(&vec![]), vec![]);
-        assert_eq!(traversal_instruction_as_vec_bytes(&vec![LEFT]), vec![1u8]);
-        assert_eq!(traversal_instruction_as_vec_bytes(&vec![RIGHT]), vec![0u8]);
+        assert_eq!(traversal_instruction_as_vec_bytes(&[]), vec![]);
+        assert_eq!(traversal_instruction_as_vec_bytes(&[LEFT]), vec![1u8]);
+        assert_eq!(traversal_instruction_as_vec_bytes(&[RIGHT]), vec![0u8]);
         assert_eq!(
-            traversal_instruction_as_vec_bytes(&vec![RIGHT, LEFT, LEFT, RIGHT]),
+            traversal_instruction_as_vec_bytes(&[RIGHT, LEFT, LEFT, RIGHT]),
             vec![0u8, 1u8, 1u8, 0u8]
         );
     }
@@ -585,20 +585,20 @@ mod test {
     #[test]
     fn test_instruction_string_to_traversal_instruction() {
         assert_eq!(
-            vec_bytes_as_traversal_instruction(&vec![1u8]).unwrap(),
+            vec_bytes_as_traversal_instruction(&[1u8]).unwrap(),
             vec![LEFT]
         );
         assert_eq!(
-            vec_bytes_as_traversal_instruction(&vec![0u8]).unwrap(),
+            vec_bytes_as_traversal_instruction(&[0u8]).unwrap(),
             vec![RIGHT]
         );
         assert_eq!(
-            vec_bytes_as_traversal_instruction(&vec![0u8, 0u8, 1u8]).unwrap(),
+            vec_bytes_as_traversal_instruction(&[0u8, 0u8, 1u8]).unwrap(),
             vec![RIGHT, RIGHT, LEFT]
         );
-        assert!(vec_bytes_as_traversal_instruction(&vec![0u8, 0u8, 2u8]).is_err());
+        assert!(vec_bytes_as_traversal_instruction(&[0u8, 0u8, 2u8]).is_err());
         assert_eq!(
-            vec_bytes_as_traversal_instruction(&vec![]).unwrap(),
+            vec_bytes_as_traversal_instruction(&[]).unwrap(),
             Vec::<bool>::new()
         );
     }

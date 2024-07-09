@@ -201,7 +201,7 @@ impl Query {
                 }
             }
         }
-        return false;
+        false
     }
 
     pub fn has_subquery_or_subquery_path_on_key(&self, key: &[u8], in_path: bool) -> bool {
@@ -218,7 +218,7 @@ impl Query {
                 }
             }
         }
-        return false;
+        false
     }
 
     /// Pushes terminal key paths and keys to `result`, no more than
@@ -943,7 +943,7 @@ mod test {
 
         for (key, expected_value) in keys.iter().zip(expected_result.iter()) {
             assert_eq!(
-                values.get(key).map(|a| a.as_ref()).flatten(),
+                values.get(key).and_then(|a| a.as_ref()),
                 expected_value.as_ref()
             );
         }
@@ -4420,7 +4420,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         ));
         let query_vec: Vec<QueryItem> = query.into();
-        let expected = vec![QueryItem::Range(
+        let expected = [QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         assert_eq!(
