@@ -164,7 +164,6 @@ pub fn apply_to_memonly(
         })
         .unwrap()
         .expect("commit failed");
-        println!("{:?}", &tree);
         assert_tree_invariants(&tree);
         tree
     })

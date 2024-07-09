@@ -70,12 +70,8 @@ mod visualize;
 
 #[cfg(feature = "full")]
 pub use ed;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use error::Error;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use proofs::query::execute_proof;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use proofs::query::verify_query;
 #[cfg(feature = "full")]
 pub use tree::{
     BatchEntry, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,

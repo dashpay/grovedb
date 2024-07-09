@@ -286,6 +286,14 @@ where
         })
     }
 
+    /// Returns if the merk has a root tree set
+    pub fn has_root_key(&self) -> bool {
+        let tree = self.tree.take();
+        let res = tree.is_some();
+        self.tree.set(tree);
+        res
+    }
+
     /// Returns the total sum value in the Merk tree
     pub fn sum(&self) -> Result<Option<i64>, Error> {
         self.use_tree(|tree| match tree {

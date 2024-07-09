@@ -86,6 +86,57 @@ pub enum ReferencePathType {
     SiblingReference(Vec<u8>),
 }
 
+// Helper function to display paths
+fn display_path(path: &[Vec<u8>]) -> String {
+    path.iter()
+        .map(hex::encode)
+        .collect::<Vec<String>>()
+        .join("/")
+}
+
+impl fmt::Display for ReferencePathType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                write!(f, "AbsolutePathReference({})", display_path(path))
+            }
+            ReferencePathType::UpstreamRootHeightReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamRootHeightReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamRootHeightWithParentPathAdditionReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::UpstreamFromElementHeightReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamFromElementHeightReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::CousinReference(key) => {
+                write!(f, "CousinReference({})", hex::encode(key))
+            }
+            ReferencePathType::RemovedCousinReference(path) => {
+                write!(f, "RemovedCousinReference({})", display_path(path))
+            }
+            ReferencePathType::SiblingReference(key) => {
+                write!(f, "SiblingReference({})", hex::encode(key))
+            }
+        }
+    }
+}
+
 #[cfg(any(feature = "full", feature = "verify"))]
 impl ReferencePathType {
     /// Given the reference path type and the current qualified path (path+key),
@@ -129,7 +180,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
         None => Err(Error::CorruptedPath(
-            "qualified path should always have an element",
+            "qualified path should always have an element".to_string(),
         )),
         Some((key, path)) => {
             path_from_reference_path_type(reference_path_type, path, Some(key.as_ref()))
@@ -168,7 +219,7 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
             no_of_elements_to_keep,
             mut path,
         ) => {
-            if usize::from(no_of_elements_to_keep) > current_path.len() || current_path.len() == 0 {
+            if usize::from(no_of_elements_to_keep) > current_path.len() || current_path.is_empty() {
                 return Err(Error::InvalidInput(
                     "reference stored path cannot satisfy reference constraints",
                 ));
@@ -478,7 +529,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query)
+            .prove_query(&path_query, None)
             .unwrap()
             .expect("should generate proof");
         let (hash, result) =

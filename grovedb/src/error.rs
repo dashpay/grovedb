@@ -1,9 +1,14 @@
 //! GroveDB Errors
 
+use std::convert::Infallible;
+
 /// GroveDB Errors
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("infallible")]
+    /// This error can not happen, used for generics
+    Infallible,
     // Input data errors
     #[error("cyclic reference path")]
     /// Cyclic reference
@@ -16,7 +21,7 @@ pub enum Error {
     MissingReference(String),
     #[error("internal error: {0}")]
     /// Internal error
-    InternalError(&'static str),
+    InternalError(String),
     #[error("invalid proof: {0}")]
     /// Invalid proof
     InvalidProof(String),
@@ -62,7 +67,7 @@ pub enum Error {
     /// The corrupted path represents a consistency error in internal groveDB
     /// logic
     #[error("corrupted path: {0}")]
-    CorruptedPath(&'static str),
+    CorruptedPath(String),
 
     // Query errors
     #[error("invalid query: {0}")]
@@ -84,6 +89,10 @@ pub enum Error {
     #[error("data corruption error: {0}")]
     /// Corrupted data
     CorruptedData(String),
+
+    #[error("data storage error: {0}")]
+    /// Corrupted storage
+    CorruptedStorage(String),
 
     #[error("invalid code execution error: {0}")]
     /// Invalid code execution
@@ -138,4 +147,16 @@ pub enum Error {
     #[error("merk error: {0}")]
     /// Merk error
     MerkError(grovedb_merk::error::Error),
+}
+
+impl From<Infallible> for Error {
+    fn from(_value: Infallible) -> Self {
+        Self::Infallible
+    }
+}
+
+impl From<grovedb_merk::error::Error> for Error {
+    fn from(value: grovedb_merk::Error) -> Self {
+        Error::MerkError(value)
+    }
 }

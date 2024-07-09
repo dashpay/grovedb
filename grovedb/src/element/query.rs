@@ -29,6 +29,8 @@
 //! Query
 //! Implements functions in Element for querying
 
+use std::fmt;
+
 #[cfg(feature = "full")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
@@ -36,13 +38,17 @@ use grovedb_costs::{
 };
 #[cfg(feature = "full")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
+#[cfg(feature = "full")]
+use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
+#[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
-use crate::query_result_type::Path;
+#[cfg(feature = "full")]
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::{
     element::helpers::raw_decode,
@@ -57,7 +63,7 @@ use crate::{
     Error, PathQuery, TransactionArg,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{Element, SizedQuery};
+use crate::{query_result_type::Path, Element, SizedQuery};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, Debug)]
@@ -72,6 +78,26 @@ pub struct QueryOptions {
     /// hence we would continue on the increasingly expensive query.
     pub decrease_limit_on_range_with_no_sub_elements: bool,
     pub error_if_intermediate_path_tree_not_present: bool,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for QueryOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "QueryOptions {{")?;
+        writeln!(f, "  allow_get_raw: {}", self.allow_get_raw)?;
+        writeln!(f, "  allow_cache: {}", self.allow_cache)?;
+        writeln!(
+            f,
+            "  decrease_limit_on_range_with_no_sub_elements: {}",
+            self.decrease_limit_on_range_with_no_sub_elements
+        )?;
+        writeln!(
+            f,
+            "  error_if_intermediate_path_tree_not_present: {}",
+            self.error_if_intermediate_path_tree_not_present
+        )?;
+        write!(f, "}}")
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -105,6 +131,124 @@ where
     pub results: &'a mut Vec<QueryResultElement>,
     pub limit: &'a mut Option<u16>,
     pub offset: &'a mut Option<u16>,
+}
+
+#[cfg(feature = "full")]
+fn format_query(query: &Query, indent: usize) -> String {
+    let indent_str = " ".repeat(indent);
+    let mut output = format!("{}Query {{\n", indent_str);
+
+    output += &format!("{}  items: [\n", indent_str);
+    for item in &query.items {
+        output += &format!("{}    {},\n", indent_str, item);
+    }
+    output += &format!("{}  ],\n", indent_str);
+
+    output += &format!(
+        "{}  default_subquery_branch: {}\n",
+        indent_str,
+        format_subquery_branch(&query.default_subquery_branch, indent + 2)
+    );
+
+    if let Some(ref branches) = query.conditional_subquery_branches {
+        output += &format!("{}  conditional_subquery_branches: {{\n", indent_str);
+        for (item, branch) in branches {
+            output += &format!(
+                "{}    {}: {},\n",
+                indent_str,
+                item,
+                format_subquery_branch(branch, indent + 4)
+            );
+        }
+        output += &format!("{}  }},\n", indent_str);
+    }
+
+    output += &format!("{}  left_to_right: {}\n", indent_str, query.left_to_right);
+    output += &format!("{}}}", indent_str);
+
+    output
+}
+
+#[cfg(feature = "full")]
+fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
+    let indent_str = " ".repeat(indent);
+    let mut output = "SubqueryBranch {{\n".to_string();
+
+    if let Some(ref path) = branch.subquery_path {
+        output += &format!("{}  subquery_path: {:?},\n", indent_str, path);
+    }
+
+    if let Some(ref subquery) = branch.subquery {
+        output += &format!(
+            "{}  subquery: {},\n",
+            indent_str,
+            format_query(subquery, indent + 2)
+        );
+    }
+
+    output += &format!("{}}}", " ".repeat(indent));
+
+    output
+}
+
+#[cfg(feature = "full")]
+impl<'db, 'ctx, 'a> fmt::Display for PathQueryPushArgs<'db, 'ctx, 'a>
+where
+    'db: 'ctx,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "PathQueryPushArgs {{")?;
+        writeln!(
+            f,
+            "  key: {}",
+            self.key.map_or("None".to_string(), hex_to_ascii)
+        )?;
+        writeln!(f, "  element: {}", self.element)?;
+        writeln!(
+            f,
+            "  path: [{}]",
+            self.path
+                .iter()
+                .map(|p| hex_to_ascii(p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        writeln!(
+            f,
+            "  subquery_path: {}",
+            self.subquery_path
+                .as_ref()
+                .map_or("None".to_string(), |p| format!(
+                    "[{}]",
+                    p.iter()
+                        .map(|e| hex_to_ascii(e.as_slice()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+        )?;
+        writeln!(
+            f,
+            "  subquery: {}",
+            self.subquery
+                .as_ref()
+                .map_or("None".to_string(), |q| format!("\n{}", format_query(q, 4)))
+        )?;
+        writeln!(f, "  left_to_right: {}", self.left_to_right)?;
+        writeln!(f, "  query_options: {}", self.query_options)?;
+        writeln!(f, "  result_type: {}", self.result_type)?;
+        writeln!(
+            f,
+            "  results: [{}]",
+            self.results
+                .iter()
+                .map(|r| format!("{}", r))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        writeln!(f, "  limit: {:?}", self.limit)?;
+        writeln!(f, "  offset: {:?}", self.offset)?;
+        write!(f, "}}")
+    }
 }
 
 impl Element {
@@ -285,6 +429,8 @@ impl Element {
     #[cfg(feature = "full")]
     /// Push arguments to path query
     fn path_query_push(args: PathQueryPushArgs) -> CostResult<(), Error> {
+        // println!("path_query_push {} \n", args);
+
         let mut cost = OperationCost::default();
 
         let PathQueryPushArgs {
@@ -308,7 +454,7 @@ impl Element {
             decrease_limit_on_range_with_no_sub_elements,
             ..
         } = query_options;
-        if element.is_tree() {
+        if element.is_any_tree() {
             let mut path_vec = path.to_vec();
             let key = cost_return_on_error_no_add!(
                 &cost,
@@ -623,7 +769,7 @@ impl Element {
                 }
             } else {
                 Err(Error::InternalError(
-                    "QueryItem must be a Key if not a range",
+                    "QueryItem must be a Key if not a range".to_string(),
                 ))
             }
         } else {
@@ -698,6 +844,7 @@ impl Element {
 
     #[cfg(feature = "full")]
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
+        // println!("basic_push {}", args);
         let PathQueryPushArgs {
             path,
             key,
@@ -717,14 +864,18 @@ impl Element {
                     results.push(QueryResultElement::ElementResultItem(element));
                 }
                 QueryResultType::QueryKeyElementPairResultType => {
-                    let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
+                    let key = key.ok_or(Error::CorruptedPath(
+                        "basic push must have a key".to_string(),
+                    ))?;
                     results.push(QueryResultElement::KeyElementPairResultItem((
                         Vec::from(key),
                         element,
                     )));
                 }
                 QueryResultType::QueryPathKeyElementTrioResultType => {
-                    let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
+                    let key = key.ok_or(Error::CorruptedPath(
+                        "basic push must have a key".to_string(),
+                    ))?;
                     let path = path.iter().map(|a| a.to_vec()).collect();
                     results.push(QueryResultElement::PathKeyElementTrioResultItem((
                         path,

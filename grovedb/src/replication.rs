@@ -364,7 +364,7 @@ impl GroveDb {
             || !state_sync_info.processed_prefixes.is_empty()
         {
             return Err(Error::InternalError(
-                "GroveDB has already started a snapshot syncing",
+                "GroveDB has already started a snapshot syncing".to_string(),
             ));
         }
 
@@ -384,7 +384,9 @@ impl GroveDb {
                 .insert(root_prefix, root_prefix_state_sync_info);
             state_sync_info.app_hash = app_hash;
         } else {
-            return Err(Error::InternalError("Unable to open merk for replication"));
+            return Err(Error::InternalError(
+                "Unable to open merk for replication".to_string(),
+            ));
         }
 
         Ok(state_sync_info)
@@ -424,7 +426,9 @@ impl GroveDb {
             replication::util_split_global_chunk_id(global_chunk_id, &state_sync_info.app_hash)?;
 
         if state_sync_info.current_prefixes.is_empty() {
-            return Err(Error::InternalError("GroveDB is not in syncing mode"));
+            return Err(Error::InternalError(
+                "GroveDB is not in syncing mode".to_string(),
+            ));
         }
         if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
             if let Ok((res, mut new_subtree_state_sync)) =
@@ -453,12 +457,16 @@ impl GroveDb {
 
                     // Subtree is finished. We can save it.
                     match new_subtree_state_sync.restorer.take() {
-                        None => Err(Error::InternalError("Unable to finalize subtree")),
+                        None => Err(Error::InternalError(
+                            "Unable to finalize subtree".to_string(),
+                        )),
                         Some(restorer) => {
                             if (new_subtree_state_sync.num_processed_chunks > 0)
                                 && (restorer.finalize().is_err())
                             {
-                                return Err(Error::InternalError("Unable to finalize Merk"));
+                                return Err(Error::InternalError(
+                                    "Unable to finalize Merk".to_string(),
+                                ));
                             }
                             state_sync_info.processed_prefixes.insert(chunk_prefix);
 
@@ -479,16 +487,20 @@ impl GroveDb {
                                 next_chunk_ids.extend(res);
                                 Ok((next_chunk_ids, new_state_sync_info))
                             } else {
-                                Err(Error::InternalError("Unable to discover Subtrees"))
+                                Err(Error::InternalError(
+                                    "Unable to discover Subtrees".to_string(),
+                                ))
                             }
                         }
                     }
                 }
             } else {
-                Err(Error::InternalError("Unable to process incoming chunk"))
+                Err(Error::InternalError(
+                    "Unable to process incoming chunk".to_string(),
+                ))
             }
         } else {
-            Err(Error::InternalError("Invalid incoming prefix"))
+            Err(Error::InternalError("Invalid incoming prefix".to_string()))
         }
     }
 
@@ -510,7 +522,7 @@ impl GroveDb {
             Some(restorer) => {
                 if !state_sync_info.pending_chunks.contains(chunk_id) {
                     return Err(Error::InternalError(
-                        "Incoming global_chunk_id not expected",
+                        "Incoming global_chunk_id not expected".to_string(),
                     ));
                 }
                 state_sync_info.pending_chunks.remove(chunk_id);
@@ -529,7 +541,7 @@ impl GroveDb {
                                 }
                                 _ => {
                                     return Err(Error::InternalError(
-                                        "Unable to process incoming chunk",
+                                        "Unable to process incoming chunk".to_string(),
                                     ));
                                 }
                             };
@@ -543,7 +555,9 @@ impl GroveDb {
                 }
             }
             _ => {
-                return Err(Error::InternalError("Invalid internal state (restorer"));
+                return Err(Error::InternalError(
+                    "Invalid internal state (restorer".to_string(),
+                ));
             }
         }
 
@@ -593,7 +607,9 @@ impl GroveDb {
                     let root_chunk_prefix = prefix.to_vec();
                     res.push(root_chunk_prefix.to_vec());
                 } else {
-                    return Err(Error::InternalError("Unable to open Merk for replication"));
+                    return Err(Error::InternalError(
+                        "Unable to open Merk for replication".to_string(),
+                    ));
                 }
             }
         }

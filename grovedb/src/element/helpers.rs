@@ -43,15 +43,17 @@ use grovedb_merk::{
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
+#[cfg(feature = "full")]
+use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::reference_path::{path_from_reference_path_type, ReferencePathType};
-#[cfg(any(feature = "full", feature = "verify"))]
-use crate::{element::SUM_ITEM_COST_SIZE, Element, Error};
+use crate::reference_path::ReferencePathType;
 #[cfg(feature = "full")]
 use crate::{
-    element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     ElementFlags,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{Element, Error};
 
 impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -134,8 +136,14 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree but not a sum tree
+    pub fn is_basic_tree(&self) -> bool {
+        matches!(self, Element::Tree(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
-    pub fn is_tree(&self) -> bool {
+    pub fn is_any_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
@@ -147,8 +155,14 @@ impl Element {
 
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is an item
-    pub fn is_item(&self) -> bool {
+    pub fn is_any_item(&self) -> bool {
         matches!(self, Element::Item(..) | Element::SumItem(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is an item
+    pub fn is_basic_item(&self) -> bool {
+        matches!(self, Element::Item(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]

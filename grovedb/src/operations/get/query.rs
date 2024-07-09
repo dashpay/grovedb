@@ -38,7 +38,10 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "full")]
 use crate::element::SumValue;
-use crate::{element::QueryOptions, query_result_type::PathKeyOptionalElementTrio};
+use crate::{
+    element::QueryOptions, operations::proof::ProveOptions,
+    query_result_type::PathKeyOptionalElementTrio,
+};
 #[cfg(feature = "full")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
@@ -152,7 +155,7 @@ where {
     pub fn get_proved_path_query(
         &self,
         path_query: &PathQuery,
-        is_verbose: bool,
+        prove_options: Option<ProveOptions>,
         transaction: TransactionArg,
     ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
@@ -160,10 +163,8 @@ where {
                 "transactions are not currently supported".to_string(),
             ))
             .wrap_with_cost(Default::default())
-        } else if is_verbose {
-            self.prove_verbose(path_query)
         } else {
-            self.prove_query(path_query)
+            self.prove_query(path_query, prove_options)
         }
     }
 
@@ -191,7 +192,7 @@ where {
                             )
                             .unwrap_add_cost(cost)?;
 
-                        if maybe_item.is_item() {
+                        if maybe_item.is_any_item() {
                             Ok(maybe_item)
                         } else {
                             Err(Error::InvalidQuery("the reference must result in an item"))
@@ -1273,8 +1274,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path, SizedQuery::new(query, Some(1000), None));
 
-        let raw_result = db
-            .query_raw_keys_optional(&path_query, true, true, true, None)
+        db.query_raw_keys_optional(&path_query, true, true, true, None)
             .unwrap()
             .expect_err(
                 "query with subquery should error if error_if_intermediate_path_tree_not_present \

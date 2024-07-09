@@ -143,7 +143,7 @@ impl GroveDb {
                         })
                 )
             } else {
-                return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
+                return Err(Error::CorruptedPath("empty path".to_string())).wrap_with_cost(cost);
             }
             visited.insert(current_path.clone());
             match current_element {

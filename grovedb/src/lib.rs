@@ -164,7 +164,6 @@ pub mod replication;
 mod tests;
 #[cfg(feature = "full")]
 mod util;
-mod versioning;
 #[cfg(feature = "full")]
 mod visualize;
 
@@ -202,6 +201,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+#[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
@@ -227,7 +227,7 @@ use crate::element::helpers::raw_decode;
 pub use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use crate::Error::MerkError;
 
 #[cfg(feature = "full")]
@@ -239,6 +239,7 @@ pub struct GroveDb {
     db: RocksDbStorage,
 }
 
+#[cfg(feature = "full")]
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 /// Transaction
@@ -318,7 +319,7 @@ impl GroveDb {
                 .add_cost(cost)
             } else {
                 Err(Error::CorruptedPath(
-                    "cannot open a subtree as parent exists but is not a tree",
+                    "cannot open a subtree as parent exists but is not a tree".to_string(),
                 ))
                 .wrap_with_cost(cost)
             }
@@ -378,7 +379,7 @@ impl GroveDb {
                 .unwrap()
             } else {
                 Err(Error::CorruptedPath(
-                    "cannot open a subtree as parent exists but is not a tree",
+                    "cannot open a subtree as parent exists but is not a tree".to_string(),
                 ))
             }
         } else {
@@ -438,7 +439,7 @@ impl GroveDb {
                 .add_cost(cost)
             } else {
                 Err(Error::CorruptedPath(
-                    "cannot open a subtree as parent exists but is not a tree",
+                    "cannot open a subtree as parent exists but is not a tree".to_string(),
                 ))
                 .wrap_with_cost(cost)
             }
@@ -894,7 +895,7 @@ impl GroveDb {
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value)?;
-            if element.is_tree() {
+            if element.is_any_tree() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,
@@ -924,7 +925,7 @@ impl GroveDb {
                     );
                 }
                 issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch)?);
-            } else if element.is_item() {
+            } else if element.is_any_item() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,
@@ -964,7 +965,7 @@ impl GroveDb {
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value)?;
-            if element.is_tree() {
+            if element.is_any_tree() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,
@@ -999,7 +1000,7 @@ impl GroveDb {
                     batch,
                     transaction,
                 )?);
-            } else if element.is_item() {
+            } else if element.is_any_item() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
                         &key,

@@ -408,7 +408,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let keys = prove_keys_per_batch[i % n_batches].clone();
 
-            merk.prove_unchecked(keys, None, None, true)
+            merk.prove_unchecked(keys, None, true)
                 .unwrap()
                 .expect("prove failed");
             i += 1;
