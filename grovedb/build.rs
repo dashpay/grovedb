@@ -24,7 +24,8 @@ fn main() {
     if !status.success() {
         let stdout_msg = String::from_utf8_lossy(&stdout);
         let stderr_msg = String::from_utf8_lossy(&stderr);
-        panic!("Error running `trunk build --release`\n{stdout_msg}\n{stderr_msg}");
+        let bindgen_version = env::var_os("TRUNK_TOOLS_WASM_BINDGEN").unwrap_or_default();
+        panic!("Error running `trunk build --release`\nbindgen version:{bindgen_version:?}\n{stdout_msg}\n{stderr_msg}");
     }
 
     let zip_file = out_dir.join("grovedbg.zip");
