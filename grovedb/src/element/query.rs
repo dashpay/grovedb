@@ -172,7 +172,7 @@ fn format_query(query: &Query, indent: usize) -> String {
 #[cfg(feature = "full")]
 fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
     let indent_str = " ".repeat(indent);
-    let mut output = format!("SubqueryBranch {{\n");
+    let mut output = "SubqueryBranch {{\n".to_string();
 
     if let Some(ref path) = branch.subquery_path {
         output += &format!("{}  subquery_path: {:?},\n", indent_str, path);
@@ -201,7 +201,7 @@ where
         writeln!(
             f,
             "  key: {}",
-            self.key.map_or("None".to_string(), |k| hex_to_ascii(k))
+            self.key.map_or("None".to_string(), hex_to_ascii)
         )?;
         writeln!(f, "  element: {}", self.element)?;
         writeln!(
@@ -209,7 +209,7 @@ where
             "  path: [{}]",
             self.path
                 .iter()
-                .map(|p| hex_to_ascii(*p))
+                .map(|p| hex_to_ascii(p))
                 .collect::<Vec<_>>()
                 .join(", ")
         )?;

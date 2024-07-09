@@ -36,23 +36,23 @@ pub struct ProvedPathKeyOptionalValue {
 #[cfg(any(feature = "full", feature = "verify"))]
 impl fmt::Display for ProvedPathKeyOptionalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ProvedPathKeyValue {{\n")?;
-        write!(
+        writeln!(f, "ProvedPathKeyValue {{")?;
+        writeln!(
             f,
-            "  path: [{}],\n",
+            "  path: [{}],",
             self.path
                 .iter()
                 .map(|p| hex_to_ascii(p))
                 .collect::<Vec<_>>()
                 .join(", ")
         )?;
-        write!(f, "  key: {},\n", hex_to_ascii(&self.key))?;
-        write!(
+        writeln!(f, "  key: {},", hex_to_ascii(&self.key))?;
+        writeln!(
             f,
-            "  value: {},\n",
+            "  value: {},",
             optional_element_hex_to_ascii(self.value.as_ref())
         )?;
-        write!(f, "  proof: {}\n", hex::encode(self.proof))?;
+        writeln!(f, "  proof: {}", hex::encode(self.proof))?;
         write!(f, "}}")
     }
 }
@@ -74,23 +74,19 @@ pub struct ProvedPathKeyValue {
 #[cfg(any(feature = "full", feature = "verify"))]
 impl fmt::Display for ProvedPathKeyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ProvedPathKeyValue {{\n")?;
-        write!(
+        writeln!(f, "ProvedPathKeyValue {{")?;
+        writeln!(
             f,
-            "  path: [{}],\n",
+            "  path: [{}],",
             self.path
                 .iter()
                 .map(|p| hex_to_ascii(p))
                 .collect::<Vec<_>>()
                 .join(", ")
         )?;
-        write!(f, "  key: {},\n", hex_to_ascii(&self.key))?;
-        write!(
-            f,
-            "  value: {},\n",
-            element_hex_to_ascii(self.value.as_ref())
-        )?;
-        write!(f, "  proof: {}\n", hex::encode(self.proof))?;
+        writeln!(f, "  key: {},", hex_to_ascii(&self.key))?;
+        writeln!(f, "  value: {},", element_hex_to_ascii(self.value.as_ref()))?;
+        writeln!(f, "  proof: {}", hex::encode(self.proof))?;
         write!(f, "}}")
     }
 }
@@ -294,15 +290,15 @@ pub fn hex_to_ascii(hex_value: &[u8]) -> String {
     if hex_value.iter().all(|&c| ALLOWED_CHARS.contains(&c)) {
         // Try to convert to UTF-8
         String::from_utf8(hex_value.to_vec())
-            .unwrap_or_else(|_| format!("0x{}", hex::encode(&hex_value)))
+            .unwrap_or_else(|_| format!("0x{}", hex::encode(hex_value)))
     } else {
         // Hex encode and prepend "0x"
-        format!("0x{}", hex::encode(&hex_value))
+        format!("0x{}", hex::encode(hex_value))
     }
 }
 
 pub fn path_hex_to_ascii(path: &Path) -> String {
-    path.into_iter()
+    path.iter()
         .map(|e| hex_to_ascii(e.as_slice()))
         .collect::<Vec<_>>()
         .join("/")
@@ -310,7 +306,7 @@ pub fn path_hex_to_ascii(path: &Path) -> String {
 
 pub fn path_as_slices_hex_to_ascii(path: &[&[u8]]) -> String {
     path.into_iter()
-        .map(|e| hex_to_ascii(*e))
+        .map(|e| hex_to_ascii(e))
         .collect::<Vec<_>>()
         .join("/")
 }

@@ -112,9 +112,7 @@ impl fmt::Display for Element {
                 write!(
                     f,
                     "Tree({}{})",
-                    root_key
-                        .as_ref()
-                        .map_or("None".to_string(), |k| hex::encode(k)),
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
@@ -134,9 +132,7 @@ impl fmt::Display for Element {
                 write!(
                     f,
                     "SumTree({}, {}{}",
-                    root_key
-                        .as_ref()
-                        .map_or("None".to_string(), |k| hex::encode(k)),
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
                     sum_value,
                     flags
                         .as_ref()

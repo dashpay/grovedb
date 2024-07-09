@@ -32,7 +32,7 @@ impl GroveDb {
             // must have a limit
             query.query.limit.ok_or(Error::NotSupported(
                 "limits must be set in verify_query_with_absence_proof".to_string(),
-            ))? as usize;
+            ))?;
         }
 
         // must have no offset
@@ -249,7 +249,9 @@ impl GroveDb {
         let mut verified_keys = BTreeSet::new();
 
         if merk_result.result_set.is_empty() {
-            limit_left.as_mut().map(|limit| *limit -= 1);
+            if prove_options.decrease_limit_on_empty_sub_query_result {
+                limit_left.as_mut().map(|limit| *limit -= 1);
+            }
         } else {
             for proved_key_value in merk_result.result_set {
                 let mut path = current_path.to_vec();

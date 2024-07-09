@@ -276,7 +276,7 @@ impl PathQuery {
         }
     }
 
-    pub fn query_items_at_path<'a>(&'a self, path: &[&[u8]]) -> Option<SinglePathSubquery> {
+    pub fn query_items_at_path(&self, path: &[&[u8]]) -> Option<SinglePathSubquery> {
         fn recursive_query_items<'b>(
             query: &'b Query,
             path: &[&[u8]],
@@ -299,11 +299,9 @@ impl PathQuery {
                                     .all(|(a, b)| *a == b.as_slice())
                                 {
                                     return if path_after_top_removed.len() == subquery_path.len() {
-                                        if let Some(subquery) = &subquery_branch.subquery {
-                                            Some(SinglePathSubquery::from_query(subquery))
-                                        } else {
-                                            None
-                                        }
+                                        subquery_branch.subquery.as_ref().map(|subquery| {
+                                            SinglePathSubquery::from_query(subquery)
+                                        })
                                     } else {
                                         let last_path_item = path.len() == subquery_path.len();
                                         let has_subquery = subquery_branch.subquery.is_some();
@@ -350,11 +348,11 @@ impl PathQuery {
                         // If we are asking what is the subquery when we are at 1 / 2
                         // we should get
                         return if path_after_top_removed.len() == subquery_path.len() {
-                            if let Some(subquery) = &query.default_subquery_branch.subquery {
-                                Some(SinglePathSubquery::from_query(subquery))
-                            } else {
-                                None
-                            }
+                            query
+                                .default_subquery_branch
+                                .subquery
+                                .as_ref()
+                                .map(|subquery| SinglePathSubquery::from_query(subquery))
                         } else {
                             let last_path_item = path.len() == subquery_path.len();
                             let has_subquery = query.default_subquery_branch.subquery.is_some();
@@ -482,7 +480,7 @@ impl<'a> fmt::Display for SinglePathSubquery<'a> {
         writeln!(f, "  has_subquery: {}", self.has_subquery)?;
         writeln!(f, "  left_to_right: {}", self.left_to_right)?;
         match &self.in_path {
-            Some(path) => writeln!(f, "  in_path: Some({})", hex_to_ascii(&path)),
+            Some(path) => writeln!(f, "  in_path: Some({})", hex_to_ascii(path)),
             None => writeln!(f, "  in_path: None"),
         }?;
         write!(f, "}}")
@@ -493,13 +491,11 @@ impl<'a> SinglePathSubquery<'a> {
     /// Checks to see if we have a subquery on a specific key
     pub fn has_subquery_or_matching_in_path_on_key(&self, key: &[u8]) -> bool {
         if self.has_subquery.has_subquery_on_key(key) {
-            return true;
+            true
+        } else if let Some(path) = self.in_path.as_ref() {
+            path.as_slice() == key
         } else {
-            if let Some(path) = self.in_path.as_ref() {
-                path.as_slice() == key
-            } else {
-                false
-            }
+            false
         }
     }
 
@@ -1516,66 +1512,60 @@ mod tests {
             },
         };
 
-        // {
-        //     let path = vec![];
-        //     let first = path_query
-        //         .query_items_at_path(&path)
-        //         .expect("expected query items");
-        //
-        //     assert_eq!(
-        //         first,
-        //         InternalCowItemsQuery {
-        //             items: Cow::Owned(vec![
-        //                 QueryItem::Key(vec![20]),
-        //                 QueryItem::Key(vec![96]),
-        //             ]),
-        //             has_subquery:
-        // HasSubquery::Conditionally(Cow::Borrowed(&conditional_subquery_branches)),
-        //             left_to_right: true,
-        //             in_path: None,
-        //         }
-        //     );
-        // }
-        //
-        // {
-        //     let path = vec![key_20.as_slice()];
-        //     let query = path_query
-        //         .query_items_at_path(&path)
-        //         .expect("expected query items");
-        //
-        //     assert_eq!(
-        //         query,
-        //         InternalCowItemsQuery {
-        //             items: Cow::Owned(vec![
-        //                 QueryItem::Key(identity_id.clone()),
-        //             ]),
-        //             has_subquery: NoSubquery,
-        //             left_to_right: true,
-        //             in_path: Some(Cow::Borrowed(&identity_id)),
-        //         }
-        //     );
-        // }
-        //
-        // {
-        //     let path = vec![key_20.as_slice(), identity_id.as_slice()];
-        //     let query = path_query
-        //         .query_items_at_path(&path)
-        //         .expect("expected query items");
-        //
-        //     assert_eq!(
-        //         query,
-        //         InternalCowItemsQuery {
-        //             items: Cow::Owned(vec![
-        //                 QueryItem::Key(vec![80]),
-        //                 QueryItem::Key(vec![0xc0]),
-        //             ]),
-        //             has_subquery:
-        // HasSubquery::Conditionally(Cow::Borrowed(&
-        // inner_conditional_subquery_branches)),             left_to_right:
-        // true,             in_path: None,
-        //         }
-        //     );
-        // }
+        {
+            let path = vec![];
+            let first = path_query
+                .query_items_at_path(&path)
+                .expect("expected query items");
+
+            assert_eq!(
+                first,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(vec![20]), QueryItem::Key(vec![96]),]),
+                    has_subquery: HasSubquery::Conditionally(Cow::Borrowed(
+                        &conditional_subquery_branches
+                    )),
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+
+        {
+            let path = vec![key_20.as_slice()];
+            let query = path_query
+                .query_items_at_path(&path)
+                .expect("expected query items");
+
+            assert_eq!(
+                query,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(identity_id.clone()),]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: Some(Cow::Borrowed(&identity_id)),
+                }
+            );
+        }
+
+        {
+            let path = vec![key_20.as_slice(), identity_id.as_slice()];
+            let query = path_query
+                .query_items_at_path(&path)
+                .expect("expected query items");
+
+            assert_eq!(
+                query,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(vec![80]), QueryItem::Key(vec![0xc0]),]),
+                    has_subquery: HasSubquery::Conditionally(Cow::Borrowed(
+                        &inner_conditional_subquery_branches
+                    )),
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
 
         {
             let path = vec![key_20.as_slice(), identity_id.as_slice(), key_80.as_slice()];
@@ -1593,54 +1583,5 @@ mod tests {
                 }
             );
         }
-        // {
-        //     let path = vec![
-        //         vec![20],
-        //     ];
-        //
-        //     let second = path_query
-        //         .query
-        //         .query
-        //         .query_items_at_path(&path)
-        //         .expect("expected query items");
-        //
-        //     assert_eq!(
-        //         second,
-        //         InternalCowItemsQuery {
-        //             items: Cow::Owned(vec![
-        //                 QueryItem::Key(vec![80]),
-        //                 QueryItem::Key(vec![0xc0]),
-        //             ]),
-        //             has_subquery: HasSubquery::Always,
-        //             left_to_right: true,
-        //             in_path: Some(Cow::Borrowed(&vec![20])),
-        //         }
-        //     );
-        // }
-        //
-        // {
-        //     let path = vec![
-        //         vec![20],
-        //         vec![80],
-        //     ];
-        //
-        //     let third = path_query
-        //         .query
-        //         .query
-        //         .query_items_at_path(&path)
-        //         .expect("expected query items");
-        //
-        //     assert_eq!(
-        //         third,
-        //         InternalCowItemsQuery {
-        //             items: Cow::Owned(vec![
-        //                 QueryItem::RangeFull,
-        //             ]),
-        //             has_subquery: HasSubquery::Always,
-        //             left_to_right: true,
-        //             in_path: Some(Cow::Borrowed(&vec![80])),
-        //         }
-        //     );
-        // }
     }
 }

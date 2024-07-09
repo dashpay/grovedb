@@ -298,9 +298,7 @@ impl QueryResultElements {
             if let QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) =
                 result_item
             {
-                map.entry(path)
-                    .or_insert_with(BTreeMap::new)
-                    .insert(key, element);
+                map.entry(path).or_default().insert(key, element);
             }
         }
 
@@ -316,9 +314,7 @@ impl QueryResultElements {
                 result_item
             {
                 if let Some(last) = path.pop() {
-                    map.entry(last)
-                        .or_insert_with(BTreeMap::new)
-                        .insert(key, element);
+                    map.entry(last).or_default().insert(key, element);
                 }
             }
         }
@@ -409,9 +405,9 @@ impl QueryResultElements {
             if let QueryResultElement::PathKeyElementTrioResultItem((mut path, key, _)) =
                 result_item
             {
-                if let Some(_) = path.pop() {
+                if path.pop().is_some() {
                     if let Some(last) = path.pop() {
-                        map.entry(last).or_insert_with(Vec::new).push(key);
+                        map.entry(last).or_default().push(key);
                     }
                 }
             }

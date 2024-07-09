@@ -87,9 +87,9 @@ pub enum ReferencePathType {
 }
 
 // Helper function to display paths
-fn display_path(path: &Vec<Vec<u8>>) -> String {
+fn display_path(path: &[Vec<u8>]) -> String {
     path.iter()
-        .map(|segment| hex::encode(segment))
+        .map(hex::encode)
         .collect::<Vec<String>>()
         .join("/")
 }
@@ -219,7 +219,7 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
             no_of_elements_to_keep,
             mut path,
         ) => {
-            if usize::from(no_of_elements_to_keep) > current_path.len() || current_path.len() == 0 {
+            if usize::from(no_of_elements_to_keep) > current_path.len() || current_path.is_empty() {
                 return Err(Error::InvalidInput(
                     "reference stored path cannot satisfy reference constraints",
                 ));
