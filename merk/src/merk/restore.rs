@@ -710,10 +710,7 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(2).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(
-                &traversal_instruction_as_vec_bytes(&[LEFT, LEFT]),
-                chunk,
-            )
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, LEFT]), chunk)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
@@ -726,10 +723,8 @@ mod tests {
         // let's try to apply the second chunk again, should not work
         let (chunk, _) = chunk_producer.chunk_with_index(2).unwrap();
         // apply second chunk
-        let chunk_process_result = restorer.process_chunk(
-            &traversal_instruction_as_vec_bytes(&[LEFT, LEFT]),
-            chunk,
-        );
+        let chunk_process_result =
+            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, LEFT]), chunk);
         assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
@@ -739,10 +734,8 @@ mod tests {
         // next let's get a random but expected chunk and work with that e.g. chunk 4
         // but let's apply it to the wrong place
         let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
-        let chunk_process_result = restorer.process_chunk(
-            &traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]),
-            chunk,
-        );
+        let chunk_process_result =
+            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]), chunk);
         assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
@@ -755,10 +748,7 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(5).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(
-                &traversal_instruction_as_vec_bytes(&[RIGHT, RIGHT]),
-                chunk,
-            )
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[RIGHT, RIGHT]), chunk)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
@@ -772,10 +762,7 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(3).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(
-                &traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]),
-                chunk,
-            )
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]), chunk)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
@@ -789,10 +776,7 @@ mod tests {
         let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(
-                &traversal_instruction_as_vec_bytes(&[RIGHT, LEFT]),
-                chunk,
-            )
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[RIGHT, LEFT]), chunk)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
