@@ -1,17 +1,22 @@
-use std::{collections::LinkedList, fmt};
+#[cfg(feature = "full")]
+use std::collections::LinkedList;
+use std::fmt;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "full")]
-use crate::proofs::query::{Map, MapBuilder};
+use crate::proofs::{
+    query::{Map, MapBuilder},
+    Op,
+};
 use crate::{
     error::Error,
-    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Op, Query},
+    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
     tree::value_hash,
     CryptoHash as MerkHash, CryptoHash,
 };
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), Option<u16>);
 
 #[cfg(feature = "full")]

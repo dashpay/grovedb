@@ -38,13 +38,17 @@ use grovedb_costs::{
 };
 #[cfg(feature = "full")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
+#[cfg(feature = "full")]
 use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
+#[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
+#[cfg(feature = "full")]
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::{
     element::helpers::raw_decode,
@@ -58,9 +62,8 @@ use crate::{
     util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
-use crate::{operations::proof::util::hex_to_ascii, query_result_type::Path};
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{Element, SizedQuery};
+use crate::{query_result_type::Path, Element, SizedQuery};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, Debug)]
@@ -130,6 +133,7 @@ where
     pub offset: &'a mut Option<u16>,
 }
 
+#[cfg(feature = "full")]
 fn format_query(query: &Query, indent: usize) -> String {
     let indent_str = " ".repeat(indent);
     let mut output = format!("{}Query {{\n", indent_str);
@@ -165,6 +169,7 @@ fn format_query(query: &Query, indent: usize) -> String {
     output
 }
 
+#[cfg(feature = "full")]
 fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
     let indent_str = " ".repeat(indent);
     let mut output = format!("SubqueryBranch {{\n");

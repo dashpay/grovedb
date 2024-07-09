@@ -15,9 +15,8 @@ use crate::operations::proof::util::{
 };
 use crate::{
     operations::proof::{
-        generate::{GroveDBProof, GroveDBProofV0, LayerProof},
         util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
-        ProveOptions,
+        GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions,
     },
     query_result_type::PathKeyOptionalElementTrio,
     Element, Error, GroveDb, PathQuery,

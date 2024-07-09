@@ -143,7 +143,7 @@ impl QueryResultElements {
     }
 
     /// From elements
-    pub(crate) fn from_elements(elements: Vec<QueryResultElement>) -> Self {
+    pub fn from_elements(elements: Vec<QueryResultElement>) -> Self {
         QueryResultElements { elements }
     }
 

@@ -10,7 +10,7 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use grovedb_storage::RawIterator;
@@ -427,7 +427,7 @@ impl QueryItem {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
+    pub fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
         for (ai, bi) in a.iter().zip(b.iter()) {
             match ai.cmp(bi) {
                 Ordering::Equal => continue,

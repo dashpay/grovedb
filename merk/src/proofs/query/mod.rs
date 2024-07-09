@@ -14,11 +14,11 @@ pub mod query_item;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod verify;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use std::cmp::Ordering;
 use std::{collections::HashSet, fmt, ops::RangeFull};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 #[cfg(any(feature = "full", feature = "verify"))]
 use indexmap::IndexMap;
@@ -28,7 +28,7 @@ pub use map::*;
 pub use query_item::intersect::QueryItemIntersectionResult;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query_item::QueryItem;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use verify::ProofAbsenceLimit;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use verify::VerifyOptions;
@@ -37,7 +37,7 @@ pub use verify::{ProofVerificationResult, ProvedKeyOptionalValue, ProvedKeyValue
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use super::Node;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::error::Error;

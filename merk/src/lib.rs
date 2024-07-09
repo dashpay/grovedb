@@ -70,7 +70,7 @@ mod visualize;
 
 #[cfg(feature = "full")]
 pub use ed;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use error::Error;
 #[cfg(feature = "full")]
 pub use tree::{

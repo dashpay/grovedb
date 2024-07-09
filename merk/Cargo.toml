@@ -19,13 +19,10 @@ indexmap = "2.2.6"
 grovedb-costs = { version = "1.0.0-rc.2", path = "../costs" }
 grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize" }
 grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
+hex = { version = "0.4.3" }
 
 [dependencies.time]
 version = "0.3.34"
-optional = true
-
-[dependencies.hex]
-version = "0.4.3"
 optional = true
 
 [dependencies.colored]
@@ -58,7 +55,6 @@ default = ["full"]
 proof_debug = []
 full = ["rand",
         "time",
-        "hex",
         "colored",
         "num_cpus",
         "byteorder",

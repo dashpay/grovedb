@@ -201,6 +201,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+#[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
@@ -226,7 +227,7 @@ use crate::element::helpers::raw_decode;
 pub use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use crate::Error::MerkError;
 
 #[cfg(feature = "full")]
@@ -238,6 +239,7 @@ pub struct GroveDb {
     db: RocksDbStorage,
 }
 
+#[cfg(feature = "full")]
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 /// Transaction
