@@ -266,19 +266,31 @@ impl Query {
 
             match node {
                 Node::KV(key, value) => {
-                    println!("Processing KV node");
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KV node");
+                    }
                     execute_node(key, Some(value), value_hash(value).unwrap())?;
                 }
                 Node::KVValueHash(key, value, value_hash) => {
-                    println!("Processing KVValueHash node");
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVValueHash node");
+                    }
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::KVDigest(key, value_hash) => {
-                    println!("Processing KVDigest node");
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigest node");
+                    }
                     execute_node(key, None, *value_hash)?;
                 }
                 Node::KVRefValueHash(key, value, value_hash) => {
-                    println!("Processing KVRefValueHash node");
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHash node");
+                    }
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVValueHashFeatureType(..) => {

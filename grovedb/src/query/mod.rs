@@ -33,12 +33,6 @@ pub struct PathQuery {
     pub query: SizedQuery,
 }
 
-/// Do we go from left to right
-pub type LeftToRight = bool;
-
-/// Do we have subqueries
-pub type HasSubqueries = bool;
-
 #[cfg(any(feature = "full", feature = "verify"))]
 impl fmt::Display for PathQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -282,13 +276,13 @@ impl PathQuery {
         }
     }
 
-    pub fn query_items_at_path<'a>(&'a self, path: &[&[u8]]) -> Option<InternalCowItemsQuery> {
+    pub fn query_items_at_path<'a>(&'a self, path: &[&[u8]]) -> Option<SinglePathSubquery> {
         fn recursive_query_items<'b>(
             query: &'b Query,
             path: &[&[u8]],
-        ) -> Option<InternalCowItemsQuery<'b>> {
+        ) -> Option<SinglePathSubquery<'b>> {
             if path.is_empty() {
-                return Some(InternalCowItemsQuery::from_query(query));
+                return Some(SinglePathSubquery::from_query(query));
             }
 
             let key = path[0];
@@ -306,14 +300,14 @@ impl PathQuery {
                                 {
                                     return if path_after_top_removed.len() == subquery_path.len() {
                                         if let Some(subquery) = &subquery_branch.subquery {
-                                            Some(InternalCowItemsQuery::from_query(subquery))
+                                            Some(SinglePathSubquery::from_query(subquery))
                                         } else {
                                             None
                                         }
                                     } else {
                                         let last_path_item = path.len() == subquery_path.len();
                                         let has_subquery = subquery_branch.subquery.is_some();
-                                        Some(InternalCowItemsQuery::from_key_when_in_path(
+                                        Some(SinglePathSubquery::from_key_when_in_path(
                                             &subquery_path[path_after_top_removed.len()],
                                             last_path_item,
                                             has_subquery,
@@ -357,14 +351,14 @@ impl PathQuery {
                         // we should get
                         return if path_after_top_removed.len() == subquery_path.len() {
                             if let Some(subquery) = &query.default_subquery_branch.subquery {
-                                Some(InternalCowItemsQuery::from_query(subquery))
+                                Some(SinglePathSubquery::from_query(subquery))
                             } else {
                                 None
                             }
                         } else {
                             let last_path_item = path.len() == subquery_path.len();
                             let has_subquery = query.default_subquery_branch.subquery.is_some();
-                            Some(InternalCowItemsQuery::from_key_when_in_path(
+                            Some(SinglePathSubquery::from_key_when_in_path(
                                 &subquery_path[path_after_top_removed.len()],
                                 last_path_item,
                                 has_subquery,
@@ -397,7 +391,7 @@ impl PathQuery {
         match given_path_len.cmp(&self_path_len) {
             Ordering::Less => {
                 if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
-                    Some(InternalCowItemsQuery::from_key_when_in_path(
+                    Some(SinglePathSubquery::from_key_when_in_path(
                         &self.path[given_path_len],
                         false,
                         true,
@@ -408,7 +402,7 @@ impl PathQuery {
             }
             Ordering::Equal => {
                 if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
-                    Some(InternalCowItemsQuery::from_path_query(self))
+                    Some(SinglePathSubquery::from_path_query(self))
                 } else {
                     None
                 }
@@ -425,7 +419,7 @@ impl PathQuery {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum HasSubquery<'a> {
+pub enum HasSubquery<'a> {
     NoSubquery,
     Always,
     Conditionally(Cow<'a, IndexMap<QueryItem, SubqueryBranch>>),
@@ -465,7 +459,7 @@ impl<'a> HasSubquery<'a> {
 /// subquery information
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct InternalCowItemsQuery<'a> {
+pub struct SinglePathSubquery<'a> {
     /// Items
     pub items: Cow<'a, Vec<QueryItem>>,
     /// Default subquery branch
@@ -477,7 +471,7 @@ pub(crate) struct InternalCowItemsQuery<'a> {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-impl<'a> fmt::Display for InternalCowItemsQuery<'a> {
+impl<'a> fmt::Display for SinglePathSubquery<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "InternalCowItemsQuery {{")?;
         writeln!(f, "  items: [")?;
@@ -495,12 +489,7 @@ impl<'a> fmt::Display for InternalCowItemsQuery<'a> {
     }
 }
 
-impl<'a> InternalCowItemsQuery<'a> {
-    /// Checks to see if we have a subquery on a specific key
-    pub fn has_subquery_on_key(&self, key: &[u8]) -> bool {
-        self.has_subquery.has_subquery_on_key(key)
-    }
-
+impl<'a> SinglePathSubquery<'a> {
     /// Checks to see if we have a subquery on a specific key
     pub fn has_subquery_or_matching_in_path_on_key(&self, key: &[u8]) -> bool {
         if self.has_subquery.has_subquery_on_key(key) {
@@ -518,7 +507,7 @@ impl<'a> InternalCowItemsQuery<'a> {
         key: &'a Vec<u8>,
         subquery_is_last_path_item: bool,
         subquery_has_inner_subquery: bool,
-    ) -> InternalCowItemsQuery<'a> {
+    ) -> SinglePathSubquery<'a> {
         // in this case there should be no in_path, because we are trying to get this
         // level of items and nothing underneath
         let in_path = if subquery_is_last_path_item && !subquery_has_inner_subquery {
@@ -526,7 +515,7 @@ impl<'a> InternalCowItemsQuery<'a> {
         } else {
             Some(Borrowed(key))
         };
-        InternalCowItemsQuery {
+        SinglePathSubquery {
             items: Cow::Owned(vec![QueryItem::Key(key.clone())]),
             has_subquery: HasSubquery::NoSubquery,
             left_to_right: true,
@@ -534,11 +523,11 @@ impl<'a> InternalCowItemsQuery<'a> {
         }
     }
 
-    pub fn from_path_query(path_query: &PathQuery) -> InternalCowItemsQuery {
+    pub fn from_path_query(path_query: &PathQuery) -> SinglePathSubquery {
         Self::from_query(&path_query.query.query)
     }
 
-    pub fn from_query(query: &Query) -> InternalCowItemsQuery {
+    pub fn from_query(query: &Query) -> SinglePathSubquery {
         let has_subquery = if query.default_subquery_branch.subquery.is_some()
             || query.default_subquery_branch.subquery_path.is_some()
         {
@@ -548,7 +537,7 @@ impl<'a> InternalCowItemsQuery<'a> {
         } else {
             HasSubquery::NoSubquery
         };
-        InternalCowItemsQuery {
+        SinglePathSubquery {
             items: Cow::Borrowed(&query.items),
             has_subquery,
             left_to_right: query.left_to_right,
@@ -569,7 +558,7 @@ mod tests {
     use indexmap::IndexMap;
 
     use crate::{
-        query::{HasSubquery, HasSubquery::NoSubquery, InternalCowItemsQuery},
+        query::{HasSubquery, SinglePathSubquery},
         query_result_type::QueryResultType,
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
@@ -1213,7 +1202,7 @@ mod tests {
 
             assert_eq!(
                 first,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(root_path_key_2.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
@@ -1231,7 +1220,7 @@ mod tests {
 
             assert_eq!(
                 second,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(root_item_key.clone())]),
                     has_subquery: HasSubquery::Always, /* This is correct because there's a
                                                         * subquery for one item */
@@ -1254,7 +1243,7 @@ mod tests {
 
             assert_eq!(
                 third,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_1.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
@@ -1277,7 +1266,7 @@ mod tests {
 
             assert_eq!(
                 fourth,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_2.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
@@ -1301,7 +1290,7 @@ mod tests {
 
             assert_eq!(
                 fifth,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(subquery_item_key.clone())]),
                     has_subquery: HasSubquery::Always, /* This means that we should be able to
                                                         * add items underneath */
@@ -1327,7 +1316,7 @@ mod tests {
 
             assert_eq!(
                 sixth,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(inner_subquery_path_key.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
@@ -1371,7 +1360,7 @@ mod tests {
 
             assert_eq!(
                 first,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::RangeFull(RangeFull)]),
                     has_subquery: HasSubquery::Always,
                     left_to_right: true,
@@ -1389,7 +1378,7 @@ mod tests {
 
             assert_eq!(
                 second,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(quantum_key.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
@@ -1439,7 +1428,7 @@ mod tests {
 
             assert_eq!(
                 second,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::Key(zero_vec.clone())]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,
@@ -1596,7 +1585,7 @@ mod tests {
 
             assert_eq!(
                 query,
-                InternalCowItemsQuery {
+                SinglePathSubquery {
                     items: Cow::Owned(vec![QueryItem::RangeFull(RangeFull)]),
                     has_subquery: HasSubquery::NoSubquery,
                     left_to_right: true,

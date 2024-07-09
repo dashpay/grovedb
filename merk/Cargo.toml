@@ -55,6 +55,7 @@ optional = true
 
 [features]
 default = ["full"]
+proof_debug = []
 full = ["rand",
         "time",
         "hex",

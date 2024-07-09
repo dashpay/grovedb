@@ -9,13 +9,14 @@ use grovedb_merk::{
     CryptoHash,
 };
 
+#[cfg(feature = "proof_debug")]
+use crate::operations::proof::util::{
+    hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
+};
 use crate::{
     operations::proof::{
         generate::{GroveDBProof, GroveDBProofV0, LayerProof},
-        util::{
-            element_hex_to_ascii, hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
-            ProvedPathKeyOptionalValue, ProvedPathKeyValues,
-        },
+        util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
         ProveOptions,
     },
     query_result_type::PathKeyOptionalElementTrio,
@@ -118,18 +119,38 @@ impl GroveDb {
                 .into_iter()
                 .map(|(path, key, element)| ((path, key), element))
                 .collect();
-
-            println!(
-                "t{:?}, r{:?}",
-                terminal_keys
-                    .iter()
-                    .map(|(path, key)| (path_hex_to_ascii(path), hex_to_ascii(key)))
-                    .collect::<Vec<_>>(),
-                result_set_as_map
-                    .iter()
-                    .map(|((path, key), e)| ((path_hex_to_ascii(path), hex_to_ascii(key)), e))
-                    .collect::<BTreeMap<_, _>>()
-            );
+            #[cfg(feature = "proof_debug")]
+            {
+                println!(
+                    "terminal keys are [{}] \n result set is [{}]",
+                    terminal_keys
+                        .iter()
+                        .map(|(path, key)| format!(
+                            "path: {} key: {}",
+                            path_hex_to_ascii(path),
+                            hex_to_ascii(key)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    result_set_as_map
+                        .iter()
+                        .map(|((path, key), e)| {
+                            let element_string = if let Some(e) = e {
+                                e.to_string()
+                            } else {
+                                "None".to_string()
+                            };
+                            format!(
+                                "path: {} key: {} element: {}",
+                                path_hex_to_ascii(path),
+                                hex_to_ascii(key),
+                                e
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
 
             result = terminal_keys
                 .into_iter()
@@ -217,12 +238,14 @@ impl GroveDb {
                 eprintln!("{e}");
                 Error::InvalidProof(format!("invalid proof verification parameters: {}", e))
             })?;
-
-        println!(
-            "current path {} merk result is {}",
-            path_as_slices_hex_to_ascii(current_path),
-            merk_result
-        );
+        #[cfg(feature = "proof_debug")]
+        {
+            println!(
+                "current path {} \n merk result is {}",
+                path_as_slices_hex_to_ascii(current_path),
+                merk_result
+            );
+        }
 
         let mut verified_keys = BTreeSet::new();
 
@@ -239,7 +262,10 @@ impl GroveDb {
                     verified_keys.insert(key.clone());
 
                     if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
-                        println!("lower layer had key {}", hex_to_ascii(key));
+                        #[cfg(feature = "proof_debug")]
+                        {
+                            println!("lower layer had key {}", hex_to_ascii(key));
+                        }
                         match element {
                             Element::Tree(Some(_), _) | Element::SumTree(Some(_), ..) => {
                                 path.push(key);
@@ -287,10 +313,13 @@ impl GroveDb {
                                 path.iter().map(|p| p.to_vec()).collect(),
                                 proved_key_value,
                             );
-                        println!(
-                            "pushing {} limit left after is {:?}",
-                            &path_key_optional_value, limit_left
-                        );
+                        #[cfg(feature = "proof_debug")]
+                        {
+                            println!(
+                                "pushing {} limit left after is {:?}",
+                                &path_key_optional_value, limit_left
+                            );
+                        }
                         result.push(path_key_optional_value.try_into()?);
 
                         limit_left.as_mut().map(|limit| *limit -= 1);
@@ -298,12 +327,15 @@ impl GroveDb {
                             break;
                         }
                     } else {
-                        println!(
-                            "we have subquery on key {} with value {}: {}",
-                            hex_to_ascii(key),
-                            element,
-                            level_query
-                        )
+                        #[cfg(feature = "proof_debug")]
+                        {
+                            println!(
+                                "we have subquery on key {} with value {}: {}",
+                                hex_to_ascii(key),
+                                element,
+                                level_query
+                            )
+                        }
                     }
                 }
             }

@@ -46,6 +46,7 @@ harness = false
 
 [features]
 default = ["full"]
+proof_debug = []
 full = [
     "grovedb-merk/full",
     "thiserror",

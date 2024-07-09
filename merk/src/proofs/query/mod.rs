@@ -135,29 +135,6 @@ impl fmt::Display for Query {
     }
 }
 
-macro_rules! compare_result_tuples_not_optional {
-    ($result_set:expr, $expected_result_set:expr) => {
-        assert_eq!(
-            $expected_result_set.len(),
-            $result_set.len(),
-            "Result set lengths do not match"
-        );
-        for i in 0..$expected_result_set.len() {
-            assert_eq!(
-                $expected_result_set[i].0, $result_set[i].key,
-                "Key mismatch at index {}",
-                i
-            );
-            assert_eq!(
-                &$expected_result_set[i].1,
-                $result_set[i].value.as_ref().expect("expected value"),
-                "Value mismatch at index {}",
-                i
-            );
-        }
-    };
-}
-
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Query {
     /// Creates a new query which contains no items.
@@ -839,12 +816,35 @@ where
 #[cfg(test)]
 mod test {
 
+    macro_rules! compare_result_tuples_not_optional {
+        ($result_set:expr, $expected_result_set:expr) => {
+            assert_eq!(
+                $expected_result_set.len(),
+                $result_set.len(),
+                "Result set lengths do not match"
+            );
+            for i in 0..$expected_result_set.len() {
+                assert_eq!(
+                    $expected_result_set[i].0, $result_set[i].key,
+                    "Key mismatch at index {}",
+                    i
+                );
+                assert_eq!(
+                    &$expected_result_set[i].1,
+                    $result_set[i].value.as_ref().expect("expected value"),
+                    "Value mismatch at index {}",
+                    i
+                );
+            }
+        };
+    }
+
     use super::{
         super::{encoding::encode_into, *},
         *,
     };
     use crate::{
-        proofs::query::{query_item::QueryItem::RangeAfter, verify, verify::ProvedKeyValue},
+        proofs::query::{query_item::QueryItem::RangeAfter, verify},
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, TreeNode},
         TreeFeatureType::BasicMerkNode,

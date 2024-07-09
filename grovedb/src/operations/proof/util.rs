@@ -1,4 +1,4 @@
-use std::{fmt, fmt::Formatter};
+use std::fmt;
 
 use grovedb_merk::{
     proofs::query::{Key, Path, ProvedKeyOptionalValue, ProvedKeyValue},
