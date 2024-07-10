@@ -38,8 +38,8 @@ fn main() {
     .expect("successful key2 insert");
 
     // Check the key-values are there
-    let result1 = db.get(root_path, key1, None).unwrap();
-    let result2 = db.get(root_path, key2, None).unwrap();
+    let result1 = db.get(root_path, key1, None, grove_version).unwrap();
+    let result2 = db.get(root_path, key2, None, grove_version).unwrap();
     println!("Before deleting, we have key1: {:?}", result1);
     println!("Before deleting, we have key2: {:?}", result2);
 
@@ -52,8 +52,8 @@ fn main() {
         .expect("successfully deleted key2");
 
     // Check the key-values again
-    let result3 = db.get(root_path, key1, None).unwrap();
-    let result4 = db.get(root_path, key2, None).unwrap();
+    let result3 = db.get(root_path, key1, None, grove_version).unwrap();
+    let result4 = db.get(root_path, key2, None, grove_version).unwrap();
     println!("After deleting, we have key1: {:?}", result3);
     println!("After deleting, we have key2: {:?}", result4);
 }

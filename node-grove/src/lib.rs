@@ -348,6 +348,7 @@ impl GroveDbWrapper {
                     path.as_slice(),
                     &key,
                     using_transaction.then_some(transaction).flatten(),
+                    grove_version,
                 )
                 .unwrap(); // Todo: Costs
 

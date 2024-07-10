@@ -12,7 +12,7 @@ use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
 use indexmap::IndexMap;
-
+use grovedb_version::version::GroveVersion;
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::query_result_type::PathKey;
@@ -276,7 +276,7 @@ impl PathQuery {
         }
     }
 
-    pub fn query_items_at_path(&self, path: &[&[u8]]) -> Option<SinglePathSubquery> {
+    pub fn query_items_at_path(&self, path: &[&[u8]], grove_version: &GroveVersion) -> Option<SinglePathSubquery> {
         fn recursive_query_items<'b>(
             query: &'b Query,
             path: &[&[u8]],
@@ -826,6 +826,7 @@ mod tests {
                 true,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None,
+                grove_version,
             )
             .value
             .expect("expected to get results");
@@ -1138,6 +1139,7 @@ mod tests {
                 true,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None,
+                grove_version,
             )
             .value
             .expect("expected to get results");
@@ -1199,7 +1201,7 @@ mod tests {
         {
             let path = vec![root_path_key_1.as_slice()];
             let first = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1217,7 +1219,7 @@ mod tests {
             let path = vec![root_path_key_1.as_slice(), root_path_key_2.as_slice()];
 
             let second = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1240,7 +1242,7 @@ mod tests {
             ];
 
             let third = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1263,7 +1265,7 @@ mod tests {
             ];
 
             let fourth = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1287,7 +1289,7 @@ mod tests {
             ];
 
             let fifth = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1313,7 +1315,7 @@ mod tests {
             ];
 
             let sixth = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1358,7 +1360,7 @@ mod tests {
         {
             let path = vec![root_path_key.as_slice()];
             let first = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1376,7 +1378,7 @@ mod tests {
             let path = vec![root_path_key.as_slice(), dash_key.as_slice()];
 
             let second = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1427,7 +1429,7 @@ mod tests {
             let path = vec![TEST_LEAF, empty_vec.as_slice()];
 
             let second = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1524,7 +1526,7 @@ mod tests {
         {
             let path = vec![];
             let first = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1543,7 +1545,7 @@ mod tests {
         {
             let path = vec![key_20.as_slice()];
             let query = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1560,7 +1562,7 @@ mod tests {
         {
             let path = vec![key_20.as_slice(), identity_id.as_slice()];
             let query = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(
@@ -1579,7 +1581,7 @@ mod tests {
         {
             let path = vec![key_20.as_slice(), identity_id.as_slice(), key_80.as_slice()];
             let query = path_query
-                .query_items_at_path(&path)
+                .query_items_at_path(&path, grove_version)
                 .expect("expected query items");
 
             assert_eq!(

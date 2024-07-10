@@ -95,13 +95,13 @@
 //!
 //! // Retrieve inserted elements
 //! let elem = db
-//!     .get(&[b"tree1"], b"hello", None, grove_version)
+//!     .get(&[b"tree1"], b"hello", None,grove_version)
 //!     .unwrap()
 //!     .expect("successful get");
 //! assert_eq!(elem, Element::new_item(b"world".to_vec()));
 //!
 //! let elem = db
-//!     .get(&[b"tree1"], b"grovedb", None, grove_version)
+//!     .get(&[b"tree1"], b"grovedb", None,grove_version)
 //!     .unwrap()
 //!     .expect("successful get");
 //! assert_eq!(elem, Element::new_item(b"rocks".to_vec()));
@@ -121,7 +121,7 @@
 //!
 //! // Retrieve updated element
 //! let elem = db
-//!     .get(&[b"tree1"], b"hello", None, grove_version)
+//!     .get(&[b"tree1"], b"hello", None,grove_version)
 //!     .unwrap()
 //!     .expect("successful get");
 //! assert_eq!(elem, Element::new_item(b"WORLD".to_vec()));
@@ -130,7 +130,7 @@
 //! db.delete(&[b"tree1"], b"hello", None, None, grove_version)
 //!     .unwrap()
 //!     .expect("successful delete");
-//! let elem_result = db.get(&[b"tree1"], b"hello", None).unwrap();
+//! let elem_result = db.get(&[b"tree1"], b"hello", None,grove_version).unwrap();
 //! assert_eq!(elem_result.is_err(), true);
 //!
 //! // State Root
@@ -303,7 +303,7 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
+                Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(|e| {
                     Error::InvalidParentLayerPath(format!(
                         "could not get key {} for parent {:?} of subtree: {}",
                         hex::encode(parent_key),
@@ -429,7 +429,7 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, parent_key).map_err(|e| {
+                Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(|e| {
                     Error::InvalidParentLayerPath(format!(
                         "could not get key {} for parent {:?} of subtree: {}",
                         hex::encode(parent_key),
@@ -476,12 +476,12 @@ impl GroveDb {
 
     /// Returns root key of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_key(&self, transaction: TransactionArg) -> CostResult<Vec<u8>, Error> {
+    pub fn root_key(&self, transaction: TransactionArg, grove_version: &GroveVersion) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, grove_version, {
             let root_key = subtree.root_key().unwrap();
             Ok(root_key).wrap_with_cost(cost)
         })
@@ -494,7 +494,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, grove_version, {
             let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
             Ok(root_hash).wrap_with_cost(cost)
         })
@@ -508,6 +508,7 @@ impl GroveDb {
         mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: &SubtreePath<'b, B>,
         transaction: &Transaction,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -527,7 +528,7 @@ impl GroveDb {
                     storage_batch,
                     parent_path.clone(),
                     transaction,
-                    false
+                    false, grove_version,
                 )
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
@@ -541,7 +542,8 @@ impl GroveDb {
                     parent_key,
                     root_key,
                     root_hash,
-                    sum
+                    sum,
+                    grove_version,
                 )
             );
             child_tree = parent_tree;
@@ -589,7 +591,8 @@ impl GroveDb {
                     parent_key,
                     root_key,
                     root_hash,
-                    sum
+                    sum,
+                    grove_version,
                 )
             );
             child_tree = parent_tree;
@@ -604,6 +607,7 @@ impl GroveDb {
         mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>>,
         path: SubtreePath<'b, B>,
         batch: &StorageBatch,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -621,7 +625,7 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(parent_path.clone(), Some(batch))
+                self.open_non_transactional_merk_at_path(parent_path.clone(), Some(batch), grove_version)
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -634,7 +638,8 @@ impl GroveDb {
                     parent_key,
                     root_key,
                     root_hash,
-                    sum
+                    sum,
+                    grove_version,
                 )
             );
             child_tree = parent_tree;
@@ -826,18 +831,18 @@ impl GroveDb {
     /// .unwrap()?;
     ///
     /// // This action exists only inside the transaction for now
-    /// let result = db.get([TEST_LEAF].as_ref(), subtree_key, None).unwrap();
+    /// let result = db.get([TEST_LEAF].as_ref(), subtree_key, None, grove_version).unwrap();
     /// assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
     /// let result_with_transaction = db
-    ///     .get([TEST_LEAF].as_ref(), subtree_key, Some(&tx))
+    ///     .get([TEST_LEAF].as_ref(), subtree_key, Some(&tx),grove_version)
     ///     .unwrap()?;
     /// assert_eq!(result_with_transaction, Element::empty_tree());
     ///
     /// // After transaction is committed, the value from it can be accessed normally.
     /// let  _ = db.commit_transaction(tx);
-    /// let result = db.get([TEST_LEAF].as_ref(), subtree_key, None).unwrap()?;
+    /// let result = db.get([TEST_LEAF].as_ref(), subtree_key, None,grove_version).unwrap()?;
     /// assert_eq!(result, Element::empty_tree());
     ///
     /// # Ok(())

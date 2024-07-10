@@ -89,11 +89,12 @@ mod test {
         Storage, StorageBatch,
     };
     use tempfile::TempDir;
-
+    use grovedb_version::version::GroveVersion;
     use crate::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType::BasicMerkNode};
 
     #[test]
     fn test_reopen_root_hash() {
+        let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
@@ -142,6 +143,7 @@ mod test {
 
     #[test]
     fn test_open_fee() {
+        let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
 

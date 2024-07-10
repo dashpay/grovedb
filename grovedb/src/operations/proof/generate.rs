@@ -173,7 +173,7 @@ impl GroveDb {
         let query = cost_return_on_error_no_add!(
             &cost,
             path_query
-                .query_items_at_path(path.as_slice())
+                .query_items_at_path(path.as_slice(), grove_version)
                 .ok_or(Error::CorruptedPath(format!(
                     "prove subqueries: path {} should be part of path_query {}",
                     path.iter()
@@ -186,7 +186,7 @@ impl GroveDb {
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.as_slice().into(), None)
+            self.open_non_transactional_merk_at_path(path.as_slice().into(), None, grove_version)
         );
 
         let limit = if path.len() < path_query.path.len() {

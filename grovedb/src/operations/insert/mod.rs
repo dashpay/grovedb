@@ -15,7 +15,7 @@ use grovedb_storage::rocksdb_storage::{
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
 use grovedb_storage::{Storage, StorageBatch};
-use grovedb_version::check_v0;
+use grovedb_version::check_v0_with_cost;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use crate::{
@@ -77,7 +77,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0!("insert", grove_version.grovedb_versions.operations.insert.insert);
+        check_v0_with_cost!("insert", grove_version.grovedb_versions.operations.insert.insert);
 
         let subtree_path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
@@ -120,7 +120,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("insert_on_transaction", grove_version.grovedb_versions.operations.insert.insert_on_transaction);
+        check_v0_with_cost!("insert_on_transaction", grove_version.grovedb_versions.operations.insert.insert_on_transaction);
 
         let mut cost = OperationCost::default();
 
@@ -141,7 +141,7 @@ impl GroveDb {
         merk_cache.insert(path.clone(), merk);
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(merk_cache, path, transaction, batch)
+            self.propagate_changes_with_transaction(merk_cache, path, transaction, batch, grove_version)
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -156,7 +156,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("insert_without_transaction", grove_version.grovedb_versions.operations.insert.insert_without_transaction);
+        check_v0_with_cost!("insert_without_transaction", grove_version.grovedb_versions.operations.insert.insert_without_transaction);
 
         let mut cost = OperationCost::default();
 
@@ -171,7 +171,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_without_transaction(merk_cache, path, batch)
+            self.propagate_changes_without_transaction(merk_cache, path, batch, grove_version)
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -192,13 +192,13 @@ impl GroveDb {
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
-        check_v0!("add_element_on_transaction", grove_version.grovedb_versions.operations.insert.add_element_on_transaction);
+        check_v0_with_cost!("add_element_on_transaction", grove_version.grovedb_versions.operations.insert.add_element_on_transaction);
 
         let mut cost = OperationCost::default();
 
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.clone(), transaction, Some(batch))
+            self.open_transactional_merk_at_path(path.clone(), transaction, Some(batch), grove_version)
         );
         // if we don't allow a tree override then we should check
 
@@ -253,7 +253,8 @@ impl GroveDb {
                     self.open_transactional_merk_at_path(
                         referenced_path.into(),
                         transaction,
-                        Some(batch)
+                        Some(batch),
+                        grove_version,
                     )
                 );
 
@@ -340,12 +341,12 @@ impl GroveDb {
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
-        check_v0!("add_element_without_transaction", grove_version.grovedb_versions.operations.insert.add_element_without_transaction);
+        check_v0_with_cost!("add_element_without_transaction", grove_version.grovedb_versions.operations.insert.add_element_without_transaction);
 
         let mut cost = OperationCost::default();
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.into(), Some(batch))
+            self.open_non_transactional_merk_at_path(path.into(), Some(batch), grove_version)
         );
 
         if options.checks_for_override() {
@@ -396,7 +397,7 @@ impl GroveDb {
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(referenced_path.into(), Some(batch))
+                    self.open_non_transactional_merk_at_path(referenced_path.into(), Some(batch), grove_version)
                 );
 
                 // when there is no transaction, we don't want to use caching
@@ -482,7 +483,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0!("insert_if_not_exists", grove_version.grovedb_versions.operations.insert.insert_if_not_exists);
+        check_v0_with_cost!("insert_if_not_exists", grove_version.grovedb_versions.operations.insert.insert_if_not_exists);
 
         let mut cost = OperationCost::default();
         let subtree_path: SubtreePath<_> = path.into();
@@ -514,7 +515,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0!("insert_if_changed_value", grove_version.grovedb_versions.operations.insert.insert_if_changed_value);
+        check_v0_with_cost!("insert_if_changed_value", grove_version.grovedb_versions.operations.insert.insert_if_changed_value);
 
         let mut cost = OperationCost::default();
         let subtree_path: SubtreePath<B> = path.into();

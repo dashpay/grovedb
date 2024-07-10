@@ -2662,7 +2662,7 @@ mod tests {
         .unwrap();
 
         assert!(db
-            .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None)
+            .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None, grove_version)
             .unwrap()
             .expect("path is valid tree"));
 
@@ -2678,7 +2678,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(!db
-            .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None)
+            .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None, grove_version)
             .unwrap()
             .expect("path is valid tree"));
     }
@@ -2784,8 +2784,9 @@ mod tests {
             db.get(
                 [TEST_LEAF, b"subtree1", b"subtree11"].as_ref(),
                 b"key1",
-                None
-                , grove_version)
+                None,
+                grove_version
+            )
             .unwrap()
             .expect("successful get 1"),
             element
@@ -2906,7 +2907,7 @@ mod tests {
         .unwrap()
         .expect("successful subtree 3 insert");
         let subtrees = db
-            .find_subtrees(&[TEST_LEAF].as_ref().into(), None)
+            .find_subtrees(&[TEST_LEAF].as_ref().into(), None, grove_version)
             .unwrap()
             .expect("cannot get subtrees");
         assert_eq!(

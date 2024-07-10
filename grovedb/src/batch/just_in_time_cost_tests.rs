@@ -66,7 +66,8 @@ mod tests {
         db.get(
             [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
-            Some(&tx), grove_version
+            Some(&tx),
+            grove_version
         )
         .unwrap()
         .expect("cannot get element");
@@ -94,7 +95,8 @@ mod tests {
         db.get(
             [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
-            Some(&tx), grove_version
+            Some(&tx),
+            grove_version
         )
         .unwrap()
         .expect("cannot get element");
@@ -165,7 +167,8 @@ mod tests {
         db.get(
             [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
-            Some(&tx), grove_version
+            Some(&tx),
+            grove_version
         )
         .unwrap()
         .expect("cannot get element");
@@ -214,7 +217,8 @@ mod tests {
         db.get(
             [b"documents".as_slice(), b"key3".as_slice()].as_ref(),
             b"key4",
-            Some(&tx), grove_version
+            Some(&tx),
+            grove_version
         )
         .unwrap()
         .expect("cannot get element");

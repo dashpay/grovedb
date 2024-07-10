@@ -498,6 +498,7 @@ impl Element {
                                     None,
                                     transaction,
                                     subtree,
+                                    grove_version,
                                     {
                                         results.push(QueryResultElement::ElementResultItem(
                                             cost_return_on_error!(
@@ -507,7 +508,7 @@ impl Element {
                                                     path_vec.as_slice(),
                                                     subquery_path_last_key.as_slice(),
                                                     allow_cache,
-                                                grove_version,
+                                                    grove_version,
                                                 )
                                             ),
                                         ));
@@ -522,6 +523,7 @@ impl Element {
                                     None,
                                     transaction,
                                     subtree,
+                                    grove_version,
                                     {
                                         results.push(QueryResultElement::KeyElementPairResultItem(
                                             (
@@ -549,6 +551,7 @@ impl Element {
                                     None,
                                     transaction,
                                     subtree,
+                                    grove_version,
                                     {
                                         results.push(
                                             QueryResultElement::PathKeyElementTrioResultItem((
@@ -705,6 +708,7 @@ impl Element {
                     None,
                     transaction,
                     subtree,
+                    grove_version,
                     {
                         Element::get(&subtree, key, query_options.allow_cache, grove_version)
                             .unwrap_add_cost(&mut cost)

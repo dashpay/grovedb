@@ -87,7 +87,7 @@ impl Element {
             merk.get(
                 key.as_ref(),
                 allow_cache,
-                Some(&Element::value_defined_cost_for_serialized_value)
+                Some(&Element::value_defined_cost_for_serialized_value), grove_version
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
@@ -95,7 +95,7 @@ impl Element {
             &cost,
             value_opt
                 .map(|value| {
-                    Self::deserialize(value.as_slice()).map_err(|_| {
+                    Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
                         Error::CorruptedData(String::from("unable to deserialize element"))
                     })
                 })
@@ -157,7 +157,7 @@ impl Element {
             value
                 .as_ref()
                 .map(|value| {
-                    Self::deserialize(value.as_slice()).map_err(|_| {
+                    Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
                         Error::CorruptedData(String::from("unable to deserialize element"))
                     })
                 })
@@ -226,7 +226,7 @@ impl Element {
 
         let absolute_element = cost_return_on_error_no_add!(
             &cost,
-            element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()))
+            element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()), grove_version)
         );
 
         Ok(absolute_element).wrap_with_cost(cost)
@@ -247,7 +247,7 @@ impl Element {
             merk.get_value_hash(
                 key.as_ref(),
                 allow_cache,
-                Some(&Element::value_defined_cost_for_serialized_value)
+                Some(&Element::value_defined_cost_for_serialized_value), grove_version
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );

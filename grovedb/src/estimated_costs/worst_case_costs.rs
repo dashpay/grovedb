@@ -19,7 +19,7 @@ use grovedb_merk::{
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use integer_encoding::VarInt;
-use grovedb_version::check_v0;
+use grovedb_version::check_v0_with_cost;
 use grovedb_version::version::GroveVersion;
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
@@ -37,7 +37,7 @@ impl GroveDb {
         is_sum_tree: bool,
         grove_version: &GroveVersion,
     ) {
-        check_v0!("add_worst_case_get_merk_at_path", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_merk_at_path);
+        check_v0_with_cost!("add_worst_case_get_merk_at_path", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_merk_at_path);
 
         cost.seek_count += 2;
         match path.last() {
@@ -62,7 +62,7 @@ impl GroveDb {
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("worst_case_merk_replace_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_replace_tree);
+        check_v0_with_cost!("worst_case_merk_replace_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_replace_tree);
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -96,7 +96,7 @@ impl GroveDb {
         propagate_if_input: Option<&WorstCaseLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("worst_case_merk_insert_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_insert_tree);
+        check_v0_with_cost!("worst_case_merk_insert_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_insert_tree);
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -127,7 +127,7 @@ impl GroveDb {
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("worst_case_merk_delete_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_delete_tree);
+        check_v0_with_cost!("worst_case_merk_delete_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_delete_tree);
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -157,7 +157,7 @@ impl GroveDb {
         propagate_for_level: Option<&WorstCaseLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("worst_case_merk_insert_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_insert_element);
+        check_v0_with_cost!("worst_case_merk_insert_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_insert_element);
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -205,7 +205,7 @@ impl GroveDb {
         propagate_for_level: Option<&WorstCaseLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("worst_case_merk_replace_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_replace_element);
+        check_v0_with_cost!("worst_case_merk_replace_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_replace_element);
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -267,7 +267,7 @@ impl GroveDb {
         propagate_for_level: Option<&WorstCaseLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("worst_case_merk_patch_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_patch_element);
+        check_v0_with_cost!("worst_case_merk_patch_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_patch_element);
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -309,7 +309,7 @@ impl GroveDb {
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0!("worst_case_merk_delete_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_delete_element);
+        check_v0_with_cost!("worst_case_merk_delete_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_delete_element);
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -332,7 +332,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
         grove_version: &GroveVersion,
     ) {
-        check_v0!("add_worst_case_has_raw_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_has_raw_cost);
+        check_v0_with_cost!("add_worst_case_has_raw_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_has_raw_cost);
 
         let value_size = TreeNode::worst_case_encoded_tree_size(
             key.max_length() as u32,
@@ -353,7 +353,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
         grove_version: &GroveVersion,
     ) {
-        check_v0!("add_worst_case_get_raw_tree_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_raw_tree_cost);
+        check_v0_with_cost!("add_worst_case_get_raw_tree_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_raw_tree_cost);
 
         cost.seek_count += 1;
         let tree_cost_size = if is_sum_tree {
@@ -378,7 +378,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
         grove_version: &GroveVersion,
     ) {
-        check_v0!("add_worst_case_get_raw_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_raw_cost);
+        check_v0_with_cost!("add_worst_case_get_raw_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_raw_cost);
 
         cost.seek_count += 1;
         add_worst_case_get_merk_node(
@@ -399,7 +399,7 @@ impl GroveDb {
         max_references_sizes: Vec<u32>,
         grove_version: &GroveVersion,
     ) {
-        check_v0!("add_worst_case_get_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_cost);
+        check_v0_with_cost!("add_worst_case_get_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_cost);
 
         // todo: verify
         let value_size: u32 = TreeNode::worst_case_encoded_tree_size(

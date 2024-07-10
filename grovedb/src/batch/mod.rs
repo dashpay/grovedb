@@ -2429,7 +2429,7 @@ mod tests {
             GroveDbOp::insert_op(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
         ];
         assert!(matches!(
-            db.apply_batch(ops, None, None).unwrap(),
+            db.apply_batch(ops, None, None, grove_version).unwrap(),
             Err(Error::InvalidBatchOperation(
                 "batch operations fail consistency checks"
             ))
@@ -2445,7 +2445,7 @@ mod tests {
             GroveDbOp::insert_op(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
         ];
         assert!(matches!(
-            db.apply_batch(ops, None, None).unwrap(),
+            db.apply_batch(ops, None, None, grove_version).unwrap(),
             Err(Error::InvalidBatchOperation(
                 "batch operations fail consistency checks"
             ))
@@ -2461,7 +2461,7 @@ mod tests {
             GroveDbOp::delete_op(vec![], TEST_LEAF.to_vec()),
         ];
         assert!(matches!(
-            db.apply_batch(ops, None, None).unwrap(),
+            db.apply_batch(ops, None, None, grove_version).unwrap(),
             Err(Error::InvalidBatchOperation(
                 "batch operations fail consistency checks"
             ))
@@ -2542,29 +2542,30 @@ mod tests {
         db.apply_batch(ops, None, Some(&tx), grove_version)
             .unwrap()
             .expect("cannot apply batch");
-        db.get(EMPTY_PATH, b"keyb", None)
+        db.get(EMPTY_PATH, b"keyb", None, grove_version)
             .unwrap()
             .expect_err("we should not get an element");
-        db.get(EMPTY_PATH, b"keyb", Some(&tx))
+        db.get(EMPTY_PATH, b"keyb", Some(&tx), grove_version)
             .unwrap()
             .expect("we should get an element");
 
-        db.get(EMPTY_PATH, b"key1", None)
+        db.get(EMPTY_PATH, b"key1", None, grove_version)
             .unwrap()
             .expect_err("we should not get an element");
-        db.get(EMPTY_PATH, b"key1", Some(&tx))
+        db.get(EMPTY_PATH, b"key1", Some(&tx), grove_version)
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref()].as_ref(), b"key2", Some(&tx))
+        db.get([b"key1".as_ref()].as_ref(), b"key2", Some(&tx), grove_version)
             .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2"].as_ref(), b"key3", Some(&tx))
+        db.get([b"key1".as_ref(), b"key2"].as_ref(), b"key3", Some(&tx), grove_version)
             .unwrap()
             .expect("cannot get element");
         db.get(
             [b"key1".as_ref(), b"key2", b"key3"].as_ref(),
             b"key4",
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .expect("cannot get element");
@@ -2573,14 +2574,15 @@ mod tests {
             db.get(
                 [b"key1".as_ref(), b"key2", b"key3"].as_ref(),
                 b"key4",
-                Some(&tx)
+                Some(&tx),
+                grove_version
             )
             .unwrap()
             .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", Some(&tx))
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", Some(&tx), grove_version)
                 .unwrap()
                 .expect("cannot get element"),
             element2
@@ -3048,7 +3050,7 @@ mod tests {
         ];
         assert!(db.apply_batch(ops, None, None, grove_version).unwrap().is_err());
         assert!(db
-            .get([b"key1".as_ref()].as_ref(), b"key2", None)
+            .get([b"key1".as_ref()].as_ref(), b"key2", None, grove_version)
             .unwrap()
             .is_err());
     }
@@ -3083,11 +3085,11 @@ mod tests {
         ];
         assert!(db.apply_batch(ops, None, None, grove_version).unwrap().is_err());
         assert!(db
-            .get([b"key1".as_ref()].as_ref(), b"key2", None)
+            .get([b"key1".as_ref()].as_ref(), b"key2", None, grove_version)
             .unwrap()
             .is_err());
         assert!(db
-            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
+            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
             .unwrap()
             .is_err(),);
     }
@@ -3155,7 +3157,7 @@ mod tests {
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
             .expect_err("insertion of element under a deleted tree should not be allowed");
-        db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None)
+        db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None, grove_version)
             .unwrap()
             .expect_err("nothing should have been inserted");
     }
@@ -3205,7 +3207,7 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
         assert_eq!(
-            db.get([TEST_LEAF, b"valid"].as_ref(), b"key1", None)
+            db.get([TEST_LEAF, b"valid"].as_ref(), b"key1", None, grove_version)
                 .unwrap()
                 .expect("cannot get element"),
             element
@@ -3375,7 +3377,7 @@ mod tests {
         )];
 
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
                 .unwrap()
                 .expect("cannot get item"),
             element
@@ -3384,7 +3386,7 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
         assert!(db
-            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
+            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
             .unwrap()
             .is_err());
     }
@@ -3438,18 +3440,18 @@ mod tests {
             .expect("cannot apply batch");
 
         assert!(db
-            .get([ANOTHER_TEST_LEAF].as_ref(), b"key1", None)
+            .get([ANOTHER_TEST_LEAF].as_ref(), b"key1", None, grove_version)
             .unwrap()
             .is_err());
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None)
+            db.get([b"key1".as_ref(), b"key2", b"key3"].as_ref(), b"key4", None, grove_version)
                 .unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF].as_ref(), b"key", None)
+            db.get([TEST_LEAF].as_ref(), b"key", None, grove_version)
                 .unwrap()
                 .expect("cannot get element"),
             element2
@@ -3460,11 +3462,11 @@ mod tests {
         );
 
         // verify root leaves
-        assert!(db.get(EMPTY_PATH, TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get(EMPTY_PATH, ANOTHER_TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get(EMPTY_PATH, b"key1", None).unwrap().is_ok());
-        assert!(db.get(EMPTY_PATH, b"key2", None).unwrap().is_ok());
-        assert!(db.get(EMPTY_PATH, b"key3", None).unwrap().is_err());
+        assert!(db.get(EMPTY_PATH, TEST_LEAF, None, grove_version).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, ANOTHER_TEST_LEAF, None, grove_version).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, b"key1", None, grove_version).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, b"key2", None, grove_version).unwrap().is_ok());
+        assert!(db.get(EMPTY_PATH, b"key3", None, grove_version).unwrap().is_err());
     }
 
     #[test]
@@ -3545,7 +3547,7 @@ mod tests {
             ])),
         )];
         assert!(matches!(
-            db.apply_batch(batch, None, None).unwrap(),
+            db.apply_batch(batch, None, None, grove_version).unwrap(),
             Err(Error::MissingReference(String { .. }))
         ));
 
@@ -3569,7 +3571,7 @@ mod tests {
         ];
         assert!(db.apply_batch(batch, None, None, grove_version).unwrap().is_ok());
         assert_eq!(
-            db.get([TEST_LEAF].as_ref(), b"key1", None)
+            db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
                 .unwrap()
                 .unwrap(),
             elem
@@ -3616,7 +3618,7 @@ mod tests {
             GroveDbOp::insert_op(vec![TEST_LEAF.to_vec()], b"invalid_path".to_vec(), elem),
         ];
         assert!(matches!(
-            db.apply_batch(batch, None, None).unwrap(),
+            db.apply_batch(batch, None, None, grove_version).unwrap(),
             Err(Error::ReferenceLimit)
         ));
     }

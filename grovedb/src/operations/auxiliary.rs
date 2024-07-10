@@ -37,7 +37,7 @@ use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 use grovedb_storage::{Storage, StorageBatch};
-
+use grovedb_version::version::GroveVersion;
 use crate::util::storage_context_optional_tx;
 #[cfg(feature = "full")]
 use crate::{util::meta_storage_context_optional_tx, Element, Error, GroveDb, TransactionArg};
@@ -129,6 +129,7 @@ impl GroveDb {
         &self,
         path: &SubtreePath<B>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
         let mut cost = OperationCost::default();
 
@@ -153,7 +154,7 @@ impl GroveDb {
                 let storage = storage.unwrap_add_cost(&mut cost);
                 let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
                 while let Some((key, value)) =
-                    cost_return_on_error!(&mut cost, raw_iter.next_element())
+                    cost_return_on_error!(&mut cost, raw_iter.next_element(grove_version))
                 {
                     if value.is_any_tree() {
                         let mut sub_path = q.clone();

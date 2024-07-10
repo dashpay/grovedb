@@ -260,7 +260,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item1",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -270,7 +270,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item2",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -280,7 +280,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item3",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -290,7 +290,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item4",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -659,7 +659,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"item1",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -670,7 +670,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"sumitem1",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -681,7 +681,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"sumitem2",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -694,7 +694,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"item2",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -776,7 +776,7 @@ fn test_sum_tree_with_batches() {
             .get_feature_type(
                 b"c",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),

@@ -190,7 +190,7 @@ impl GroveDb {
         if options.validate_tree_at_path_exists {
             cost_return_on_error!(
                 &mut cost,
-                self.check_subtree_exists_path_not_found(path.clone(), transaction)
+                self.check_subtree_exists_path_not_found(path.clone(), transaction, grove_version)
             );
         }
         if let Some(delete_operation_this_level) = cost_return_on_error!(

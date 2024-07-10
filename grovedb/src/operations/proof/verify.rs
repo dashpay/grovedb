@@ -8,6 +8,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     CryptoHash,
 };
+use grovedb_version::{TryFromVersioned, TryIntoVersioned};
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "proof_debug")]
 use crate::operations::proof::util::{
@@ -214,12 +215,12 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
-        T: TryFrom<ProvedPathKeyOptionalValue>,
-        Error: From<<T as TryFrom<ProvedPathKeyOptionalValue>>::Error>,
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
         let internal_query =
             query
-                .query_items_at_path(current_path)
+                .query_items_at_path(current_path, grove_version)
                 .ok_or(Error::CorruptedPath(format!(
                     "verify raw: path {} should be part of path_query {}",
                     current_path
@@ -332,7 +333,7 @@ impl GroveDb {
                                 &path_key_optional_value, limit_left
                             );
                         }
-                        result.push(path_key_optional_value.try_into()?);
+                        result.push(path_key_optional_value.try_into_versioned(grove_version)?);
 
                         limit_left.as_mut().map(|limit| *limit -= 1);
                         if limit_left == &Some(0) {

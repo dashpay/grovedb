@@ -537,6 +537,8 @@ impl TryFromVersioned<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
+    use grovedb_version::TryIntoVersioned;
+    use grovedb_version::version::GroveVersion;
     use crate::{
         operations::proof::util::ProvedPathKeyValue, query_result_type::PathKeyOptionalElementTrio,
         Element,
@@ -544,6 +546,7 @@ mod tests {
 
     #[test]
     fn test_single_proved_path_key_value_to_path_key_optional_element() {
+        let grove_version = GroveVersion::latest();
         let path = vec![b"1".to_vec(), b"2".to_vec()];
         let proved_path_key_value = ProvedPathKeyValue {
             path: path.clone(),
@@ -552,7 +555,7 @@ mod tests {
             proof: [0; 32],
         };
         let path_key_element_trio: PathKeyOptionalElementTrio = proved_path_key_value
-            .try_into()
+            .try_into_versioned(grove_version)
             .expect("should convert to path key optional element trio");
         assert_eq!(
             path_key_element_trio,

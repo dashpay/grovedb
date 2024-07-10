@@ -169,7 +169,7 @@ impl GroveDb {
     pub fn get_subtrees_metadata(&self, tx: TransactionArg, grove_version: &GroveVersion) -> Result<SubtreesMetadata, Error> {
         let mut subtrees_metadata = crate::replication::SubtreesMetadata::new();
 
-        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), tx).value?;
+        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), tx, grove_version).value?;
         for subtree in subtrees_root.into_iter() {
             let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
             let path: &[&[u8]] = &subtree_path;
