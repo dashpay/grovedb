@@ -2359,7 +2359,11 @@ impl GroveDb {
                 );
                 cost_return_on_error!(
                     &mut cost,
-                    Self::apply_batch_structure(batch_structure, batch_apply_options)
+                    Self::apply_batch_structure(
+                        batch_structure,
+                        batch_apply_options,
+                        grove_version
+                    )
                 );
             }
 
@@ -2377,7 +2381,11 @@ impl GroveDb {
                 );
                 cost_return_on_error!(
                     &mut cost,
-                    Self::apply_batch_structure(batch_structure, batch_apply_options)
+                    Self::apply_batch_structure(
+                        batch_structure,
+                        batch_apply_options,
+                        grove_version
+                    )
                 );
             }
         }

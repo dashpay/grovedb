@@ -6,6 +6,7 @@ use grovedb_costs::OperationCost;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
+use crate::Error;
 #[cfg(feature = "full")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
@@ -66,7 +67,7 @@ impl GroveDb {
         estimated_element_size: u32,
         in_parent_tree_using_sums: bool,
         grove_version: &GroveVersion,
-    ) -> OperationCost {
+    ) -> Result<OperationCost, Error> {
         let mut cost = OperationCost::default();
         GroveDb::add_average_case_get_raw_cost::<RocksDbStorage>(
             &mut cost,
@@ -75,8 +76,8 @@ impl GroveDb {
             estimated_element_size,
             in_parent_tree_using_sums,
             grove_version,
-        );
-        cost
+        )?;
+        Ok(cost)
     }
 
     /// Get the Operation Cost for a get query with the following parameters
@@ -87,7 +88,7 @@ impl GroveDb {
         estimated_element_size: u32,
         estimated_references_sizes: Vec<u32>,
         grove_version: &GroveVersion,
-    ) -> OperationCost {
+    ) -> Result<OperationCost, Error> {
         let mut cost = OperationCost::default();
         GroveDb::add_average_case_get_cost::<RocksDbStorage>(
             &mut cost,
@@ -97,8 +98,8 @@ impl GroveDb {
             estimated_element_size,
             estimated_references_sizes,
             grove_version,
-        );
-        cost
+        )?;
+        Ok(cost)
     }
 
     /// Get the Operation Cost for a get query with the following parameters
@@ -109,7 +110,7 @@ impl GroveDb {
         is_sum_tree: bool,
         in_parent_tree_using_sums: bool,
         grove_version: &GroveVersion,
-    ) -> OperationCost {
+    ) -> Result<OperationCost, Error> {
         let mut cost = OperationCost::default();
         GroveDb::add_average_case_get_raw_tree_cost::<RocksDbStorage>(
             &mut cost,
@@ -119,7 +120,7 @@ impl GroveDb {
             is_sum_tree,
             in_parent_tree_using_sums,
             grove_version,
-        );
-        cost
+        )?;
+        Ok(cost)
     }
 }

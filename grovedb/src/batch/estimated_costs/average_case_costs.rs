@@ -230,12 +230,15 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     ))
                 })
             );
-            GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
-                &mut cost,
-                path,
-                layer_should_be_empty,
-                layer_info.is_sum_tree,
-                grove_version,
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                    &mut cost,
+                    path,
+                    layer_should_be_empty,
+                    layer_info.is_sum_tree,
+                    grove_version,
+                )
             );
             self.cached_merks
                 .insert(path.clone(), layer_info.is_sum_tree);

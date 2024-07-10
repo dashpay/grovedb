@@ -11,6 +11,7 @@ use grovedb_merk::{
     HASH_LENGTH_U32,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_version::version::GroveVersion;
 use intmap::IntMap;
 
 use crate::{
@@ -30,6 +31,7 @@ impl GroveDb {
         stop_path_height: Option<u16>,
         validate: bool,
         estimated_layer_info: IntMap<EstimatedLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
         let mut cost = OperationCost::default();
 
@@ -113,7 +115,8 @@ impl GroveDb {
                         validate,
                         check_if_tree,
                         except_keys_count,
-                        (key_len, estimated_element_size)
+                        (key_len, estimated_element_size),
+                        grove_version,
                     )
                 );
                 ops.push(op);
@@ -131,24 +134,33 @@ impl GroveDb {
         check_if_tree: bool,
         except_keys_count: u16,
         estimated_key_element_size: EstimatedKeyAndElementSize,
+        grove_version: &GroveVersion,
     ) -> CostResult<GroveDbOp, Error> {
         let mut cost = OperationCost::default();
 
         if validate {
-            GroveDb::add_average_case_get_merk_at_path::<S>(
-                &mut cost,
-                path,
-                false,
-                parent_tree_is_sum_tree,
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_average_case_get_merk_at_path::<S>(
+                    &mut cost,
+                    path,
+                    false,
+                    parent_tree_is_sum_tree,
+                    grove_version,
+                )
             );
         }
         if check_if_tree {
-            GroveDb::add_average_case_get_raw_cost::<S>(
-                &mut cost,
-                path,
-                key,
-                estimated_key_element_size.1,
-                parent_tree_is_sum_tree,
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_average_case_get_raw_cost::<S>(
+                    &mut cost,
+                    path,
+                    key,
+                    estimated_key_element_size.1,
+                    parent_tree_is_sum_tree,
+                    grove_version,
+                )
             );
         }
         // in the worst case this is a tree

@@ -231,6 +231,7 @@ pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
 #[cfg(test)]
 pub mod tests {
     use ed::Encode;
+    use grovedb_version::version::GroveVersion;
 
     use crate::{
         proofs::{
@@ -244,6 +245,7 @@ pub mod tests {
     };
 
     fn build_tree_10_nodes() -> TreeNode {
+        let grove_version = GroveVersion::latest();
         //              3
         //           /      \
         //          1         7
@@ -259,10 +261,14 @@ pub mod tests {
     pub fn traverse_get_node_hash(
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
+        grove_version: &GroveVersion,
     ) -> Node {
-        traverse_and_apply(walker, traverse_instructions, |walker| {
-            walker.to_hash_node().unwrap()
-        })
+        traverse_and_apply(
+            walker,
+            traverse_instructions,
+            |walker| walker.to_hash_node().unwrap(),
+            grove_version,
+        )
     }
 
     /// Traverses a tree to a certain node and returns the kv_feature_type of
@@ -270,20 +276,28 @@ pub mod tests {
     pub fn traverse_get_kv_feature_type(
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
+        grove_version: &GroveVersion,
     ) -> Node {
-        traverse_and_apply(walker, traverse_instructions, |walker| {
-            walker.to_kv_value_hash_feature_type_node()
-        })
+        traverse_and_apply(
+            walker,
+            traverse_instructions,
+            |walker| walker.to_kv_value_hash_feature_type_node(),
+            grove_version,
+        )
     }
     /// Traverses a tree to a certain node and returns the kv_hash of
     /// that node
     pub fn traverse_get_kv_hash(
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
+        grove_version: &GroveVersion,
     ) -> Node {
-        traverse_and_apply(walker, traverse_instructions, |walker| {
-            walker.to_kvhash_node()
-        })
+        traverse_and_apply(
+            walker,
+            traverse_instructions,
+            |walker| walker.to_kvhash_node(),
+            grove_version,
+        )
     }
 
     /// Traverses a tree to a certain node and returns the result of applying
@@ -292,6 +306,7 @@ pub mod tests {
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
         apply_fn: T,
+        grove_version: &GroveVersion,
     ) -> Node
     where
         T: Fn(&mut RefWalker<PanicSource>) -> Node,
@@ -309,11 +324,17 @@ pub mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        traverse_and_apply(&mut child, &traverse_instructions[1..], apply_fn)
+        traverse_and_apply(
+            &mut child,
+            &traverse_instructions[1..],
+            apply_fn,
+            grove_version,
+        )
     }
 
     #[test]
     fn build_chunk_from_root_depth_0() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -324,7 +345,7 @@ pub mod tests {
         assert_eq!(chunk.len(), 1);
         assert_eq!(
             chunk[0],
-            Op::Push(traverse_get_node_hash(&mut tree_walker, &[]))
+            Op::Push(traverse_get_node_hash(&mut tree_walker, &[], grove_version))
         );
 
         let computed_tree = execute(chunk.into_iter().map(Ok), true, |_| Ok(()))
@@ -335,6 +356,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_from_root_depth_1() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -350,10 +372,22 @@ pub mod tests {
         assert_eq!(
             chunk,
             vec![
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT])),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Child
             ]
         );
@@ -366,6 +400,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_from_root_depth_3() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -387,40 +422,59 @@ pub mod tests {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT]
+                    &[LEFT, LEFT],
+                    grove_version
                 )),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT]
+                    &[LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
                 Op::Child,
@@ -436,6 +490,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_from_root_depth_max_depth() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -456,40 +511,59 @@ pub mod tests {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT]
+                    &[LEFT, LEFT],
+                    grove_version
                 )),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT]
+                    &[LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
-                Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
-                )),
-                Op::Push(traverse_get_kv_feature_type(
-                    &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT],
+                    grove_version
+                )),
+                Op::Parent,
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
                 Op::Child,
@@ -505,6 +579,7 @@ pub mod tests {
 
     #[test]
     fn chunk_greater_than_max_should_equal_max_depth() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -529,6 +604,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_after_traversal_depth_2() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -549,27 +625,36 @@ pub mod tests {
             vec![
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
                 Op::Child,
@@ -584,12 +669,13 @@ pub mod tests {
             .expect("should reconstruct tree");
         assert_eq!(
             Node::Hash(computed_tree.hash().unwrap()),
-            traverse_get_node_hash(&mut tree_walker, &[RIGHT])
+            traverse_get_node_hash(&mut tree_walker, &[RIGHT], grove_version)
         );
     }
 
     #[test]
     fn build_chunk_after_traversal_depth_1() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -608,16 +694,19 @@ pub mod tests {
             vec![
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
             ]
@@ -628,12 +717,13 @@ pub mod tests {
             .expect("should reconstruct tree");
         assert_eq!(
             Node::Hash(computed_tree.hash().unwrap()),
-            traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT])
+            traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT], grove_version)
         );
     }
 
     #[test]
     fn test_chunk_encoding() {
+        let grove_version = GroveVersion::latest();
         let chunk = vec![
             Op::Push(Node::Hash([0; 32])),
             Op::Push(Node::KVValueHashFeatureType(
@@ -653,6 +743,7 @@ pub mod tests {
 
     #[test]
     fn test_height_proof_generation() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -666,14 +757,30 @@ pub mod tests {
         assert_eq!(
             height_proof,
             vec![
-                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[LEFT, LEFT])),
-                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_kv_hash(
+                    &mut tree_walker,
+                    &[LEFT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_hash(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT],
+                    grove_version
+                )),
                 Op::Child,
-                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[])),
+                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[], grove_version)),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Child,
             ]
         );
@@ -681,6 +788,7 @@ pub mod tests {
 
     #[test]
     fn test_height_proof_verification() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 

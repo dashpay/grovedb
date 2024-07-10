@@ -664,6 +664,7 @@ mod tests {
 
     #[test]
     fn test_process_chunk_correct_chunk_id_map() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
         merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
@@ -725,23 +726,51 @@ mod tests {
         // assert all the chunk hash values
         assert_eq!(
             restorer.chunk_id_to_root_hash.get(vec![1, 1].as_slice()),
-            Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[LEFT, LEFT])).unwrap())
-                .as_ref()
+            Some(
+                get_node_hash(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, LEFT],
+                    grove_version
+                ))
+                .unwrap()
+            )
+            .as_ref()
         );
         assert_eq!(
             restorer.chunk_id_to_root_hash.get(vec![1, 0].as_slice()),
-            Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[LEFT, RIGHT])).unwrap())
-                .as_ref()
+            Some(
+                get_node_hash(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT],
+                    grove_version
+                ))
+                .unwrap()
+            )
+            .as_ref()
         );
         assert_eq!(
             restorer.chunk_id_to_root_hash.get(vec![0, 1].as_slice()),
-            Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT])).unwrap())
-                .as_ref()
+            Some(
+                get_node_hash(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT],
+                    grove_version
+                ))
+                .unwrap()
+            )
+            .as_ref()
         );
         assert_eq!(
             restorer.chunk_id_to_root_hash.get(vec![0, 0].as_slice()),
-            Some(get_node_hash(traverse_get_node_hash(&mut tree_walker, &[RIGHT, RIGHT])).unwrap())
-                .as_ref()
+            Some(
+                get_node_hash(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT, RIGHT],
+                    grove_version
+                ))
+                .unwrap()
+            )
+            .as_ref()
         );
 
         // generate second chunk
@@ -895,6 +924,7 @@ mod tests {
     // attempts restoration on some empty merk
     // verifies that restoration was performed correctly.
     fn test_restoration_single_chunk_strategy(batch_size: u64) {
+        let grove_version = GroveVersion::latest();
         // build the source merk
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
@@ -980,6 +1010,7 @@ mod tests {
 
     #[test]
     fn test_process_multi_chunk_no_limit() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
         merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
@@ -1048,6 +1079,7 @@ mod tests {
 
     #[test]
     fn test_process_multi_chunk_no_limit_but_non_root() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
         merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
@@ -1129,6 +1161,7 @@ mod tests {
 
     #[test]
     fn test_process_multi_chunk_with_limit() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
         merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
@@ -1228,6 +1261,7 @@ mod tests {
     // attempts restoration on some empty merk, with multi chunks
     // verifies that restoration was performed correctly.
     fn test_restoration_multi_chunk_strategy(batch_size: u64, limit: Option<usize>) {
+        let grove_version = GroveVersion::latest();
         // build the source merk
         let mut source_merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..batch_size);
@@ -1311,6 +1345,7 @@ mod tests {
 
     #[test]
     fn test_restoration_interruption() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
         merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)

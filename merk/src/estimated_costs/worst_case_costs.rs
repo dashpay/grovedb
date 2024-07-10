@@ -32,6 +32,7 @@ use std::cmp::Ordering;
 
 #[cfg(feature = "full")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "full")]
 use crate::{
@@ -58,12 +59,13 @@ impl TreeNode {
         not_prefixed_key_len: u32,
         max_element_size: u32,
         is_sum_node: bool,
+        grove_version: &GroveVersion,
     ) -> u32 {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
         2 + (2 * Link::encoded_link_size(not_prefixed_key_len, is_sum_node))
-            + KV::encoded_kv_node_size(max_element_size, is_sum_node)
+            + KV::encoded_kv_node_size(max_element_size, is_sum_node, grove_version)
     }
 }
 
@@ -74,15 +76,21 @@ pub fn add_worst_case_get_merk_node(
     not_prefixed_key_len: u32,
     max_element_size: u32,
     is_sum_node: bool,
-) {
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
     cost.seek_count += 1;
 
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
-    cost.storage_loaded_bytes +=
-        TreeNode::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node);
+    cost.storage_loaded_bytes += TreeNode::worst_case_encoded_tree_size(
+        not_prefixed_key_len,
+        max_element_size,
+        is_sum_node,
+        grove_version,
+    );
+    Ok(())
 }
 
 #[cfg(feature = "full")]

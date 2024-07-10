@@ -7,6 +7,7 @@ use grovedb_merk::{
     estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, tree::kv::KV,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_version::version::GroveVersion;
 use intmap::IntMap;
 
 use crate::{
@@ -25,6 +26,7 @@ impl GroveDb {
         validate: bool,
         intermediate_tree_info: IntMap<(bool, u32)>,
         max_element_size: u32,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
         let mut cost = OperationCost::default();
 
@@ -95,7 +97,8 @@ impl GroveDb {
                         validate,
                         check_if_tree,
                         except_keys_count,
-                        max_element_size
+                        max_element_size,
+                        grove_version
                     )
                 );
                 ops.push(op);
@@ -113,11 +116,17 @@ impl GroveDb {
         check_if_tree: bool,
         except_keys_count: u16,
         max_element_size: u32,
+        grove_version: &GroveVersion,
     ) -> CostResult<GroveDbOp, Error> {
         let mut cost = OperationCost::default();
 
         if validate {
-            GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path, parent_tree_is_sum_tree);
+            GroveDb::add_worst_case_get_merk_at_path::<S>(
+                &mut cost,
+                path,
+                parent_tree_is_sum_tree,
+                grove_version,
+            );
         }
         if check_if_tree {
             GroveDb::add_worst_case_get_raw_cost::<S>(
@@ -126,6 +135,7 @@ impl GroveDb {
                 key,
                 max_element_size,
                 parent_tree_is_sum_tree,
+                grove_version,
             );
         }
         // in the worst case this is a tree

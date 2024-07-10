@@ -587,17 +587,45 @@ mod test {
         assert_eq!(
             chunk,
             vec![
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, LEFT])),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT],
+                    grove_version
+                )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT])),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT, RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT, RIGHT],
+                    grove_version
+                )),
                 Op::Child,
                 Op::Child
             ]
@@ -618,16 +646,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT, LEFT]
+                    &[LEFT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT]
+                    &[LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT, RIGHT]
+                    &[LEFT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]
@@ -648,16 +679,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT, LEFT]
+                    &[LEFT, RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT]
+                    &[LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT, RIGHT]
+                    &[LEFT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]
@@ -678,16 +712,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]
@@ -708,16 +745,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, LEFT]
+                    &[RIGHT, RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]

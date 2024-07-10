@@ -30,6 +30,7 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
@@ -320,12 +321,13 @@ impl TreeNode {
         not_prefixed_key_len: u32,
         estimated_element_size: u32,
         is_sum_node: bool,
+        grove_version: &GroveVersion,
     ) -> u32 {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
         2 + (2 * Link::encoded_link_size(not_prefixed_key_len, is_sum_node))
-            + KV::encoded_kv_node_size(estimated_element_size, is_sum_node)
+            + KV::encoded_kv_node_size(estimated_element_size, is_sum_node, grove_version)
     }
 }
 
@@ -336,7 +338,8 @@ pub fn add_average_case_get_merk_node(
     not_prefixed_key_len: u32,
     approximate_element_size: u32,
     is_sum_tree: bool,
-) {
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
     cost.seek_count += 1;
@@ -347,7 +350,9 @@ pub fn add_average_case_get_merk_node(
         not_prefixed_key_len,
         approximate_element_size,
         is_sum_tree,
+        grove_version,
     );
+    Ok(())
 }
 
 #[cfg(feature = "full")]

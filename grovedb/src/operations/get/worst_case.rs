@@ -4,7 +4,9 @@
 use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_version::version::GroveVersion;
 
+use crate::Error;
 #[cfg(feature = "full")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
@@ -19,7 +21,8 @@ impl GroveDb {
         key: &KeyInfo,
         max_element_size: u32,
         in_parent_tree_using_sums: bool,
-    ) -> OperationCost {
+        grove_version: &GroveVersion,
+    ) -> Result<OperationCost, Error> {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
             &mut cost,
@@ -27,8 +30,9 @@ impl GroveDb {
             key,
             max_element_size,
             in_parent_tree_using_sums,
-        );
-        cost
+            grove_version,
+        )?;
+        Ok(cost)
     }
 
     /// Worst case cost for get raw
@@ -37,7 +41,8 @@ impl GroveDb {
         key: &KeyInfo,
         max_element_size: u32,
         in_parent_tree_using_sums: bool,
-    ) -> OperationCost {
+        grove_version: &GroveVersion,
+    ) -> Result<OperationCost, Error> {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
             &mut cost,
@@ -45,8 +50,9 @@ impl GroveDb {
             key,
             max_element_size,
             in_parent_tree_using_sums,
-        );
-        cost
+            grove_version,
+        )?;
+        Ok(cost)
     }
 
     /// Worst case cost for get
@@ -56,7 +62,8 @@ impl GroveDb {
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
         in_parent_tree_using_sums: bool,
-    ) -> OperationCost {
+        grove_version: &GroveVersion,
+    ) -> Result<OperationCost, Error> {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
             &mut cost,
@@ -65,7 +72,8 @@ impl GroveDb {
             max_element_size,
             in_parent_tree_using_sums,
             max_references_sizes,
-        );
-        cost
+            grove_version,
+        )?;
+        Ok(cost)
     }
 }

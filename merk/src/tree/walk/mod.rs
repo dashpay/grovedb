@@ -404,6 +404,7 @@ mod test {
 
     #[test]
     fn walk_modified() {
+        let grove_version = GroveVersion::latest();
         let tree = TreeNode::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerkNode)
             .unwrap()
             .attach(
@@ -431,6 +432,7 @@ mod test {
 
     #[test]
     fn walk_stored() {
+        let grove_version = GroveVersion::latest();
         let mut tree = TreeNode::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerkNode)
             .unwrap()
             .attach(
@@ -461,6 +463,7 @@ mod test {
 
     #[test]
     fn walk_pruned() {
+        let grove_version = GroveVersion::latest();
         let tree = TreeNode::from_fields(
             b"test".to_vec(),
             b"abc".to_vec(),
@@ -496,6 +499,7 @@ mod test {
 
     #[test]
     fn walk_none() {
+        let grove_version = GroveVersion::latest();
         let tree = TreeNode::new(b"test".to_vec(), b"abc".to_vec(), None, BasicMerkNode).unwrap();
 
         let source = MockSource {};

@@ -757,6 +757,7 @@ mod test {
         rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
         RawIterator, Storage, StorageBatch, StorageContext,
     };
+    use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use super::{Merk, RefWalker};
@@ -776,6 +777,7 @@ mod test {
 
     #[test]
     fn simple_insert_apply() {
+        let grove_version = GroveVersion::latest();
         let batch_size = 20;
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..batch_size);
@@ -795,6 +797,7 @@ mod test {
 
     #[test]
     fn tree_height() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..1);
         merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
@@ -830,6 +833,7 @@ mod test {
 
     #[test]
     fn insert_uncached() {
+        let grove_version = GroveVersion::latest();
         let batch_size = 20;
         let mut merk = TempMerk::new(grove_version);
 
@@ -848,6 +852,7 @@ mod test {
 
     #[test]
     fn insert_two() {
+        let grove_version = GroveVersion::latest();
         let tree_size = 2;
         let batch_size = 1;
         let mut merk = TempMerk::new(grove_version);
@@ -862,6 +867,7 @@ mod test {
 
     #[test]
     fn insert_rand() {
+        let grove_version = GroveVersion::latest();
         let tree_size = 40;
         let batch_size = 4;
         let mut merk = TempMerk::new(grove_version);
@@ -877,6 +883,7 @@ mod test {
 
     #[test]
     fn actual_deletes() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
 
         let batch = make_batch_rand(10, 1);
@@ -895,6 +902,7 @@ mod test {
 
     #[test]
     fn aux_data() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         merk.apply::<Vec<_>, _>(
             &[],
@@ -912,6 +920,7 @@ mod test {
 
     #[test]
     fn get_not_found() {
+        let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
 
         // no root
@@ -974,6 +983,7 @@ mod test {
     // TODO: what this test should do?
     #[test]
     fn reopen_check_root_hash() {
+        let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
@@ -999,6 +1009,7 @@ mod test {
 
     #[test]
     fn test_get_node_cost() {
+        let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
@@ -1021,15 +1032,17 @@ mod test {
 
     #[test]
     fn reopen() {
+        let grove_version = GroveVersion::latest();
         fn collect(
             mut node: RefWalker<MerkSource<PrefixedRocksDbStorageContext>>,
             nodes: &mut Vec<Vec<u8>>,
         ) {
+            let grove_version = GroveVersion::latest();
             nodes.push(node.tree().encode());
             if let Some(c) = node
                 .walk(
                     true,
-                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
                 .unwrap()
@@ -1040,7 +1053,7 @@ mod test {
             if let Some(c) = node
                 .walk(
                     false,
-                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
                 .unwrap()
@@ -1120,6 +1133,7 @@ mod test {
 
     #[test]
     fn reopen_iter() {
+        let grove_version = GroveVersion::latest();
         fn collect(iter: PrefixedStorageIter<'_, '_>, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
             while iter.valid().unwrap() {
                 nodes.push((
@@ -1190,6 +1204,7 @@ mod test {
 
     #[test]
     fn update_node() {
+        let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");

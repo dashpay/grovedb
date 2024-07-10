@@ -72,7 +72,7 @@ pub struct SubqueryBranch {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// `Query` represents one or more keys or ranges of keys, which can be used to
-/// resolve a proof which will include all of the requested values.
+/// resolve a proof which will include all the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Query {
     /// Items
@@ -459,7 +459,7 @@ impl Query {
         }
     }
 
-    /// Check if has subquery
+    /// Check if there is a subquery
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
@@ -471,7 +471,7 @@ impl Query {
         false
     }
 
-    /// Check if has only keys
+    /// Check if there are only keys
     pub fn has_only_keys(&self) -> bool {
         // checks if all searched for items are keys
         self.items.iter().all(|a| a.is_key())
@@ -862,7 +862,7 @@ mod test {
         *,
     };
     use crate::{
-        proofs::query::{query_item::QueryItem::RangeAfter, verify},
+        proofs::query::verify,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, TreeNode},
         TreeFeatureType::BasicMerkNode,
@@ -919,11 +919,12 @@ mod test {
     }
 
     fn verify_keys_test(keys: Vec<Vec<u8>>, expected_result: Vec<Option<Vec<u8>>>) {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, ..) = walker
-            .create_full_proof(
+            .create_proof(
                 keys.clone()
                     .into_iter()
                     .map(QueryItem::Key)
@@ -931,6 +932,7 @@ mod test {
                     .as_slice(),
                 None,
                 true,
+                grove_version,
             )
             .unwrap()
             .expect("failed to create proof");
@@ -1159,11 +1161,12 @@ mod test {
 
     #[test]
     fn empty_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence, ..) = walker
-            .create_full_proof(vec![].as_slice(), None, true)
+            .create_proof(vec![].as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1205,12 +1208,13 @@ mod test {
 
     #[test]
     fn root_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Key(vec![5])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1260,12 +1264,13 @@ mod test {
 
     #[test]
     fn leaf_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Key(vec![3])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1315,12 +1320,13 @@ mod test {
 
     #[test]
     fn double_leaf_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Key(vec![3]), QueryItem::Key(vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1377,6 +1383,7 @@ mod test {
 
     #[test]
     fn all_nodes_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -1386,7 +1393,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1447,12 +1454,13 @@ mod test {
 
     #[test]
     fn global_edge_absence_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Key(vec![8])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1501,12 +1509,13 @@ mod test {
 
     #[test]
     fn absence_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Key(vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1558,6 +1567,7 @@ mod test {
 
     #[test]
     fn doc_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode)
             .unwrap()
             .attach(
@@ -1640,7 +1650,7 @@ mod test {
             QueryItem::Key(vec![4]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1797,6 +1807,7 @@ mod test {
 
     #[test]
     fn range_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -1804,7 +1815,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1905,7 +1916,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -1930,6 +1941,7 @@ mod test {
 
     #[test]
     fn range_proof_inclusive() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -1937,7 +1949,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2040,7 +2052,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2067,12 +2079,13 @@ mod test {
 
     #[test]
     fn range_from_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2145,13 +2158,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::Key(vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2177,7 +2190,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), true)
+            .create_proof(query_items.as_slice(), Some(2), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2187,7 +2200,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2216,13 +2229,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(100), true)
+            .create_proof(query_items.as_slice(), Some(100), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2251,7 +2264,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2275,12 +2288,13 @@ mod test {
 
     #[test]
     fn range_to_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2381,13 +2395,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2413,13 +2427,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), true)
+            .create_proof(query_items.as_slice(), Some(2), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2448,13 +2462,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(100), true)
+            .create_proof(query_items.as_slice(), Some(100), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2488,7 +2502,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2519,7 +2533,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), false)
+            .create_proof(query_items.as_slice(), Some(2), false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2544,12 +2558,13 @@ mod test {
 
     #[test]
     fn range_to_proof_inclusive() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2650,13 +2665,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2682,13 +2697,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), true)
+            .create_proof(query_items.as_slice(), Some(2), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2717,13 +2732,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(100), true)
+            .create_proof(query_items.as_slice(), Some(100), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2757,7 +2772,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2788,7 +2803,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), false)
+            .create_proof(query_items.as_slice(), Some(1), false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2810,12 +2825,13 @@ mod test {
 
     #[test]
     fn range_after_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let query_items = vec![RangeAfter(vec![3]..)];
+        let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2916,13 +2932,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2948,13 +2964,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), true)
+            .create_proof(query_items.as_slice(), Some(2), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -2983,13 +2999,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(100), true)
+            .create_proof(query_items.as_slice(), Some(100), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3021,9 +3037,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let query_items = vec![RangeAfter(vec![3]..)];
+        let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3052,9 +3068,9 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let query_items = vec![RangeAfter(vec![3]..)];
+        let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(3), false)
+            .create_proof(query_items.as_slice(), Some(3), false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3079,12 +3095,13 @@ mod test {
 
     #[test]
     fn range_after_to_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3175,13 +3192,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3207,13 +3224,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), true)
+            .create_proof(query_items.as_slice(), Some(2), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3242,13 +3259,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(100), true)
+            .create_proof(query_items.as_slice(), Some(100), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3277,7 +3294,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3303,7 +3320,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(300), false)
+            .create_proof(query_items.as_slice(), Some(300), false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3328,12 +3345,13 @@ mod test {
 
     #[test]
     fn range_after_to_proof_inclusive() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3423,13 +3441,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3455,13 +3473,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), true)
+            .create_proof(query_items.as_slice(), Some(2), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3490,13 +3508,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(100), true)
+            .create_proof(query_items.as_slice(), Some(100), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3525,7 +3543,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3549,12 +3567,13 @@ mod test {
 
     #[test]
     fn range_full_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3663,13 +3682,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3695,13 +3714,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), true)
+            .create_proof(query_items.as_slice(), Some(2), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3730,13 +3749,13 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(100), true)
+            .create_proof(query_items.as_slice(), Some(100), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         let equivalent_query_items = vec![QueryItem::RangeFull(..)];
         let (equivalent_proof, equivalent_absence, ..) = walker
-            .create_full_proof(equivalent_query_items.as_slice(), None, true)
+            .create_proof(equivalent_query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3772,7 +3791,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3805,7 +3824,7 @@ mod test {
 
         let query_items = vec![QueryItem::RangeFull(..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), Some(2), false)
+            .create_proof(query_items.as_slice(), Some(2), false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3830,12 +3849,13 @@ mod test {
 
     #[test]
     fn proof_with_limit() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeFrom(vec![2]..)];
         let (proof, _, limit) = walker
-            .create_full_proof(query_items.as_slice(), Some(1), true)
+            .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -3904,12 +3924,13 @@ mod test {
 
     #[test]
     fn right_to_left_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeFrom(vec![3]..)];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, false)
+            .create_proof(query_items.as_slice(), None, false, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4009,6 +4030,7 @@ mod test {
 
     #[test]
     fn range_proof_missing_upper_bound() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -4016,7 +4038,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 6, 5],
         )];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4111,6 +4133,7 @@ mod test {
 
     #[test]
     fn range_proof_missing_lower_bound() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -4119,7 +4142,7 @@ mod test {
             QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]),
         ];
         let (proof, absence, ..) = walker
-            .create_full_proof(query_items.as_slice(), None, true)
+            .create_proof(query_items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4210,6 +4233,7 @@ mod test {
 
     #[test]
     fn subset_proof() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_tree_seq(10, grove_version);
         let expected_hash = tree.hash().unwrap().to_owned();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -4219,7 +4243,7 @@ mod test {
         query.insert_all();
 
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, true)
+            .create_proof(query.items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4246,7 +4270,7 @@ mod test {
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
         query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 7]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, true)
+            .create_proof(query.items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4277,7 +4301,7 @@ mod test {
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
         query.insert_range(vec![0, 0, 0, 0, 0, 0, 0, 6]..vec![0, 0, 0, 0, 0, 0, 0, 10]);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, true)
+            .create_proof(query.items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4308,7 +4332,7 @@ mod test {
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 1]..=vec![0, 0, 0, 0, 0, 0, 0, 3]);
         query.insert_range_inclusive(vec![0, 0, 0, 0, 0, 0, 0, 2]..=vec![0, 0, 0, 0, 0, 0, 0, 5]);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), None, true)
+            .create_proof(query.items.as_slice(), None, true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4338,7 +4362,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), Some(5), true)
+            .create_proof(query.items.as_slice(), Some(5), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4367,6 +4391,7 @@ mod test {
 
     #[test]
     fn break_subset_proof() {
+        let grove_version = GroveVersion::latest();
         // TODO: move this to where you'd set the constraints for this definition
         // goal is to show that ones limit and offset values are involved
         // whether a query is subset or not now also depends on the state
@@ -4384,7 +4409,7 @@ mod test {
         let mut query = Query::new();
         query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
         let (proof, ..) = walker
-            .create_full_proof(query.items.as_slice(), Some(3), true)
+            .create_proof(query.items.as_slice(), Some(3), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
@@ -4462,6 +4487,7 @@ mod test {
 
     #[test]
     fn verify_ops() {
+        let grove_version = GroveVersion::latest();
         let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode).unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
@@ -4471,7 +4497,12 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, ..) = walker
-            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, true)
+            .create_proof(
+                vec![QueryItem::Key(vec![5])].as_slice(),
+                None,
+                true,
+                grove_version,
+            )
             .unwrap()
             .expect("failed to create proof");
         let mut bytes = vec![];
@@ -4488,6 +4519,7 @@ mod test {
     #[test]
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
+        let grove_version = GroveVersion::latest();
         let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode).unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
@@ -4496,7 +4528,12 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, ..) = walker
-            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, true)
+            .create_proof(
+                vec![QueryItem::Key(vec![5])].as_slice(),
+                None,
+                true,
+                grove_version,
+            )
             .unwrap()
             .expect("failed to create proof");
         let mut bytes = vec![];
@@ -4511,11 +4548,12 @@ mod test {
     #[test]
     #[should_panic(expected = "verify failed")]
     fn verify_query_mismatched_hash() {
+        let grove_version = GroveVersion::latest();
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let keys = vec![vec![5], vec![7]];
         let (proof, ..) = walker
-            .create_full_proof(
+            .create_proof(
                 keys.clone()
                     .into_iter()
                     .map(QueryItem::Key)
@@ -4523,6 +4561,7 @@ mod test {
                     .as_slice(),
                 None,
                 true,
+                grove_version,
             )
             .unwrap()
             .expect("failed to create proof");
