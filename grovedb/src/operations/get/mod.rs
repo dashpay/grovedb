@@ -18,7 +18,9 @@ use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
-use grovedb_version::{check_v0_with_cost, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
 #[cfg(feature = "full")]
 use crate::{
@@ -47,7 +49,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!("get", grove_version.grovedb_versions.operations.get.get);
+        check_grovedb_v0_with_cost!("get", grove_version.grovedb_versions.operations.get.get);
 
         self.get_caching_optional(path.into(), key, true, transaction, grove_version)
     }
@@ -62,7 +64,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_caching_optional",
             grove_version
                 .grovedb_versions
@@ -111,7 +113,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "follow_reference",
             grove_version
                 .grovedb_versions
@@ -183,7 +185,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_raw",
             grove_version.grovedb_versions.operations.get.get_raw
         );
@@ -200,7 +202,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_raw_caching_optional",
             grove_version
                 .grovedb_versions
@@ -232,7 +234,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_raw_optional",
             grove_version
                 .grovedb_versions
@@ -253,7 +255,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_raw_optional_caching_optional",
             grove_version
                 .grovedb_versions
@@ -410,7 +412,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "has_raw",
             grove_version.grovedb_versions.operations.get.has_raw
         );
@@ -495,7 +497,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "check_subtree_exists_invalid_path",
             grove_version
                 .grovedb_versions

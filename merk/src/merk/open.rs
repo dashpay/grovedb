@@ -15,12 +15,7 @@ where
     S: StorageContext<'db>,
 {
     /// Open empty tree
-    pub fn open_empty(
-        storage: S,
-        merk_type: MerkType,
-        is_sum_tree: bool,
-        grove_version: &GroveVersion,
-    ) -> Self {
+    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),

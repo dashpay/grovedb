@@ -2,23 +2,18 @@
 //! Implements serialization functions in Element
 
 use bincode::config;
-use grovedb_version::check_v0;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};
-use grovedb_version::error::GroveVersionError;
 
 impl Element {
     #[cfg(feature = "full")]
     /// Serializes self. Returns vector of u8s.
     pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, Error> {
-        check_v0!(
+        check_grovedb_v0!(
             "Element::serialize",
-            grove_version
-                .grovedb_versions
-                .element
-                .serialize
+            grove_version.grovedb_versions.element.serialize
         );
         let config = config::standard().with_big_endian().with_no_limit();
         bincode::encode_to_vec(self, config)
@@ -28,12 +23,9 @@ impl Element {
     #[cfg(feature = "full")]
     /// Serializes self. Returns usize.
     pub fn serialized_size(&self, grove_version: &GroveVersion) -> Result<usize, Error> {
-        check_v0!(
+        check_grovedb_v0!(
             "Element::serialized_size",
-            grove_version
-                .grovedb_versions
-                .element
-                .serialized_size
+            grove_version.grovedb_versions.element.serialized_size
         );
         self.serialize(grove_version)
             .map(|serialized| serialized.len())
@@ -42,12 +34,9 @@ impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Deserializes given bytes and sets as self
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, Error> {
-        check_v0!(
+        check_grovedb_v0!(
             "Element::deserialize",
-            grove_version
-                .grovedb_versions
-                .element
-                .deserialize
+            grove_version.grovedb_versions.element.deserialize
         );
         let config = config::standard().with_big_endian().with_no_limit();
         Ok(bincode::decode_from_slice(bytes, config)

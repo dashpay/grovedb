@@ -12,13 +12,14 @@ use grovedb_merk::Merk;
 use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use integer_encoding::VarInt;
-use grovedb_version::check_v0_with_cost;
+
 use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::{Element, Error, Hash};
-use grovedb_version::error::GroveVersionError;
 
 impl Element {
     #[cfg(feature = "full")]
@@ -30,13 +31,7 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        check_v0_with_cost!(
-            "get",
-            grove_version
-                .grovedb_versions
-                .element
-                .get
-        );
+        check_grovedb_v0_with_cost!("get", grove_version.grovedb_versions.element.get);
         Self::get_optional(merk, key.as_ref(), allow_cache, grove_version).map(|result| {
             let value = result?;
             value.ok_or_else(|| {
@@ -61,12 +56,9 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_optional",
-            grove_version
-                .grovedb_versions
-                .element
-                .get_optional
+            grove_version.grovedb_versions.element.get_optional
         );
         let mut cost = OperationCost::default();
 
@@ -103,12 +95,9 @@ impl Element {
         key: K,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_from_storage",
-            grove_version
-                .grovedb_versions
-                .element
-                .get_from_storage
+            grove_version.grovedb_versions.element.get_from_storage
         );
         Self::get_optional_from_storage(storage, key.as_ref(), grove_version).map(|result| {
             let value = result?;
@@ -129,7 +118,7 @@ impl Element {
         key: K,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_optional_from_storage",
             grove_version
                 .grovedb_versions
@@ -223,7 +212,7 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_with_absolute_refs",
             grove_version
                 .grovedb_versions
@@ -239,10 +228,7 @@ impl Element {
 
         let absolute_element = cost_return_on_error_no_add!(
             &cost,
-            element.convert_if_reference_to_absolute_reference(
-                path,
-                Some(key.as_ref())
-            )
+            element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()))
         );
 
         Ok(absolute_element).wrap_with_cost(cost)
@@ -256,12 +242,9 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Hash>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_value_hash",
-            grove_version
-                .grovedb_versions
-                .element
-                .get_value_hash
+            grove_version.grovedb_versions.element.get_value_hash
         );
         let mut cost = OperationCost::default();
 

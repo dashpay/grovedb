@@ -1,13 +1,16 @@
 use crate::version::{
     grovedb_versions::{
+        GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
-        GroveDBOperationsInsertVersions, GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
-        GroveDBOperationsWorstCaseVersions, GroveDBVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
+        GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
+        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions,
+        GroveDBReplicationVersions, GroveDBVersions,
     },
+    merk_versions::MerkVersions,
     GroveVersion,
 };
-use crate::version::grovedb_versions::{GroveDBApplyBatchVersions, GroveDBElementMethodVersions};
 
 pub const GROVE_V1: GroveVersion = GroveVersion {
     protocol_version: 0,
@@ -74,6 +77,15 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 get_raw_optional_caching_optional: 0,
                 has_raw: 0,
                 check_subtree_exists_invalid_path: 0,
+                average_case_for_has_raw: 0,
+                average_case_for_has_raw_tree: 0,
+                average_case_for_get_raw: 0,
+                average_case_for_get: 0,
+                average_case_for_get_tree: 0,
+                worst_case_for_has_raw: 0,
+                worst_case_for_get_raw: 0,
+                worst_case_for_get: 0,
+                is_empty_tree: 0,
             },
             insert: GroveDBOperationsInsertVersions {
                 insert: 0,
@@ -99,6 +111,8 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 delete_up_tree_while_empty_with_sectional_storage: 0,
                 delete_operations_for_delete_up_tree_while_empty: 0,
                 add_delete_operations_for_delete_up_tree_while_empty: 0,
+                average_case_delete_operations_for_delete_up_tree_while_empty: 0,
+                worst_case_delete_operations_for_delete_up_tree_while_empty: 0,
             },
             query: GroveDBOperationsQueryVersions {
                 query_encoded_many: 0,
@@ -112,6 +126,18 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 query_keys_optional: 0,
                 query_raw_keys_optional: 0,
                 follow_element: 0,
+            },
+            proof: GroveDBOperationsProofVersions {
+                prove_query: 0,
+                prove_query_many: 0,
+                verify_query_with_options: 0,
+                verify_query_raw: 0,
+                verify_layer_proof: 0,
+                verify_query: 0,
+                verify_subset_query: 0,
+                verify_query_with_absence_proof: 0,
+                verify_subset_query_with_absence_proof: 0,
+                verify_query_with_chained_path_queries: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -143,5 +169,17 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
             },
         },
+        path_query_methods: GroveDBPathQueryMethodVersions {
+            terminal_keys: 0,
+            merge: 0,
+            query_items_at_path: 0,
+        },
+        replication: GroveDBReplicationVersions {
+            get_subtrees_metadata: 0,
+            fetch_chunk: 0,
+            start_snapshot_syncing: 0,
+            apply_chunk: 0,
+        },
     },
+    merk_versions: MerkVersions {},
 };

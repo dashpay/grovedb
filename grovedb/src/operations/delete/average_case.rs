@@ -11,7 +11,9 @@ use grovedb_merk::{
     HASH_LENGTH_U32,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use intmap::IntMap;
 
 use crate::{
@@ -33,6 +35,14 @@ impl GroveDb {
         estimated_layer_info: IntMap<EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
+        check_grovedb_v0_with_cost!(
+            "average_case_delete_operations_for_delete_up_tree_while_empty",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete_up_tree
+                .average_case_delete_operations_for_delete_up_tree_while_empty
+        );
         let mut cost = OperationCost::default();
 
         let stop_path_height = stop_path_height.unwrap_or_default();
@@ -126,7 +136,7 @@ impl GroveDb {
     }
 
     /// Average case delete operation for delete internal
-    pub fn average_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
+    fn average_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
         parent_tree_is_sum_tree: bool,

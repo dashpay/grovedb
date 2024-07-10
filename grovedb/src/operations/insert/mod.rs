@@ -15,7 +15,9 @@ use grovedb_storage::rocksdb_storage::{
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
 use grovedb_storage::{Storage, StorageBatch};
-use grovedb_version::{check_v0_with_cost, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
 #[cfg(feature = "full")]
 use crate::{
@@ -76,7 +78,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert",
             grove_version.grovedb_versions.operations.insert.insert
         );
@@ -122,7 +124,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_on_transaction",
             grove_version
                 .grovedb_versions
@@ -172,7 +174,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_without_transaction",
             grove_version
                 .grovedb_versions
@@ -222,7 +224,7 @@ impl GroveDb {
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "add_element_on_transaction",
             grove_version
                 .grovedb_versions
@@ -390,7 +392,7 @@ impl GroveDb {
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "add_element_without_transaction",
             grove_version
                 .grovedb_versions
@@ -550,7 +552,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_if_not_exists",
             grove_version
                 .grovedb_versions
@@ -589,7 +591,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_if_changed_value",
             grove_version
                 .grovedb_versions

@@ -3045,7 +3045,7 @@ mod tests {
 
         // now we merge the path queries
         let mut merged_path_queries =
-            PathQuery::merge(vec![&path_query_one, &path_query_two]).unwrap();
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version).unwrap();
         merged_path_queries.query.limit = Some(3);
         let proof = db
             .prove_query(&merged_path_queries, None, grove_version)

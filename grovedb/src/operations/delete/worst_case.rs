@@ -7,7 +7,9 @@ use grovedb_merk::{
     estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, tree::kv::KV,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use intmap::IntMap;
 
 use crate::{
@@ -28,6 +30,14 @@ impl GroveDb {
         max_element_size: u32,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
+        check_grovedb_v0_with_cost!(
+            "delete",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete_up_tree
+                .worst_case_delete_operations_for_delete_up_tree_while_empty
+        );
         let mut cost = OperationCost::default();
 
         let stop_path_height = stop_path_height.unwrap_or_default();
@@ -108,7 +118,7 @@ impl GroveDb {
     }
 
     /// Worst case costs for delete operation for delete internal
-    pub fn worst_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
+    fn worst_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
         parent_tree_is_sum_tree: bool,
@@ -121,21 +131,27 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         if validate {
-            GroveDb::add_worst_case_get_merk_at_path::<S>(
-                &mut cost,
-                path,
-                parent_tree_is_sum_tree,
-                grove_version,
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_worst_case_get_merk_at_path::<S>(
+                    &mut cost,
+                    path,
+                    parent_tree_is_sum_tree,
+                    grove_version,
+                )
             );
         }
         if check_if_tree {
-            GroveDb::add_worst_case_get_raw_cost::<S>(
-                &mut cost,
-                path,
-                key,
-                max_element_size,
-                parent_tree_is_sum_tree,
-                grove_version,
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_worst_case_get_raw_cost::<S>(
+                    &mut cost,
+                    path,
+                    key,
+                    max_element_size,
+                    parent_tree_is_sum_tree,
+                    grove_version,
+                )
             );
         }
         // in the worst case this is a tree

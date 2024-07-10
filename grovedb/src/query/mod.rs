@@ -11,7 +11,7 @@ use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 use indexmap::IndexMap;
 
 use crate::operations::proof::util::hex_to_ascii;
@@ -135,7 +135,18 @@ impl PathQuery {
     }
 
     /// Gets the path of all terminal keys
-    pub fn terminal_keys(&self, max_results: usize) -> Result<Vec<PathKey>, Error> {
+    pub fn terminal_keys(
+        &self,
+        max_results: usize,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<PathKey>, Error> {
+        check_grovedb_v0!(
+            "merge",
+            grove_version
+                .grovedb_versions
+                .path_query_methods
+                .terminal_keys
+        );
         let mut result: Vec<(Vec<Vec<u8>>, Vec<u8>)> = vec![];
         self.query
             .query
@@ -145,7 +156,14 @@ impl PathQuery {
     }
 
     /// Combines multiple path queries into one equivalent path query
-    pub fn merge(mut path_queries: Vec<&PathQuery>) -> Result<Self, Error> {
+    pub fn merge(
+        mut path_queries: Vec<&PathQuery>,
+        grove_version: &GroveVersion,
+    ) -> Result<Self, Error> {
+        check_grovedb_v0!(
+            "merge",
+            grove_version.grovedb_versions.path_query_methods.merge
+        );
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
@@ -281,7 +299,14 @@ impl PathQuery {
         &self,
         path: &[&[u8]],
         grove_version: &GroveVersion,
-    ) -> Option<SinglePathSubquery> {
+    ) -> Result<Option<SinglePathSubquery>, Error> {
+        check_grovedb_v0!(
+            "query_items_at_path",
+            grove_version
+                .grovedb_versions
+                .path_query_methods
+                .query_items_at_path
+        );
         fn recursive_query_items<'b>(
             query: &'b Query,
             path: &[&[u8]],
@@ -391,7 +416,7 @@ impl PathQuery {
         let self_path_len = self.path.len();
         let given_path_len = path.len();
 
-        match given_path_len.cmp(&self_path_len) {
+        Ok(match given_path_len.cmp(&self_path_len) {
             Ordering::Less => {
                 if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
                     Some(SinglePathSubquery::from_key_when_in_path(
@@ -412,11 +437,11 @@ impl PathQuery {
             }
             Ordering::Greater => {
                 if !self.path.iter().zip(path).all(|(a, b)| a.as_slice() == *b) {
-                    return None;
+                    return Ok(None);
                 }
                 recursive_query_items(&self.query.query, &path[self_path_len..])
             }
-        }
+        })
     }
 }
 
@@ -600,8 +625,9 @@ mod tests {
                 .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("should merge path queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("should merge path queries");
 
         let proof = temp_db
             .prove_query(&merged_path_query, None, grove_version)
@@ -649,8 +675,9 @@ mod tests {
                 .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("expect to merge path queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
@@ -759,9 +786,11 @@ mod tests {
 
         }
 
-        let merged_path_query =
-            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .expect("expect to merge path queries");
+        let merged_path_query = PathQuery::merge(
+            vec![&path_query_one, &path_query_two, &path_query_three],
+            grove_version,
+        )
+        .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
         let conditional_subquery_branches = merged_path_query
@@ -943,8 +972,9 @@ mod tests {
                 .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("expect to merge path queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
 
         let proof = temp_db
@@ -1030,9 +1060,11 @@ mod tests {
                 .expect("should execute proof");
         assert_eq!(result_set.len(), 2);
 
-        let merged_path_query =
-            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .expect("should merge three queries");
+        let merged_path_query = PathQuery::merge(
+            vec![&path_query_one, &path_query_two, &path_query_three],
+            grove_version,
+        )
+        .expect("should merge three queries");
 
         let proof = temp_db
             .prove_query(&merged_path_query, None, grove_version)
@@ -1081,8 +1113,9 @@ mod tests {
                 .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("should merge three queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("should merge three queries");
 
         let proof = temp_db
             .prove_query(&merged_path_query, None, grove_version)
@@ -1160,8 +1193,9 @@ mod tests {
 
         }
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("expected to be able to merge path_query");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("expected to be able to merge path_query");
 
         // we expect the common path to be the path of both before merge
         assert_eq!(
@@ -1270,6 +1304,7 @@ mod tests {
             let path = vec![root_path_key_1.as_slice()];
             let first = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1288,6 +1323,7 @@ mod tests {
 
             let second = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1311,6 +1347,7 @@ mod tests {
 
             let third = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1334,6 +1371,7 @@ mod tests {
 
             let fourth = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1358,6 +1396,7 @@ mod tests {
 
             let fifth = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1384,6 +1423,7 @@ mod tests {
 
             let sixth = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1429,6 +1469,7 @@ mod tests {
             let path = vec![root_path_key.as_slice()];
             let first = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1447,6 +1488,7 @@ mod tests {
 
             let second = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1498,6 +1540,7 @@ mod tests {
 
             let second = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1595,6 +1638,7 @@ mod tests {
             let path = vec![];
             let first = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1614,6 +1658,7 @@ mod tests {
             let path = vec![key_20.as_slice()];
             let query = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1631,6 +1676,7 @@ mod tests {
             let path = vec![key_20.as_slice(), identity_id.as_slice()];
             let query = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(
@@ -1650,6 +1696,7 @@ mod tests {
             let path = vec![key_20.as_slice(), identity_id.as_slice(), key_80.as_slice()];
             let query = path_query
                 .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
                 .expect("expected query items");
 
             assert_eq!(

@@ -2,21 +2,22 @@
 //! Implements functions in Element for deleting
 
 #[cfg(feature = "full")]
+use grovedb_costs::OperationCost;
+#[cfg(feature = "full")]
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
 #[cfg(feature = "full")]
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 #[cfg(feature = "full")]
-use grovedb_version::check_v0_with_cost;
-#[cfg(feature = "full")]
-use grovedb_version::version::GroveVersion;
-#[cfg(feature = "full")]
-use grovedb_costs::OperationCost;
-#[cfg(feature = "full")]
-use crate::{Element, Error};
+use grovedb_version::check_grovedb_v0_with_cost;
 #[cfg(feature = "full")]
 use grovedb_version::error::GroveVersionError;
+#[cfg(feature = "full")]
+use grovedb_version::version::GroveVersion;
+
+#[cfg(feature = "full")]
+use crate::{Element, Error};
 
 impl Element {
     #[cfg(feature = "full")]
@@ -29,13 +30,7 @@ impl Element {
         is_sum: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
-            "delete",
-            grove_version
-                .grovedb_versions
-                .element
-                .delete
-        );
+        check_grovedb_v0_with_cost!("delete", grove_version.grovedb_versions.element.delete);
         let op = match (is_sum, is_layered) {
             (true, true) => Op::DeleteLayeredMaybeSpecialized,
             (true, false) => Op::DeleteMaybeSpecialized,
@@ -76,7 +71,7 @@ impl Element {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_with_sectioned_removal_bytes",
             grove_version
                 .grovedb_versions
@@ -116,7 +111,7 @@ impl Element {
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_into_batch_operations",
             grove_version
                 .grovedb_versions

@@ -14,7 +14,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[rustfmt::skip]
 use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
 use crate::{replication, Error, GroveDb, Transaction, TransactionArg};
 
@@ -89,7 +89,7 @@ impl fmt::Debug for SubtreesMetadata {
                 " prefix:{:?} -> path:{:?}",
                 hex::encode(prefix),
                 metadata_path_str
-            );
+            )?;
         }
         Ok(())
     }
@@ -172,7 +172,14 @@ impl GroveDb {
         tx: TransactionArg,
         grove_version: &GroveVersion,
     ) -> Result<SubtreesMetadata, Error> {
-        let mut subtrees_metadata = crate::replication::SubtreesMetadata::new();
+        check_grovedb_v0!(
+            "is_empty_tree",
+            grove_version
+                .grovedb_versions
+                .replication
+                .get_subtrees_metadata
+        );
+        let mut subtrees_metadata = SubtreesMetadata::new();
 
         let subtrees_root = self
             .find_subtrees(&SubtreePath::empty(), tx, grove_version)
@@ -259,6 +266,10 @@ impl GroveDb {
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
+        check_grovedb_v0!(
+            "fetch_chunk",
+            grove_version.grovedb_versions.replication.fetch_chunk
+        );
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -359,6 +370,13 @@ impl GroveDb {
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<MultiStateSyncInfo, Error> {
+        check_grovedb_v0!(
+            "start_snapshot_syncing",
+            grove_version
+                .grovedb_versions
+                .replication
+                .start_snapshot_syncing
+        );
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -420,6 +438,10 @@ impl GroveDb {
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+        check_grovedb_v0!(
+            "apply_chunk",
+            grove_version.grovedb_versions.replication.apply_chunk
+        );
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(

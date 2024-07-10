@@ -2,7 +2,6 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::OperationCost;
-use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
@@ -34,11 +33,7 @@ pub const SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST;
 
 #[cfg(feature = "full")]
 impl KV {
-    fn encoded_kv_node_size(
-        element_size: u32,
-        is_sum_node: bool,
-        grove_version: &GroveVersion,
-    ) -> u32 {
+    fn encoded_kv_node_size(element_size: u32, is_sum_node: bool) -> u32 {
         // We always charge 8 bytes for the sum node (even though
         // it could theoretically be 9 bytes
         let sum_node_feature_size = if is_sum_node { 9 } else { 1 };
@@ -57,7 +52,6 @@ pub fn add_cost_case_merk_insert(
     key_len: u32,
     value_len: u32,
     in_tree_using_sums: bool,
-    grove_version: &GroveVersion,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.added_bytes += KV::node_byte_cost_size_for_key_and_raw_value_lengths(
@@ -82,7 +76,6 @@ pub fn add_cost_case_merk_insert_layered(
     key_len: u32,
     value_len: u32,
     in_tree_using_sums: bool,
-    grove_version: &GroveVersion,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.added_bytes += KV::layered_node_byte_cost_size_for_key_and_value_lengths(
@@ -109,7 +102,6 @@ pub fn add_cost_case_merk_replace(
     key_len: u32,
     value_len: u32,
     in_tree_using_sums: bool,
-    grove_version: &GroveVersion,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.added_bytes +=
@@ -133,7 +125,6 @@ pub fn add_cost_case_merk_replace_same_size(
     key_len: u32,
     value_len: u32,
     in_tree_using_sums: bool,
-    grove_version: &GroveVersion,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.replaced_bytes += KV::node_byte_cost_size_for_key_and_raw_value_lengths(
@@ -158,7 +149,6 @@ pub fn add_cost_case_merk_replace_layered(
     key_len: u32,
     value_len: u32,
     in_tree_using_sums: bool,
-    grove_version: &GroveVersion,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.replaced_bytes += KV::layered_node_byte_cost_size_for_key_and_value_lengths(
@@ -187,7 +177,6 @@ pub fn add_cost_case_merk_patch(
     value_len: u32,
     change_in_bytes: i32,
     in_tree_using_sums: bool,
-    grove_version: &GroveVersion,
 ) {
     cost.seek_count += 1;
     if change_in_bytes >= 0 {

@@ -1,18 +1,18 @@
 //! Insert
 //! Implements functions in Element for inserting into Merk
 
-use grovedb_costs::cost_return_on_error_default;
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
+    CostsExt, OperationCost,
 };
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
 use grovedb_storage::StorageContext;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use integer_encoding::VarInt;
-use grovedb_version::check_v0_with_cost;
-use crate::Element::SumItem;
-use crate::{Element, Error, Hash};
-use grovedb_version::error::GroveVersionError;
+
+use crate::{Element, Element::SumItem, Error, Hash};
 
 impl Element {
     #[cfg(feature = "full")]
@@ -28,13 +28,7 @@ impl Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
-            "insert",
-            grove_version
-                .grovedb_versions
-                .element
-                .insert
-        );
+        check_grovedb_v0_with_cost!("insert", grove_version.grovedb_versions.element.insert);
 
         let serialized = cost_return_on_error_default!(self.serialize(grove_version));
 
@@ -87,7 +81,7 @@ impl Element {
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_into_batch_operations",
             grove_version
                 .grovedb_versions
@@ -133,12 +127,9 @@ impl Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_if_not_exists",
-            grove_version
-                .grovedb_versions
-                .element
-                .insert_if_not_exists
+            grove_version.grovedb_versions.element.insert_if_not_exists
         );
 
         let mut cost = OperationCost::default();
@@ -169,7 +160,7 @@ impl Element {
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_if_not_exists_into_batch_operations",
             grove_version
                 .grovedb_versions
@@ -213,7 +204,7 @@ impl Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(bool, Option<Element>), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_if_changed_value",
             grove_version
                 .grovedb_versions
@@ -255,7 +246,7 @@ impl Element {
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
     ) -> CostResult<(bool, Option<Element>), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_if_changed_value_into_batch_operations",
             grove_version
                 .grovedb_versions
@@ -302,12 +293,9 @@ impl Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_reference",
-            grove_version
-                .grovedb_versions
-                .element
-                .insert_reference
+            grove_version.grovedb_versions.element.insert_reference
         );
 
         let serialized = match self.serialize(grove_version) {
@@ -352,7 +340,7 @@ impl Element {
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_reference_into_batch_operations",
             grove_version
                 .grovedb_versions
@@ -387,12 +375,9 @@ impl Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_subtree",
-            grove_version
-                .grovedb_versions
-                .element
-                .insert_subtree
+            grove_version.grovedb_versions.element.insert_subtree
         );
 
         let serialized = match self.serialize(grove_version) {
@@ -442,7 +427,7 @@ impl Element {
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "insert_subtree_into_batch_operations",
             grove_version
                 .grovedb_versions

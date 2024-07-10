@@ -12,10 +12,10 @@ use grovedb_merk::{
     TreeFeatureType,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_version::check_v0;
+
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -27,7 +27,6 @@ use crate::{
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};
-use grovedb_version::error::GroveVersionError;
 
 impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -192,13 +191,14 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the required item space
-    pub fn required_item_space(len: u32, flag_len: u32, grove_version: &GroveVersion) -> Result<u32, Error> {
-        check_v0!(
+    pub fn required_item_space(
+        len: u32,
+        flag_len: u32,
+        grove_version: &GroveVersion,
+    ) -> Result<u32, Error> {
+        check_grovedb_v0!(
             "required_item_space",
-            grove_version
-                .grovedb_versions
-                .element
-                .required_item_space
+            grove_version.grovedb_versions.element.required_item_space
         );
         Ok(len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1)
     }
@@ -242,7 +242,7 @@ impl Element {
         is_sum_node: bool,
         grove_version: &GroveVersion,
     ) -> Result<u32, Error> {
-        check_v0!(
+        check_grovedb_v0!(
             "specialized_costs_for_key_value",
             grove_version
                 .grovedb_versions
@@ -303,12 +303,9 @@ impl Element {
     #[cfg(feature = "full")]
     /// Get tree cost for the element
     pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
-        check_v0!(
+        check_grovedb_v0!(
             "get_specialized_cost",
-            grove_version
-                .grovedb_versions
-                .element
-                .get_specialized_cost
+            grove_version.grovedb_versions.element.get_specialized_cost
         );
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),

@@ -6,7 +6,9 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
 use crate::{
     batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
@@ -70,6 +72,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        check_grovedb_v0_with_cost!(
+            "delete",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete_up_tree
+                .delete_up_tree_while_empty
+        );
         self.delete_up_tree_while_empty_with_sectional_storage(
             path.into(),
             key,
@@ -103,6 +113,14 @@ impl GroveDb {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<u16, Error> {
+        check_grovedb_v0_with_cost!(
+            "delete",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete_up_tree
+                .delete_up_tree_while_empty_with_sectional_storage
+        );
         let mut cost = OperationCost::default();
         let mut batch_operations: Vec<GroveDbOp> = Vec::new();
 
@@ -156,6 +174,14 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
+        check_grovedb_v0_with_cost!(
+            "delete",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete_up_tree
+                .delete_operations_for_delete_up_tree_while_empty
+        );
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
             key,
@@ -180,6 +206,14 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error> {
+        check_grovedb_v0_with_cost!(
+            "delete",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete_up_tree
+                .add_delete_operations_for_delete_up_tree_while_empty
+        );
         let mut cost = OperationCost::default();
 
         if let Some(stop_path_height) = options.stop_path_height {

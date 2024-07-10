@@ -59,14 +59,14 @@ use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
-use grovedb_version::check_v0_with_cost;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 pub use options::BatchApplyOptions;
-use grovedb_version::error::GroveVersionError;
 
 pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 #[cfg(feature = "estimated_costs")]
@@ -984,7 +984,7 @@ where
     fn update_base_merk_root_key(
         &mut self,
         root_key: Option<Vec<u8>>,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let base_path = vec![];
@@ -1418,7 +1418,7 @@ impl GroveDb {
             u32,
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "apply_batch_structure",
             grove_version
                 .grovedb_versions
@@ -1635,12 +1635,9 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "apply_body",
-            grove_version
-                .grovedb_versions
-                .apply_batch
-                .apply_body
+            grove_version.grovedb_versions.apply_batch.apply_body
         );
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
@@ -1683,7 +1680,7 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "continue_partial_apply_body",
             grove_version
                 .grovedb_versions
@@ -1716,7 +1713,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "apply_operations_without_batching",
             grove_version
                 .grovedb_versions
@@ -1770,12 +1767,9 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "apply_batch",
-            grove_version
-                .grovedb_versions
-                .apply_batch
-                .apply_batch
+            grove_version.grovedb_versions.apply_batch.apply_batch
         );
         self.apply_batch_with_element_flags_update(
             ops,
@@ -1804,7 +1798,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "apply_partial_batch",
             grove_version
                 .grovedb_versions
@@ -1837,7 +1831,7 @@ impl GroveDb {
         new_merk: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "open_batch_transactional_merk_at_path",
             grove_version
                 .grovedb_versions
@@ -1853,13 +1847,7 @@ impl GroveDb {
         if let Some((parent_path, parent_key)) = path.derive_parent() {
             if new_merk {
                 // TODO: can this be a sum tree
-                Ok(Merk::open_empty(
-                    storage,
-                    MerkType::LayeredMerk,
-                    false,
-                    grove_version,
-                ))
-                .wrap_with_cost(cost)
+                Ok(Merk::open_empty(storage, MerkType::LayeredMerk, false)).wrap_with_cost(cost)
             } else {
                 let parent_storage = self
                     .db
@@ -1897,13 +1885,7 @@ impl GroveDb {
                 }
             }
         } else if new_merk {
-            Ok(Merk::open_empty(
-                storage,
-                MerkType::BaseMerk,
-                false,
-                grove_version,
-            ))
-            .wrap_with_cost(cost)
+            Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
         } else {
             Merk::open_base(
                 storage,
@@ -1924,7 +1906,7 @@ impl GroveDb {
         new_merk: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "open_batch_merk_at_path",
             grove_version
                 .grovedb_versions
@@ -1943,8 +1925,7 @@ impl GroveDb {
             } else {
                 MerkType::LayeredMerk
             };
-            Ok(Merk::open_empty(storage, merk_type, false, grove_version))
-                .wrap_with_cost(local_cost)
+            Ok(Merk::open_empty(storage, merk_type, false)).wrap_with_cost(local_cost)
         } else if let Some((base_path, last)) = path.derive_parent() {
             let parent_storage = self
                 .db
@@ -2006,7 +1987,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "apply_batch_with_element_flags_update",
             grove_version
                 .grovedb_versions
@@ -2138,7 +2119,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "apply_partial_batch_with_element_flags_update",
             grove_version
                 .grovedb_versions
@@ -2382,7 +2363,7 @@ impl GroveDb {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "estimated_case_operations_for_batch",
             grove_version
                 .grovedb_versions

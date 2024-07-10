@@ -5,6 +5,15 @@ pub struct GroveDBVersions {
     pub apply_batch: GroveDBApplyBatchVersions,
     pub element: GroveDBElementMethodVersions,
     pub operations: GroveDBOperationsVersions,
+    pub path_query_methods: GroveDBPathQueryMethodVersions,
+    pub replication: GroveDBReplicationVersions,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBPathQueryMethodVersions {
+    pub terminal_keys: FeatureVersion,
+    pub merge: FeatureVersion,
+    pub query_items_at_path: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -29,6 +38,7 @@ pub struct GroveDBOperationsVersions {
     pub delete: GroveDBOperationsDeleteVersions,
     pub delete_up_tree: GroveDBOperationsDeleteUpTreeVersions,
     pub query: GroveDBOperationsQueryVersions,
+    pub proof: GroveDBOperationsProofVersions,
     pub average_case: GroveDBOperationsAverageCaseVersions,
     pub worst_case: GroveDBOperationsWorstCaseVersions,
 }
@@ -44,6 +54,29 @@ pub struct GroveDBOperationsGetVersions {
     pub get_raw_optional_caching_optional: FeatureVersion,
     pub has_raw: FeatureVersion,
     pub check_subtree_exists_invalid_path: FeatureVersion,
+    pub average_case_for_has_raw: FeatureVersion,
+    pub average_case_for_has_raw_tree: FeatureVersion,
+    pub average_case_for_get_raw: FeatureVersion,
+    pub average_case_for_get: FeatureVersion,
+    pub average_case_for_get_tree: FeatureVersion,
+    pub worst_case_for_has_raw: FeatureVersion,
+    pub worst_case_for_get_raw: FeatureVersion,
+    pub worst_case_for_get: FeatureVersion,
+    pub is_empty_tree: FeatureVersion,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBOperationsProofVersions {
+    pub prove_query: FeatureVersion,
+    pub prove_query_many: FeatureVersion,
+    pub verify_query_with_options: FeatureVersion,
+    pub verify_query_raw: FeatureVersion,
+    pub verify_layer_proof: FeatureVersion,
+    pub verify_query: FeatureVersion,
+    pub verify_subset_query: FeatureVersion,
+    pub verify_query_with_absence_proof: FeatureVersion,
+    pub verify_subset_query_with_absence_proof: FeatureVersion,
+    pub verify_query_with_chained_path_queries: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -123,6 +156,8 @@ pub struct GroveDBOperationsDeleteUpTreeVersions {
     pub delete_up_tree_while_empty_with_sectional_storage: FeatureVersion,
     pub delete_operations_for_delete_up_tree_while_empty: FeatureVersion,
     pub add_delete_operations_for_delete_up_tree_while_empty: FeatureVersion,
+    pub average_case_delete_operations_for_delete_up_tree_while_empty: FeatureVersion,
+    pub worst_case_delete_operations_for_delete_up_tree_while_empty: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -178,4 +213,12 @@ pub struct GroveDBElementMethodVersions {
     pub serialize: FeatureVersion,
     pub serialized_size: FeatureVersion,
     pub deserialize: FeatureVersion,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBReplicationVersions {
+    pub get_subtrees_metadata: FeatureVersion,
+    pub fetch_chunk: FeatureVersion,
+    pub start_snapshot_syncing: FeatureVersion,
+    pub apply_chunk: FeatureVersion,
 }

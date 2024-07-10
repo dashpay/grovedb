@@ -6,7 +6,7 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_version::{
-    check_v0, check_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
@@ -46,7 +46,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<u8>>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_encoded_many",
             grove_version
                 .grovedb_versions
@@ -122,7 +122,7 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error>
 where {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_many_raw",
             grove_version
                 .grovedb_versions
@@ -132,7 +132,10 @@ where {
         );
         let mut cost = OperationCost::default();
 
-        let query = cost_return_on_error_no_add!(&cost, PathQuery::merge(path_queries.to_vec()));
+        let query = cost_return_on_error_no_add!(
+            &cost,
+            PathQuery::merge(path_queries.to_vec(), grove_version)
+        );
         let (result, _) = cost_return_on_error!(
             &mut cost,
             self.query_raw(
@@ -156,7 +159,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "get_proved_path_query",
             grove_version
                 .grovedb_versions
@@ -182,7 +185,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> Result<Element, Error> {
-        check_v0!(
+        check_grovedb_v0!(
             "follow_element",
             grove_version
                 .grovedb_versions
@@ -235,7 +238,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query",
             grove_version.grovedb_versions.operations.query.query
         );
@@ -278,7 +281,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(Vec<Vec<u8>>, u16), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_item_value",
             grove_version
                 .grovedb_versions
@@ -364,7 +367,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(Vec<QueryItemOrSumReturnType>, u16), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_item_value_or_sum",
             grove_version
                 .grovedb_versions
@@ -462,7 +465,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(Vec<i64>, u16), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_sums",
             grove_version.grovedb_versions.operations.query.query_sums
         );
@@ -546,7 +549,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_raw",
             grove_version.grovedb_versions.operations.query.query_raw
         );
@@ -576,7 +579,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_keys_optional",
             grove_version
                 .grovedb_versions
@@ -595,8 +598,10 @@ where {
         }
         let mut cost = OperationCost::default();
 
-        let terminal_keys =
-            cost_return_on_error_no_add!(&cost, path_query.terminal_keys(max_results));
+        let terminal_keys = cost_return_on_error_no_add!(
+            &cost,
+            path_query.terminal_keys(max_results, grove_version)
+        );
 
         let (elements, _) = cost_return_on_error!(
             &mut cost,
@@ -633,7 +638,7 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "query_raw_keys_optional",
             grove_version
                 .grovedb_versions
@@ -652,8 +657,10 @@ where {
         }
         let mut cost = OperationCost::default();
 
-        let terminal_keys =
-            cost_return_on_error_no_add!(&cost, path_query.terminal_keys(max_results));
+        let terminal_keys = cost_return_on_error_no_add!(
+            &cost,
+            path_query.terminal_keys(max_results, grove_version)
+        );
 
         let (elements, _) = cost_return_on_error!(
             &mut cost,

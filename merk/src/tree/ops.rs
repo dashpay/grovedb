@@ -443,7 +443,6 @@ where
                             old_specialized_cost,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
-                            grove_version
                         )
                     )
                 }

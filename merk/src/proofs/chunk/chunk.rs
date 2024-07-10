@@ -723,7 +723,6 @@ pub mod tests {
 
     #[test]
     fn test_chunk_encoding() {
-        let grove_version = GroveVersion::latest();
         let chunk = vec![
             Op::Push(Node::Hash([0; 32])),
             Op::Push(Node::KVValueHashFeatureType(

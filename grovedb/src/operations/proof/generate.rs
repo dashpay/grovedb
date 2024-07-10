@@ -12,7 +12,9 @@ use grovedb_merk::{
     Merk, ProofWithoutEncodingResult,
 };
 use grovedb_storage::StorageContext;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
 #[cfg(feature = "proof_debug")]
 use crate::query_result_type::QueryResultType;
@@ -34,8 +36,16 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_query_many",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_query_many
+        );
         if query.len() > 1 {
-            let query = cost_return_on_error_default!(PathQuery::merge(query));
+            let query = cost_return_on_error_default!(PathQuery::merge(query, grove_version));
             self.prove_query(&query, prove_options, grove_version)
         } else {
             self.prove_query(query[0], prove_options, grove_version)
@@ -52,6 +62,10 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_query_many",
+            grove_version.grovedb_versions.operations.proof.prove_query
+        );
         self.prove_internal_serialized(query, prove_options, grove_version)
     }
 
@@ -183,14 +197,16 @@ impl GroveDb {
             &cost,
             path_query
                 .query_items_at_path(path.as_slice(), grove_version)
-                .ok_or(Error::CorruptedPath(format!(
-                    "prove subqueries: path {} should be part of path_query {}",
-                    path.iter()
-                        .map(|a| hex_to_ascii(a))
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    path_query
-                )))
+                .and_then(|query_items| {
+                    query_items.ok_or(Error::CorruptedPath(format!(
+                        "prove subqueries: path {} should be part of path_query {}",
+                        path.iter()
+                            .map(|a| hex_to_ascii(a))
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                        path_query
+                    )))
+                })
         );
 
         let subtree = cost_return_on_error!(

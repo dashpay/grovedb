@@ -27,7 +27,9 @@ use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{check_v0_with_cost, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
 #[cfg(feature = "full")]
 use crate::{
@@ -111,7 +113,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete",
             grove_version.grovedb_versions.operations.delete.delete
         );
@@ -175,7 +177,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "clear_subtree",
             grove_version
                 .grovedb_versions
@@ -354,7 +356,7 @@ impl GroveDb {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_with_sectional_storage_function",
             grove_version
                 .grovedb_versions
@@ -413,7 +415,7 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_if_empty_tree",
             grove_version
                 .grovedb_versions
@@ -463,7 +465,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_if_empty_tree_with_sectional_storage_function",
             grove_version
                 .grovedb_versions
@@ -514,7 +516,7 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<GroveDbOp>, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_operation_for_delete_internal",
             grove_version
                 .grovedb_versions
@@ -681,7 +683,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_internal_on_transaction",
             grove_version
                 .grovedb_versions
@@ -878,7 +880,7 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!(
+        check_grovedb_v0_with_cost!(
             "delete_internal_without_transaction",
             grove_version
                 .grovedb_versions

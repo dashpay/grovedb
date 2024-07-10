@@ -223,7 +223,6 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
@@ -393,10 +392,10 @@ mod test {
         fn fetch(
             &self,
             link: &Link,
-            value_defined_cost_fn: Option<
+            _value_defined_cost_fn: Option<
                 &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
             >,
-            grove_version: &GroveVersion,
+            _grove_version: &GroveVersion,
         ) -> CostResult<TreeNode, Error> {
             TreeNode::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerkNode).map(Ok)
         }
