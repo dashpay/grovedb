@@ -32,7 +32,7 @@
 use std::collections::BTreeMap;
 
 use grovedb_storage::{Batch, StorageContext};
-
+use grovedb_version::version::GroveVersion;
 use crate::{
     merk,
     merk::MerkSource,
@@ -87,6 +87,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         &mut self,
         chunk_id: &[u8],
         chunk: Vec<Op>,
+        grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
         let expected_root_hash = self
             .chunk_id_to_root_hash
@@ -106,7 +107,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         } else {
             // every non root chunk has some associated parent with an placeholder link
             // here we update the placeholder link to represent the true data
-            self.rewrite_parent_link(chunk_id, &root_traversal_instruction, &chunk_tree)?;
+            self.rewrite_parent_link(chunk_id, &root_traversal_instruction, &chunk_tree, grove_version)?;
         }
 
         // next up, we need to write the chunk and build the map again
@@ -125,6 +126,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     pub fn process_multi_chunk(
         &mut self,
         multi_chunk: Vec<ChunkOp>,
+        grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
         let mut expect_chunk_id = true;
         let mut chunk_ids = vec![];
@@ -144,7 +146,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 }
                 ChunkOp::Chunk(chunk) => {
                     // TODO: remove clone
-                    let next_chunk_ids = self.process_chunk(&current_chunk_id, chunk)?;
+                    let next_chunk_ids = self.process_chunk(&current_chunk_id, chunk, grove_version)?;
                     chunk_ids.extend(next_chunk_ids);
                 }
             }
@@ -282,6 +284,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         chunk_id: &[u8],
         traversal_instruction: &[bool],
         chunk_tree: &ProofTree,
+        grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         let parent_key = self
             .parent_keys
@@ -293,7 +296,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut parent = merk::fetch_node(
             &self.merk.storage,
             parent_key.as_slice(),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )?
         .ok_or(Error::ChunkRestoringError(InternalError(
             "cannot find expected parent in memory, most likely state corruption issue",
@@ -328,16 +332,18 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Each nodes height is not added to state as such the producer could lie
     /// about the height values after replication we need to verify the
     /// heights and if invalid recompute the correct values
-    fn rewrite_heights(&mut self) -> Result<(), Error> {
+    fn rewrite_heights(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
         fn rewrite_child_heights<'s, 'db, S: StorageContext<'db>>(
             mut walker: RefWalker<MerkSource<'s, S>>,
             batch: &mut <S as StorageContext<'db>>::Batch,
+            grove_version: &GroveVersion,
         ) -> Result<(u8, u8), Error> {
             // TODO: remove unwrap
             let mut cloned_node = TreeNode::decode(
                 walker.tree().key().to_vec(),
                 walker.tree().encode().as_slice(),
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap();
 
@@ -345,19 +351,19 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             let mut right_height = 0;
 
             if let Some(left_walker) = walker
-                .walk(LEFT, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .walk(LEFT, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
                 .unwrap()?
             {
-                let left_child_heights = rewrite_child_heights(left_walker, batch)?;
+                let left_child_heights = rewrite_child_heights(left_walker, batch, grove_version)?;
                 left_height = left_child_heights.0.max(left_child_heights.1) + 1;
                 *cloned_node.link_mut(LEFT).unwrap().child_heights_mut() = left_child_heights;
             }
 
             if let Some(right_walker) = walker
-                .walk(RIGHT, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .walk(RIGHT, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
                 .unwrap()?
             {
-                let right_child_heights = rewrite_child_heights(right_walker, batch)?;
+                let right_child_heights = rewrite_child_heights(right_walker, batch, grove_version)?;
                 right_height = right_child_heights.0.max(right_child_heights.1) + 1;
                 *cloned_node.link_mut(RIGHT).unwrap().child_heights_mut() = right_child_heights;
             }
@@ -375,7 +381,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut tree = self.merk.tree.take().unwrap();
         let walker = RefWalker::new(&mut tree, self.merk.source());
 
-        rewrite_child_heights(walker, &mut batch)?;
+        rewrite_child_heights(walker, &mut batch, grove_version)?;
 
         self.merk.tree.set(Some(tree));
 
@@ -387,9 +393,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     /// Rebuild restoration state from partial storage state
-    fn attempt_state_recovery(&mut self) -> Result<(), Error> {
+    fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
         // TODO: think about the return type some more
-        let (bad_link_map, parent_keys) = self.merk.verify(false);
+        let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
         if !bad_link_map.is_empty() {
             self.chunk_id_to_root_hash = bad_link_map;
             self.parent_keys = parent_keys;
@@ -401,7 +407,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Consumes the `Restorer` and returns a newly created, fully populated
     /// Merk instance. This method will return an error if called before
     /// processing all chunks.
-    pub fn finalize(mut self) -> Result<Merk<S>, Error> {
+    pub fn finalize(mut self, grove_version: &GroveVersion) -> Result<Merk<S>, Error> {
         // ensure all chunks have been processed
         if !self.chunk_id_to_root_hash.is_empty() || !self.parent_keys.is_empty() {
             return Err(Error::ChunkRestoringError(
@@ -412,18 +418,18 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         // get the latest version of the root node
         let _ = self
             .merk
-            .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
+            .load_base_root(None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version);
 
         // if height values are wrong, rewrite height
-        if self.verify_height().is_err() {
-            let _ = self.rewrite_heights();
+        if self.verify_height(grove_version).is_err() {
+            let _ = self.rewrite_heights(grove_version);
             // update the root node after height rewrite
             let _ = self
                 .merk
-                .load_base_root(None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>);
+                .load_base_root(None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version);
         }
 
-        if !self.merk.verify(self.merk.is_sum_tree).0.is_empty() {
+        if !self.merk.verify(self.merk.is_sum_tree, grove_version).0.is_empty() {
             return Err(Error::ChunkRestoringError(ChunkError::InternalError(
                 "restored tree invalid",
             )));
@@ -434,10 +440,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
     /// Verify that the child heights of the merk tree links correctly represent
     /// the tree
-    fn verify_height(&self) -> Result<(), Error> {
+    fn verify_height(&self, grove_version: &GroveVersion) -> Result<(), Error> {
         let tree = self.merk.tree.take();
         let height_verification_result = if let Some(tree) = &tree {
-            self.verify_tree_height(tree, tree.height())
+            self.verify_tree_height(tree, tree.height(), grove_version)
         } else {
             Ok(())
         };
@@ -445,7 +451,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         height_verification_result
     }
 
-    fn verify_tree_height(&self, tree: &TreeNode, parent_height: u8) -> Result<(), Error> {
+    fn verify_tree_height(&self, tree: &TreeNode, parent_height: u8, grove_version: &GroveVersion) -> Result<(), Error> {
         let (left_height, right_height) = tree.child_heights();
 
         if (left_height.abs_diff(right_height)) > 1 {
@@ -477,13 +483,14 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 let left_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
-                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
                 )
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
-                self.verify_tree_height(&left_tree, left_height)?;
+                self.verify_tree_height(&left_tree, left_height, grove_version)?;
             } else {
-                self.verify_tree_height(left_tree.unwrap(), left_height)?;
+                self.verify_tree_height(left_tree.unwrap(), left_height, grove_version)?;
             }
         }
 
@@ -493,13 +500,14 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 let right_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
-                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
                 )
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
-                self.verify_tree_height(&right_tree, right_height)?;
+                self.verify_tree_height(&right_tree, right_height, grove_version)?;
             } else {
-                self.verify_tree_height(right_tree.unwrap(), right_height)?;
+                self.verify_tree_height(right_tree.unwrap(), right_height, grove_version)?;
             }
         }
 
@@ -628,9 +636,9 @@ mod tests {
 
     #[test]
     fn test_process_chunk_correct_chunk_id_map() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -646,7 +654,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -671,12 +680,13 @@ mod tests {
         );
 
         // generate first chunk
-        let (chunk, _) = chunk_producer.chunk_with_index(1).unwrap();
+        let (chunk, _) = chunk_producer.chunk_with_index(1, grove_version).unwrap();
         // apply first chunk
         let new_chunk_ids = restorer
             .process_chunk(
                 &traversal_instruction_as_vec_bytes(vec![].as_slice()),
                 chunk,
+                grove_version,
             )
             .expect("should process chunk successfully");
         assert_eq!(new_chunk_ids.len(), 4);
@@ -707,10 +717,10 @@ mod tests {
         );
 
         // generate second chunk
-        let (chunk, _) = chunk_producer.chunk_with_index(2).unwrap();
+        let (chunk, _) = chunk_producer.chunk_with_index(2, grove_version).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, LEFT]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, LEFT]), chunk, grove_version)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
@@ -721,10 +731,10 @@ mod tests {
         );
 
         // let's try to apply the second chunk again, should not work
-        let (chunk, _) = chunk_producer.chunk_with_index(2).unwrap();
+        let (chunk, _) = chunk_producer.chunk_with_index(2, grove_version).unwrap();
         // apply second chunk
         let chunk_process_result =
-            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, LEFT]), chunk);
+            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, LEFT]), chunk, grove_version);
         assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
@@ -733,9 +743,9 @@ mod tests {
 
         // next let's get a random but expected chunk and work with that e.g. chunk 4
         // but let's apply it to the wrong place
-        let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
+        let (chunk, _) = chunk_producer.chunk_with_index(4, grove_version).unwrap();
         let chunk_process_result =
-            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]), chunk);
+            restorer.process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]), chunk, grove_version);
         assert!(chunk_process_result.is_err());
         assert!(matches!(
             chunk_process_result,
@@ -745,10 +755,10 @@ mod tests {
         ));
 
         // correctly apply chunk 5
-        let (chunk, _) = chunk_producer.chunk_with_index(5).unwrap();
+        let (chunk, _) = chunk_producer.chunk_with_index(5, grove_version).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&[RIGHT, RIGHT]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[RIGHT, RIGHT]), chunk, grove_version)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
@@ -759,10 +769,10 @@ mod tests {
         );
 
         // correctly apply chunk 3
-        let (chunk, _) = chunk_producer.chunk_with_index(3).unwrap();
+        let (chunk, _) = chunk_producer.chunk_with_index(3, grove_version).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[LEFT, RIGHT]), chunk, grove_version)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
@@ -773,10 +783,10 @@ mod tests {
         );
 
         // correctly apply chunk 4
-        let (chunk, _) = chunk_producer.chunk_with_index(4).unwrap();
+        let (chunk, _) = chunk_producer.chunk_with_index(4, grove_version).unwrap();
         // apply second chunk
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&[RIGHT, LEFT]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[RIGHT, LEFT]), chunk, grove_version)
             .unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         // chunk_map should have 1 less element
@@ -787,7 +797,7 @@ mod tests {
         );
 
         // finalize merk
-        let restored_merk = restorer.finalize().expect("should finalized successfully");
+        let restored_merk = restorer.finalize(grove_version).expect("should finalized successfully");
 
         assert_eq!(
             restored_merk.root_hash().unwrap(),
@@ -841,13 +851,14 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
         let batch = make_batch_seq(0..batch_size);
         source_merk
-            .apply::<_, Vec<_>>(&batch, &[], None)
+            .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
 
@@ -859,7 +870,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -881,9 +893,9 @@ mod tests {
         // perform chunk production and processing
         let mut chunk_id_opt = Some(vec![]);
         while let Some(chunk_id) = chunk_id_opt {
-            let (chunk, next_chunk_id) = chunk_producer.chunk(&chunk_id).expect("should get chunk");
+            let (chunk, next_chunk_id) = chunk_producer.chunk(&chunk_id, grove_version).expect("should get chunk");
             restorer
-                .process_chunk(&chunk_id, chunk)
+                .process_chunk(&chunk_id, chunk, grove_version)
                 .expect("should process chunk successfully");
             chunk_id_opt = next_chunk_id;
         }
@@ -891,7 +903,7 @@ mod tests {
         // after chunk processing we should be able to finalize
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 0);
         assert_eq!(restorer.parent_keys.len(), 0);
-        let restored_merk = restorer.finalize().expect("should finalize");
+        let restored_merk = restorer.finalize(grove_version).expect("should finalize");
 
         // compare root hash values
         assert_eq!(
@@ -914,9 +926,9 @@ mod tests {
 
     #[test]
     fn test_process_multi_chunk_no_limit() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -928,7 +940,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -953,7 +966,7 @@ mod tests {
 
         // generate multi chunk from root with no limit
         let chunk = chunk_producer
-            .multi_chunk_with_limit(vec![].as_slice(), None)
+            .multi_chunk_with_limit(vec![].as_slice(), None, grove_version)
             .expect("should generate multichunk");
 
         assert_eq!(chunk.chunk.len(), 2);
@@ -961,14 +974,14 @@ mod tests {
         assert_eq!(chunk.remaining_limit, None);
 
         let next_ids = restorer
-            .process_multi_chunk(chunk.chunk)
+            .process_multi_chunk(chunk.chunk, grove_version)
             .expect("should process chunk");
         // should have replicated all chunks
         assert_eq!(next_ids.len(), 0);
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 0);
         assert_eq!(restorer.parent_keys.len(), 0);
 
-        let restored_merk = restorer.finalize().expect("should be able to finalize");
+        let restored_merk = restorer.finalize(grove_version).expect("should be able to finalize");
 
         // compare root hash values
         assert_eq!(
@@ -979,9 +992,9 @@ mod tests {
 
     #[test]
     fn test_process_multi_chunk_no_limit_but_non_root() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -993,7 +1006,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1017,9 +1031,9 @@ mod tests {
         );
 
         // first restore the first chunk
-        let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1).unwrap();
+        let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1, grove_version).unwrap();
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&[]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[]), chunk, grove_version)
             .expect("should process chunk");
         assert_eq!(new_chunk_ids.len(), 4);
         assert_eq!(next_chunk_index, Some(2));
@@ -1028,19 +1042,19 @@ mod tests {
 
         // generate multi chunk from the 2nd chunk with no limit
         let multi_chunk = chunk_producer
-            .multi_chunk_with_limit_and_index(next_chunk_index.unwrap(), None)
+            .multi_chunk_with_limit_and_index(next_chunk_index.unwrap(), None, grove_version)
             .unwrap();
         // tree of height 4 has 5 chunks
         // we have restored the first leaving 4 chunks
         // each chunk has an extra chunk id, since they are disjoint
         // hence the size of the multi chunk should be 8
         assert_eq!(multi_chunk.chunk.len(), 8);
-        let new_chunk_ids = restorer.process_multi_chunk(multi_chunk.chunk).unwrap();
+        let new_chunk_ids = restorer.process_multi_chunk(multi_chunk.chunk, grove_version).unwrap();
         assert_eq!(new_chunk_ids.len(), 0);
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 0);
         assert_eq!(restorer.parent_keys.len(), 0);
 
-        let restored_merk = restorer.finalize().expect("should be able to finalize");
+        let restored_merk = restorer.finalize(grove_version).expect("should be able to finalize");
 
         // compare root hash values
         assert_eq!(
@@ -1051,9 +1065,9 @@ mod tests {
 
     #[test]
     fn test_process_multi_chunk_with_limit() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -1065,7 +1079,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1084,13 +1099,13 @@ mod tests {
 
         // build multi chunk with with limit of 325
         let multi_chunk = chunk_producer
-            .multi_chunk_with_limit(vec![].as_slice(), Some(600))
+            .multi_chunk_with_limit(vec![].as_slice(), Some(600), grove_version)
             .unwrap();
         // should only contain the first chunk
         assert_eq!(multi_chunk.chunk.len(), 2);
         // should point to chunk 2
         assert_eq!(multi_chunk.next_index, Some(vec![1, 1]));
-        let next_ids = restorer.process_multi_chunk(multi_chunk.chunk).unwrap();
+        let next_ids = restorer.process_multi_chunk(multi_chunk.chunk, grove_version).unwrap();
         assert_eq!(next_ids.len(), 4);
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
         assert_eq!(restorer.parent_keys.len(), 4);
@@ -1099,11 +1114,11 @@ mod tests {
         // with limit just above 642 should get 2 chunks (2 and 3)
         // disjoint, so multi chunk len should be 4
         let multi_chunk = chunk_producer
-            .multi_chunk_with_limit(multi_chunk.next_index.unwrap().as_slice(), Some(645))
+            .multi_chunk_with_limit(multi_chunk.next_index.unwrap().as_slice(), Some(645), grove_version)
             .unwrap();
         assert_eq!(multi_chunk.chunk.len(), 4);
         assert_eq!(multi_chunk.next_index, Some(vec![0u8, 1u8]));
-        let next_ids = restorer.process_multi_chunk(multi_chunk.chunk).unwrap();
+        let next_ids = restorer.process_multi_chunk(multi_chunk.chunk, grove_version).unwrap();
         // chunks 2 and 3 are leaf chunks
         assert_eq!(next_ids.len(), 0);
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 2);
@@ -1111,18 +1126,18 @@ mod tests {
 
         // get the last 2 chunks
         let multi_chunk = chunk_producer
-            .multi_chunk_with_limit(multi_chunk.next_index.unwrap().as_slice(), Some(645))
+            .multi_chunk_with_limit(multi_chunk.next_index.unwrap().as_slice(), Some(645), grove_version)
             .unwrap();
         assert_eq!(multi_chunk.chunk.len(), 4);
         assert_eq!(multi_chunk.next_index, None);
-        let next_ids = restorer.process_multi_chunk(multi_chunk.chunk).unwrap();
+        let next_ids = restorer.process_multi_chunk(multi_chunk.chunk, grove_version).unwrap();
         // chunks 2 and 3 are leaf chunks
         assert_eq!(next_ids.len(), 0);
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 0);
         assert_eq!(restorer.parent_keys.len(), 0);
 
         // finalize merk
-        let restored_merk = restorer.finalize().unwrap();
+        let restored_merk = restorer.finalize(grove_version).unwrap();
 
         // compare root hash values
         assert_eq!(
@@ -1136,10 +1151,10 @@ mod tests {
     // verifies that restoration was performed correctly.
     fn test_restoration_multi_chunk_strategy(batch_size: u64, limit: Option<usize>) {
         // build the source merk
-        let mut source_merk = TempMerk::new();
+        let mut source_merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..batch_size);
         source_merk
-            .apply::<_, Vec<_>>(&batch, &[], None)
+            .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
 
@@ -1151,7 +1166,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1174,10 +1190,10 @@ mod tests {
         let mut chunk_id_opt = Some(vec![]);
         while let Some(chunk_id) = chunk_id_opt {
             let multi_chunk = chunk_producer
-                .multi_chunk_with_limit(&chunk_id, limit)
+                .multi_chunk_with_limit(&chunk_id, limit, grove_version)
                 .expect("should get chunk");
             restorer
-                .process_multi_chunk(multi_chunk.chunk)
+                .process_multi_chunk(multi_chunk.chunk, grove_version)
                 .expect("should process chunk successfully");
             chunk_id_opt = multi_chunk.next_index;
         }
@@ -1185,7 +1201,7 @@ mod tests {
         // after chunk processing we should be able to finalize
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 0);
         assert_eq!(restorer.parent_keys.len(), 0);
-        let restored_merk = restorer.finalize().expect("should finalize");
+        let restored_merk = restorer.finalize(grove_version).expect("should finalize");
 
         // compare root hash values
         assert_eq!(
@@ -1217,9 +1233,9 @@ mod tests {
 
     #[test]
     fn test_restoration_interruption() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -1231,7 +1247,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1255,9 +1272,9 @@ mod tests {
         );
 
         // first restore the first chunk
-        let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1).unwrap();
+        let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1, grove_version).unwrap();
         let new_chunk_ids = restorer
-            .process_chunk(&traversal_instruction_as_vec_bytes(&[]), chunk)
+            .process_chunk(&traversal_instruction_as_vec_bytes(&[]), chunk, grove_version)
             .expect("should process chunk");
         assert_eq!(new_chunk_ids.len(), 4);
         assert_eq!(next_chunk_index, Some(2));
@@ -1276,7 +1293,8 @@ mod tests {
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1287,7 +1305,7 @@ mod tests {
         assert_eq!(restorer.parent_keys.len(), 0);
 
         // recover state
-        let recovery_attempt = restorer.attempt_state_recovery();
+        let recovery_attempt = restorer.attempt_state_recovery(grove_version);
         assert!(recovery_attempt.is_ok());
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
         assert_eq!(restorer.parent_keys.len(), 4);

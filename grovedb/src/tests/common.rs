@@ -1,7 +1,7 @@
 //! Common tests
 
 use grovedb_path::SubtreePath;
-
+use grovedb_version::version::GroveVersion;
 use crate::{operations::proof::util::ProvedPathKeyValues, Element, Error};
 
 /// Compare result tuples
@@ -17,7 +17,7 @@ pub fn compare_result_tuples(
 }
 
 fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
-    let elem = Element::deserialize(raw_bytes)?;
+    let elem = Element::deserialize(raw_bytes, GroveVersion::latest())?;
     match elem {
         Element::Item(item, _) => Ok(item),
         _ => Err(Error::CorruptedPath("expected only item type".to_string())),

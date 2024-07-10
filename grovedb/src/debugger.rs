@@ -86,7 +86,7 @@ async fn fetch_node(
     };
 
     let merk = db
-        .open_non_transactional_merk_at_path(path.as_slice().into(), None)
+        .open_non_transactional_merk_at_path(path.as_slice().into(), None, grove_version)
         .unwrap()?;
     let node = merk.get_node_dbg(&key)?;
 
@@ -107,7 +107,7 @@ async fn fetch_root_node(
     };
 
     let merk = db
-        .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
+        .open_non_transactional_merk_at_path(SubtreePath::empty(), None, grove_version)
         .unwrap()?;
 
     let node = merk.get_root_node_dbg()?;
@@ -129,7 +129,7 @@ fn node_to_update(
         right_child,
     }: NodeDbg,
 ) -> Result<NodeUpdate, crate::Error> {
-    let grovedb_element = crate::Element::deserialize(&value)?;
+    let grovedb_element = crate::Element::deserialize(&value, grove_version)?;
 
     let element = match grovedb_element {
         crate::Element::Item(value, ..) => grovedbg_types::Element::Item { value },

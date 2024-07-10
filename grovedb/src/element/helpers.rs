@@ -42,7 +42,7 @@ use grovedb_merk::{
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -217,53 +217,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Get the size of an element in bytes
-    #[deprecated]
-    pub fn byte_size(&self) -> u32 {
-        match self {
-            Element::Item(item, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + item.len() as u32
-                } else {
-                    item.len() as u32
-                }
-            }
-            Element::SumItem(item, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + item.required_space() as u32
-                } else {
-                    item.required_space() as u32
-                }
-            }
-            Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.serialized_size() as u32;
-
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + path_length
-                } else {
-                    path_length
-                }
-            }
-            Element::Tree(_, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + 32
-                } else {
-                    32
-                }
-            }
-            Element::SumTree(_, _, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + 32 + 8
-                } else {
-                    32 + 8
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "full")]
     /// Get the required item space
-    pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
+    pub fn required_item_space(len: u32, flag_len: u32, grove_version: &GroveVersion) -> u32 {
         len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
@@ -273,6 +228,7 @@ impl Element {
         self,
         path: &[&[u8]],
         key: Option<&[u8]>,
+        grove_version: &GroveVersion,
     ) -> Result<Element, Error> {
         // Convert any non absolute reference type to an absolute one
         // we do this here because references are aggregated first then followed later
@@ -304,9 +260,10 @@ impl Element {
         key: &Vec<u8>,
         value: &[u8],
         is_sum_node: bool,
+        grove_version: &GroveVersion,
     ) -> Result<u32, Error> {
         // todo: we actually don't need to deserialize the whole element
-        let element = Element::deserialize(value)?;
+        let element = Element::deserialize(value, grove_version)?;
         let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
@@ -358,7 +315,7 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get tree cost for the element
-    pub fn get_specialized_cost(&self) -> Result<u32, Error> {
+    pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
@@ -371,8 +328,8 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the value defined cost for a serialized value
-    pub fn value_defined_cost(&self) -> Option<ValueDefinedCostType> {
-        let Some(value_cost) = self.get_specialized_cost().ok() else {
+    pub fn value_defined_cost(&self, grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
+        let Some(value_cost) = self.get_specialized_cost(grove_version).ok() else {
             return None;
         };
 
@@ -391,21 +348,22 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the value defined cost for a serialized value
-    pub fn value_defined_cost_for_serialized_value(value: &[u8]) -> Option<ValueDefinedCostType> {
-        let element = Element::deserialize(value).ok()?;
-        element.value_defined_cost()
+    pub fn value_defined_cost_for_serialized_value(value: &[u8], grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
+        let element = Element::deserialize(value, grove_version).ok()?;
+        element.value_defined_cost(grove_version)
     }
 }
 
 #[cfg(feature = "full")]
 /// Decode from bytes
-pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
+pub fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element, Error> {
     let tree = TreeNode::decode_raw(
         bytes,
         vec![],
         Some(Element::value_defined_cost_for_serialized_value),
+        grove_version,
     )
     .map_err(|e| Error::CorruptedData(e.to_string()))?;
-    let element: Element = Element::deserialize(tree.value_as_slice())?;
+    let element: Element = Element::deserialize(tree.value_as_slice(), grove_version)?;
     Ok(element)
 }

@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Delete
 //! Implements functions in Element for deleting
 
@@ -35,7 +7,7 @@ use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, Cost
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
-
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use crate::{Element, Error};
 
@@ -48,6 +20,7 @@ impl Element {
         merk_options: Option<MerkOptions>,
         is_layered: bool,
         is_sum: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let op = match (is_sum, is_layered) {
             (true, true) => Op::DeleteLayeredMaybeSpecialized,
@@ -62,10 +35,11 @@ impl Element {
             &[],
             merk_options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -86,6 +60,7 @@ impl Element {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let op = match (is_in_sum_tree, is_layered) {
             (true, true) => Op::DeleteLayeredMaybeSpecialized,
@@ -100,12 +75,13 @@ impl Element {
             &[],
             merk_options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
+            grove_version,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -117,6 +93,7 @@ impl Element {
         is_layered: bool,
         is_sum: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let op = match (is_sum, is_layered) {
             (true, true) => Op::DeleteLayeredMaybeSpecialized,

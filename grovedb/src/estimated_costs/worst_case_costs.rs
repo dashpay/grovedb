@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Worst case costs
 //! Implements worst case cost functions in GroveDb
 
@@ -47,7 +19,8 @@ use grovedb_merk::{
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use integer_encoding::VarInt;
-
+use grovedb_version::check_v0;
+use grovedb_version::version::GroveVersion;
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
@@ -62,7 +35,10 @@ impl GroveDb {
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         is_sum_tree: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_worst_case_get_merk_at_path", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_merk_at_path);
+
         cost.seek_count += 2;
         match path.last() {
             None => {}
@@ -84,7 +60,10 @@ impl GroveDb {
         is_in_parent_sum_tree: bool,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("worst_case_merk_replace_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_replace_tree);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let tree_cost = if is_sum_tree {
@@ -115,7 +94,10 @@ impl GroveDb {
         is_sum_tree: bool,
         is_in_parent_sum_tree: bool,
         propagate_if_input: Option<&WorstCaseLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("worst_case_merk_insert_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_insert_tree);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let flags_len = flags.as_ref().map_or(0, |flags| {
@@ -143,7 +125,10 @@ impl GroveDb {
         is_sum_tree: bool,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("worst_case_merk_delete_tree", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_delete_tree);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let tree_cost = if is_sum_tree {
@@ -170,7 +155,10 @@ impl GroveDb {
         value: &Element,
         in_parent_tree_using_sums: bool,
         propagate_for_level: Option<&WorstCaseLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("worst_case_merk_insert_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_insert_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
@@ -215,7 +203,10 @@ impl GroveDb {
         value: &Element,
         in_parent_tree_using_sums: bool,
         propagate_for_level: Option<&WorstCaseLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("worst_case_merk_replace_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_replace_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
@@ -274,7 +265,10 @@ impl GroveDb {
         change_in_bytes: i32,
         in_tree_using_sums: bool,
         propagate_for_level: Option<&WorstCaseLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("worst_case_merk_patch_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_patch_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
@@ -313,7 +307,10 @@ impl GroveDb {
         key: &KeyInfo,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("worst_case_merk_delete_element", grove_version.grovedb_versions.operations.worst_case.worst_case_merk_delete_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         add_worst_case_merk_delete(&mut cost, key_len, MERK_BIGGEST_VALUE_SIZE);
@@ -333,7 +330,10 @@ impl GroveDb {
         key: &KeyInfo,
         max_element_size: u32,
         in_parent_tree_using_sums: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_worst_case_has_raw_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_has_raw_cost);
+
         let value_size = TreeNode::worst_case_encoded_tree_size(
             key.max_length() as u32,
             max_element_size,
@@ -351,7 +351,10 @@ impl GroveDb {
         key: &KeyInfo,
         is_sum_tree: bool,
         in_parent_tree_using_sums: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_worst_case_get_raw_tree_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_raw_tree_cost);
+
         cost.seek_count += 1;
         let tree_cost_size = if is_sum_tree {
             SUM_TREE_COST_SIZE
@@ -373,7 +376,10 @@ impl GroveDb {
         key: &KeyInfo,
         max_element_size: u32,
         in_parent_tree_using_sums: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_worst_case_get_raw_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_raw_cost);
+
         cost.seek_count += 1;
         add_worst_case_get_merk_node(
             cost,
@@ -391,7 +397,10 @@ impl GroveDb {
         max_element_size: u32,
         in_parent_tree_using_sums: bool,
         max_references_sizes: Vec<u32>,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_worst_case_get_cost", grove_version.grovedb_versions.operations.worst_case.add_worst_case_get_cost);
+
         // todo: verify
         let value_size: u32 = TreeNode::worst_case_encoded_tree_size(
             key.max_length() as u32,
@@ -420,7 +429,7 @@ mod test {
         Storage, StorageBatch,
     };
     use tempfile::TempDir;
-
+    use grovedb_version::version::GroveVersion;
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
         tests::{common::EMPTY_PATH, TEST_LEAF},
@@ -432,10 +441,10 @@ mod test {
         // Open a merk and insert 10 elements.
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch);
+        let mut merk = empty_path_merk(&*storage, &batch, grove_version);
 
         let merk_batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
+        merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -446,7 +455,7 @@ mod test {
             .unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = empty_path_merk_read_only(&*storage);
+        let merk = empty_path_merk_read_only(&*storage, grove_version);
 
         // To simulate worst case, we need to pick a node that:
         // 1. Is not in memory
@@ -456,7 +465,8 @@ mod test {
         let node_result = merk.get(
             &8_u64.to_be_bytes(),
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         );
 
         // By tweaking the max element size, we can adapt the worst case function to
@@ -474,7 +484,7 @@ mod test {
         let db = GroveDb::open(tmp_dir.path()).unwrap();
 
         // insert empty tree to start
-        db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -482,13 +492,13 @@ mod test {
         // after tree rotation, 2 will be at the top hence would have both left and
         // right links this will serve as our worst case candidate.
         let elem = Element::new_item(b"value".to_vec());
-        db.insert([TEST_LEAF].as_ref(), &[1], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[1], elem.clone(), None, None, grove_version)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF].as_ref(), &[2], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[2], elem.clone(), None, None, grove_version)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF].as_ref(), &[3], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[3], elem.clone(), None, None, grove_version)
             .unwrap()
             .expect("expected insert");
 
@@ -499,11 +509,12 @@ mod test {
             &mut worst_case_has_raw_cost,
             &path,
             &key,
-            elem.serialized_size().expect("expected size") as u32,
+            elem.serialized_size(grove_version).expect("expected size") as u32,
             false,
+            GroveVersion::latest(),
         );
 
-        let actual_cost = db.has_raw([TEST_LEAF].as_ref(), &[2], None);
+        let actual_cost = db.has_raw([TEST_LEAF].as_ref(), &[2], None, GroveVersion::latest());
 
         assert_eq!(worst_case_has_raw_cost, actual_cost.cost);
     }

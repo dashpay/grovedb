@@ -7,7 +7,8 @@ use std::{
 };
 
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
-
+use grovedb_version::TryFromVersioned;
+use grovedb_version::version::GroveVersion;
 use crate::{
     operations::proof::util::{
         hex_to_ascii, path_hex_to_ascii, ProvedPathKeyOptionalValue, ProvedPathKeyValue,
@@ -503,11 +504,11 @@ pub type PathKeyElementTrio = (Path, Key, Element);
 pub type PathKeyOptionalElementTrio = (Path, Key, Option<Element>);
 
 #[cfg(any(feature = "full", feature = "verify"))]
-impl TryFrom<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
+impl TryFromVersioned<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
     type Error = Error;
 
-    fn try_from(proved_path_key_value: ProvedPathKeyValue) -> Result<Self, Self::Error> {
-        let element = Element::deserialize(proved_path_key_value.value.as_slice())?;
+    fn try_from_versioned(proved_path_key_value: ProvedPathKeyValue, grove_version: &GroveVersion) -> Result<Self, Self::Error> {
+        let element = Element::deserialize(proved_path_key_value.value.as_slice(), grove_version)?;
         Ok((
             proved_path_key_value.path,
             proved_path_key_value.key,
@@ -517,13 +518,13 @@ impl TryFrom<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-impl TryFrom<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio {
+impl TryFromVersioned<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio {
     type Error = Error;
 
-    fn try_from(proved_path_key_value: ProvedPathKeyOptionalValue) -> Result<Self, Self::Error> {
+    fn try_from_versioned(proved_path_key_value: ProvedPathKeyOptionalValue, grove_version: &GroveVersion) -> Result<Self, Self::Error> {
         let element = proved_path_key_value
             .value
-            .map(|e| Element::deserialize(e.as_slice()))
+            .map(|e| Element::deserialize(e.as_slice(), grove_version))
             .transpose()?;
         Ok((
             proved_path_key_value.path,

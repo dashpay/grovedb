@@ -10,4 +10,5 @@ members = [
     "visualize",
     "path",
     "grovedbg-types",
+    "grovedb-version"
 ]

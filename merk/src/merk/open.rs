@@ -2,7 +2,7 @@ use std::cell::Cell;
 
 use grovedb_costs::CostResult;
 use grovedb_storage::StorageContext;
-
+use grovedb_version::version::GroveVersion;
 use crate::{
     tree::kv::ValueDefinedCostType,
     Error, Merk, MerkType,
@@ -14,7 +14,7 @@ where
     S: StorageContext<'db>,
 {
     /// Open empty tree
-    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
+    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool, grove_version: &GroveVersion) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -28,7 +28,8 @@ where
     pub fn open_standalone(
         storage: S,
         is_sum_tree: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
@@ -38,14 +39,15 @@ where
             is_sum_tree,
         };
 
-        merk.load_base_root(value_defined_cost_fn).map_ok(|_| merk)
+        merk.load_base_root(value_defined_cost_fn, grove_version).map_ok(|_| merk)
     }
 
     /// Open base tree
     pub fn open_base(
         storage: S,
         is_sum_tree: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
@@ -55,7 +57,7 @@ where
             is_sum_tree,
         };
 
-        merk.load_base_root(value_defined_cost_fn).map_ok(|_| merk)
+        merk.load_base_root(value_defined_cost_fn, grove_version).map_ok(|_| merk)
     }
 
     /// Open layered tree with root key
@@ -63,7 +65,8 @@ where
         storage: S,
         root_key: Option<Vec<u8>>,
         is_sum_tree: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
@@ -73,7 +76,7 @@ where
             is_sum_tree,
         };
 
-        merk.load_root(value_defined_cost_fn).map_ok(|_| merk)
+        merk.load_root(value_defined_cost_fn, grove_version).map_ok(|_| merk)
     }
 }
 
@@ -102,7 +105,8 @@ mod test {
                 .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -111,6 +115,7 @@ mod test {
             &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -127,7 +132,8 @@ mod test {
                 .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -144,7 +150,8 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), Some(&batch))
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         );
         // Opening not existing merk should cost only root key seek (except context
         // creation)
@@ -158,6 +165,7 @@ mod test {
             &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -172,7 +180,8 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         );
 
         // Opening existing merk should cost two seeks. (except context creation)

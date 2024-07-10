@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Tests
 
 #[cfg(feature = "full")]
@@ -45,7 +17,7 @@ mod tests {
     };
     use integer_encoding::VarInt;
     use intmap::IntMap;
-
+    use grovedb_version::version::GroveVersion;
     use crate::{
         batch::GroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
@@ -54,11 +26,12 @@ mod tests {
 
     #[test]
     fn test_batch_one_insert_costs_match_non_batch() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx))
+            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx), grove_version)
             .cost;
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::insert_op(
@@ -66,12 +39,13 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert_eq!(non_batch_cost.storage_cost, cost.storage_cost);
     }
 
     #[test]
     fn test_batch_root_one_insert_tree_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -80,7 +54,7 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 113 storage_written_bytes
@@ -136,6 +110,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_insert_item_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -144,7 +119,7 @@ mod tests {
             b"key1".to_vec(),
             Element::new_item(b"cat".to_vec()),
         )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 214 storage_written_bytes
@@ -199,6 +174,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_insert_tree_under_parent_item_in_same_merk_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -209,6 +185,7 @@ mod tests {
                 Element::new_item(b"cat".to_vec()),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("successful root tree leaf insert");
@@ -220,7 +197,7 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 115 storage_written_bytes
@@ -293,10 +270,11 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_insert_tree_under_parent_tree_in_same_merk_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -305,7 +283,7 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 113 storage_written_bytes
@@ -367,10 +345,11 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_insert_tree_under_parent_tree_in_different_merk_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -379,7 +358,7 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 113 storage_written_bytes
@@ -448,6 +427,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_insert_cost_right_below_value_required_cost_of_2() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -456,7 +436,7 @@ mod tests {
             b"key1".to_vec(),
             Element::new_item([0u8; 59].to_vec()),
         )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 243 storage_written_bytes
@@ -510,6 +490,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_insert_cost_right_above_value_required_cost_of_2() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -518,7 +499,7 @@ mod tests {
             b"key1".to_vec(),
             Element::new_item([0u8; 60].to_vec()),
         )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 243 storage_written_bytes
@@ -572,9 +553,10 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_update_item_bigger_cost_no_flags() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("expected to insert tree");
 
@@ -584,6 +566,7 @@ mod tests {
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected to insert item");
@@ -604,6 +587,7 @@ mod tests {
                     Ok((NoStorageRemoval, NoStorageRemoval))
                 },
                 Some(&tx),
+                grove_version,
             )
             .cost;
 
@@ -628,9 +612,10 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_update_item_bigger_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("expected to insert tree");
 
@@ -640,6 +625,7 @@ mod tests {
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected to insert item");
@@ -683,6 +669,7 @@ mod tests {
                     ))
                 },
                 Some(&tx),
+                grove_version,
             )
             .cost;
 
@@ -707,9 +694,10 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_update_item_smaller_cost_no_flags() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("expected to insert tree");
 
@@ -719,6 +707,7 @@ mod tests {
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected to insert item");
@@ -742,6 +731,7 @@ mod tests {
                     ))
                 },
                 Some(&tx),
+                grove_version,
             )
             .cost;
 
@@ -762,9 +752,10 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_update_item_smaller_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("expected to insert tree");
 
@@ -774,6 +765,7 @@ mod tests {
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected to insert item");
@@ -816,6 +808,7 @@ mod tests {
                     Ok((NoStorageRemoval, SectionedStorageRemoval(removed_bytes)))
                 },
                 Some(&tx),
+                grove_version,
             )
             .cost;
 
@@ -842,9 +835,10 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_update_tree_bigger_flags_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("expected to insert tree");
 
@@ -854,6 +848,7 @@ mod tests {
             Element::new_tree_with_flags(None, Some(vec![0, 0])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected to insert item");
@@ -895,6 +890,7 @@ mod tests {
                     Ok((NoStorageRemoval, BasicStorageRemoval(removed_value_bytes)))
                 },
                 Some(&tx),
+                grove_version,
             )
             .cost;
 

@@ -147,6 +147,11 @@ pub enum Error {
     #[error("merk error: {0}")]
     /// Merk error
     MerkError(grovedb_merk::error::Error),
+
+    // Version errors
+    #[error(transparent)]
+    /// Version error
+    VersionError(grovedb_version::error::GroveVersionError),
 }
 
 impl From<Infallible> for Error {
@@ -160,3 +165,10 @@ impl From<grovedb_merk::error::Error> for Error {
         Error::MerkError(value)
     }
 }
+
+impl From<grovedb_version::error::GroveVersionError> for Error {
+    fn from(value: grovedb_version::error::GroveVersionError) -> Self {
+        Error::VersionError(value)
+    }
+}
+

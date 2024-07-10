@@ -8,7 +8,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     CryptoHash,
 };
-
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "proof_debug")]
 use crate::operations::proof::util::{
     hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
@@ -27,6 +27,7 @@ impl GroveDb {
         proof: &[u8],
         query: &PathQuery,
         options: VerifyOptions,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         if options.absence_proofs_for_non_existing_searched_keys {
             // must have a limit
@@ -49,7 +50,7 @@ impl GroveDb {
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
 
-        let (root_hash, result) = Self::verify_proof_internal(&grovedb_proof, query, options)?;
+        let (root_hash, result) = Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
 
         Ok((root_hash, result))
     }
@@ -57,6 +58,7 @@ impl GroveDb {
     pub fn verify_query_raw(
         proof: &[u8],
         query: &PathQuery,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
         let config = bincode::config::standard()
             .with_big_endian()
@@ -73,6 +75,7 @@ impl GroveDb {
                 verify_proof_succinctness: false,
                 include_empty_trees_in_result: true,
             },
+            grove_version,
         )?;
 
         Ok((root_hash, result))
@@ -82,16 +85,18 @@ impl GroveDb {
         proof: &GroveDBProof,
         query: &PathQuery,
         options: VerifyOptions,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         match proof {
-            GroveDBProof::V0(proof_v0) => Self::verify_proof_internal_v0(proof_v0, query, options),
+            GroveDBProof::V0(proof_v0) => Self::verify_proof_v0_internal(proof_v0, query, options, grove_version),
         }
     }
 
-    fn verify_proof_internal_v0(
+    fn verify_proof_v0_internal(
         proof: &GroveDBProofV0,
         query: &PathQuery,
         options: VerifyOptions,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
@@ -103,6 +108,7 @@ impl GroveDb {
             &[],
             &mut result,
             &options,
+            grove_version,
         )?;
 
         if options.absence_proofs_for_non_existing_searched_keys {
@@ -167,10 +173,11 @@ impl GroveDb {
         proof: &GroveDBProof,
         query: &PathQuery,
         options: VerifyOptions,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
         match proof {
             GroveDBProof::V0(proof_v0) => {
-                Self::verify_proof_raw_internal_v0(proof_v0, query, options)
+                Self::verify_proof_raw_internal_v0(proof_v0, query, options, grove_version)
             }
         }
     }
@@ -179,6 +186,7 @@ impl GroveDb {
         proof: &GroveDBProofV0,
         query: &PathQuery,
         options: VerifyOptions,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
@@ -190,6 +198,7 @@ impl GroveDb {
             &[],
             &mut result,
             &options,
+            grove_version,
         )?;
         Ok((root_hash, result))
     }
@@ -202,6 +211,7 @@ impl GroveDb {
         current_path: &[&[u8]],
         result: &mut Vec<T>,
         options: &VerifyOptions,
+        grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
         T: TryFrom<ProvedPathKeyOptionalValue>,
@@ -258,7 +268,7 @@ impl GroveDb {
                 let key = &proved_key_value.key;
                 let hash = &proved_key_value.proof;
                 if let Some(value_bytes) = &proved_key_value.value {
-                    let element = Element::deserialize(value_bytes)?;
+                    let element = Element::deserialize(value_bytes, grove_version)?;
 
                     verified_keys.insert(key.clone());
 
@@ -278,6 +288,7 @@ impl GroveDb {
                                     &path,
                                     result,
                                     options,
+                                    grove_version,
                                 )?;
                                 let combined_root_hash =
                                     combine_hash(value_hash(value_bytes).value(), &lower_hash)
@@ -348,6 +359,7 @@ impl GroveDb {
     pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
@@ -357,12 +369,14 @@ impl GroveDb {
                 verify_proof_succinctness: true,
                 include_empty_trees_in_result: false,
             },
+            grove_version,
         )
     }
 
     pub fn verify_subset_query(
         proof: &[u8],
         query: &PathQuery,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
@@ -372,12 +386,14 @@ impl GroveDb {
                 verify_proof_succinctness: false,
                 include_empty_trees_in_result: false,
             },
+            grove_version,
         )
     }
 
     pub fn verify_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
@@ -387,12 +403,14 @@ impl GroveDb {
                 verify_proof_succinctness: true,
                 include_empty_trees_in_result: false,
             },
+            grove_version,
         )
     }
 
     pub fn verify_subset_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         Self::verify_query_with_options(
             proof,
@@ -402,6 +420,7 @@ impl GroveDb {
                 verify_proof_succinctness: false,
                 include_empty_trees_in_result: false,
             },
+            grove_version,
         )
     }
 
@@ -415,13 +434,14 @@ impl GroveDb {
         proof: &[u8],
         first_query: &PathQuery,
         chained_path_queries: Vec<C>,
+        grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<Vec<PathKeyOptionalElementTrio>>), Error>
     where
         C: Fn(Vec<PathKeyOptionalElementTrio>) -> Option<PathQuery>,
     {
         let mut results = vec![];
 
-        let (last_root_hash, elements) = Self::verify_subset_query(proof, first_query)?;
+        let (last_root_hash, elements) = Self::verify_subset_query(proof, first_query, grove_version)?;
         results.push(elements);
 
         // we should iterate over each chained path queries
@@ -429,7 +449,7 @@ impl GroveDb {
             let new_path_query = path_query_generator(results[results.len() - 1].clone()).ok_or(
                 Error::InvalidInput("one of the path query generators returns no path query"),
             )?;
-            let (new_root_hash, new_elements) = Self::verify_subset_query(proof, &new_path_query)?;
+            let (new_root_hash, new_elements) = Self::verify_subset_query(proof, &new_path_query, grove_version)?;
             if new_root_hash != last_root_hash {
                 return Err(Error::InvalidProof(format!(
                     "root hash for different path queries do no match, first is {}, this one is {}",

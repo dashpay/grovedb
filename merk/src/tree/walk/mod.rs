@@ -13,6 +13,7 @@ use grovedb_costs::{
     cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
 };
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 pub use ref_walker::RefWalker;
 
@@ -53,9 +54,10 @@ where
         mut self,
         left: bool,
         value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(Self, Option<Self>), Error>
     where
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         let mut cost = OperationCost::default();
 
@@ -77,7 +79,7 @@ where
             }
             cost_return_on_error!(
                 &mut cost,
-                self.source.fetch(&link.unwrap(), value_defined_cost_fn)
+                self.source.fetch(&link.unwrap(), value_defined_cost_fn, grove_version)
             )
         };
 
@@ -92,11 +94,12 @@ where
         self,
         left: bool,
         value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(Self, Self), Error>
     where
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
-        self.detach(left, value_defined_cost_fn)
+        self.detach(left, value_defined_cost_fn, grove_version)
             .map_ok(|(walker, maybe_child)| {
                 if let Some(child) = maybe_child {
                     (walker, child)
@@ -116,16 +119,17 @@ where
         left: bool,
         f: F,
         value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error>
     where
         F: FnOnce(Option<Self>) -> CostResult<Option<T>, Error>,
         T: Into<TreeNode>,
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         let mut cost = OperationCost::default();
 
         let (mut walker, maybe_child) =
-            cost_return_on_error!(&mut cost, self.detach(left, value_defined_cost_fn));
+            cost_return_on_error!(&mut cost, self.detach(left, value_defined_cost_fn, grove_version));
         let new_child = match f(maybe_child).unwrap_add_cost(&mut cost) {
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
@@ -141,16 +145,17 @@ where
         left: bool,
         f: F,
         value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error>
     where
         F: FnOnce(Self) -> CostResult<Option<T>, Error>,
         T: Into<TreeNode>,
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         let mut cost = OperationCost::default();
 
         let (mut walker, child) =
-            cost_return_on_error!(&mut cost, self.detach_expect(left, value_defined_cost_fn));
+            cost_return_on_error!(&mut cost, self.detach_expect(left, value_defined_cost_fn, grove_version));
         let new_child = match f(child).unwrap_add_cost(&mut cost) {
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
@@ -213,6 +218,7 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
@@ -370,7 +376,7 @@ where
 #[cfg(test)]
 mod test {
     use grovedb_costs::CostsExt;
-
+    use grovedb_version::version::GroveVersion;
     use super::{super::NoopCommit, *};
     use crate::tree::{TreeFeatureType::BasicMerkNode, TreeNode};
 
@@ -381,7 +387,8 @@ mod test {
         fn fetch(
             &self,
             link: &Link,
-            _value_defined_cost_fn: Option<&impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            value_defined_cost_fn: Option<&impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version: &GroveVersion,
         ) -> CostResult<TreeNode, Error> {
             TreeNode::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerkNode).map(Ok)
         }
@@ -406,7 +413,8 @@ mod test {
                     assert_eq!(child.expect("should have child").tree().key(), b"foo");
                     Ok(None).wrap_with_cost(Default::default())
                 },
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("walk failed");
@@ -435,7 +443,8 @@ mod test {
                     assert_eq!(child.expect("should have child").tree().key(), b"foo");
                     Ok(None).wrap_with_cost(Default::default())
                 },
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("walk failed");
@@ -469,7 +478,8 @@ mod test {
                     assert_eq!(child.tree().key(), b"foo");
                     Ok(None).wrap_with_cost(Default::default())
                 },
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("walk failed");
@@ -490,7 +500,8 @@ mod test {
                     assert!(child.is_none());
                     Ok(None).wrap_with_cost(Default::default())
                 },
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("walk failed");

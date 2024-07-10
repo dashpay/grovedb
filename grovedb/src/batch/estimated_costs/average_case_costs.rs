@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Average case costs
 
 #[cfg(feature = "full")]
@@ -48,7 +20,7 @@ use grovedb_merk::{
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 use itertools::Itertools;
-
+use grovedb_version::version::GroveVersion;
 use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
@@ -69,6 +41,7 @@ impl Op {
         key: &KeyInfo,
         layer_element_estimates: &EstimatedLayerInformation,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let in_tree_using_sums = layer_element_estimates.is_sum_tree;
         let propagate_if_input = || {
@@ -84,6 +57,7 @@ impl Op {
                 layer_element_estimates,
                 sum.is_some(),
                 propagate,
+                grove_version,
             ),
             Op::InsertTreeWithRootHash { flags, sum, .. } => {
                 GroveDb::average_case_merk_insert_tree(
@@ -92,6 +66,7 @@ impl Op {
                     sum.is_some(),
                     in_tree_using_sums,
                     propagate_if_input(),
+                    grove_version,
                 )
             }
             Op::Insert { element } => GroveDb::average_case_merk_insert_element(
@@ -99,6 +74,7 @@ impl Op {
                 element,
                 in_tree_using_sums,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::RefreshReference {
                 reference_path_type,
@@ -114,12 +90,14 @@ impl Op {
                 ),
                 in_tree_using_sums,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::Replace { element } => GroveDb::average_case_merk_replace_element(
                 key,
                 element,
                 in_tree_using_sums,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::Patch {
                 element,
@@ -130,21 +108,24 @@ impl Op {
                 *change_in_bytes,
                 in_tree_using_sums,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::Delete => {
-                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
+                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate, grove_version)
             }
             Op::DeleteTree => GroveDb::average_case_merk_delete_tree(
                 key,
                 false,
                 layer_element_estimates,
                 propagate,
+                grove_version,
             ),
             Op::DeleteSumTree => GroveDb::average_case_merk_delete_tree(
                 key,
                 true,
                 layer_element_estimates,
                 propagate,
+                grove_version,
             ),
         }
     }
@@ -204,6 +185,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
+        grove_version: &GroveVersion,
     ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
 
@@ -249,6 +231,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 path,
                 layer_should_be_empty,
                 layer_info.is_sum_tree,
+                grove_version,
             );
             self.cached_merks
                 .insert(path.clone(), layer_info.is_sum_tree);
@@ -257,7 +240,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.average_case_cost(&key, layer_element_estimates, false)
+                op.average_case_cost(&key, layer_element_estimates, false, grove_version)
             );
         }
 
@@ -268,7 +251,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
     }
 
-    fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
+    fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>, grove_version: &GroveVersion) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         cost.seek_count += 1;
         let base_path = KeyInfoPath(vec![]);
@@ -282,6 +265,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                         .estimated_layer_count
                         .estimated_to_be_empty(),
                     estimated_layer_info.is_sum_tree,
+                    grove_version,
                 );
                 self.cached_merks
                     .insert(base_path, estimated_layer_info.is_sum_tree);
@@ -306,7 +290,7 @@ mod tests {
         EstimatedLayerSizes::{AllItems, AllSubtrees},
         EstimatedSumTrees::{NoSumTrees, SomeSumTrees},
     };
-
+    use grovedb_version::version::GroveVersion;
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo,
@@ -318,6 +302,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_insert_op_average_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -343,11 +328,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get average case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             average_case_cost.eq(&cost),
             "average cost not eq {:?} \n to cost {:?}",
@@ -385,6 +371,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_with_flags_insert_op_average_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -418,11 +405,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get average case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
@@ -450,6 +438,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_item_insert_op_average_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -475,11 +464,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get average case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
         assert_eq!(
@@ -510,10 +500,11 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_insert_op_under_element_average_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -540,11 +531,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get average case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
         assert_eq!(cost.storage_cost, average_case_cost.storage_cost);
@@ -587,10 +579,11 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_insert_op_in_sub_tree_average_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -626,11 +619,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get average case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
@@ -671,6 +665,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_sum_item_replace_op_average_case_costs() {
+        let grove_version = GroveVersion::latest();
         let ops = vec![GroveDbOp::replace_op(
             vec![vec![7]],
             hex::decode("46447a3b4c8939fd4cf8b610ba7da3d3f6b52b39ab2549bf91503b9b07814055")
@@ -709,6 +704,7 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get average case costs");
@@ -734,10 +730,11 @@ mod tests {
 
     #[test]
     fn test_batch_average_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"keyb", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"keyb", Element::empty_tree(), None, Some(&tx), grove_version)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -773,10 +770,11 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to estimate costs");
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         // at the moment we just check the added bytes are the same
         assert_eq!(
             average_case_cost.storage_cost.added_bytes,

@@ -46,7 +46,7 @@ pub fn get(c: &mut Criterion) {
     let batch_size = 2_000;
     let num_batches = initial_size / batch_size;
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     let mut batches = vec![];
     for i in 0..num_batches {
@@ -56,7 +56,7 @@ pub fn get(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -64,6 +64,7 @@ pub fn get(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -78,7 +79,7 @@ pub fn get(c: &mut Criterion) {
             let key_index = (i / num_batches) as usize;
 
             let key = &batches[batch_index][key_index].0;
-            merk.get(key, true, None::<fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            merk.get(key, true, None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
                 .unwrap()
                 .expect("get failed");
 
@@ -101,7 +102,7 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
     }
 
     c.bench_function("insert_1m_2k_seq", |b| {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let mut i = 0;
 
         b.iter_with_large_drop(|| {
@@ -111,7 +112,7 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
                 &[],
                 None,
                 &|_k, _v| Ok(0),
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -119,6 +120,7 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
                         BasicStorageRemoval(value_bytes_to_remove),
                     ))
                 },
+                grove_version,
             )
             .unwrap()
             .expect("apply failed");
@@ -141,7 +143,7 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
     }
 
     c.bench_function("insert_1m_2k_rand", |b| {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let mut i = 0;
 
         b.iter_with_large_drop(|| {
@@ -151,7 +153,7 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
                 &[],
                 None,
                 &|_k, _v| Ok(0),
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -159,6 +161,7 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
                         BasicStorageRemoval(value_bytes_to_remove),
                     ))
                 },
+                grove_version,
             )
             .unwrap()
             .expect("apply failed");
@@ -175,7 +178,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
     let n_batches: usize = initial_size / batch_size;
     let mut batches = Vec::with_capacity(n_batches);
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     for i in 0..n_batches {
         let batch = make_batch_seq(((i * batch_size) as u64)..((i + 1) * batch_size) as u64);
@@ -184,7 +187,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -192,6 +195,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -209,7 +213,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
                 &[],
                 None,
                 &|_k, _v| Ok(0),
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -217,6 +221,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
                         BasicStorageRemoval(value_bytes_to_remove),
                     ))
                 },
+                grove_version,
             )
             .unwrap()
             .expect("apply failed");
@@ -233,7 +238,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
     let n_batches: usize = initial_size / batch_size;
     let mut batches = Vec::with_capacity(n_batches);
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
@@ -242,7 +247,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -250,6 +255,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -267,7 +273,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
                 &[],
                 None,
                 &|_k, _v| Ok(0),
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -275,6 +281,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
                         BasicStorageRemoval(value_bytes_to_remove),
                     ))
                 },
+                grove_version,
             )
             .unwrap()
             .expect("apply failed");
@@ -292,7 +299,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
     let mut batches = Vec::with_capacity(n_batches);
     let mut delete_batches = Vec::with_capacity(n_batches);
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
@@ -302,7 +309,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -310,6 +317,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -331,7 +339,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -339,6 +347,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -349,7 +358,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                 &[],
                 None,
                 &|_k, _v| Ok(0),
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 &mut |_costs, _old_value, _value| Ok((false, None)),
                 &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                     Ok((
@@ -357,6 +366,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                         BasicStorageRemoval(value_bytes_to_remove),
                     ))
                 },
+                grove_version,
             )
             .unwrap()
             .expect("apply failed");
@@ -374,7 +384,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
     let mut batches = Vec::with_capacity(n_batches);
     let mut prove_keys_per_batch = Vec::with_capacity(n_batches);
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
@@ -383,7 +393,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -391,6 +401,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
@@ -408,7 +419,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let keys = prove_keys_per_batch[i % n_batches].clone();
 
-            merk.prove_unchecked(keys, None, true)
+            merk.prove_unchecked(keys, None, true, grove_version)
                 .unwrap()
                 .expect("prove failed");
             i += 1;
@@ -423,7 +434,7 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
 
     let n_batches: usize = initial_size / batch_size;
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
@@ -432,7 +443,7 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -440,6 +451,7 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed")
@@ -465,7 +477,7 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
 
     let n_batches: usize = initial_size / batch_size;
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
@@ -474,7 +486,7 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -482,6 +494,7 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed")
@@ -493,7 +506,7 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
     c.bench_function("chunkproducer_rand_1m_1_rand", |b| {
         b.iter_with_large_drop(|| {
             let i = rng.gen::<usize>() % chunks.len();
-            let _chunk = chunks.chunk(i).unwrap();
+            let _chunk = chunks.chunk(i, grove_version).unwrap();
         });
     });
 }
@@ -505,7 +518,7 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
 
     let n_batches: usize = initial_size / batch_size;
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
@@ -514,7 +527,7 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
             &[],
             None,
             &|_k, _v| Ok(0),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -522,6 +535,7 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
         .unwrap()
         .expect("apply failed")
@@ -529,11 +543,11 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
 
     let mut chunks = merk.chunks().unwrap().into_iter();
 
-    let mut next = || match chunks.next() {
+    let mut next = || match chunks.next(grove_version) {
         Some(chunk) => chunk,
         None => {
             chunks = merk.chunks().unwrap().into_iter();
-            chunks.next().unwrap()
+            chunks.next(grove_version).unwrap()
         }
     };
 
@@ -548,7 +562,7 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
 pub fn restore_500_1(c: &mut Criterion) {
     let merk_size = 500;
 
-    let mut merk = TempMerk::new();
+    let mut merk = TempMerk::new(grove_version);
 
     let batch = make_batch_rand(merk_size as u64, 0_u64);
     merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
@@ -556,7 +570,7 @@ pub fn restore_500_1(c: &mut Criterion) {
         &[],
         None,
         &|_k, _v| Ok(0),
-        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         &mut |_costs, _old_value, _value| Ok((false, None)),
         &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
@@ -564,6 +578,7 @@ pub fn restore_500_1(c: &mut Criterion) {
                 BasicStorageRemoval(value_bytes_to_remove),
             ))
         },
+        grove_version,
     )
     .unwrap()
     .expect("apply failed");
@@ -585,7 +600,8 @@ pub fn restore_500_1(c: &mut Criterion) {
                 let m = Merk::open_standalone(
                     ctx,
                     false,
-                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
                 )
                 .unwrap()
                 .unwrap();

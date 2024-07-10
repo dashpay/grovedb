@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Average case costs
 //! Implements average case cost functions in GroveDb
 
@@ -45,7 +17,8 @@ use grovedb_merk::{
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use integer_encoding::VarInt;
-
+use grovedb_version::check_v0;
+use grovedb_version::version::GroveVersion;
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
@@ -59,7 +32,10 @@ impl GroveDb {
         path: &KeyInfoPath,
         merk_should_be_empty: bool,
         is_sum_tree: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_average_case_get_merk_at_path", grove_version.grovedb_versions.operations.average_case.add_average_case_get_merk_at_path);
+
         cost.seek_count += 1;
         // If the merk is not empty we load the tree
         if !merk_should_be_empty {
@@ -84,7 +60,10 @@ impl GroveDb {
         estimated_layer_information: &EstimatedLayerInformation,
         _is_sum_tree: bool,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("average_case_merk_replace_tree", grove_version.grovedb_versions.operations.average_case.average_case_merk_replace_tree);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let flags_size = cost_return_on_error_no_add!(
@@ -124,7 +103,10 @@ impl GroveDb {
         is_sum_tree: bool,
         in_tree_using_sums: bool,
         propagate_if_input: Option<&EstimatedLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("average_case_merk_insert_tree", grove_version.grovedb_versions.operations.average_case.average_case_merk_insert_tree);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let flags_len = flags.as_ref().map_or(0, |flags| {
@@ -152,7 +134,10 @@ impl GroveDb {
         is_sum_tree: bool,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("average_case_merk_delete_tree", grove_version.grovedb_versions.operations.average_case.average_case_merk_delete_tree);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let flags_size = cost_return_on_error_no_add!(
@@ -188,7 +173,10 @@ impl GroveDb {
         value: &Element,
         in_tree_using_sums: bool,
         propagate_for_level: Option<&EstimatedLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("average_case_merk_insert_element", grove_version.grovedb_versions.operations.average_case.average_case_merk_insert_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
@@ -228,7 +216,10 @@ impl GroveDb {
         value: &Element,
         in_tree_using_sums: bool,
         propagate_for_level: Option<&EstimatedLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("average_case_merk_replace_element", grove_version.grovedb_versions.operations.average_case.average_case_merk_replace_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
@@ -293,7 +284,10 @@ impl GroveDb {
         change_in_bytes: i32,
         in_tree_using_sums: bool,
         propagate_for_level: Option<&EstimatedLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("average_case_merk_patch_element", grove_version.grovedb_versions.operations.average_case.average_case_merk_patch_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
@@ -332,7 +326,10 @@ impl GroveDb {
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0!("average_case_merk_delete_element", grove_version.grovedb_versions.operations.average_case.average_case_merk_delete_element);
+
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let value_size = cost_return_on_error_no_add!(
@@ -359,7 +356,10 @@ impl GroveDb {
         key: &KeyInfo,
         estimated_element_size: u32,
         in_parent_tree_using_sums: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_average_case_has_raw_cost", grove_version.grovedb_versions.operations.average_case.add_average_case_has_raw_cost);
+
         let value_size = TreeNode::average_case_encoded_tree_size(
             key.max_length() as u32,
             estimated_element_size,
@@ -378,7 +378,10 @@ impl GroveDb {
         estimated_flags_size: u32,
         is_sum_tree: bool,
         in_parent_tree_using_sums: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_average_case_has_raw_tree_cost", grove_version.grovedb_versions.operations.average_case.add_average_case_has_raw_tree_cost);
+
         let estimated_element_size = if is_sum_tree {
             SUM_TREE_COST_SIZE + estimated_flags_size
         } else {
@@ -390,6 +393,7 @@ impl GroveDb {
             key,
             estimated_element_size,
             in_parent_tree_using_sums,
+            grove_version,
         );
     }
 
@@ -400,7 +404,10 @@ impl GroveDb {
         key: &KeyInfo,
         estimated_element_size: u32,
         in_parent_tree_using_sums: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_average_case_get_raw_cost", grove_version.grovedb_versions.operations.average_case.add_average_case_get_raw_cost);
+
         cost.seek_count += 1;
         add_average_case_get_merk_node(
             cost,
@@ -418,7 +425,10 @@ impl GroveDb {
         estimated_flags_size: u32,
         is_sum_tree: bool,
         in_parent_tree_using_sums: bool,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_average_case_get_raw_tree_cost", grove_version.grovedb_versions.operations.average_case.add_average_case_get_raw_tree_cost);
+
         let estimated_element_size = if is_sum_tree {
             SUM_TREE_COST_SIZE + estimated_flags_size
         } else {
@@ -442,7 +452,10 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
         estimated_element_size: u32,
         estimated_references_sizes: Vec<u32>,
+        grove_version: &GroveVersion,
     ) {
+        check_v0!("add_average_case_get_cost", grove_version.grovedb_versions.operations.average_case.add_average_case_get_cost);
+
         // todo: verify
         let value_size: u32 = TreeNode::average_case_encoded_tree_size(
             key.max_length() as u32,
@@ -468,7 +481,7 @@ mod test {
         rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
     };
     use tempfile::TempDir;
-
+    use grovedb_version::version::GroveVersion;
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
         tests::{common::EMPTY_PATH, TEST_LEAF},
@@ -488,12 +501,13 @@ mod test {
                 .get_storage_context(EMPTY_PATH, Some(&batch))
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
         let merk_batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
+        merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -507,7 +521,8 @@ mod test {
         let merk = Merk::open_base(
             storage.get_storage_context(EMPTY_PATH, None).unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -520,7 +535,8 @@ mod test {
         let node_result = merk.get(
             &8_u64.to_be_bytes(),
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         );
 
         // By tweaking the max element size, we can adapt the average case function to
@@ -538,7 +554,7 @@ mod test {
         let db = GroveDb::open(tmp_dir.path()).unwrap();
 
         // insert empty tree to start
-        db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -546,13 +562,13 @@ mod test {
         // after tree rotation, 2 will be at the top hence would have both left and
         // right links this will serve as our average case candidate.
         let elem = Element::new_item(b"value".to_vec());
-        db.insert([TEST_LEAF].as_ref(), &[1], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[1], elem.clone(), None, None, grove_version)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF].as_ref(), &[2], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[2], elem.clone(), None, None, grove_version)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF].as_ref(), &[3], elem.clone(), None, None)
+        db.insert([TEST_LEAF].as_ref(), &[3], elem.clone(), None, None, grove_version)
             .unwrap()
             .expect("expected insert");
 
@@ -563,11 +579,12 @@ mod test {
             &mut average_case_has_raw_cost,
             &path,
             &key,
-            elem.serialized_size().expect("expected size") as u32,
+            elem.serialized_size(grove_version).expect("expected size") as u32,
             false,
+            GroveVersion::latest(),
         );
 
-        let actual_cost = db.has_raw([TEST_LEAF].as_ref(), &[2], None);
+        let actual_cost = db.has_raw([TEST_LEAF].as_ref(), &[2], None, GroveVersion::latest());
 
         assert_eq!(average_case_has_raw_cost, actual_cost.cost);
     }

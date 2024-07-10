@@ -41,7 +41,7 @@ use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 use integer_encoding::VarInt;
-
+use grovedb_version::version::GroveVersion;
 use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::{Element, Error, Hash};
@@ -54,8 +54,9 @@ impl Element {
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        Self::get_optional(merk, key.as_ref(), allow_cache).map(|result| {
+        Self::get_optional(merk, key.as_ref(), allow_cache, grove_version).map(|result| {
             let value = result?;
             value.ok_or_else(|| {
                 Error::PathKeyNotFound(format!(
@@ -77,6 +78,7 @@ impl Element {
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
 
@@ -110,8 +112,9 @@ impl Element {
     pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         storage: &S,
         key: K,
+        grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
-        Self::get_optional_from_storage(storage, key.as_ref()).map(|result| {
+        Self::get_optional_from_storage(storage, key.as_ref(), grove_version).map(|result| {
             let value = result?;
             value.ok_or_else(|| {
                 Error::PathKeyNotFound(format!(
@@ -128,6 +131,7 @@ impl Element {
     pub fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         storage: &S,
         key: K,
+        grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let key_ref = key.as_ref();
@@ -214,10 +218,11 @@ impl Element {
         path: &[&[u8]],
         key: K,
         allow_cache: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let element = cost_return_on_error!(&mut cost, Self::get(merk, key.as_ref(), allow_cache));
+        let element = cost_return_on_error!(&mut cost, Self::get(merk, key.as_ref(), allow_cache, grove_version));
 
         let absolute_element = cost_return_on_error_no_add!(
             &cost,
@@ -233,6 +238,7 @@ impl Element {
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<Option<Hash>, Error> {
         let mut cost = OperationCost::default();
 
@@ -260,6 +266,7 @@ mod tests {
 
     #[test]
     fn test_cache_changes_cost() {
+        let grove_version= GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
         let ctx = storage
@@ -269,15 +276,16 @@ mod tests {
             ctx,
             false,
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .unwrap()
         .unwrap();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey", None)
+            .insert(&mut merk, b"mykey", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key", None)
+            .insert(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -293,12 +301,13 @@ mod tests {
             ctx,
             false,
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .unwrap()
         .unwrap();
 
         assert_eq!(
-            Element::get(&merk, b"another-key", true)
+            Element::get(&merk, b"another-key", true, grove_version)
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
@@ -306,14 +315,14 @@ mod tests {
 
         // Warm up cache because the Merk was reopened.
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key", None)
+            .insert(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        let cost_with_cache = Element::get(&merk, b"another-key", true)
+        let cost_with_cache = Element::get(&merk, b"another-key", true, grove_version)
             .cost_as_result()
             .expect("expected to get cost");
-        let cost_without_cache = Element::get(&merk, b"another-key", false)
+        let cost_without_cache = Element::get(&merk, b"another-key", false, grove_version)
             .cost_as_result()
             .expect("expected to get cost");
         assert_ne!(cost_with_cache, cost_without_cache);

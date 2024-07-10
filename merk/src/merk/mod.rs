@@ -55,6 +55,7 @@ use grovedb_costs::{
     CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
+use grovedb_version::version::GroveVersion;
 use source::MerkSource;
 
 use crate::{
@@ -524,7 +525,8 @@ where
     /// Meaning that it doesn't have a parent Merk
     pub(crate) fn load_base_root(
         &mut self,
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         self.storage
             .get_root(ROOT_KEY_KEY)
@@ -534,7 +536,7 @@ where
                 if let Some(tree_root_key) = tree_root_key_opt {
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-                    TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn).map_ok(
+                    TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn, grove_version).map_ok(
                         |tree| {
                             if let Some(t) = tree.as_ref() {
                                 self.root_tree_key = Cell::new(Some(t.key().to_vec()));
@@ -553,13 +555,14 @@ where
     /// Meaning that it doesn't have a parent Merk
     pub(crate) fn load_root(
         &mut self,
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         // In case of successful seek for root key check if it exists
         if let Some(tree_root_key) = self.root_tree_key.get_mut() {
             // Trying to build a tree out of it, costs will be accumulated because
             // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-            TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn).map_ok(|tree| {
+            TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn, grove_version).map_ok(|tree| {
                 self.tree = Cell::new(tree);
             })
         } else {
@@ -575,6 +578,7 @@ where
     pub fn verify(
         &self,
         skip_sum_checks: bool,
+        grove_version: &GroveVersion,
     ) -> (BTreeMap<Vec<u8>, CryptoHash>, BTreeMap<Vec<u8>, Vec<u8>>) {
         let tree = self.tree.take();
 
@@ -590,6 +594,7 @@ where
             &mut bad_link_map,
             &mut parent_keys,
             skip_sum_checks,
+            grove_version,
         );
         self.tree.set(tree);
 
@@ -603,6 +608,7 @@ where
         bad_link_map: &mut BTreeMap<Vec<u8>, CryptoHash>,
         parent_keys: &mut BTreeMap<Vec<u8>, Vec<u8>>,
         skip_sum_checks: bool,
+        grove_version: &GroveVersion,
     ) {
         if let Some(link) = tree.link(LEFT) {
             traversal_instruction.push(LEFT);
@@ -613,6 +619,7 @@ where
                 bad_link_map,
                 parent_keys,
                 skip_sum_checks,
+                grove_version,
             );
             traversal_instruction.pop();
         }
@@ -626,6 +633,7 @@ where
                 bad_link_map,
                 parent_keys,
                 skip_sum_checks,
+                grove_version,
             );
             traversal_instruction.pop();
         }
@@ -639,6 +647,7 @@ where
         bad_link_map: &mut BTreeMap<Vec<u8>, CryptoHash>,
         parent_keys: &mut BTreeMap<Vec<u8>, Vec<u8>>,
         skip_sum_checks: bool,
+        grove_version: &GroveVersion,
     ) {
         let (hash, key, sum) = match link {
             Link::Reference { hash, key, sum, .. } => {
@@ -662,7 +671,8 @@ where
         let node = TreeNode::get(
             &self.storage,
             key,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap();
 
@@ -701,6 +711,7 @@ where
             bad_link_map,
             parent_keys,
             skip_sum_checks,
+            grove_version,
         );
     }
 }
@@ -708,12 +719,13 @@ where
 fn fetch_node<'db>(
     db: &impl StorageContext<'db>,
     key: &[u8],
-    value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+    grove_version: &GroveVersion,
 ) -> Result<Option<TreeNode>, Error> {
     let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
         Ok(Some(
-            TreeNode::decode(key.to_vec(), &bytes, value_defined_cost_fn).map_err(EdError)?,
+            TreeNode::decode(key.to_vec(), &bytes, value_defined_cost_fn, grove_version).map_err(EdError)?,
         ))
     } else {
         Ok(None)
@@ -750,9 +762,9 @@ mod test {
     #[test]
     fn simple_insert_apply() {
         let batch_size = 20;
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
 
@@ -768,34 +780,34 @@ mod test {
 
     #[test]
     fn tree_height() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..1);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(1));
 
         // height 2
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..2);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(2));
 
         // height 5
         // 2^5 - 1 = 31 (max number of elements in tree of height 5)
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(5));
 
         // should still be height 5 for 29 elements
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..29);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(5));
@@ -804,16 +816,16 @@ mod test {
     #[test]
     fn insert_uncached() {
         let batch_size = 20;
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
 
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_invariants(&merk);
 
         let batch = make_batch_seq(batch_size..(batch_size * 2));
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_invariants(&merk);
@@ -823,11 +835,11 @@ mod test {
     fn insert_two() {
         let tree_size = 2;
         let batch_size = 1;
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
 
         for i in 0..(tree_size / batch_size) {
             let batch = make_batch_rand(batch_size, i);
-            merk.apply::<_, Vec<_>>(&batch, &[], None)
+            merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
                 .unwrap()
                 .expect("apply failed");
         }
@@ -837,12 +849,12 @@ mod test {
     fn insert_rand() {
         let tree_size = 40;
         let batch_size = 4;
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
 
         for i in 0..(tree_size / batch_size) {
             println!("i:{i}");
             let batch = make_batch_rand(batch_size, i);
-            merk.apply::<_, Vec<_>>(&batch, &[], None)
+            merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
                 .unwrap()
                 .expect("apply failed");
         }
@@ -850,15 +862,15 @@ mod test {
 
     #[test]
     fn actual_deletes() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
 
         let batch = make_batch_rand(10, 1);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
 
         let key = batch.first().unwrap().0.clone();
-        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], None)
+        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -868,15 +880,16 @@ mod test {
 
     #[test]
     fn aux_data() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         merk.apply::<Vec<_>, _>(
             &[],
             &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode), None)],
             None,
+            grove_version,
         )
         .unwrap()
         .expect("apply failed");
-        merk.commit();
+        merk.commit(grove_version);
 
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
@@ -884,14 +897,15 @@ mod test {
 
     #[test]
     fn get_not_found() {
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
 
         // no root
         assert!(merk
             .get(
                 &[1, 2, 3],
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version
             )
             .unwrap()
             .unwrap()
@@ -902,6 +916,7 @@ mod test {
             &[(vec![5, 5, 5], Op::Put(vec![], BasicMerkNode))],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -909,7 +924,8 @@ mod test {
             .get(
                 &[1, 2, 3],
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version
             )
             .unwrap()
             .unwrap()
@@ -924,6 +940,7 @@ mod test {
             ],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -931,7 +948,8 @@ mod test {
             .get(
                 &[3, 3, 3],
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version
             )
             .unwrap()
             .unwrap()
@@ -949,16 +967,17 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None, grove_version)
             .unwrap()
             .unwrap();
         let batch = make_batch_seq(11..12);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None, grove_version)
             .unwrap()
             .unwrap();
     }
@@ -973,12 +992,13 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None, grove_version)
             .unwrap()
             .unwrap();
         drop(merk);
@@ -992,14 +1012,14 @@ mod test {
         ) {
             nodes.push(node.tree().encode());
             if let Some(c) = node
-                .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version)
                 .unwrap()
                 .unwrap()
             {
                 collect(c, nodes);
             }
             if let Some(c) = node
-                .walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version)
                 .unwrap()
                 .unwrap()
             {
@@ -1018,12 +1038,13 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), Some(&batch))
                     .unwrap(),
                 false,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("cannot open merk");
             let merk_batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
+            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
                 .unwrap()
                 .unwrap();
 
@@ -1036,7 +1057,8 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),
                 false,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("cannot open merk");
@@ -1056,7 +1078,8 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -1094,12 +1117,13 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), Some(&batch))
                     .unwrap(),
                 false,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("cannot open merk");
             let merk_batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None)
+            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
                 .unwrap()
                 .unwrap();
 
@@ -1114,7 +1138,8 @@ mod test {
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),
                 false,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("cannot open merk");
@@ -1128,7 +1153,8 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -1150,7 +1176,8 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), Some(&batch))
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -1159,6 +1186,7 @@ mod test {
             &[(b"9".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -1166,6 +1194,7 @@ mod test {
             &[(b"10".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -1174,7 +1203,8 @@ mod test {
             .get(
                 b"10".as_slice(),
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("should get successfully");
@@ -1185,6 +1215,7 @@ mod test {
             &[(b"10".to_vec(), Op::Put(b"b".to_vec(), BasicMerkNode))],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -1192,7 +1223,8 @@ mod test {
             .get(
                 b"10".as_slice(),
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("should get successfully");
@@ -1208,7 +1240,8 @@ mod test {
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
             false,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
@@ -1218,6 +1251,7 @@ mod test {
             &[(b"10".to_vec(), Op::Put(b"c".to_vec(), BasicMerkNode))],
             &[],
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -1225,7 +1259,8 @@ mod test {
             .get(
                 b"10".as_slice(),
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .expect("should get successfully");

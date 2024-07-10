@@ -51,6 +51,7 @@ pub use hash::{
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use kv::KV;
 #[cfg(feature = "full")]
@@ -922,9 +923,10 @@ impl TreeNode {
         left: bool,
         source: &S,
         value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
@@ -939,7 +941,7 @@ impl TreeNode {
         };
 
         let mut cost = OperationCost::default();
-        let tree = cost_return_on_error!(&mut cost, source.fetch(link, value_defined_cost_fn));
+        let tree = cost_return_on_error!(&mut cost, source.fetch(link, value_defined_cost_fn, grove_version));
         debug_assert_eq!(tree.key(), link.key());
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,

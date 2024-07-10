@@ -8,7 +8,7 @@ use grovedb_costs::{
     CostResult, CostsExt,
 };
 use grovedb_storage::StorageContext;
-
+use grovedb_version::version::GroveVersion;
 use crate::{
     tree::{
         kv::{ValueDefinedCostType, KV},
@@ -30,12 +30,14 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))], &[], None)
+    /// # let grove_version = GroveVersion::latest();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))], &[], None,grove_version)
     ///         .unwrap().expect("");
     ///
     /// use grovedb_merk::Op;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
+    /// use grovedb_version::version::GroveVersion;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
@@ -43,13 +45,14 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
+    /// store.apply::<_, Vec<_>>(batch, &[], None,grove_version).unwrap().expect("");
     /// ```
     pub fn apply<KB, KA>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
@@ -67,7 +70,7 @@ where
                     use_sum_nodes,
                 ))
             },
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -75,6 +78,7 @@ where
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
     }
 
@@ -87,12 +91,14 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))], &[], None)
+    /// # let grove_version = GroveVersion::latest();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))], &[], None,grove_version)
     ///         .unwrap().expect("");
     ///
     /// use grovedb_merk::Op;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
+    /// use grovedb_version::version::GroveVersion;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
@@ -100,7 +106,7 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
+    /// store.apply::<_, Vec<_>>(batch, &[], None,grove_version).unwrap().expect("");
     /// ```
     pub fn apply_with_specialized_costs<KB, KA>(
         &mut self,
@@ -108,7 +114,8 @@ where
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        value_defined_cost_fn: Option<&impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<&impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
@@ -127,6 +134,7 @@ where
                     BasicStorageRemoval(value_bytes_to_remove),
                 ))
             },
+            grove_version,
         )
     }
 
@@ -140,21 +148,24 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
-    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    /// # let grove_version = GroveVersion::latest();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(    /// /// /// ///
     ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
-    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, v, o| Ok((false, None)),
-    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
+    ///     grove_version,
     /// ).unwrap().expect("");
     ///
     /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use grovedb_merk::Op;
     /// use grovedb_merk::tree::kv::ValueDefinedCostType;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
+    /// use grovedb_version::version::GroveVersion;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
@@ -164,13 +175,14 @@ where
     /// ];
     ///
     /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     batch,
+    /// batch,
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
-    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, v, o| Ok((false, None)),
-    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
+    ///     grove_version,
     /// ).unwrap().expect("");
     /// ```
     pub fn apply_with_costs_just_in_time_value_update<KB, KA>(
@@ -179,7 +191,7 @@ where
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        value_defined_cost_fn: Option<&impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<&impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -196,6 +208,7 @@ where
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
@@ -228,6 +241,7 @@ where
             value_defined_cost_fn,
             update_tree_value_based_on_costs,
             section_removal_bytes,
+            grove_version,
         )
     }
 
@@ -241,21 +255,24 @@ where
     ///
     /// # Example
     /// ```
-    /// # let mut store = grovedb_merk::test_utils::TempMerk::new();
-    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    /// # let grove_version = GroveVersion::latest();
+    /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(    /// /// /// ///
     ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
-    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, o, v| Ok((false, None)),
-    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
+    ///     grove_version,
     /// ).unwrap().expect("");
     ///
     /// use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use grovedb_merk::Op;
     /// use grovedb_merk::tree::kv::ValueDefinedCostType;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
+    /// use grovedb_version::version::GroveVersion;
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key [1,2,3]
@@ -263,14 +280,15 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _>(    /// /// ///
-    ///     batch,
+    /// unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _>(    /// /// ///     /// /// //////
+    /// batch,
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
-    ///     None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+    ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
     ///     &mut |s, o, v| Ok((false, None)),
-    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
+    ///     grove_version,
     /// ).unwrap().expect("");
     /// }
     /// ```
@@ -283,12 +301,13 @@ where
         value_defined_cost_fn: Option<&V>,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         U: FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -310,6 +329,7 @@ where
             value_defined_cost_fn,
             update_tree_value_based_on_costs,
             section_removal_bytes,
+            grove_version,
         )
         .flat_map_ok(|(maybe_tree, key_updates)| {
             // we set the new root node of the merk tree

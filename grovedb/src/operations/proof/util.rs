@@ -4,7 +4,7 @@ use grovedb_merk::{
     proofs::query::{Key, Path, ProvedKeyOptionalValue, ProvedKeyValue},
     CryptoHash, Error,
 };
-
+use grovedb_version::version::GroveVersion;
 use crate::Element;
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -313,14 +313,14 @@ pub fn path_as_slices_hex_to_ascii(path: &[&[u8]]) -> String {
 pub fn optional_element_hex_to_ascii(hex_value: Option<&Vec<u8>>) -> String {
     match hex_value {
         None => "None".to_string(),
-        Some(hex_value) => Element::deserialize(hex_value)
+        Some(hex_value) => Element::deserialize(hex_value, GroveVersion::latest())
             .map(|e| e.to_string())
             .unwrap_or_else(|_| hex::encode(hex_value)),
     }
 }
 
 pub fn element_hex_to_ascii(hex_value: &[u8]) -> String {
-    Element::deserialize(hex_value)
+    Element::deserialize(hex_value, GroveVersion::latest())
         .map(|e| e.to_string())
         .unwrap_or_else(|_| hex::encode(hex_value))
 }

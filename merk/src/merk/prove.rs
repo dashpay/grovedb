@@ -2,7 +2,7 @@ use std::collections::LinkedList;
 
 use grovedb_costs::{CostResult, CostsExt};
 use grovedb_storage::StorageContext;
-
+use grovedb_version::version::GroveVersion;
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::RefWalker,
@@ -29,9 +29,10 @@ where
         &self,
         query: Query,
         limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> CostResult<ProofConstructionResult, Error> {
         let left_to_right = query.left_to_right;
-        self.prove_unchecked(query, limit, left_to_right)
+        self.prove_unchecked(query, limit, left_to_right, grove_version)
             .map_ok(|(proof, limit)| {
                 let mut bytes = Vec::with_capacity(128);
                 encode_into(proof.iter(), &mut bytes);
@@ -54,9 +55,10 @@ where
         &self,
         query: Query,
         limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> CostResult<ProofWithoutEncodingResult, Error> {
         let left_to_right = query.left_to_right;
-        self.prove_unchecked(query, limit, left_to_right)
+        self.prove_unchecked(query, limit, left_to_right, grove_version)
             .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
     }
 
@@ -77,6 +79,7 @@ where
         query: I,
         limit: Option<u16>,
         left_to_right: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<Proof, Error>
     where
         Q: Into<QueryItem>,
@@ -92,7 +95,7 @@ where
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
-                    ref_walker.create_proof(query_vec.as_slice(), limit, left_to_right)
+                    ref_walker.create_proof(query_vec.as_slice(), limit, left_to_right, grove_version)
                 })
                 .map_ok(|(proof, _, limit, ..)| (proof, limit))
         })
@@ -115,6 +118,7 @@ where
         query_items: &[QueryItem],
         limit: Option<u16>,
         left_to_right: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<Proof, Error> {
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
@@ -124,7 +128,7 @@ where
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
-                    ref_walker.create_proof(query_items, limit, left_to_right)
+                    ref_walker.create_proof(query_items, limit, left_to_right, grove_version)
                 })
                 .map_ok(|(proof, _, limit, ..)| (proof, limit))
         })

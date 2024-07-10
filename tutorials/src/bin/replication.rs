@@ -89,15 +89,15 @@ fn main() {
     let db_destination = create_empty_db(path_destination.clone());
 
     println!("\n######### root_hashes:");
-    let root_hash_source = db_source.root_hash(None).unwrap().unwrap();
+    let root_hash_source = db_source.root_hash(None, grove_version).unwrap().unwrap();
     println!("root_hash_source: {:?}", hex::encode(root_hash_source));
-    let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None).unwrap().unwrap();
+    let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None, grove_version).unwrap().unwrap();
     println!("root_hash_checkpoint_0: {:?}", hex::encode(root_hash_checkpoint_0));
-    let root_hash_destination = db_destination.root_hash(None).unwrap().unwrap();
+    let root_hash_destination = db_destination.root_hash(None, grove_version).unwrap().unwrap();
     println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
     println!("\n######### source_subtree_metadata of db_source");
-    let subtrees_metadata_source = db_source.get_subtrees_metadata(None).unwrap();
+    let subtrees_metadata_source = db_source.get_subtrees_metadata(None, grove_version).unwrap();
     println!("{:?}", subtrees_metadata_source);
 
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
@@ -107,7 +107,7 @@ fn main() {
     db_destination.commit_transaction(tx).unwrap().expect("expected to commit transaction");
 
     println!("\n######### verify db_destination");
-    let incorrect_hashes = db_destination.verify_grovedb(None).unwrap();
+    let incorrect_hashes = db_destination.verify_grovedb(None, grove_version).unwrap();
     if incorrect_hashes.len() > 0 {
         println!("DB verification failed!");
     }
@@ -116,11 +116,11 @@ fn main() {
     }
 
     println!("\n######### root_hashes:");
-    let root_hash_source = db_source.root_hash(None).unwrap().unwrap();
+    let root_hash_source = db_source.root_hash(None, grove_version).unwrap().unwrap();
     println!("root_hash_source: {:?}", hex::encode(root_hash_source));
-    let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None).unwrap().unwrap();
+    let root_hash_checkpoint_0 = db_checkpoint_0.root_hash(None, grove_version).unwrap().unwrap();
     println!("root_hash_checkpoint_0: {:?}", hex::encode(root_hash_checkpoint_0));
-    let root_hash_destination = db_destination.root_hash(None).unwrap().unwrap();
+    let root_hash_destination = db_destination.root_hash(None, grove_version).unwrap().unwrap();
     println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
     let query_path = &[MAIN_ΚΕΥ, KEY_INT_0];
@@ -136,7 +136,7 @@ fn main() {
 
 fn insert_empty_tree_db(db: &GroveDb, path: &[&[u8]], key: &[u8])
 {
-    db.insert(path, key, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(path, key, Element::empty_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successfully inserted tree");
 }
@@ -150,6 +150,7 @@ fn insert_range_values_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, 
             Element::new_item(i_vec.to_vec()),
             INSERT_OPTIONS,
             Some(&transaction),
+            grove_version,
         )
             .unwrap()
             .expect("successfully inserted values");
@@ -172,6 +173,7 @@ fn insert_range_ref_double_values_db(db: &GroveDb, path: &[&[u8]], ref_key: &[u8
             ])),
             INSERT_OPTIONS,
             Some(&transaction),
+            grove_version,
         )
             .unwrap()
             .expect("successfully inserted values");
@@ -180,7 +182,7 @@ fn insert_range_ref_double_values_db(db: &GroveDb, path: &[&[u8]], ref_key: &[u8
 
 fn insert_empty_sum_tree_db(db: &GroveDb, path: &[&[u8]], key: &[u8])
 {
-    db.insert(path, key, Element::empty_sum_tree(), INSERT_OPTIONS, None)
+    db.insert(path, key, Element::empty_sum_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successfully inserted tree");
 }
@@ -197,6 +199,7 @@ fn insert_sum_element_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, t
             Element::new_sum_item(value as SumValue),
             INSERT_OPTIONS,
             Some(&transaction),
+            grove_version,
         )
             .unwrap()
             .expect("successfully inserted values");
@@ -229,11 +232,11 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
         println!(">> {:?}", e);
     }
 
-    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
     // Get hash from query proof and print to terminal along with GroveDB root hash.
-    let (verify_hash, _) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    let (verify_hash, _) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
     println!("verify_hash: {:?}", hex::encode(verify_hash));
-    if verify_hash == db.root_hash(None).unwrap().unwrap() {
+    if verify_hash == db.root_hash(None, grove_version).unwrap().unwrap() {
         println!("Query verified");
     } else { println!("Verification FAILED"); };
 }
@@ -244,8 +247,8 @@ fn sync_db_demo(
     state_sync_info: MultiStateSyncInfo,
     target_tx: &Transaction,
 ) -> Result<(), grovedb::Error> {
-    let app_hash = source_db.root_hash(None).value.unwrap();
-    let mut state_sync_info = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx, CURRENT_STATE_SYNC_VERSION)?;
+    let app_hash = source_db.root_hash(None, grove_version).value.unwrap();
+    let mut state_sync_info = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx, CURRENT_STATE_SYNC_VERSION, grove_version)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
@@ -253,8 +256,8 @@ fn sync_db_demo(
     chunk_queue.push_back(app_hash.to_vec());
 
     while let Some(chunk_id) = chunk_queue.pop_front() {
-        let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
-        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, chunk_id.as_slice(), ops, target_tx, CURRENT_STATE_SYNC_VERSION)?;
+        let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, chunk_id.as_slice(), ops, target_tx, CURRENT_STATE_SYNC_VERSION, grove_version)?;
         state_sync_info = new_state_sync_info;
         chunk_queue.extend(more_chunks);
     }

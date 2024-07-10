@@ -36,7 +36,7 @@ pub use verify::VerifyOptions;
 pub use verify::{ProofVerificationResult, ProvedKeyOptionalValue, ProvedKeyValue};
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
-
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use super::Node;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -502,8 +502,8 @@ impl From<Query> for Vec<QueryItem> {
 
 #[cfg(feature = "full")]
 impl IntoIterator for Query {
-    type IntoIter = <Vec<QueryItem> as IntoIterator>::IntoIter;
     type Item = QueryItem;
+    type IntoIter = <Vec<QueryItem> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
@@ -579,18 +579,6 @@ where
         self.tree().hash().map(Node::Hash)
     }
 
-    #[cfg(feature = "full")]
-    #[allow(dead_code)] // TODO: remove when proofs will be enabled
-    /// Create a full proof
-    pub(crate) fn create_full_proof(
-        &mut self,
-        query: &[QueryItem],
-        limit: Option<u16>,
-        left_to_right: bool,
-    ) -> CostResult<ProofAbsenceLimit, Error> {
-        self.create_proof(query, limit, left_to_right)
-    }
-
     /// Generates a proof for the list of queried keys. Returns a tuple
     /// containing the generated proof operators, and a tuple representing if
     /// any keys were queried were less than the left edge or greater than the
@@ -603,6 +591,7 @@ where
         query: &[QueryItem],
         limit: Option<u16>,
         left_to_right: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
         let mut cost = OperationCost::default();
 
@@ -678,12 +667,12 @@ where
         let (mut proof, left_absence, mut new_limit) = if left_to_right {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, left_items, limit, left_to_right)
+                self.create_child_proof(proof_direction, left_items, limit, left_to_right, grove_version)
             )
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, right_items, limit, left_to_right)
+                self.create_child_proof(proof_direction, right_items, limit, left_to_right, grove_version)
             )
         };
 
@@ -717,12 +706,12 @@ where
         let (mut right_proof, right_absence, new_limit) = if left_to_right {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, right_items, new_limit, left_to_right,)
+                self.create_child_proof(proof_direction, right_items, new_limit, left_to_right, grove_version)
             )
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, left_items, new_limit, left_to_right,)
+                self.create_child_proof(proof_direction, left_items, new_limit, left_to_right, grove_version)
             )
         };
 
@@ -786,12 +775,13 @@ where
         query: &[QueryItem],
         limit: Option<u16>,
         left_to_right: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
         if !query.is_empty() {
-            self.walk(left, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            self.walk(left, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
                 .flat_map_ok(|child_opt| {
                     if let Some(mut child) = child_opt {
-                        child.create_proof(query, limit, left_to_right)
+                        child.create_proof(query, limit, left_to_right, grove_version)
                     } else {
                         Ok((LinkedList::new(), (true, true), limit))
                             .wrap_with_cost(Default::default())
@@ -1779,7 +1769,7 @@ mod test {
 
     #[test]
     fn range_proof() {
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Range(
@@ -1880,7 +1870,7 @@ mod test {
         assert_eq!(res.limit, None);
 
         // right to left test
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Range(
@@ -1912,7 +1902,7 @@ mod test {
 
     #[test]
     fn range_proof_inclusive() {
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeInclusive(
@@ -2015,7 +2005,7 @@ mod test {
         assert_eq!(res.limit, None);
 
         // right_to_left proof
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeInclusive(
@@ -3991,7 +3981,7 @@ mod test {
 
     #[test]
     fn range_proof_missing_upper_bound() {
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::Range(
@@ -4093,7 +4083,7 @@ mod test {
 
     #[test]
     fn range_proof_missing_lower_bound() {
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![
@@ -4192,7 +4182,7 @@ mod test {
 
     #[test]
     fn subset_proof() {
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let expected_hash = tree.hash().unwrap().to_owned();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -4358,7 +4348,7 @@ mod test {
         // with limit and offset the nodes a query highlights now depends on state
         // hence it's impossible to know if something is subset at definition time
 
-        let mut tree = make_tree_seq(10);
+        let mut tree = make_tree_seq(10, grove_version);
         let expected_hash = tree.hash().unwrap().to_owned();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 

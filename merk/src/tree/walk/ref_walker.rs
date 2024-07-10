@@ -2,7 +2,7 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use super::{
     super::{Link, TreeNode},
@@ -50,9 +50,10 @@ where
         &mut self,
         left: bool,
         value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Option<RefWalker<S>>, Error>
     where
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         let link = match self.tree.link(left) {
             None => return Ok(None).wrap_with_cost(Default::default()),
@@ -64,7 +65,7 @@ where
             Link::Reference { .. } => {
                 let load_res = self
                     .tree
-                    .load(left, &self.source, value_defined_cost_fn)
+                    .load(left, &self.source, value_defined_cost_fn, grove_version)
                     .unwrap_add_cost(&mut cost);
                 if let Err(e) = load_res {
                     return Err(e).wrap_with_cost(cost);

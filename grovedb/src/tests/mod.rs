@@ -15,7 +15,7 @@ use std::{
 
 use grovedb_visualize::{Drawer, Visualize};
 use tempfile::TempDir;
-
+use grovedb_version::version::GroveVersion;
 use self::common::EMPTY_PATH;
 use super::*;
 use crate::{
@@ -67,22 +67,22 @@ pub fn make_empty_grovedb() -> TempGroveDb {
 }
 
 /// A helper method to create GroveDB with one leaf for a root tree
-pub fn make_test_grovedb() -> TempGroveDb {
+pub fn make_test_grovedb(grove_version: &GroveVersion) -> TempGroveDb {
     // Tree Structure
     // root
     //  test_leaf
     //  another_test_leaf
     let tmp_dir = TempDir::new().unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
-    add_test_leaves(&mut db);
+    add_test_leaves(&mut db, grove_version);
     TempGroveDb {
         _tmp_dir: tmp_dir,
         grove_db: db,
     }
 }
 
-fn add_test_leaves(db: &mut GroveDb) {
-    db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None)
+fn add_test_leaves(db: &mut GroveDb, grove_version: &GroveVersion) {
+    db.insert(EMPTY_PATH, TEST_LEAF, Element::empty_tree(), None, None, grove_version)
         .unwrap()
         .expect("successful root tree leaf insert");
     db.insert(
@@ -91,12 +91,13 @@ fn add_test_leaves(db: &mut GroveDb) {
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful root tree leaf 2 insert");
 }
 
-pub fn make_deep_tree() -> TempGroveDb {
+pub fn make_deep_tree(grove_version: &GroveVersion) -> TempGroveDb {
     // Tree Structure
     // root
     //     test_leaf
@@ -136,11 +137,11 @@ pub fn make_deep_tree() -> TempGroveDb {
     //                  k14,v14
 
     // Insert elements into grovedb instance
-    let temp_db = make_test_grovedb();
+    let temp_db = make_test_grovedb(grove_version);
 
     // add an extra root leaf
     temp_db
-        .insert(EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None)
+        .insert(EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None, grove_version)
         .unwrap()
         .expect("successful root tree leaf insert");
 
@@ -152,6 +153,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -162,6 +164,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -172,6 +175,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -182,6 +186,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -192,6 +197,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -202,6 +208,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -213,6 +220,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value1".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -223,6 +231,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value2".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -233,6 +242,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value3".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -243,6 +253,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value4".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -253,6 +264,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value5".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -263,6 +275,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value3".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -273,6 +286,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value4".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -283,6 +297,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -293,6 +308,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -303,6 +319,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -313,6 +330,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -323,6 +341,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -334,6 +353,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value1".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -344,6 +364,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value2".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -354,6 +375,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value3".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -364,6 +386,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value4".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -374,6 +397,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value5".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -384,6 +408,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value6".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -395,6 +420,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value7".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -405,6 +431,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value8".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -415,6 +442,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value9".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -425,6 +453,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value10".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -435,6 +464,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value11".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -445,6 +475,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value12".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -455,6 +486,7 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value13".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -465,13 +497,14 @@ pub fn make_deep_tree() -> TempGroveDb {
             Element::new_item(b"value14".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
     temp_db
 }
 
-pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
+pub fn make_deep_tree_with_sum_trees(grove_version: &GroveVersion) -> TempGroveDb {
     // Tree Structure
     // root
     //     deep_leaf
@@ -506,11 +539,11 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
     //              .. -> ..
     //              z -> "z"
 
-    let temp_db = make_test_grovedb();
+    let temp_db = make_test_grovedb(grove_version);
 
     // Add deep_leaf to root
     temp_db
-        .insert(EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None)
+        .insert(EMPTY_PATH, DEEP_LEAF, Element::empty_tree(), None, None, grove_version)
         .unwrap()
         .expect("successful root tree leaf insert");
 
@@ -522,6 +555,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -534,6 +568,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::new_item("empty".as_bytes().to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful item insert");
@@ -546,6 +581,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::new_item("storage".as_bytes().to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful item insert");
@@ -559,6 +595,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -572,6 +609,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::new_sum_tree(None),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful sum tree insert");
@@ -584,6 +622,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::SumItem(1, None),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful sum item insert");
@@ -594,6 +633,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::SumItem(1, None),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful sum item insert");
@@ -607,6 +647,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
                 Element::new_item(value.to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful item insert");
@@ -618,6 +659,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
                 Element::new_sum_tree(None),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful sum tree insert");
@@ -634,6 +676,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
                 Element::SumItem(value1, None),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful sum item insert");
@@ -644,6 +687,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
                 Element::SumItem(value2, None),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful sum item insert");
@@ -657,6 +701,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::SumItem(4, None),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful sum item insert");
@@ -667,6 +712,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
             Element::SumItem(4, None),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful sum item insert");
@@ -680,6 +726,7 @@ pub fn make_deep_tree_with_sum_trees() -> TempGroveDb {
                 Element::new_item(vec![letter]),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect(&format!("successful item insert for {}", letter as char));
@@ -699,7 +746,8 @@ mod tests {
 
     #[test]
     fn test_element_with_flags() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -707,6 +755,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert subtree successfully");
@@ -716,6 +765,7 @@ mod tests {
             Element::new_item(b"flagless".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert subtree successfully");
@@ -725,6 +775,7 @@ mod tests {
             Element::new_item_with_flags(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec())),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert subtree successfully");
@@ -734,6 +785,7 @@ mod tests {
             Element::new_tree_with_flags(None, Some([1].to_vec())),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert subtree successfully");
@@ -750,24 +802,25 @@ mod tests {
             ),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert subtree successfully");
 
         let element_without_flag = db
-            .get([TEST_LEAF, b"key1"].as_ref(), b"elem1", None)
+            .get([TEST_LEAF, b"key1"].as_ref(), b"elem1", None, grove_version)
             .unwrap()
             .expect("should get successfully");
         let element_with_flag = db
-            .get([TEST_LEAF, b"key1"].as_ref(), b"elem2", None)
+            .get([TEST_LEAF, b"key1"].as_ref(), b"elem2", None, grove_version)
             .unwrap()
             .expect("should get successfully");
         let tree_element_with_flag = db
-            .get([TEST_LEAF, b"key1"].as_ref(), b"elem3", None)
+            .get([TEST_LEAF, b"key1"].as_ref(), b"elem3", None, grove_version)
             .unwrap()
             .expect("should get successfully");
         let flagged_ref_follow = db
-            .get([TEST_LEAF, b"key1", b"elem3"].as_ref(), b"elem4", None)
+            .get([TEST_LEAF, b"key1", b"elem3"].as_ref(), b"elem4", None, grove_version)
             .unwrap()
             .expect("should get successfully");
 
@@ -784,7 +837,7 @@ mod tests {
                 true,
                 true,
                 QueryKeyElementPairResultType,
-                None,
+                None, grove_version
             )
             .unwrap()
             .expect("should get successfully");
@@ -827,23 +880,23 @@ mod tests {
             SizedQuery::new(query, None, None),
         );
         let proof = db
-            .prove_query(&path_query, None)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should successfully create proof");
         let (root_hash, result_set) =
-            GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
-        assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("should verify proof");
+        assert_eq!(root_hash, db.grove_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 3);
         assert_eq!(
-            Element::deserialize(&result_set[0].value).expect("should deserialize element"),
+            Element::deserialize(&result_set[0].value, grove_version).expect("should deserialize element"),
             Element::Item(b"flagless".to_vec(), None)
         );
         assert_eq!(
-            Element::deserialize(&result_set[1].value).expect("should deserialize element"),
+            Element::deserialize(&result_set[1].value, grove_version).expect("should deserialize element"),
             Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
         );
         assert_eq!(
-            Element::deserialize(&result_set[2].value)
+            Element::deserialize(&result_set[2].value, grove_version)
                 .expect("should deserialize element")
                 .get_flags(),
             &Some([1].to_vec())
@@ -852,13 +905,14 @@ mod tests {
 
     #[test]
     fn test_cannot_update_populated_tree_item() {
+        let grove_version = GroveVersion::latest();
         // This test shows that you cannot update a tree item
-        // in a way that disconnects it's root hash from that of
+        // in a way that disconnects its root hash from that of
         // the merk it points to.
-        let db = make_deep_tree();
+        let db = make_deep_tree(grove_version);
 
         let old_element = db
-            .get([TEST_LEAF].as_ref(), b"innertree", None)
+            .get([TEST_LEAF].as_ref(), b"innertree", None, grove_version)
             .unwrap()
             .expect("should fetch item");
 
@@ -869,12 +923,13 @@ mod tests {
             new_element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect_err("should not override tree");
 
         let current_element = db
-            .get([TEST_LEAF].as_ref(), b"innertree", None)
+            .get([TEST_LEAF].as_ref(), b"innertree", None, grove_version)
             .unwrap()
             .expect("should fetch item");
 
@@ -884,8 +939,9 @@ mod tests {
 
     #[test]
     fn test_changes_propagated() {
-        let db = make_test_grovedb();
-        let old_hash = db.root_hash(None).unwrap().unwrap();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let old_hash = db.root_hash(None, grove_version).unwrap().unwrap();
         let element = Element::new_item(b"ayy".to_vec());
 
         // Insert some nested subtrees
@@ -895,6 +951,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 1 insert");
@@ -905,6 +962,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 2 insert");
@@ -915,30 +973,33 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
 
         assert_eq!(
-            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
+            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None, grove_version)
                 .unwrap()
                 .expect("successful get"),
             element
         );
-        assert_ne!(old_hash, db.root_hash(None).unwrap().unwrap());
+        assert_ne!(old_hash, db.root_hash(None, grove_version).unwrap().unwrap());
     }
 
     // TODO: Add solid test cases to this
 
     #[test]
     fn test_references() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         db.insert(
             [TEST_LEAF].as_ref(),
             b"merk_1",
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -948,6 +1009,7 @@ mod tests {
             Element::new_item(b"value1".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -957,6 +1019,7 @@ mod tests {
             Element::new_item(b"value2".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -967,6 +1030,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -983,6 +1047,7 @@ mod tests {
             ])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -996,22 +1061,24 @@ mod tests {
             ])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
         assert!(db
-            .get([TEST_LEAF].as_ref(), b"merk_1", None)
+            .get([TEST_LEAF].as_ref(), b"merk_1", None, grove_version)
             .unwrap()
             .is_ok());
         assert!(db
-            .get([TEST_LEAF].as_ref(), b"merk_2", None)
+            .get([TEST_LEAF].as_ref(), b"merk_2", None, grove_version)
             .unwrap()
             .is_ok());
     }
 
     #[test]
     fn test_follow_references() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
 
         // Insert an item to refer to
@@ -1021,6 +1088,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 1 insert");
@@ -1030,6 +1098,7 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -1045,12 +1114,13 @@ mod tests {
             ])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful reference insert");
 
         assert_eq!(
-            db.get([TEST_LEAF].as_ref(), b"reference_key", None)
+            db.get([TEST_LEAF].as_ref(), b"reference_key", None, grove_version)
                 .unwrap()
                 .expect("successful get"),
             element
@@ -1059,7 +1129,8 @@ mod tests {
 
     #[test]
     fn test_reference_must_point_to_item() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         let result = db
             .insert(
@@ -1071,6 +1142,7 @@ mod tests {
                 ])),
                 None,
                 None,
+                grove_version,
             )
             .unwrap();
 
@@ -1079,8 +1151,9 @@ mod tests {
 
     #[test]
     fn test_too_many_indirections() {
+        let grove_version = GroveVersion::latest();
         use crate::operations::get::MAX_REFERENCE_HOPS;
-        let db = make_test_grovedb();
+        let db = make_test_grovedb(grove_version);
 
         let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
 
@@ -1090,6 +1163,7 @@ mod tests {
             Element::new_item(b"oops".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful item insert");
@@ -1104,6 +1178,7 @@ mod tests {
                 ])),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful reference insert");
@@ -1119,12 +1194,13 @@ mod tests {
             ])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected insert");
 
         let result = db
-            .get([TEST_LEAF].as_ref(), &keygen(MAX_REFERENCE_HOPS + 1), None)
+            .get([TEST_LEAF].as_ref(), &keygen(MAX_REFERENCE_HOPS + 1), None, grove_version)
             .unwrap();
 
         assert!(matches!(result, Err(Error::ReferenceLimit)));
@@ -1132,7 +1208,8 @@ mod tests {
 
     #[test]
     fn test_reference_value_affects_state() {
-        let db_one = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db_one = make_test_grovedb(grove_version);
         db_one
             .insert(
                 [TEST_LEAF].as_ref(),
@@ -1140,6 +1217,7 @@ mod tests {
                 Element::new_item(vec![0]),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("should insert item");
@@ -1153,11 +1231,12 @@ mod tests {
                 ])),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("should insert item");
 
-        let db_two = make_test_grovedb();
+        let db_two = make_test_grovedb(grove_version);
         db_two
             .insert(
                 [TEST_LEAF].as_ref(),
@@ -1165,6 +1244,7 @@ mod tests {
                 Element::new_item(vec![0]),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("should insert item");
@@ -1178,17 +1258,18 @@ mod tests {
                 )),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("should insert item");
 
         assert_ne!(
             db_one
-                .root_hash(None)
+                .root_hash(None, grove_version)
                 .unwrap()
                 .expect("should return root hash"),
             db_two
-                .root_hash(None)
+                .root_hash(None, grove_version)
                 .unwrap()
                 .expect("should return toor hash")
         );
@@ -1196,12 +1277,13 @@ mod tests {
 
     #[test]
     fn test_tree_structure_is_persistent() {
+        let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().unwrap();
         let element = Element::new_item(b"ayy".to_vec());
         // Create a scoped GroveDB
         let prev_root_hash = {
             let mut db = GroveDb::open(tmp_dir.path()).unwrap();
-            add_test_leaves(&mut db);
+            add_test_leaves(&mut db, grove_version);
 
             // Insert some nested subtrees
             db.insert(
@@ -1210,6 +1292,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree 1 insert");
@@ -1219,6 +1302,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree 2 insert");
@@ -1229,71 +1313,75 @@ mod tests {
                 element.clone(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful value insert");
             assert_eq!(
-                db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
+                db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None, grove_version)
                     .unwrap()
                     .expect("successful get 1"),
                 element
             );
-            db.root_hash(None).unwrap().unwrap()
+            db.root_hash(None, grove_version).unwrap().unwrap()
         };
         // Open a persisted GroveDB
         let db = GroveDb::open(tmp_dir).unwrap();
         assert_eq!(
-            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
+            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None, grove_version)
                 .unwrap()
                 .expect("successful get 2"),
             element
         );
         assert!(db
-            .get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key4", None)
+            .get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key4", None, grove_version)
             .unwrap()
             .is_err());
-        assert_eq!(prev_root_hash, db.root_hash(None).unwrap().unwrap());
+        assert_eq!(prev_root_hash, db.root_hash(None, grove_version).unwrap().unwrap());
     }
 
     #[test]
     fn test_root_tree_leaves_are_noted() {
-        let db = make_test_grovedb();
-        db.check_subtree_exists_path_not_found([TEST_LEAF].as_ref().into(), None)
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.check_subtree_exists_path_not_found([TEST_LEAF].as_ref().into(), None, grove_version)
             .unwrap()
             .expect("should exist");
-        db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF].as_ref().into(), None)
+        db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF].as_ref().into(), None, grove_version)
             .unwrap()
             .expect("should exist");
     }
 
     #[test]
     fn test_proof_for_invalid_path_root_key() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         let query = Query::new();
         let path_query = PathQuery::new_unsized(vec![b"invalid_path_key".to_vec()], query);
 
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 0);
     }
 
     #[test]
     fn test_proof_for_invalid_path() {
-        let db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let db = make_deep_tree(grove_version);
 
         let query = Query::new();
         let path_query =
             PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"invalid_key".to_vec()], query);
 
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 0);
 
         let query = Query::new();
@@ -1306,11 +1394,11 @@ mod tests {
             query,
         );
 
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 0);
 
         let query = Query::new();
@@ -1324,11 +1412,11 @@ mod tests {
             query,
         );
 
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 0);
 
         let query = Query::new();
@@ -1342,17 +1430,18 @@ mod tests {
             query,
         );
 
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 0);
     }
 
     #[test]
     fn test_proof_for_non_existent_data() {
-        let temp_db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_test_grovedb(grove_version);
 
         let mut query = Query::new();
         query.insert_key(b"key1".to_vec());
@@ -1360,16 +1449,17 @@ mod tests {
         // path to empty subtree
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 0);
     }
 
     #[test]
     fn test_path_query_proofs_without_subquery_with_reference() {
+        let grove_version = GroveVersion::latest();
         // Tree Structure
         // root
         //     test_leaf
@@ -1386,7 +1476,7 @@ mod tests {
         //             k4,v4
 
         // Insert elements into grovedb instance
-        let temp_db = make_test_grovedb();
+        let temp_db = make_test_grovedb(grove_version);
         // Insert level 1 nodes
         temp_db
             .insert(
@@ -1395,6 +1485,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1405,6 +1496,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1415,6 +1507,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1426,6 +1519,7 @@ mod tests {
                 Element::new_item(b"value1".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1436,6 +1530,7 @@ mod tests {
                 Element::new_item(b"value2".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1446,6 +1541,7 @@ mod tests {
                 Element::new_item(b"value3".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1456,6 +1552,7 @@ mod tests {
                 Element::new_item(b"value3".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1470,6 +1567,7 @@ mod tests {
                 ])),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1480,6 +1578,7 @@ mod tests {
                 Element::new_item(b"value4".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1494,6 +1593,7 @@ mod tests {
                 ])),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1507,7 +1607,7 @@ mod tests {
             query,
         );
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         assert_eq!(
             hex::encode(&proof),
             "005e02cfb7d035b8f4a3631be46c597510a16770c15c74331b3dc8dcb577a206e49675040a746\
@@ -1521,11 +1621,11 @@ mod tests {
         4ffdbc429a89c9b6620e7224d73c2ee505eb7e6fb5eb574e1a8dc8b0d0884110001"
         );
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-        let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
-        let r2 = Element::new_item(b"value4".to_vec()).serialize().unwrap();
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
+        let r1 = Element::new_item(b"value1".to_vec()).serialize(grove_version).unwrap();
+        let r2 = Element::new_item(b"value4".to_vec()).serialize(grove_version).unwrap();
 
         compare_result_tuples(
             result_set,
@@ -1535,6 +1635,7 @@ mod tests {
 
     #[test]
     fn test_path_query_proofs_without_subquery() {
+        let grove_version = GroveVersion::latest();
         // Tree Structure
         // root
         //     test_leaf
@@ -1549,7 +1650,7 @@ mod tests {
         //             k4,v4
 
         // Insert elements into grovedb instance
-        let temp_db = make_test_grovedb();
+        let temp_db = make_test_grovedb(grove_version);
         // Insert level 1 nodes
         temp_db
             .insert(
@@ -1558,6 +1659,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1568,6 +1670,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1578,6 +1681,7 @@ mod tests {
                 Element::empty_tree(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1589,6 +1693,7 @@ mod tests {
                 Element::new_item(b"value1".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1599,6 +1704,7 @@ mod tests {
                 Element::new_item(b"value2".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1609,6 +1715,7 @@ mod tests {
                 Element::new_item(b"value3".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1619,6 +1726,7 @@ mod tests {
                 Element::new_item(b"value3".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1629,6 +1737,7 @@ mod tests {
                 Element::new_item(b"value4".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("successful subtree insert");
@@ -1640,7 +1749,7 @@ mod tests {
         let path_query =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         assert_eq!(
             hex::encode(proof.as_slice()),
             "005c0409746573745f6c656166000d020109696e6e65727472656500fafa16d06e8d8696dae443731\
@@ -1652,10 +1761,10 @@ mod tests {
         b979cbe4a51e0b2f08d110001"
         );
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-        let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
+        let r1 = Element::new_item(b"value1".to_vec()).serialize(grove_version).unwrap();
         compare_result_tuples(result_set, vec![(b"key1".to_vec(), r1)]);
 
         // Range query + limit
@@ -1666,12 +1775,12 @@ mod tests {
             SizedQuery::new(query, Some(1), None),
         );
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-        let r1 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
+        let r1 = Element::new_item(b"value2".to_vec()).serialize(grove_version).unwrap();
         compare_result_tuples(result_set, vec![(b"key2".to_vec(), r1)]);
 
         // Range query + direction + limit
@@ -1682,13 +1791,13 @@ mod tests {
             SizedQuery::new(query, Some(2), None),
         );
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
-        let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
-        let r2 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
+        let r1 = Element::new_item(b"value3".to_vec()).serialize(grove_version).unwrap();
+        let r2 = Element::new_item(b"value2".to_vec()).serialize(grove_version).unwrap();
         compare_result_tuples(
             result_set,
             vec![(b"key3".to_vec(), r1), (b"key2".to_vec(), r2)],
@@ -1697,7 +1806,8 @@ mod tests {
 
     #[test]
     fn test_path_query_proofs_with_default_subquery() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query = Query::new();
         query.insert_all();
@@ -1708,11 +1818,11 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 5);
 
         let keys = [
@@ -1729,7 +1839,7 @@ mod tests {
             b"value4".to_vec(),
             b"value5".to_vec(),
         ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
 
@@ -1742,16 +1852,16 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 2);
 
         let keys = [b"key4".to_vec(), b"key5".to_vec()];
         let values = [b"value4".to_vec(), b"value5".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
 
@@ -1765,18 +1875,18 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
-        let (hash, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect(
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
+        let (hash, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect(
             "should
     execute proof",
         );
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 3);
 
         let keys = [b"key2".to_vec(), b"key3".to_vec(), b"key4".to_vec()];
         let values = [b"value2".to_vec(), b"value3".to_vec(), b"value4".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
 
@@ -1795,11 +1905,11 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 14);
 
         let keys = [
@@ -1834,14 +1944,15 @@ mod tests {
             b"value13".to_vec(),
             b"value14".to_vec(),
         ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
     }
 
     #[test]
     fn test_path_query_proofs_with_subquery_path() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query = Query::new();
         query.insert_all();
@@ -1854,16 +1965,16 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 3);
 
         let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
         let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
 
@@ -1878,15 +1989,15 @@ mod tests {
         query.set_subquery(subq);
 
         let path_query = PathQuery::new_unsized(vec![], query);
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 3);
 
         let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
         let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
 
@@ -1902,10 +2013,10 @@ mod tests {
 
         let path_query =
             PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()], query);
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 6);
 
         let keys = [
@@ -1924,7 +2035,7 @@ mod tests {
             b"value5".to_vec(),
             b"value6".to_vec(),
         ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
 
@@ -1944,16 +2055,17 @@ mod tests {
         query.set_subquery(subq);
 
         let path_query = PathQuery::new_unsized(vec![], query);
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 0);
     }
 
     #[test]
     fn test_path_query_proofs_with_key_and_subquery() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query = Query::new();
         query.insert_key(b"deep_node_1".to_vec());
@@ -1966,23 +2078,24 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 3);
 
         let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
         let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
     }
 
     #[test]
     fn test_path_query_proofs_with_conditional_subquery() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query = Query::new();
         query.insert_all();
@@ -2002,11 +2115,11 @@ mod tests {
         query.set_subquery(subquery);
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
 
         let keys = [
             b"deeper_1".to_vec(),
@@ -2046,11 +2159,11 @@ mod tests {
         query.set_subquery(subquery);
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 6);
 
         let keys = [
@@ -2070,7 +2183,7 @@ mod tests {
             b"value11".to_vec(),
         ];
         let elements = values
-            .map(|x| Element::new_item(x).serialize().unwrap())
+            .map(|x| Element::new_item(x).serialize(grove_version).unwrap())
             .to_vec();
         // compare_result_sets(&elements, &result_set);
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
@@ -2079,7 +2192,8 @@ mod tests {
 
     #[test]
     fn test_path_query_proofs_with_sized_query() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query = Query::new();
         query.insert_all();
@@ -2105,25 +2219,26 @@ mod tests {
         let path_query = PathQuery::new(
             vec![DEEP_LEAF.to_vec()],
             SizedQuery::new(query, Some(5), None), /* we need to add a bigger limit because of
-                                                    * empty proved sub trees */
+                                                    * empty proved subtrees */
         );
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 3);
 
         let keys = [b"key4".to_vec(), b"key5".to_vec(), b"key6".to_vec()];
         let values = [b"value4".to_vec(), b"value5".to_vec(), b"value6".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
     }
 
     #[test]
     fn test_path_query_proof_with_range_subquery_and_limit() {
-        let db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let db = make_deep_tree(grove_version);
 
         // Create a path query with a range query, subquery, and limit
         let mut main_query = Query::new();
@@ -2140,15 +2255,15 @@ mod tests {
         );
 
         // Generate proof
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
 
         // Verify proof
-        let verification_result = GroveDb::verify_query_raw(&proof, &path_query);
+        let verification_result = GroveDb::verify_query_raw(&proof, &path_query, grove_version);
 
         match verification_result {
             Ok((hash, result_set)) => {
                 // Check if the hash matches the root hash
-                assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+                assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
                 // Check if we got the correct number of results
                 assert_eq!(result_set.len(), 3, "Expected 3 results due to limit");
             }
@@ -2163,13 +2278,13 @@ mod tests {
             SizedQuery::new(main_query.clone(), None, None),
         );
 
-        let proof_no_limit = db.prove_query(&path_query_no_limit, None).unwrap().unwrap();
+        let proof_no_limit = db.prove_query(&path_query_no_limit, None, grove_version).unwrap().unwrap();
         let verification_result_no_limit =
-            GroveDb::verify_query_raw(&proof_no_limit, &path_query_no_limit);
+            GroveDb::verify_query_raw(&proof_no_limit, &path_query_no_limit, grove_version);
 
         match verification_result_no_limit {
             Ok((hash, result_set)) => {
-                assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+                assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
                 assert_eq!(result_set.len(), 5, "Expected 5 results without limit");
             }
             Err(e) => {
@@ -2180,7 +2295,8 @@ mod tests {
 
     #[test]
     fn test_path_query_proof_with_range_subquery_and_limit_with_sum_trees() {
-        let db = make_deep_tree_with_sum_trees();
+        let grove_version = GroveVersion::latest();
+        let db = make_deep_tree_with_sum_trees(grove_version);
 
         // Create a path query with a range query, subquery, and limit
         let mut main_query = Query::new();
@@ -2206,7 +2322,7 @@ mod tests {
                 false,
                 false,
                 QueryResultType::QueryPathKeyElementTrioResultType,
-                None,
+                None, grove_version
             )
             .unwrap()
             .expect("expected query to execute")
@@ -2230,14 +2346,14 @@ mod tests {
         );
 
         // Generate proof
-        let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
 
         // Verify proof
         let (hash, result_set) =
-            GroveDb::verify_query_raw(&proof, &path_query).expect("proof verification failed");
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("proof verification failed");
 
         // Check if the hash matches the root hash
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         // Check if we got the correct number of results
         assert_eq!(result_set.len(), 3, "Expected 3 results due to limit");
 
@@ -2247,13 +2363,13 @@ mod tests {
             SizedQuery::new(main_query.clone(), None, None),
         );
 
-        let proof_no_limit = db.prove_query(&path_query_no_limit, None).unwrap().unwrap();
+        let proof_no_limit = db.prove_query(&path_query_no_limit, None, grove_version).unwrap().unwrap();
         let verification_result_no_limit =
-            GroveDb::verify_query_raw(&proof_no_limit, &path_query_no_limit);
+            GroveDb::verify_query_raw(&proof_no_limit, &path_query_no_limit, grove_version);
 
         match verification_result_no_limit {
             Ok((hash, result_set)) => {
-                assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+                assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
                 assert_eq!(result_set.len(), 29, "Expected 29 results without limit");
             }
             Err(e) => {
@@ -2264,7 +2380,8 @@ mod tests {
 
     #[test]
     fn test_path_query_proofs_with_direction() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         // root
         //     deep_leaf
@@ -2316,11 +2433,11 @@ mod tests {
             SizedQuery::new(query, Some(6), None), /* we need 6 because of intermediate empty
                                                     * trees in proofs */
         );
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 4);
 
         let keys = [
@@ -2335,7 +2452,7 @@ mod tests {
             b"value6".to_vec(),
             b"value5".to_vec(),
         ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
 
@@ -2354,11 +2471,11 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
-        let proof = temp_db.prove_query(&path_query, None).unwrap().unwrap();
+        let proof = temp_db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
         let (hash, result_set) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query).expect("should execute proof");
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query, grove_version).expect("should execute proof");
 
-        assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+        assert_eq!(hash, temp_db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result_set.len(), 14);
 
         let keys = [
@@ -2393,17 +2510,18 @@ mod tests {
             b"value8".to_vec(),
             b"value9".to_vec(),
         ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
     }
 
     #[test]
     fn test_checkpoint() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let element1 = Element::new_item(b"ayy".to_vec());
 
-        db.insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("cannot insert a subtree 1 into GroveDB");
         db.insert(
@@ -2412,6 +2530,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert a subtree 2 into GroveDB");
@@ -2421,12 +2540,13 @@ mod tests {
             element1.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert an item into GroveDB");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None)
+            db.get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None, grove_version)
                 .unwrap()
                 .expect("cannot get from grovedb"),
             element1
@@ -2441,14 +2561,14 @@ mod tests {
             GroveDb::open(checkpoint_tempdir).expect("cannot open grovedb from checkpoint");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None)
+            db.get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None, grove_version)
                 .unwrap()
                 .expect("cannot get from grovedb"),
             element1
         );
         assert_eq!(
             checkpoint_db
-                .get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None)
+                .get([b"key1".as_ref(), b"key2".as_ref()].as_ref(), b"key3", None, grove_version)
                 .unwrap()
                 .expect("cannot get from checkpoint"),
             element1
@@ -2464,6 +2584,7 @@ mod tests {
                 element2.clone(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("cannot insert into checkpoint");
@@ -2474,20 +2595,21 @@ mod tests {
             element3.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert into GroveDB");
 
         assert_eq!(
             checkpoint_db
-                .get([b"key1".as_ref()].as_ref(), b"key4", None)
+                .get([b"key1".as_ref()].as_ref(), b"key4", None, grove_version)
                 .unwrap()
                 .expect("cannot get from checkpoint"),
             element2,
         );
 
         assert_eq!(
-            db.get([b"key1".as_ref()].as_ref(), b"key4", None)
+            db.get([b"key1".as_ref()].as_ref(), b"key4", None, grove_version)
                 .unwrap()
                 .expect("cannot get from GroveDB"),
             element3
@@ -2500,30 +2622,32 @@ mod tests {
                 element3.clone(),
                 None,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("cannot insert into checkpoint");
 
-        db.insert([b"key1".as_ref()].as_ref(), b"key6", element3, None, None)
+        db.insert([b"key1".as_ref()].as_ref(), b"key6", element3, None, None, grove_version)
             .unwrap()
             .expect("cannot insert into GroveDB");
 
         assert!(matches!(
             checkpoint_db
-                .get([b"key1".as_ref()].as_ref(), b"key6", None)
+                .get([b"key1".as_ref()].as_ref(), b"key6", None, grove_version)
                 .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
 
         assert!(matches!(
-            db.get([b"key1".as_ref()].as_ref(), b"key5", None).unwrap(),
+            db.get([b"key1".as_ref()].as_ref(), b"key5", None, grove_version).unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
     }
 
     #[test]
     fn test_is_empty_tree() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         // Create an empty tree with no elements
         db.insert(
@@ -2532,6 +2656,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -2541,13 +2666,14 @@ mod tests {
             .unwrap()
             .expect("path is valid tree"));
 
-        // add an element to the tree to make it non empty
+        // add an element to the tree to make it non-empty
         db.insert(
             [TEST_LEAF, b"innertree"].as_ref(),
             b"key1",
             Element::new_item(b"hello".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -2559,9 +2685,10 @@ mod tests {
 
     #[test]
     fn transaction_should_be_aborted_when_rollback_is_called() {
+        let grove_version = GroveVersion::latest();
         let item_key = b"key3";
 
-        let db = make_test_grovedb();
+        let db = make_test_grovedb(grove_version);
         let transaction = db.start_transaction();
 
         let element1 = Element::new_item(b"ayy".to_vec());
@@ -2573,6 +2700,7 @@ mod tests {
                 element1,
                 None,
                 Some(&transaction),
+                grove_version,
             )
             .unwrap();
 
@@ -2581,14 +2709,15 @@ mod tests {
         db.rollback_transaction(&transaction).unwrap();
 
         let result = db
-            .get([TEST_LEAF].as_ref(), item_key, Some(&transaction))
+            .get([TEST_LEAF].as_ref(), item_key, Some(&transaction), grove_version)
             .unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     }
 
     #[test]
     fn transaction_should_be_aborted() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let transaction = db.start_transaction();
 
         let item_key = b"key3";
@@ -2600,6 +2729,7 @@ mod tests {
             element,
             None,
             Some(&transaction),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -2607,13 +2737,14 @@ mod tests {
         drop(transaction);
 
         // Transactional data shouldn't be committed to the main database
-        let result = db.get([TEST_LEAF].as_ref(), item_key, None).unwrap();
+        let result = db.get([TEST_LEAF].as_ref(), item_key, None, grove_version).unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     }
 
     #[test]
     fn test_subtree_pairs_iterator() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"lmao".to_vec());
 
@@ -2624,6 +2755,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 1 insert");
@@ -2633,6 +2765,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 2 insert");
@@ -2643,6 +2776,7 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2651,7 +2785,7 @@ mod tests {
                 [TEST_LEAF, b"subtree1", b"subtree11"].as_ref(),
                 b"key1",
                 None
-            )
+                , grove_version)
             .unwrap()
             .expect("successful get 1"),
             element
@@ -2662,6 +2796,7 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2671,6 +2806,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 3 insert");
@@ -2680,6 +2816,7 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2689,6 +2826,7 @@ mod tests {
             element2.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2704,26 +2842,27 @@ mod tests {
             .unwrap();
         let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
         assert_eq!(
-            iter.next_element().unwrap().unwrap(),
+            iter.next_element(grove_version).unwrap().unwrap(),
             Some((b"key1".to_vec(), element))
         );
         assert_eq!(
-            iter.next_element().unwrap().unwrap(),
+            iter.next_element(grove_version).unwrap().unwrap(),
             Some((b"key2".to_vec(), element2))
         );
-        let subtree_element = iter.next_element().unwrap().unwrap().unwrap();
+        let subtree_element = iter.next_element(grove_version).unwrap().unwrap().unwrap();
         assert_eq!(subtree_element.0, b"subtree11".to_vec());
         assert!(matches!(subtree_element.1, Element::Tree(..)));
-        let subtree_element = iter.next_element().unwrap().unwrap().unwrap();
+        let subtree_element = iter.next_element(grove_version).unwrap().unwrap().unwrap();
         assert_eq!(subtree_element.0, b"subtree12".to_vec());
         assert!(matches!(subtree_element.1, Element::Tree(..)));
-        assert!(matches!(iter.next_element().unwrap(), Ok(None)));
+        assert!(matches!(iter.next_element(grove_version).unwrap(), Ok(None)));
     }
 
     #[test]
     fn test_find_subtrees() {
+        let grove_version = GroveVersion::latest();
         let element = Element::new_item(b"ayy".to_vec());
-        let db = make_test_grovedb();
+        let db = make_test_grovedb(grove_version);
         // Insert some nested subtrees
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -2731,6 +2870,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 1 insert");
@@ -2740,6 +2880,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 2 insert");
@@ -2750,6 +2891,7 @@ mod tests {
             element,
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2759,6 +2901,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 3 insert");
@@ -2779,12 +2922,14 @@ mod tests {
 
     #[test]
     fn test_root_subtree_has_root_key() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let storage = db.db.get_storage_context(EMPTY_PATH, None).unwrap();
         let root_merk = Merk::open_base(
             storage,
             false,
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .unwrap()
         .expect("expected to get root merk");
@@ -2797,16 +2942,17 @@ mod tests {
 
     #[test]
     fn test_get_subtree() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
 
         // Returns error is subtree is not valid
         {
-            let subtree = db.get([TEST_LEAF].as_ref(), b"invalid_tree", None).unwrap();
+            let subtree = db.get([TEST_LEAF].as_ref(), b"invalid_tree", None, grove_version).unwrap();
             assert!(subtree.is_err());
 
             // Doesn't return an error for subtree that exists but empty
-            let subtree = db.get(EMPTY_PATH, TEST_LEAF, None).unwrap();
+            let subtree = db.get(EMPTY_PATH, TEST_LEAF, None, grove_version).unwrap();
             assert!(subtree.is_ok());
         }
 
@@ -2817,12 +2963,13 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 1 insert");
 
         let key1_tree = db
-            .get(EMPTY_PATH, TEST_LEAF, None)
+            .get(EMPTY_PATH, TEST_LEAF, None, grove_version)
             .unwrap()
             .expect("expected to get a root tree");
 
@@ -2845,6 +2992,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 2 insert");
@@ -2856,6 +3004,7 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2865,6 +3014,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 3 insert");
@@ -2882,10 +3032,11 @@ mod tests {
                 Some(b"key3".to_vec()),
                 false,
                 Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
             )
             .unwrap()
             .expect("cannot open merk");
-            let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
+            let result_element = Element::get(&subtree, b"key3", true, grove_version).unwrap().unwrap();
             assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
         }
         // Insert a new tree with transaction
@@ -2897,6 +3048,7 @@ mod tests {
             Element::empty_tree(),
             None,
             Some(&transaction),
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -2907,6 +3059,7 @@ mod tests {
             element,
             None,
             Some(&transaction),
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2926,10 +3079,11 @@ mod tests {
             Some(b"key4".to_vec()),
             false,
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
-        let result_element = Element::get(&subtree, b"key4", true).unwrap().unwrap();
+        let result_element = Element::get(&subtree, b"key4", true, grove_version).unwrap().unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
         // Should be able to retrieve instances created before transaction
@@ -2943,16 +3097,18 @@ mod tests {
             Some(b"key3".to_vec()),
             false,
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .unwrap()
         .expect("cannot open merk");
-        let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
+        let result_element = Element::get(&subtree, b"key3", true, grove_version).unwrap().unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
 
     #[test]
     fn test_get_full_query() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         // Insert a couple of subtrees first
         db.insert(
@@ -2961,6 +3117,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -2970,6 +3127,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -2980,6 +3138,7 @@ mod tests {
             Element::new_item(b"ayya".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2989,6 +3148,7 @@ mod tests {
             Element::new_item(b"ayyb".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -2998,6 +3158,7 @@ mod tests {
             Element::new_item(b"ayyc".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -3007,6 +3168,7 @@ mod tests {
             Element::new_item(b"ayyd".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -3041,7 +3203,8 @@ mod tests {
                 true,
                 true,
                 QueryKeyElementPairResultType,
-                None
+                None,
+                grove_version
             )
             .unwrap()
             .expect("expected successful get_query")
@@ -3056,8 +3219,9 @@ mod tests {
 
     #[test]
     fn test_aux_uses_separate_cf() {
+        let grove_version = GroveVersion::latest();
         let element = Element::new_item(b"ayy".to_vec());
-        let db = make_test_grovedb();
+        let db = make_test_grovedb(grove_version);
         // Insert some nested subtrees
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -3065,6 +3229,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 1 insert");
@@ -3074,6 +3239,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree 2 insert");
@@ -3084,6 +3250,7 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
@@ -3102,7 +3269,7 @@ mod tests {
             .expect("cannot delete from aux");
 
         assert_eq!(
-            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None)
+            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None, grove_version)
                 .unwrap()
                 .expect("cannot get element"),
             element
@@ -3135,10 +3302,11 @@ mod tests {
 
     #[test]
     fn test_aux_with_transaction() {
+        let grove_version = GroveVersion::latest();
         let element = Element::new_item(b"ayy".to_vec());
         let aux_value = b"ayylmao".to_vec();
         let key = b"key".to_vec();
-        let db = make_test_grovedb();
+        let db = make_test_grovedb(grove_version);
         let transaction = db.start_transaction();
 
         // Insert a regular data with aux data in the same transaction
@@ -3148,6 +3316,7 @@ mod tests {
             element,
             None,
             Some(&transaction),
+            grove_version,
         )
         .unwrap()
         .expect("unable to insert");
@@ -3181,19 +3350,21 @@ mod tests {
 
     #[test]
     fn test_root_hash() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         // Check hashes are different if tree is edited
-        let old_root_hash = db.root_hash(None).unwrap();
+        let old_root_hash = db.root_hash(None, grove_version).unwrap();
         db.insert(
             [TEST_LEAF].as_ref(),
             b"key1",
             Element::new_item(b"ayy".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("unable to insert an item");
-        assert_ne!(old_root_hash.unwrap(), db.root_hash(None).unwrap().unwrap());
+        assert_ne!(old_root_hash.unwrap(), db.root_hash(None, grove_version).unwrap().unwrap());
 
         // Check isolation
         let transaction = db.start_transaction();
@@ -3204,35 +3375,39 @@ mod tests {
             Element::new_item(b"ayy".to_vec()),
             None,
             Some(&transaction),
+            grove_version,
         )
         .unwrap()
         .expect("unable to insert an item");
-        let root_hash_outside = db.root_hash(None).unwrap().unwrap();
+        let root_hash_outside = db.root_hash(None, grove_version).unwrap().unwrap();
         assert_ne!(
-            db.root_hash(Some(&transaction)).unwrap().unwrap(),
+            db.root_hash(Some(&transaction), grove_version).unwrap().unwrap(),
             root_hash_outside
         );
 
-        assert_eq!(db.root_hash(None).unwrap().unwrap(), root_hash_outside);
+        assert_eq!(db.root_hash(None, grove_version).unwrap().unwrap(), root_hash_outside);
         db.commit_transaction(transaction).unwrap().unwrap();
-        assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash_outside);
+        assert_ne!(db.root_hash(None, grove_version).unwrap().unwrap(), root_hash_outside);
     }
 
     #[test]
     fn test_get_non_existing_root_leaf() {
-        let db = make_test_grovedb();
-        assert!(db.get(EMPTY_PATH, b"ayy", None).unwrap().is_err());
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        assert!(db.get(EMPTY_PATH, b"ayy", None, grove_version).unwrap().is_err());
     }
 
     #[test]
     fn test_check_subtree_exists_function() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         db.insert(
             [TEST_LEAF].as_ref(),
             b"key_scalar",
             Element::new_item(b"ayy".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert item");
@@ -3242,31 +3417,32 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert item");
 
         // Empty tree path means root always exist
         assert!(db
-            .check_subtree_exists_invalid_path(EMPTY_PATH, None)
+            .check_subtree_exists_invalid_path(EMPTY_PATH, None, grove_version)
             .unwrap()
             .is_ok());
 
         // TEST_LEAF should be a tree
         assert!(db
-            .check_subtree_exists_invalid_path([TEST_LEAF].as_ref().into(), None)
+            .check_subtree_exists_invalid_path([TEST_LEAF].as_ref().into(), None, grove_version)
             .unwrap()
             .is_ok());
 
         // TEST_LEAF.key_subtree should be a tree
         assert!(db
-            .check_subtree_exists_invalid_path([TEST_LEAF, b"key_subtree"].as_ref().into(), None)
+            .check_subtree_exists_invalid_path([TEST_LEAF, b"key_subtree"].as_ref().into(), None, grove_version)
             .unwrap()
             .is_ok());
 
         // TEST_LEAF.key_scalar should NOT be a tree
         assert!(matches!(
-            db.check_subtree_exists_invalid_path([TEST_LEAF, b"key_scalar"].as_ref().into(), None)
+            db.check_subtree_exists_invalid_path([TEST_LEAF, b"key_scalar"].as_ref().into(), None, grove_version)
                 .unwrap(),
             Err(Error::InvalidPath(_))
         ));
@@ -3274,7 +3450,8 @@ mod tests {
 
     #[test]
     fn test_tree_value_exists_method_no_tx() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         // Test keys in non-root tree
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -3282,31 +3459,33 @@ mod tests {
             Element::new_item(b"ayy".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert item");
         assert!(db
-            .has_raw([TEST_LEAF].as_ref(), b"key", None)
+            .has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
             .unwrap()
             .unwrap());
         assert!(!db
-            .has_raw([TEST_LEAF].as_ref(), b"badkey", None)
+            .has_raw([TEST_LEAF].as_ref(), b"badkey", None, grove_version)
             .unwrap()
             .unwrap());
 
         // Test keys for a root tree
-        db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, None)
+        db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, None, grove_version)
             .unwrap()
             .expect("cannot insert item");
 
-        assert!(db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
-        assert!(db.has_raw(EMPTY_PATH, TEST_LEAF, None).unwrap().unwrap());
-        assert!(!db.has_raw(EMPTY_PATH, b"badleaf", None).unwrap().unwrap());
+        assert!(db.has_raw(EMPTY_PATH, b"leaf", None, grove_version).unwrap().unwrap());
+        assert!(db.has_raw(EMPTY_PATH, TEST_LEAF, None, grove_version).unwrap().unwrap());
+        assert!(!db.has_raw(EMPTY_PATH, b"badleaf", None, grove_version).unwrap().unwrap());
     }
 
     #[test]
     fn test_tree_value_exists_method_tx() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let tx = db.start_transaction();
         // Test keys in non-root tree
         db.insert(
@@ -3315,38 +3494,40 @@ mod tests {
             Element::new_item(b"ayy".to_vec()),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert item");
         assert!(db
-            .has_raw([TEST_LEAF].as_ref(), b"key", Some(&tx))
+            .has_raw([TEST_LEAF].as_ref(), b"key", Some(&tx), grove_version)
             .unwrap()
             .unwrap());
         assert!(!db
-            .has_raw([TEST_LEAF].as_ref(), b"key", None)
+            .has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
             .unwrap()
             .unwrap());
 
         // Test keys for a root tree
-        db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, Some(&tx))
+        db.insert(EMPTY_PATH, b"leaf", Element::empty_tree(), None, Some(&tx), grove_version)
             .unwrap()
             .expect("cannot insert item");
-        assert!(db.has_raw(EMPTY_PATH, b"leaf", Some(&tx)).unwrap().unwrap());
-        assert!(!db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
+        assert!(db.has_raw(EMPTY_PATH, b"leaf", Some(&tx), grove_version).unwrap().unwrap());
+        assert!(!db.has_raw(EMPTY_PATH, b"leaf", None, grove_version).unwrap().unwrap());
 
         db.commit_transaction(tx)
             .unwrap()
             .expect("cannot commit transaction");
         assert!(db
-            .has_raw([TEST_LEAF].as_ref(), b"key", None)
+            .has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
             .unwrap()
             .unwrap());
-        assert!(db.has_raw(EMPTY_PATH, b"leaf", None).unwrap().unwrap());
+        assert!(db.has_raw(EMPTY_PATH, b"leaf", None, grove_version).unwrap().unwrap());
     }
 
     #[test]
     fn test_storage_wipe() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let _path = db._tmp_dir.path();
 
         // Test keys in non-root tree
@@ -3356,19 +3537,20 @@ mod tests {
             Element::new_item(b"ayy".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert item");
 
         // retrieve key before wipe
-        let elem = db.get(&[TEST_LEAF], b"key", None).unwrap().unwrap();
+        let elem = db.get(&[TEST_LEAF], b"key", None, grove_version).unwrap().unwrap();
         assert_eq!(elem, Element::new_item(b"ayy".to_vec()));
 
         // wipe the database
         db.grove_db.wipe().unwrap();
 
         // retrieve key after wipe
-        let elem_result = db.get(&[TEST_LEAF], b"key", None).unwrap();
+        let elem_result = db.get(&[TEST_LEAF], b"key", None, grove_version).unwrap();
         assert!(elem_result.is_err());
         assert!(matches!(
             elem_result,

@@ -351,7 +351,7 @@ impl ReferencePathType {
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::Query;
-
+    use grovedb_version::version::GroveVersion;
     use crate::{
         reference_path::{path_from_reference_path_type, ReferencePathType},
         tests::{make_deep_tree, TEST_LEAF},
@@ -465,7 +465,8 @@ mod tests {
 
     #[test]
     fn test_query_many_with_different_reference_types() {
-        let db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let db = make_deep_tree(grove_version);
 
         db.insert(
             [TEST_LEAF, b"innertree4"].as_ref(),
@@ -477,6 +478,7 @@ mod tests {
             ])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -490,6 +492,7 @@ mod tests {
             )),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -503,6 +506,7 @@ mod tests {
             )),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -513,7 +517,7 @@ mod tests {
         let path_query =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query);
         let result = db
-            .query_item_value(&path_query, true, true, true, None)
+            .query_item_value(&path_query, true, true, true, None, grove_version)
             .unwrap()
             .expect("should query items");
         assert_eq!(result.0.len(), 5);
@@ -529,12 +533,12 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should generate proof");
         let (hash, result) =
-            GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("should verify proof");
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result.len(), 5);
     }
 }

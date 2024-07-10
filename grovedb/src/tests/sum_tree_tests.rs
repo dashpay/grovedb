@@ -6,7 +6,7 @@ use grovedb_merk::{
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 use grovedb_storage::StorageBatch;
-
+use grovedb_version::version::GroveVersion;
 use crate::{
     batch::GroveDbOp,
     reference_path::ReferencePathType,
@@ -16,20 +16,22 @@ use crate::{
 
 #[test]
 fn test_sum_tree_behaves_like_regular_tree() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
     db.insert(
         [TEST_LEAF].as_ref(),
         b"key",
         Element::empty_sum_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
 
     // Can fetch sum tree
     let sum_tree = db
-        .get([TEST_LEAF].as_ref(), b"key", None)
+        .get([TEST_LEAF].as_ref(), b"key", None, grove_version)
         .unwrap()
         .expect("should get tree");
     assert!(matches!(sum_tree, Element::SumTree(..)));
@@ -40,6 +42,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
         Element::new_item(vec![1]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -49,6 +52,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
         Element::new_item(vec![3]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -58,13 +62,14 @@ fn test_sum_tree_behaves_like_regular_tree() {
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
 
     // Test proper item retrieval
     let item = db
-        .get([TEST_LEAF, b"key"].as_ref(), b"innerkey", None)
+        .get([TEST_LEAF, b"key"].as_ref(), b"innerkey", None, grove_version)
         .unwrap()
         .expect("should get item");
     assert_eq!(item, Element::new_item(vec![1]));
@@ -75,28 +80,30 @@ fn test_sum_tree_behaves_like_regular_tree() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"key".to_vec()], query);
     let proof = db
-        .prove_query(&path_query, None)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("should generate proof");
     let (root_hash, result_set) =
-        GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
-    assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
+        GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("should verify proof");
+    assert_eq!(root_hash, db.grove_db.root_hash(None, grove_version).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
     assert_eq!(
-        Element::deserialize(&result_set[0].value).expect("should deserialize element"),
+        Element::deserialize(&result_set[0].value, grove_version).expect("should deserialize element"),
         Element::new_item(vec![3])
     );
 }
 
 #[test]
 fn test_sum_item_behaves_like_regular_item() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
     db.insert(
         [TEST_LEAF].as_ref(),
         b"sumkey",
         Element::empty_sum_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -106,6 +113,7 @@ fn test_sum_item_behaves_like_regular_item() {
         Element::new_item(vec![1]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -115,6 +123,7 @@ fn test_sum_item_behaves_like_regular_item() {
         Element::new_sum_item(5),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -124,13 +133,14 @@ fn test_sum_item_behaves_like_regular_item() {
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
 
     // Test proper item retrieval
     let item = db
-        .get([TEST_LEAF, b"sumkey"].as_ref(), b"k2", None)
+        .get([TEST_LEAF, b"sumkey"].as_ref(), b"k2", None, grove_version)
         .unwrap()
         .expect("should get item");
     assert_eq!(item, Element::new_sum_item(5));
@@ -141,28 +151,30 @@ fn test_sum_item_behaves_like_regular_item() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sumkey".to_vec()], query);
     let proof = db
-        .prove_query(&path_query, None)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("should generate proof");
     let (root_hash, result_set) =
-        GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
-    assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
+        GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("should verify proof");
+    assert_eq!(root_hash, db.grove_db.root_hash(None, grove_version).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
     let element_from_proof =
-        Element::deserialize(&result_set[0].value).expect("should deserialize element");
+        Element::deserialize(&result_set[0].value, grove_version).expect("should deserialize element");
     assert_eq!(element_from_proof, Element::new_sum_item(5));
     assert_eq!(element_from_proof.sum_value_or_default(), 5);
 }
 
 #[test]
 fn test_cannot_insert_sum_item_in_regular_tree() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
     db.insert(
         [TEST_LEAF].as_ref(),
         b"sumkey",
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -172,7 +184,7 @@ fn test_cannot_insert_sum_item_in_regular_tree() {
             b"k1",
             Element::new_sum_item(5),
             None,
-            None,
+            None, grove_version
         )
         .unwrap(),
         Err(Error::InvalidInput("cannot add sum item to non sum tree"))
@@ -181,14 +193,16 @@ fn test_cannot_insert_sum_item_in_regular_tree() {
 
 #[test]
 fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
+    let grove_version = GroveVersion::latest();
     // All elements in a sum tree must have a summed feature type
-    let db = make_test_grovedb();
+    let db = make_test_grovedb(grove_version);
     db.insert(
         [TEST_LEAF].as_ref(),
         b"key",
         Element::empty_sum_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -199,6 +213,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         Element::new_sum_item(30),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -208,6 +223,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         Element::new_sum_item(10),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -218,6 +234,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         Element::new_item(vec![10]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -227,6 +244,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         Element::new_item(vec![15]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -235,14 +253,14 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
 
     // Open merk and check all elements in it
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
         merk.get_feature_type(
             b"item1",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -252,7 +270,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item2",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -262,7 +280,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item3",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -272,7 +290,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item4",
             true,
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -281,13 +299,14 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     assert_eq!(merk.sum().expect("expected to get sum"), Some(40));
 
     // Perform the same test on regular trees
-    let db = make_test_grovedb();
+    let db = make_test_grovedb(grove_version);
     db.insert(
         [TEST_LEAF].as_ref(),
         b"key",
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -297,6 +316,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         Element::new_item(vec![30]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -306,19 +326,20 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         Element::new_item(vec![10]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
 
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
         merk.get_feature_type(
             b"item1",
             true,
-            Some(&Element::value_defined_cost_for_serialized_value)
+            Some(&Element::value_defined_cost_for_serialized_value), grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -328,7 +349,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         merk.get_feature_type(
             b"item2",
             true,
-            Some(&Element::value_defined_cost_for_serialized_value)
+            Some(&Element::value_defined_cost_for_serialized_value), grove_version
         )
         .unwrap()
         .expect("node should exist"),
@@ -339,13 +360,15 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
 
 #[test]
 fn test_sum_tree_feature() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
     db.insert(
         [TEST_LEAF].as_ref(),
         b"key",
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -355,7 +378,7 @@ fn test_sum_tree_feature() {
     // Sum should be non for non sum tree
     // TODO: change interface to retrieve element directly
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), None);
@@ -367,11 +390,12 @@ fn test_sum_tree_feature() {
         Element::empty_sum_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert sum tree");
     let sum_tree = db
-        .get([TEST_LEAF].as_ref(), b"key2", None)
+        .get([TEST_LEAF].as_ref(), b"key2", None, grove_version)
         .unwrap()
         .expect("should retrieve tree");
     assert_eq!(sum_tree.sum_value_or_default(), 0);
@@ -383,12 +407,13 @@ fn test_sum_tree_feature() {
         Element::new_sum_item(30),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
     // TODO: change interface to retrieve element directly
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(30));
@@ -400,6 +425,7 @@ fn test_sum_tree_feature() {
         Element::new_sum_item(-10),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -409,11 +435,12 @@ fn test_sum_tree_feature() {
         Element::new_sum_item(50),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(70)); // 30 - 10 + 50 = 70
@@ -425,11 +452,12 @@ fn test_sum_tree_feature() {
         Element::new_item(vec![29]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(70));
@@ -441,6 +469,7 @@ fn test_sum_tree_feature() {
         Element::new_sum_item(10),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -450,17 +479,18 @@ fn test_sum_tree_feature() {
         Element::new_sum_item(-100),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(-60)); // 30 + 10 - 100 = -60
 
     // We can not replace a normal item with a sum item, so let's delete it first
-    db.delete([TEST_LEAF, b"key2"].as_ref(), b"item4", None, None)
+    db.delete([TEST_LEAF, b"key2"].as_ref(), b"item4", None, None, grove_version)
         .unwrap()
         .expect("expected to delete");
     // Use a large value
@@ -470,11 +500,12 @@ fn test_sum_tree_feature() {
         Element::new_sum_item(10000000),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert_eq!(merk.sum().expect("expected to get sum"), Some(9999940)); // 30 +
@@ -487,7 +518,8 @@ fn test_sum_tree_feature() {
 
 #[test]
 fn test_sum_tree_propagation() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
     // Tree
     //   SumTree
     //      SumTree
@@ -501,6 +533,7 @@ fn test_sum_tree_propagation() {
         Element::empty_sum_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -510,6 +543,7 @@ fn test_sum_tree_propagation() {
         Element::empty_sum_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -519,6 +553,7 @@ fn test_sum_tree_propagation() {
         Element::new_sum_item(20),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert tree");
@@ -528,6 +563,7 @@ fn test_sum_tree_propagation() {
         Element::new_item(vec![2]),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -537,6 +573,7 @@ fn test_sum_tree_propagation() {
         Element::new_sum_item(5),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -546,6 +583,7 @@ fn test_sum_tree_propagation() {
         Element::new_sum_item(10),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
@@ -560,12 +598,13 @@ fn test_sum_tree_propagation() {
         ])),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("should insert item");
 
     let sum_tree = db
-        .get([TEST_LEAF].as_ref(), b"key", None)
+        .get([TEST_LEAF].as_ref(), b"key", None, grove_version)
         .unwrap()
         .expect("should fetch tree");
     assert_eq!(sum_tree.sum_value_or_default(), 35);
@@ -574,7 +613,7 @@ fn test_sum_tree_propagation() {
 
     // Assert node feature types
     let test_leaf_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -582,7 +621,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"key",
                 true,
-                Some(&Element::value_defined_cost_for_serialized_value)
+                Some(&Element::value_defined_cost_for_serialized_value), grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -590,7 +629,7 @@ fn test_sum_tree_propagation() {
     ));
 
     let parent_sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -598,7 +637,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"tree2",
                 true,
-                Some(&Element::value_defined_cost_for_serialized_value)
+                Some(&Element::value_defined_cost_for_serialized_value), grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -611,6 +650,7 @@ fn test_sum_tree_propagation() {
         .open_non_transactional_merk_at_path(
             [TEST_LEAF, b"key", b"tree2"].as_ref().into(),
             Some(&batch),
+            grove_version,
         )
         .unwrap()
         .expect("should open tree");
@@ -619,7 +659,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"item1",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -630,7 +670,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"sumitem1",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -641,7 +681,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"sumitem2",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -654,7 +694,7 @@ fn test_sum_tree_propagation() {
             .get_feature_type(
                 b"item2",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -664,7 +704,8 @@ fn test_sum_tree_propagation() {
 
 #[test]
 fn test_sum_tree_with_batches() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
     let ops = vec![
         GroveDbOp::insert_op(
             vec![TEST_LEAF.to_vec()],
@@ -682,13 +723,13 @@ fn test_sum_tree_with_batches() {
             Element::new_sum_item(10),
         ),
     ];
-    db.apply_batch(ops, None, None)
+    db.apply_batch(ops, None, None, grove_version)
         .unwrap()
         .expect("should apply batch");
 
     let batch = StorageBatch::new();
     let sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
 
@@ -697,7 +738,7 @@ fn test_sum_tree_with_batches() {
             .get_feature_type(
                 b"a",
                 true,
-                Some(&Element::value_defined_cost_for_serialized_value)
+                Some(&Element::value_defined_cost_for_serialized_value), grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -708,7 +749,7 @@ fn test_sum_tree_with_batches() {
             .get_feature_type(
                 b"b",
                 true,
-                Some(&Element::value_defined_cost_for_serialized_value)
+                Some(&Element::value_defined_cost_for_serialized_value), grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -721,13 +762,13 @@ fn test_sum_tree_with_batches() {
         b"c".to_vec(),
         Element::new_sum_item(10),
     )];
-    db.apply_batch(ops, None, None)
+    db.apply_batch(ops, None, None, grove_version)
         .unwrap()
         .expect("should apply batch");
 
     let batch = StorageBatch::new();
     let sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
@@ -735,7 +776,7 @@ fn test_sum_tree_with_batches() {
             .get_feature_type(
                 b"c",
                 true,
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>
+                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version
             )
             .unwrap()
             .expect("node should exist"),
@@ -744,7 +785,7 @@ fn test_sum_tree_with_batches() {
     assert_eq!(sum_tree.sum().expect("expected to get sum"), Some(20));
 
     // Test propagation
-    // Add a new sum tree with it's own sum items, should affect sum of original
+    // Add a new sum tree with its own sum items, should affect sum of original
     // tree
     let ops = vec![
         GroveDbOp::insert_op(
@@ -803,13 +844,13 @@ fn test_sum_tree_with_batches() {
             Element::new_item(vec![5]),
         ),
     ];
-    db.apply_batch(ops, None, None)
+    db.apply_batch(ops, None, None, grove_version)
         .unwrap()
         .expect("should apply batch");
 
     let batch = StorageBatch::new();
     let sum_tree = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch), grove_version)
         .unwrap()
         .expect("should open tree");
     assert_eq!(sum_tree.sum().expect("expected to get sum"), Some(41));

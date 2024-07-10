@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Delete up tree
 
 use grovedb_costs::{
@@ -34,7 +6,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
-
+use grovedb_version::version::GroveVersion;
 use crate::{
     batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
     TransactionArg,
@@ -91,6 +63,7 @@ impl GroveDb {
         key: &[u8],
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<u16, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -107,6 +80,7 @@ impl GroveDb {
                     (BasicStorageRemoval(removed_value_bytes)),
                 ))
             },
+            grove_version,
         )
     }
 
@@ -126,6 +100,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
+        grove_version: &GroveVersion,
     ) -> CostResult<u16, Error> {
         let mut cost = OperationCost::default();
         let mut batch_operations: Vec<GroveDbOp> = Vec::new();
@@ -139,6 +114,7 @@ impl GroveDb {
                 None,
                 &mut batch_operations,
                 transaction,
+                grove_version,
             )
         );
 
@@ -163,6 +139,7 @@ impl GroveDb {
             |_, _, _| Ok(false),
             split_removal_bytes_function,
             transaction,
+            grove_version,
         )
         .map_ok(|_| ops_len as u16)
     }
@@ -176,6 +153,7 @@ impl GroveDb {
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
@@ -184,6 +162,7 @@ impl GroveDb {
             is_known_to_be_subtree_with_sum,
             &mut current_batch_operations,
             transaction,
+            grove_version,
         )
         .map_ok(|ops| ops.unwrap_or_default())
     }
@@ -198,6 +177,7 @@ impl GroveDb {
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error> {
         let mut cost = OperationCost::default();
 
@@ -222,6 +202,7 @@ impl GroveDb {
                 is_known_to_be_subtree_with_sum,
                 current_batch_operations,
                 transaction,
+                grove_version,
             )
         ) {
             let mut delete_operations = vec![delete_operation_this_level.clone()];
@@ -240,6 +221,7 @@ impl GroveDb {
                         None, // todo: maybe we can know this?
                         current_batch_operations,
                         transaction,
+                        grove_version,
                     )
                 ) {
                     delete_operations.append(&mut delete_operations_upper_level);

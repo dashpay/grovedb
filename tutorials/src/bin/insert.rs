@@ -20,6 +20,7 @@ fn main() {
         Element::Item(val1.to_vec(), None),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful key1 insert");
@@ -31,6 +32,7 @@ fn main() {
         Element::Item(val2.to_vec(), None),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful key2 insert");

@@ -35,7 +35,7 @@ use grovedb_costs::CostResult;
 use grovedb_merk::Merk;
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
-
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use crate::{Element, Error};
 
@@ -47,10 +47,12 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
+        grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         merk.exists(
             key.as_ref(),
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
