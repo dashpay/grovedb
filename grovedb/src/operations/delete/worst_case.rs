@@ -100,7 +100,7 @@ impl GroveDb {
                 );
                 let op = cost_return_on_error!(
                     &mut cost,
-                    Self::worst_case_delete_operation_for_delete_internal::<S>(
+                    Self::worst_case_delete_operation_for_delete::<S>(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
                         is_sum_tree,
@@ -117,8 +117,8 @@ impl GroveDb {
         }
     }
 
-    /// Worst case costs for delete operation for delete internal
-    fn worst_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
+    /// Worst case costs for delete operation for delete
+    pub fn worst_case_delete_operation_for_delete<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
         parent_tree_is_sum_tree: bool,
@@ -128,6 +128,14 @@ impl GroveDb {
         max_element_size: u32,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDbOp, Error> {
+        check_grovedb_v0_with_cost!(
+            "worst_case_delete_operation_for_delete",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .worst_case_delete_operation_for_delete
+        );
         let mut cost = OperationCost::default();
 
         if validate {

@@ -148,6 +148,8 @@ pub struct GroveDBOperationsDeleteVersions {
     pub delete_operation_for_delete_internal: FeatureVersion,
     pub delete_internal_on_transaction: FeatureVersion,
     pub delete_internal_without_transaction: FeatureVersion,
+    pub average_case_delete_operation_for_delete: FeatureVersion,
+    pub worst_case_delete_operation_for_delete: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

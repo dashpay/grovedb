@@ -105,6 +105,8 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 delete_operation_for_delete_internal: 0,
                 delete_internal_on_transaction: 0,
                 delete_internal_without_transaction: 0,
+                average_case_delete_operation_for_delete: 0,
+                worst_case_delete_operation_for_delete: 0,
             },
             delete_up_tree: GroveDBOperationsDeleteUpTreeVersions {
                 delete_up_tree_while_empty: 0,
