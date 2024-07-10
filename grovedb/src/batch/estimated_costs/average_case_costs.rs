@@ -18,9 +18,10 @@ use grovedb_merk::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
-use grovedb_version::version::GroveVersion;
+
 use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
@@ -110,9 +111,12 @@ impl Op {
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Delete => {
-                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate, grove_version)
-            }
+            Op::Delete => GroveDb::average_case_merk_delete_element(
+                key,
+                layer_element_estimates,
+                propagate,
+                grove_version,
+            ),
             Op::DeleteTree => GroveDb::average_case_merk_delete_tree(
                 key,
                 false,
@@ -251,7 +255,11 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
     }
 
-    fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>, grove_version: &GroveVersion) -> CostResult<(), Error> {
+    fn update_base_merk_root_key(
+        &mut self,
+        _root_key: Option<Vec<u8>>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         cost.seek_count += 1;
         let base_path = KeyInfoPath(vec![]);
@@ -291,6 +299,7 @@ mod tests {
         EstimatedSumTrees::{NoSumTrees, SomeSumTrees},
     };
     use grovedb_version::version::GroveVersion;
+
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo,
@@ -504,9 +513,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![],
@@ -583,9 +599,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![b"0".to_vec()],
@@ -734,9 +757,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"keyb", Element::empty_tree(), None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"keyb",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![],

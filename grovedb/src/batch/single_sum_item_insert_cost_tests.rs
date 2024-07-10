@@ -7,6 +7,7 @@ mod tests {
         OperationCost,
     };
     use grovedb_version::version::GroveVersion;
+
     use crate::{
         batch::GroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
@@ -122,9 +123,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![],
@@ -201,9 +209,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_sum_tree(), None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![],
@@ -280,9 +295,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![b"0".to_vec()],
@@ -363,9 +385,16 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_sum_tree(), None, Some(&tx), grove_version)
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![b"0".to_vec()],
@@ -596,9 +625,16 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None, grove_version)
-            .unwrap()
-            .expect("expected to insert tree");
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -655,9 +691,16 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None, grove_version)
-            .unwrap()
-            .expect("expected to insert tree");
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -714,9 +757,16 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None, grove_version)
-            .unwrap()
-            .expect("expected to insert tree");
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -773,9 +823,16 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(EMPTY_PATH, b"tree", Element::empty_sum_tree(), None, None, grove_version)
-            .unwrap()
-            .expect("expected to insert tree");
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),

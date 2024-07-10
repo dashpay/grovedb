@@ -16,9 +16,9 @@ use grovedb_costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use Op::*;
 
@@ -126,7 +126,9 @@ impl Fetch for PanicSource {
     fn fetch(
         &self,
         _link: &Link,
-        _value_defined_cost_fn: Option<&impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        _value_defined_cost_fn: Option<
+            &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         _grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
         unreachable!("'fetch' should not have been called")
@@ -536,8 +538,10 @@ where
                         needs_value_verification: false,
                     };
 
-                    let maybe_tree_walker =
-                        cost_return_on_error!(&mut cost, self.remove(value_defined_cost_fn, grove_version));
+                    let maybe_tree_walker = cost_return_on_error!(
+                        &mut cost,
+                        self.remove(value_defined_cost_fn, grove_version)
+                    );
 
                     // If there are no more batch updates to the left this means that the index is 0
                     // There would be no key updates to the left of this part of the tree.
@@ -811,7 +815,10 @@ where
             tree
         };
 
-        let tree = cost_return_on_error!(&mut cost, tree.maybe_balance(value_defined_cost_fn, grove_version));
+        let tree = cost_return_on_error!(
+            &mut cost,
+            tree.maybe_balance(value_defined_cost_fn, grove_version)
+        );
 
         let new_root_key = tree.tree().key();
 
@@ -834,7 +841,11 @@ where
     /// Checks if the tree is unbalanced and if so, applies AVL tree rotation(s)
     /// to re-balance the tree and its subtrees. Returns the root node of the
     /// balanced tree after applying the rotations.
-    fn maybe_balance<V>(self, value_defined_cost_fn: Option<&V>, grove_version: &GroveVersion) -> CostResult<Self, Error>
+    fn maybe_balance<V>(
+        self,
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Self, Error>
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
@@ -872,16 +883,25 @@ where
 
     /// Applies an AVL tree rotation, a constant-time operation which only needs
     /// to swap pointers in order to re-balance a tree.
-    fn rotate<V>(self, left: bool, value_defined_cost_fn: Option<&V>, grove_version: &GroveVersion) -> CostResult<Self, Error>
+    fn rotate<V>(
+        self,
+        left: bool,
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Self, Error>
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         let mut cost = OperationCost::default();
 
-        let (tree, child) =
-            cost_return_on_error!(&mut cost, self.detach_expect(left, value_defined_cost_fn, grove_version));
-        let (child, maybe_grandchild) =
-            cost_return_on_error!(&mut cost, child.detach(!left, value_defined_cost_fn, grove_version));
+        let (tree, child) = cost_return_on_error!(
+            &mut cost,
+            self.detach_expect(left, value_defined_cost_fn, grove_version)
+        );
+        let (child, maybe_grandchild) = cost_return_on_error!(
+            &mut cost,
+            child.detach(!left, value_defined_cost_fn, grove_version)
+        );
 
         // attach grandchild to self
         tree.attach(left, maybe_grandchild)
@@ -897,7 +917,11 @@ where
 
     /// Removes the root node from the tree. Rearranges and re-balances
     /// descendants (if any) in order to maintain a valid tree.
-    pub fn remove<V>(self, value_defined_cost_fn: Option<&V>, grove_version: &GroveVersion) -> CostResult<Option<Self>, Error>
+    pub fn remove<V>(
+        self,
+        value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Self>, Error>
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
@@ -910,10 +934,14 @@ where
 
         let maybe_tree = if has_left && has_right {
             // two children, promote edge of taller child
-            let (tree, tall_child) =
-                cost_return_on_error!(&mut cost, self.detach_expect(left, value_defined_cost_fn, grove_version));
-            let (_, short_child) =
-                cost_return_on_error!(&mut cost, tree.detach_expect(!left, value_defined_cost_fn, grove_version));
+            let (tree, tall_child) = cost_return_on_error!(
+                &mut cost,
+                self.detach_expect(left, value_defined_cost_fn, grove_version)
+            );
+            let (_, short_child) = cost_return_on_error!(
+                &mut cost,
+                tree.detach_expect(!left, value_defined_cost_fn, grove_version)
+            );
             let promoted = cost_return_on_error!(
                 &mut cost,
                 tall_child.promote_edge(!left, short_child, value_defined_cost_fn, grove_version)
@@ -922,7 +950,11 @@ where
         } else if has_left || has_right {
             // single child, promote it
             Some(
-                cost_return_on_error!(&mut cost, self.detach_expect(left, value_defined_cost_fn, grove_version)).1,
+                cost_return_on_error!(
+                    &mut cost,
+                    self.detach_expect(left, value_defined_cost_fn, grove_version)
+                )
+                .1,
             )
         } else {
             // no child
@@ -970,10 +1002,14 @@ where
 
         if self.tree().link(left).is_some() {
             // this node is not the edge, recurse
-            let (tree, child) =
-                cost_return_on_error!(&mut cost, self.detach_expect(left, value_defined_cost_fn, grove_version));
-            let (edge, maybe_child) =
-                cost_return_on_error!(&mut cost, child.remove_edge(left, value_defined_cost_fn, grove_version));
+            let (tree, child) = cost_return_on_error!(
+                &mut cost,
+                self.detach_expect(left, value_defined_cost_fn, grove_version)
+            );
+            let (edge, maybe_child) = cost_return_on_error!(
+                &mut cost,
+                child.remove_edge(left, value_defined_cost_fn, grove_version)
+            );
             tree.attach(left, maybe_child)
                 .maybe_balance(value_defined_cost_fn, grove_version)
                 .map_ok(|tree| (edge, Some(tree)))

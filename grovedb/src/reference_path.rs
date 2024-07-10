@@ -352,6 +352,7 @@ impl ReferencePathType {
 mod tests {
     use grovedb_merk::proofs::Query;
     use grovedb_version::version::GroveVersion;
+
     use crate::{
         reference_path::{path_from_reference_path_type, ReferencePathType},
         tests::{make_deep_tree, TEST_LEAF},
@@ -536,8 +537,8 @@ mod tests {
             .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should generate proof");
-        let (hash, result) =
-            GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("should verify proof");
+        let (hash, result) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result.len(), 5);
     }

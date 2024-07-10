@@ -43,7 +43,13 @@ fn fuzz_396148930387069749() {
 fn fuzz_case(seed: u64, using_sum_trees: bool) {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let initial_size = (rng.gen::<u64>() % 10) + 1;
-    let tree = make_tree_rand(initial_size, initial_size, seed, using_sum_trees, grove_version);
+    let tree = make_tree_rand(
+        initial_size,
+        initial_size,
+        seed,
+        using_sum_trees,
+        grove_version,
+    );
     let mut map = Map::from_iter(tree.iter());
     let mut maybe_tree = Some(tree);
     println!("====== MERK FUZZ ======");

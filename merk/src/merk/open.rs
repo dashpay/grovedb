@@ -3,6 +3,7 @@ use std::cell::Cell;
 use grovedb_costs::CostResult;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+
 use crate::{
     tree::kv::ValueDefinedCostType,
     Error, Merk, MerkType,
@@ -14,7 +15,12 @@ where
     S: StorageContext<'db>,
 {
     /// Open empty tree
-    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool, grove_version: &GroveVersion) -> Self {
+    pub fn open_empty(
+        storage: S,
+        merk_type: MerkType,
+        is_sum_tree: bool,
+        grove_version: &GroveVersion,
+    ) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -28,7 +34,9 @@ where
     pub fn open_standalone(
         storage: S,
         is_sum_tree: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
@@ -39,14 +47,17 @@ where
             is_sum_tree,
         };
 
-        merk.load_base_root(value_defined_cost_fn, grove_version).map_ok(|_| merk)
+        merk.load_base_root(value_defined_cost_fn, grove_version)
+            .map_ok(|_| merk)
     }
 
     /// Open base tree
     pub fn open_base(
         storage: S,
         is_sum_tree: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
@@ -57,7 +68,8 @@ where
             is_sum_tree,
         };
 
-        merk.load_base_root(value_defined_cost_fn, grove_version).map_ok(|_| merk)
+        merk.load_base_root(value_defined_cost_fn, grove_version)
+            .map_ok(|_| merk)
     }
 
     /// Open layered tree with root key
@@ -65,7 +77,9 @@ where
         storage: S,
         root_key: Option<Vec<u8>>,
         is_sum_tree: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
@@ -76,7 +90,8 @@ where
             is_sum_tree,
         };
 
-        merk.load_root(value_defined_cost_fn, grove_version).map_ok(|_| merk)
+        merk.load_root(value_defined_cost_fn, grove_version)
+            .map_ok(|_| merk)
     }
 }
 
@@ -88,8 +103,9 @@ mod test {
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
         Storage, StorageBatch,
     };
-    use tempfile::TempDir;
     use grovedb_version::version::GroveVersion;
+    use tempfile::TempDir;
+
     use crate::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType::BasicMerkNode};
 
     #[test]

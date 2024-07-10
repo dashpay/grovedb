@@ -19,6 +19,7 @@ use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use grovedb_version::version::GroveVersion;
+
 #[cfg(feature = "full")]
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
@@ -411,7 +412,10 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Push arguments to path query
-    fn path_query_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> CostResult<(), Error> {
+    fn path_query_push(
+        args: PathQueryPushArgs,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
         // println!("path_query_push {} \n", args);
 
         let mut cost = OperationCost::default();
@@ -535,7 +539,7 @@ impl Element {
                                                         path_vec.as_slice(),
                                                         subquery_path_last_key.as_slice(),
                                                         allow_cache,
-                                                    grove_version,
+                                                        grove_version,
                                                     )
                                                 ),
                                             ),
@@ -564,7 +568,7 @@ impl Element {
                                                         path_vec.as_slice(),
                                                         subquery_path_last_key.as_slice(),
                                                         allow_cache,
-                                                    grove_version,
+                                                        grove_version,
                                                     )
                                                 ),
                                             )),
@@ -589,21 +593,24 @@ impl Element {
             } else if allow_get_raw {
                 cost_return_on_error_no_add!(
                     &cost,
-                    Element::basic_push(PathQueryPushArgs {
-                        storage,
-                        transaction,
-                        key: Some(key),
-                        element,
-                        path,
-                        subquery_path,
-                        subquery,
-                        left_to_right,
-                        query_options,
-                        result_type,
-                        results,
-                        limit,
-                        offset,
-                    }, grove_version)
+                    Element::basic_push(
+                        PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key),
+                            element,
+                            path,
+                            subquery_path,
+                            subquery,
+                            left_to_right,
+                            query_options,
+                            result_type,
+                            results,
+                            limit,
+                            offset,
+                        },
+                        grove_version
+                    )
                 );
             } else {
                 return Err(Error::InvalidPath(
@@ -616,22 +623,24 @@ impl Element {
         } else {
             cost_return_on_error_no_add!(
                 &cost,
-                Element::basic_push(PathQueryPushArgs {
-                    storage,
-                    transaction,
-                    key,
-                    element,
-                    path,
-                    subquery_path,
-                    subquery,
-                    left_to_right,
-                    query_options,
-                    result_type,
-                    results,
-                    limit,
-                    offset,
-
-                }, grove_version)
+                Element::basic_push(
+                    PathQueryPushArgs {
+                        storage,
+                        transaction,
+                        key,
+                        element,
+                        path,
+                        subquery_path,
+                        subquery,
+                        left_to_right,
+                        query_options,
+                        result_type,
+                        results,
+                        limit,
+                        offset,
+                    },
+                    grove_version
+                )
             );
         }
         Ok(()).wrap_with_cost(cost)
@@ -718,21 +727,24 @@ impl Element {
                     Ok(element) => {
                         let (subquery_path, subquery) =
                             Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                        match add_element_function(PathQueryPushArgs {
-                            storage,
-                            transaction,
-                            key: Some(key.as_slice()),
-                            element,
-                            path,
-                            subquery_path,
-                            subquery,
-                            left_to_right: sized_query.query.left_to_right,
-                            query_options,
-                            result_type,
-                            results,
-                            limit,
-                            offset,
-                        }, grove_version)
+                        match add_element_function(
+                            PathQueryPushArgs {
+                                storage,
+                                transaction,
+                                key: Some(key.as_slice()),
+                                element,
+                                path,
+                                subquery_path,
+                                subquery,
+                                left_to_right: sized_query.query.left_to_right,
+                                query_options,
+                                result_type,
+                                results,
+                                limit,
+                                offset,
+                            },
+                            grove_version,
+                        )
                         .unwrap_add_cost(&mut cost)
                         {
                             Ok(_) => Ok(()),
@@ -784,7 +796,7 @@ impl Element {
                             iter.value()
                                 .unwrap_add_cost(&mut cost)
                                 .expect("if key exists then value should too"),
-                        grove_version
+                            grove_version
                         )
                     );
                     let key = iter
@@ -793,21 +805,24 @@ impl Element {
                         .expect("key should exist");
                     let (subquery_path, subquery) =
                         Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                    let result_with_cost = add_element_function(PathQueryPushArgs {
-                        storage,
-                        transaction,
-                        key: Some(key),
-                        element,
-                        path,
-                        subquery_path,
-                        subquery,
-                        left_to_right: sized_query.query.left_to_right,
-                        query_options,
-                        result_type,
-                        results,
-                        limit,
-                        offset,
-                    }, grove_version);
+                    let result_with_cost = add_element_function(
+                        PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key),
+                            element,
+                            path,
+                            subquery_path,
+                            subquery,
+                            left_to_right: sized_query.query.left_to_right,
+                            query_options,
+                            result_type,
+                            results,
+                            limit,
+                            offset,
+                        },
+                        grove_version,
+                    );
                     let result = result_with_cost.unwrap_add_cost(&mut cost);
                     match result {
                         Ok(x) => x,
@@ -850,7 +865,8 @@ impl Element {
             ..
         } = args;
 
-        let element = element.convert_if_reference_to_absolute_reference(path, key, grove_version)?;
+        let element =
+            element.convert_if_reference_to_absolute_reference(path, key, grove_version)?;
 
         if offset.unwrap_or(0) == 0 {
             match result_type {
@@ -902,6 +918,7 @@ mod tests {
     use grovedb_merk::proofs::Query;
     use grovedb_storage::{Storage, StorageBatch};
     use grovedb_version::version::GroveVersion;
+
     use crate::{
         element::{query::QueryOptions, *},
         query_result_type::{
@@ -964,9 +981,16 @@ mod tests {
         query.insert_key(b"a".to_vec());
 
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None, grove_version)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyc".to_vec())
@@ -978,9 +1002,16 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None, grove_version)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyb".to_vec()),
@@ -993,9 +1024,16 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None, grove_version)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayyb".to_vec()),
                 Element::new_item(b"ayyc".to_vec()),
@@ -1009,9 +1047,16 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, QueryOptions::default(), None, grove_version)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyb".to_vec()),
@@ -1106,7 +1151,11 @@ mod tests {
         let batch = StorageBatch::new();
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch), grove_version)
+            .open_non_transactional_merk_at_path(
+                [TEST_LEAF].as_ref().into(),
+                Some(&batch),
+                grove_version,
+            )
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1214,7 +1263,11 @@ mod tests {
 
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch), grove_version)
+            .open_non_transactional_merk_at_path(
+                [TEST_LEAF].as_ref().into(),
+                Some(&batch),
+                grove_version,
+            )
             .unwrap()
             .expect("cannot open Merk");
 
@@ -1598,7 +1651,10 @@ impl<I: RawIterator> ElementsIterator<I> {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next_element(&mut self, grove_version: &GroveVersion) -> CostResult<Option<KeyElementPair>, Error> {
+    pub fn next_element(
+        &mut self,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
         Ok(if self.raw_iter.valid().unwrap_add_cost(&mut cost) {

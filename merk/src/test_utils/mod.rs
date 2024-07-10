@@ -35,8 +35,8 @@ use std::{convert::TryInto, ops::Range};
 use grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageBatch};
-use rand::prelude::*;
 use grovedb_version::version::GroveVersion;
+use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
@@ -75,7 +75,11 @@ pub fn assert_tree_invariants(tree: &TreeNode) {
 /// Apply given batch to given tree and commit using memory only.
 /// Used by `apply_memonly` which also performs checks using
 /// `assert_tree_invariants`. Return Tree.
-pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>, grove_version: &GroveVersion) -> TreeNode {
+pub fn apply_memonly_unchecked(
+    tree: TreeNode,
+    batch: &MerkBatch<Vec<u8>>,
+    grove_version: &GroveVersion,
+) -> TreeNode {
     let is_sum_node = tree.is_sum_node();
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
     let mut tree = Walker::<PanicSource>::apply_to(
@@ -118,7 +122,11 @@ pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>, grove
 
 /// Apply given batch to given tree and commit using memory only.
 /// Perform checks using `assert_tree_invariants`. Return Tree.
-pub fn apply_memonly(tree: TreeNode, batch: &MerkBatch<Vec<u8>>, grove_version: &GroveVersion) -> TreeNode {
+pub fn apply_memonly(
+    tree: TreeNode,
+    batch: &MerkBatch<Vec<u8>>,
+    grove_version: &GroveVersion,
+) -> TreeNode {
     let tree = apply_memonly_unchecked(tree, batch, grove_version);
     assert_tree_invariants(&tree);
     tree
@@ -273,7 +281,11 @@ pub fn make_tree_seq(node_count: u64, grove_version: &GroveVersion) -> TreeNode 
 /// Create tree with initial fixed values and apply `node count` Put ops using
 /// sequential keys using memory only
 /// requires a starting key vector
-pub fn make_tree_seq_with_start_key(node_count: u64, start_key: Vec<u8>, grove_version: &GroveVersion) -> TreeNode {
+pub fn make_tree_seq_with_start_key(
+    node_count: u64,
+    start_key: Vec<u8>,
+    grove_version: &GroveVersion,
+) -> TreeNode {
     let batch_size = if node_count >= 10_000 {
         assert_eq!(node_count % 10_000, 0);
         10_000

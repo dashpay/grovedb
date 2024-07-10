@@ -79,9 +79,14 @@ pub fn get(c: &mut Criterion) {
             let key_index = (i / num_batches) as usize;
 
             let key = &batches[batch_index][key_index].0;
-            merk.get(key, true, None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
-                .unwrap()
-                .expect("get failed");
+            merk.get(
+                key,
+                true,
+                None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get failed");
 
             i = (i + 1) % initial_size;
         })

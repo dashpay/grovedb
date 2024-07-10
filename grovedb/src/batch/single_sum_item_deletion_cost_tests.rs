@@ -3,6 +3,7 @@
 #[cfg(feature = "full")]
 mod tests {
     use grovedb_version::version::GroveVersion;
+
     use crate::{
         batch::GroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
@@ -15,7 +16,14 @@ mod tests {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_sum_tree(), None, None, grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -74,7 +82,13 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete([b"sum_tree".as_slice()].as_ref(), b"key1", None, Some(&tx), grove_version)
+            .delete(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to delete successfully");
 

@@ -33,6 +33,7 @@ use grovedb_merk::tree::{
 };
 use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
+
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},
     Element,
@@ -57,7 +58,11 @@ fn test_node_hashes_when_inserting_item() {
     let batch = StorageBatch::new();
 
     let test_leaf_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch), grove_version)
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
@@ -126,7 +131,11 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     let batch = StorageBatch::new();
 
     let test_leaf_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch), grove_version)
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
@@ -164,7 +173,11 @@ fn test_tree_hashes_when_inserting_empty_tree() {
         .expect("value hash should be some");
 
     let underlying_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch), grove_version)
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF, b"key1"].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
@@ -214,12 +227,20 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     let batch = StorageBatch::new();
 
     let under_top_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch), grove_version)
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
     let middle_merk_key1 = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch), grove_version)
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF, b"key1"].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 

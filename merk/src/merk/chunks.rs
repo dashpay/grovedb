@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use ed::Encode;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+
 use crate::{
     error::Error,
     proofs::{
@@ -104,13 +105,18 @@ where
     }
 
     /// Returns the chunk at a given chunk id.
-    pub fn chunk(&mut self, chunk_id: &[u8], grove_version: &GroveVersion) -> Result<(Vec<Op>, Option<Vec<u8>>), Error> {
+    pub fn chunk(
+        &mut self,
+        chunk_id: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Result<(Vec<Op>, Option<Vec<u8>>), Error> {
         let traversal_instructions = vec_bytes_as_traversal_instruction(chunk_id)?;
         let chunk_index = chunk_index_from_traversal_instruction_with_recovery(
             traversal_instructions.as_slice(),
             self.height,
         )?;
-        let (chunk, next_index) = self.chunk_internal(chunk_index, traversal_instructions, grove_version)?;
+        let (chunk, next_index) =
+            self.chunk_internal(chunk_index, traversal_instructions, grove_version)?;
         let next_chunk_id = next_index
             .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
             .transpose()?;
@@ -138,9 +144,11 @@ where
         let chunk_height = chunk_height(self.height, index).unwrap();
 
         let chunk = self.merk.walk(|maybe_walker| match maybe_walker {
-            Some(mut walker) => {
-                walker.traverse_and_build_chunk(&traversal_instructions, chunk_height, grove_version)
-            }
+            Some(mut walker) => walker.traverse_and_build_chunk(
+                &traversal_instructions,
+                chunk_height,
+                grove_version,
+            ),
             None => Err(Error::ChunkingError(ChunkError::EmptyTree(
                 "cannot create chunk producer for empty Merk",
             ))),
@@ -349,7 +357,10 @@ where
     /// optimizing throughput compared to random access.
     // TODO: this is not better than random access, as we are not keeping state
     //  that will make this more efficient, decide if this should be fixed or not
-    fn next_chunk(&mut self, grove_version: &GroveVersion) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
+    fn next_chunk(
+        &mut self,
+        grove_version: &GroveVersion,
+    ) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
         let max_index = number_of_chunks(self.height);
         if self.index > max_index {
             return None;
@@ -376,7 +387,10 @@ impl<'db, S> ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
 {
-    pub fn next(&mut self, grove_version: &GroveVersion) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
+    pub fn next(
+        &mut self,
+        grove_version: &GroveVersion,
+    ) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
         self.next_chunk(grove_version)
     }
 }
@@ -1013,7 +1027,8 @@ mod test {
 
         // ensure that the remaining limit, next index and values given are correct
         // if limit is smaller than first chunk, we should get an error
-        let chunk_result = chunk_producer.multi_chunk_with_limit(vec![].as_slice(), Some(5), grove_version);
+        let chunk_result =
+            chunk_producer.multi_chunk_with_limit(vec![].as_slice(), Some(5), grove_version);
         assert!(matches!(
             chunk_result,
             Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))
@@ -1023,7 +1038,8 @@ mod test {
         // data size of chunk 2 is exactly 317
         // chunk op encoding for chunk 2 = 321
         // hence limit of 317 will be insufficient
-        let chunk_result = chunk_producer.multi_chunk_with_limit_and_index(2, Some(317), grove_version);
+        let chunk_result =
+            chunk_producer.multi_chunk_with_limit_and_index(2, Some(317), grove_version);
         assert!(matches!(
             chunk_result,
             Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))

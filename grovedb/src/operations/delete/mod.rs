@@ -27,8 +27,8 @@ use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::check_v0_with_cost;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{check_v0_with_cost, error::GroveVersionError, version::GroveVersion};
+
 #[cfg(feature = "full")]
 use crate::{
     batch::{GroveDbOp, Op},
@@ -36,7 +36,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 use crate::{raw_decode, util::merk_optional_tx_path_not_empty};
-use grovedb_version::error::GroveVersionError;
 
 #[cfg(feature = "full")]
 #[derive(Clone)]
@@ -112,7 +111,10 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!("delete", grove_version.grovedb_versions.operations.delete.delete);
+        check_v0_with_cost!(
+            "delete",
+            grove_version.grovedb_versions.operations.delete.delete
+        );
 
         let options = options.unwrap_or_default();
         let batch = StorageBatch::new();
@@ -173,7 +175,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!("clear_subtree", grove_version.grovedb_versions.operations.delete.clear_subtree);
+        check_v0_with_cost!(
+            "clear_subtree",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .clear_subtree
+        );
 
         let subtree_path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
@@ -253,7 +262,11 @@ impl GroveDb {
         } else {
             let mut merk_to_clear = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(subtree_path.clone(), Some(&batch), grove_version)
+                self.open_non_transactional_merk_at_path(
+                    subtree_path.clone(),
+                    Some(&batch),
+                    grove_version
+                )
             );
 
             if options.check_for_subtrees {
@@ -341,7 +354,14 @@ impl GroveDb {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_v0_with_cost!("delete_with_sectional_storage_function", grove_version.grovedb_versions.operations.delete.delete_with_sectional_storage_function);
+        check_v0_with_cost!(
+            "delete_with_sectional_storage_function",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .delete_with_sectional_storage_function
+        );
 
         let options = options.unwrap_or_default();
         let batch = StorageBatch::new();
@@ -393,7 +413,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_v0_with_cost!("delete_if_empty_tree", grove_version.grovedb_versions.operations.delete.delete_if_empty_tree);
+        check_v0_with_cost!(
+            "delete_if_empty_tree",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .delete_if_empty_tree
+        );
 
         let batch = StorageBatch::new();
 
@@ -436,7 +463,14 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!("delete_if_empty_tree_with_sectional_storage_function", grove_version.grovedb_versions.operations.delete.delete_if_empty_tree_with_sectional_storage_function);
+        check_v0_with_cost!(
+            "delete_if_empty_tree_with_sectional_storage_function",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .delete_if_empty_tree_with_sectional_storage_function
+        );
 
         let options = DeleteOptions {
             allow_deleting_non_empty_trees: false,
@@ -458,12 +492,10 @@ impl GroveDb {
                         BasicStorageRemoval(removed_key_bytes),
                         BasicStorageRemoval(removed_value_bytes),
                     )),
-                    Some(flags) => split_removal_bytes_function(
-                        flags,
-                        removed_key_bytes,
-                        removed_value_bytes,
-                    )
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
+                    Some(flags) => {
+                        split_removal_bytes_function(flags, removed_key_bytes, removed_value_bytes)
+                            .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                    }
                 }
             },
             batch,
@@ -482,7 +514,14 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<GroveDbOp>, Error> {
-        check_v0_with_cost!("delete_operation_for_delete_internal", grove_version.grovedb_versions.operations.delete.delete_operation_for_delete_internal);
+        check_v0_with_cost!(
+            "delete_operation_for_delete_internal",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .delete_operation_for_delete_internal
+        );
 
         let mut cost = OperationCost::default();
 
@@ -496,7 +535,11 @@ impl GroveDb {
             if options.validate_tree_at_path_exists {
                 cost_return_on_error!(
                     &mut cost,
-                    self.check_subtree_exists_path_not_found(path.clone(), transaction, grove_version)
+                    self.check_subtree_exists_path_not_found(
+                        path.clone(),
+                        transaction,
+                        grove_version
+                    )
                 );
             }
             let (is_subtree, is_subtree_with_sum) = match is_known_to_be_subtree_with_sum {
@@ -599,7 +642,6 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-
         if let Some(transaction) = transaction {
             self.delete_internal_on_transaction(
                 path,
@@ -611,7 +653,14 @@ impl GroveDb {
                 grove_version,
             )
         } else {
-            self.delete_internal_without_transaction(path, key, options, sectioned_removal, batch, grove_version)
+            self.delete_internal_without_transaction(
+                path,
+                key,
+                options,
+                sectioned_removal,
+                batch,
+                grove_version,
+            )
         }
     }
 
@@ -632,7 +681,14 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!("delete_internal_on_transaction", grove_version.grovedb_versions.operations.delete.delete_internal_on_transaction);
+        check_v0_with_cost!(
+            "delete_internal_on_transaction",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .delete_internal_on_transaction
+        );
 
         let mut cost = OperationCost::default();
 
@@ -642,7 +698,12 @@ impl GroveDb {
         );
         let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.clone(), transaction, Some(batch), grove_version)
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
         );
         let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
         if element.is_any_tree() {
@@ -761,7 +822,13 @@ impl GroveDb {
                 merk_cache.insert(path.clone(), subtree_to_delete_from);
                 cost_return_on_error!(
                     &mut cost,
-                    self.propagate_changes_with_transaction(merk_cache, path, transaction, batch, grove_version)
+                    self.propagate_changes_with_transaction(
+                        merk_cache,
+                        path,
+                        transaction,
+                        batch,
+                        grove_version
+                    )
                 );
             }
         } else {
@@ -782,7 +849,13 @@ impl GroveDb {
             merk_cache.insert(path.clone(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,
-                self.propagate_changes_with_transaction(merk_cache, path, transaction, batch, grove_version)
+                self.propagate_changes_with_transaction(
+                    merk_cache,
+                    path,
+                    transaction,
+                    batch,
+                    grove_version
+                )
             );
         }
 
@@ -805,12 +878,21 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        check_v0_with_cost!("delete_internal_without_transaction", grove_version.grovedb_versions.operations.delete.delete_internal_without_transaction);
+        check_v0_with_cost!(
+            "delete_internal_without_transaction",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .delete_internal_without_transaction
+        );
 
         let mut cost = OperationCost::default();
 
-        let element =
-            cost_return_on_error!(&mut cost, self.get_raw(path.clone(), key.as_ref(), None, grove_version));
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw(path.clone(), key.as_ref(), None, grove_version)
+        );
         let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
             HashMap::default();
         let mut subtree_to_delete_from = cost_return_on_error!(
@@ -846,7 +928,11 @@ impl GroveDb {
                 if !is_empty {
                     let subtrees_paths = cost_return_on_error!(
                         &mut cost,
-                        self.find_subtrees(&SubtreePath::from(&subtree_merk_path), None, grove_version)
+                        self.find_subtrees(
+                            &SubtreePath::from(&subtree_merk_path),
+                            None,
+                            grove_version
+                        )
                     );
                     // TODO: dumb traversal should not be tolerated
                     for subtree_path in subtrees_paths.into_iter().rev() {
@@ -909,8 +995,9 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
     };
-    use pretty_assertions::assert_eq;
     use grovedb_version::version::GroveVersion;
+    use pretty_assertions::assert_eq;
+
     use crate::{
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
         tests::{
@@ -951,16 +1038,33 @@ mod tests {
             .unwrap()
             .expect("unable to delete subtree");
         assert!(matches!(
-            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None, grove_version)
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"key1", b"key2"].as_ref(),
+                b"key3",
+                None,
+                grove_version
+            )
+            .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         // assert_eq!(db.subtrees.len().unwrap(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
         // TEST_LEAF.key4 stay
-        assert!(db.get(EMPTY_PATH, TEST_LEAF, None, grove_version).unwrap().is_ok());
-        assert!(db.get(EMPTY_PATH, ANOTHER_TEST_LEAF, None, grove_version).unwrap().is_ok());
-        assert!(db.get([TEST_LEAF].as_ref(), b"key4", None, grove_version).unwrap().is_ok());
-        assert_ne!(root_hash, db.root_hash(None, grove_version).unwrap().unwrap());
+        assert!(db
+            .get(EMPTY_PATH, TEST_LEAF, None, grove_version)
+            .unwrap()
+            .is_ok());
+        assert!(db
+            .get(EMPTY_PATH, ANOTHER_TEST_LEAF, None, grove_version)
+            .unwrap()
+            .is_ok());
+        assert!(db
+            .get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
+            .unwrap()
+            .is_ok());
+        assert_ne!(
+            root_hash,
+            db.root_hash(None, grove_version).unwrap().unwrap()
+        );
     }
 
     #[test]
@@ -993,24 +1097,35 @@ mod tests {
         .unwrap()
         .expect("successful subtree 3 insert");
 
-        db.delete([TEST_LEAF].as_ref(), b"key1", None, Some(&transaction), grove_version)
-            .unwrap()
-            .expect("unable to delete subtree");
+        db.delete(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            None,
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .expect("unable to delete subtree");
         assert!(matches!(
             db.get(
                 [TEST_LEAF, b"key1", b"key2"].as_ref(),
                 b"key3",
-                Some(&transaction), grove_version
+                Some(&transaction),
+                grove_version
             )
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         transaction.commit().expect("cannot commit transaction");
         assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
+                .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(db.get([TEST_LEAF].as_ref(), b"key4", None, grove_version).unwrap().is_ok());
+        assert!(db
+            .get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -1088,7 +1203,12 @@ mod tests {
         let transaction = db.start_transaction();
 
         let deleted = db
-            .delete_if_empty_tree([TEST_LEAF].as_ref(), b"level1-A", Some(&transaction), grove_version)
+            .delete_if_empty_tree(
+                [TEST_LEAF].as_ref(),
+                b"level1-A",
+                Some(&transaction),
+                grove_version,
+            )
             .unwrap()
             .expect("unable to delete subtree");
         assert!(!deleted);
@@ -1112,8 +1232,9 @@ mod tests {
             db.get(
                 [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
                 b"level3-A",
-                Some(&transaction)
-            , grove_version)
+                Some(&transaction),
+                grove_version
+            )
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
@@ -1122,15 +1243,21 @@ mod tests {
             db.get(
                 [TEST_LEAF, b"level1-A"].as_ref(),
                 b"level2-A",
-                Some(&transaction)
-            , grove_version)
+                Some(&transaction),
+                grove_version
+            )
             .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
 
         assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"level1-A", Some(&transaction), grove_version)
-                .unwrap(),
+            db.get(
+                [TEST_LEAF].as_ref(),
+                b"level1-A",
+                Some(&transaction),
+                grove_version
+            )
+            .unwrap(),
             Ok(Element::Tree(..)),
         ));
     }
@@ -1227,19 +1354,26 @@ mod tests {
                 [TEST_LEAF, b"level1-A", b"level2-A"].as_ref(),
                 b"level3-A",
                 None,
-            grove_version)
+                grove_version
+            )
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
 
         assert!(matches!(
-            db.get([TEST_LEAF, b"level1-A"].as_ref(), b"level2-A", None, grove_version)
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"level1-A"].as_ref(),
+                b"level2-A",
+                None,
+                grove_version
+            )
+            .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
 
         assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"level1-A", None, grove_version).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"level1-A", None, grove_version)
+                .unwrap(),
             Ok(Element::Tree(..)),
         ));
     }
@@ -1305,21 +1439,24 @@ mod tests {
                 ..Default::default()
             }),
             Some(&transaction),
-             grove_version)
+            grove_version,
+        )
         .unwrap()
         .expect("unable to delete subtree");
         assert!(matches!(
             db.get(
                 [TEST_LEAF, b"key1", b"key2"].as_ref(),
                 b"key3",
-                Some(&transaction)
-            , grove_version)
+                Some(&transaction),
+                grove_version
+            )
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         transaction.commit().expect("cannot commit transaction");
         assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
+                .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
         db.get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
@@ -1386,20 +1523,30 @@ mod tests {
                 deleting_non_empty_trees_returns_error: false,
                 ..Default::default()
             }),
-            None, grove_version
+            None,
+            grove_version,
         )
         .unwrap()
         .expect("unable to delete subtree");
         assert!(matches!(
-            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None, grove_version)
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"key1", b"key2"].as_ref(),
+                b"key3",
+                None,
+                grove_version
+            )
+            .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
+                .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(db.get([TEST_LEAF].as_ref(), b"key4", None, grove_version).unwrap().is_ok());
+        assert!(db
+            .get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -1407,19 +1554,30 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
-        db.insert([TEST_LEAF].as_ref(), b"key", element, None, None, grove_version)
-            .unwrap()
-            .expect("successful insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key",
+            element,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful insert");
         let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
         assert!(db
             .delete([TEST_LEAF].as_ref(), b"key", None, None, grove_version)
             .unwrap()
             .is_ok());
         assert!(matches!(
-            db.get([TEST_LEAF].as_ref(), b"key", None, grove_version).unwrap(),
+            db.get([TEST_LEAF].as_ref(), b"key", None, grove_version)
+                .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert_ne!(root_hash, db.root_hash(None, grove_version).unwrap().unwrap());
+        assert_ne!(
+            root_hash,
+            db.root_hash(None, grove_version).unwrap().unwrap()
+        );
     }
 
     #[test]
@@ -1522,7 +1680,13 @@ mod tests {
             .expect("expected to insert");
 
         let cost = db
-            .delete([b"sum_tree".as_slice()].as_ref(), b"key1", None, Some(&tx), grove_version)
+            .delete(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to delete");
 
@@ -1602,7 +1766,13 @@ mod tests {
             .expect("expected to insert");
 
         let cost = db
-            .delete([b"sum_tree".as_slice()].as_ref(), b"key1", None, Some(&tx), grove_version)
+            .delete(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to delete");
 
@@ -1710,7 +1880,11 @@ mod tests {
             .unwrap();
         assert!(!matches!(key1_tree, Element::Tree(None, _)));
         let key1_merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), None, grove_version)
+            .open_non_transactional_merk_at_path(
+                [TEST_LEAF, b"key1"].as_ref().into(),
+                None,
+                grove_version,
+            )
             .unwrap()
             .unwrap();
         assert_ne!(key1_merk.root_hash().unwrap(), [0; 32]);
@@ -1727,7 +1901,8 @@ mod tests {
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
                 }),
-                None, grove_version
+                None,
+                grove_version,
             )
             .expect("expected no error");
         assert!(!success);
@@ -1740,7 +1915,8 @@ mod tests {
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: false,
                 }),
-                None, grove_version
+                None,
+                grove_version,
             )
             .expect("unable to delete subtree");
 
@@ -1752,8 +1928,13 @@ mod tests {
             Err(Error::PathKeyNotFound(_))
         ));
         assert!(matches!(
-            db.get([TEST_LEAF, b"key1", b"key2"].as_ref(), b"key3", None, grove_version)
-                .unwrap(),
+            db.get(
+                [TEST_LEAF, b"key1", b"key2"].as_ref(),
+                b"key3",
+                None,
+                grove_version
+            )
+            .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
         let key1_tree = db
@@ -1763,7 +1944,11 @@ mod tests {
         assert!(matches!(key1_tree, Element::Tree(None, _)));
 
         let key1_merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), None, grove_version)
+            .open_non_transactional_merk_at_path(
+                [TEST_LEAF, b"key1"].as_ref().into(),
+                None,
+                grove_version,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(key1_merk.root_hash().unwrap(), [0; 32]);

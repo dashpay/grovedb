@@ -48,8 +48,8 @@
 //! Insert, Update, Delete and Prove elements.
 //! ```
 //! use grovedb::{Element, GroveDb};
-//! use tempfile::TempDir;
 //! use grovedb_version::version::GroveVersion;
+//! use tempfile::TempDir;
 //!
 //! let grove_version = GroveVersion::latest();
 //!
@@ -63,9 +63,16 @@
 //! let root_path: &[&[u8]] = &[];
 //!
 //! // Insert new tree to root
-//! db.insert(root_path, b"tree1", Element::empty_tree(), None, None,grove_version)
-//!     .unwrap()
-//!     .expect("successful tree insert");
+//! db.insert(
+//!     root_path,
+//!     b"tree1",
+//!     Element::empty_tree(),
+//!     None,
+//!     None,
+//!     grove_version,
+//! )
+//! .unwrap()
+//! .expect("successful tree insert");
 //!
 //! // Insert key-value 1 into tree1
 //! // key - hello, value - world
@@ -95,13 +102,13 @@
 //!
 //! // Retrieve inserted elements
 //! let elem = db
-//!     .get(&[b"tree1"], b"hello", None,grove_version)
+//!     .get(&[b"tree1"], b"hello", None, grove_version)
 //!     .unwrap()
 //!     .expect("successful get");
 //! assert_eq!(elem, Element::new_item(b"world".to_vec()));
 //!
 //! let elem = db
-//!     .get(&[b"tree1"], b"grovedb", None,grove_version)
+//!     .get(&[b"tree1"], b"grovedb", None, grove_version)
 //!     .unwrap()
 //!     .expect("successful get");
 //! assert_eq!(elem, Element::new_item(b"rocks".to_vec()));
@@ -121,7 +128,7 @@
 //!
 //! // Retrieve updated element
 //! let elem = db
-//!     .get(&[b"tree1"], b"hello", None,grove_version)
+//!     .get(&[b"tree1"], b"hello", None, grove_version)
 //!     .unwrap()
 //!     .expect("successful get");
 //! assert_eq!(elem, Element::new_item(b"WORLD".to_vec()));
@@ -130,7 +137,7 @@
 //! db.delete(&[b"tree1"], b"hello", None, None, grove_version)
 //!     .unwrap()
 //!     .expect("successful delete");
-//! let elem_result = db.get(&[b"tree1"], b"hello", None,grove_version).unwrap();
+//! let elem_result = db.get(&[b"tree1"], b"hello", None, grove_version).unwrap();
 //! assert_eq!(elem_result.is_err(), true);
 //!
 //! // State Root
@@ -220,13 +227,14 @@ use grovedb_storage::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::{Storage, StorageContext};
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
-use grovedb_version::version::GroveVersion;
+
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -303,14 +311,16 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(|e| {
-                    Error::InvalidParentLayerPath(format!(
-                        "could not get key {} for parent {:?} of subtree: {}",
-                        hex::encode(parent_key),
-                        DebugByteVectors(parent_path.to_vec()),
-                        e
-                    ))
-                })
+                Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(
+                    |e| {
+                        Error::InvalidParentLayerPath(format!(
+                            "could not get key {} for parent {:?} of subtree: {}",
+                            hex::encode(parent_key),
+                            DebugByteVectors(parent_path.to_vec()),
+                            e
+                        ))
+                    }
+                )
             );
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
@@ -429,14 +439,16 @@ impl GroveDb {
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
                 &mut cost,
-                Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(|e| {
-                    Error::InvalidParentLayerPath(format!(
-                        "could not get key {} for parent {:?} of subtree: {}",
-                        hex::encode(parent_key),
-                        DebugByteVectors(parent_path.to_vec()),
-                        e
-                    ))
-                })
+                Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(
+                    |e| {
+                        Error::InvalidParentLayerPath(format!(
+                            "could not get key {} for parent {:?} of subtree: {}",
+                            hex::encode(parent_key),
+                            DebugByteVectors(parent_path.to_vec()),
+                            e
+                        ))
+                    }
+                )
             );
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
@@ -476,28 +488,52 @@ impl GroveDb {
 
     /// Returns root key of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_key(&self, transaction: TransactionArg, grove_version: &GroveVersion) -> CostResult<Vec<u8>, Error> {
+    pub fn root_key(
+        &self,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, grove_version, {
-            let root_key = subtree.root_key().unwrap();
-            Ok(root_key).wrap_with_cost(cost)
-        })
+        root_merk_optional_tx!(
+            &mut cost,
+            self.db,
+            None,
+            transaction,
+            subtree,
+            grove_version,
+            {
+                let root_key = subtree.root_key().unwrap();
+                Ok(root_key).wrap_with_cost(cost)
+            }
+        )
     }
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg, grove_version: &GroveVersion) -> CostResult<Hash, Error> {
+    pub fn root_hash(
+        &self,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Hash, Error> {
         let mut cost = OperationCost {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, None, transaction, subtree, grove_version, {
-            let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
-            Ok(root_hash).wrap_with_cost(cost)
-        })
+        root_merk_optional_tx!(
+            &mut cost,
+            self.db,
+            None,
+            transaction,
+            subtree,
+            grove_version,
+            {
+                let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
+                Ok(root_hash).wrap_with_cost(cost)
+            }
+        )
     }
 
     /// Method to propagate updated subtree key changes one level up inside a
@@ -528,7 +564,8 @@ impl GroveDb {
                     storage_batch,
                     parent_path.clone(),
                     transaction,
-                    false, grove_version,
+                    false,
+                    grove_version,
                 )
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
@@ -578,7 +615,12 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(parent_path.clone(), transaction, Some(batch), grove_version)
+                self.open_transactional_merk_at_path(
+                    parent_path.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version
+                )
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -625,7 +667,11 @@ impl GroveDb {
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(parent_path.clone(), Some(batch), grove_version)
+                self.open_non_transactional_merk_at_path(
+                    parent_path.clone(),
+                    Some(batch),
+                    grove_version
+                )
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
@@ -669,7 +715,13 @@ impl GroveDb {
                     sum.unwrap_or_default(),
                     flag,
                 );
-                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None, grove_version)
+                tree.insert_subtree(
+                    parent_tree,
+                    key.as_ref(),
+                    root_tree_hash,
+                    None,
+                    grove_version,
+                )
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -695,48 +747,50 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        Self::get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(|element| {
-            if let Element::Tree(_, flag) = element {
-                let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                let merk_feature_type = cost_return_on_error!(
-                    &mut cost,
-                    tree.get_feature_type(parent_tree.is_sum_tree)
-                        .wrap_with_cost(OperationCost::default())
-                );
-                tree.insert_subtree_into_batch_operations(
-                    key,
-                    root_tree_hash,
-                    true,
-                    batch_operations,
-                    merk_feature_type,
-                    grove_version,
-                )
-            } else if let Element::SumTree(.., flag) = element {
-                let tree = Element::new_sum_tree_with_flags_and_sum_value(
-                    maybe_root_key,
-                    sum.unwrap_or_default(),
-                    flag,
-                );
-                let merk_feature_type = cost_return_on_error!(
-                    &mut cost,
-                    tree.get_feature_type(parent_tree.is_sum_tree)
-                        .wrap_with_cost(OperationCost::default())
-                );
-                tree.insert_subtree_into_batch_operations(
-                    key,
-                    root_tree_hash,
-                    true,
-                    batch_operations,
-                    merk_feature_type,
-                    grove_version,
-                )
-            } else {
-                Err(Error::InvalidPath(
-                    "can only propagate on tree items".to_owned(),
-                ))
-                .wrap_with_cost(Default::default())
-            }
-        })
+        Self::get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(
+            |element| {
+                if let Element::Tree(_, flag) = element {
+                    let tree = Element::new_tree_with_flags(maybe_root_key, flag);
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.is_sum_tree)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else if let Element::SumTree(.., flag) = element {
+                    let tree = Element::new_sum_tree_with_flags_and_sum_value(
+                        maybe_root_key,
+                        sum.unwrap_or_default(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.is_sum_tree)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else {
+                    Err(Error::InvalidPath(
+                        "can only propagate on tree items".to_owned(),
+                    ))
+                    .wrap_with_cost(Default::default())
+                }
+            },
+        )
     }
 
     /// Get element from subtree. Return CostResult.
@@ -798,8 +852,8 @@ impl GroveDb {
     /// # use grovedb_version::version::GroveVersion;
     /// #
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// use std::option::Option::None;    ///
-    ///
+    /// use std::option::Option::None;
+    /// ///
     ///
     /// const TEST_LEAF: &[u8] = b"test_leaf";
     ///
@@ -826,23 +880,27 @@ impl GroveDb {
     ///     Element::empty_tree(),
     ///     None,
     ///     Some(&tx),
-    ///    grove_version,
+    ///     grove_version,
     /// )
     /// .unwrap()?;
     ///
     /// // This action exists only inside the transaction for now
-    /// let result = db.get([TEST_LEAF].as_ref(), subtree_key, None, grove_version).unwrap();
+    /// let result = db
+    ///     .get([TEST_LEAF].as_ref(), subtree_key, None, grove_version)
+    ///     .unwrap();
     /// assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
     /// let result_with_transaction = db
-    ///     .get([TEST_LEAF].as_ref(), subtree_key, Some(&tx),grove_version)
+    ///     .get([TEST_LEAF].as_ref(), subtree_key, Some(&tx), grove_version)
     ///     .unwrap()?;
     /// assert_eq!(result_with_transaction, Element::empty_tree());
     ///
     /// // After transaction is committed, the value from it can be accessed normally.
-    /// let  _ = db.commit_transaction(tx);
-    /// let result = db.get([TEST_LEAF].as_ref(), subtree_key, None,grove_version).unwrap()?;
+    /// let _ = db.commit_transaction(tx);
+    /// let result = db
+    ///     .get([TEST_LEAF].as_ref(), subtree_key, None, grove_version)
+    ///     .unwrap()?;
     /// assert_eq!(result, Element::empty_tree());
     ///
     /// # Ok(())
@@ -868,7 +926,7 @@ impl GroveDb {
     /// Method to visualize hash mismatch after verification
     pub fn visualize_verify_grovedb(
         &self,
-        grove_version: &GroveVersion
+        grove_version: &GroveVersion,
     ) -> Result<HashMap<String, (String, String, String)>, Error> {
         Ok(self
             .verify_grovedb(None, grove_version)?
@@ -898,7 +956,12 @@ impl GroveDb {
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         if let Some(transaction) = transaction {
             let root_merk = self
-                .open_transactional_merk_at_path(SubtreePath::empty(), transaction, None, grove_version)
+                .open_transactional_merk_at_path(
+                    SubtreePath::empty(),
+                    transaction,
+                    None,
+                    grove_version,
+                )
                 .unwrap()?;
             self.verify_merk_and_submerks_in_transaction(
                 root_merk,
@@ -963,7 +1026,12 @@ impl GroveDb {
                         (root_hash, combined_value_hash, element_value_hash),
                     );
                 }
-                issues.extend(self.verify_merk_and_submerks(inner_merk, &new_path_ref, batch, grove_version)?);
+                issues.extend(self.verify_merk_and_submerks(
+                    inner_merk,
+                    &new_path_ref,
+                    batch,
+                    grove_version,
+                )?);
             } else if element.is_any_item() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(
@@ -1023,7 +1091,12 @@ impl GroveDb {
                 let new_path_ref = SubtreePath::from(&new_path);
 
                 let inner_merk = self
-                    .open_transactional_merk_at_path(new_path_ref.clone(), transaction, batch, grove_version)
+                    .open_transactional_merk_at_path(
+                        new_path_ref.clone(),
+                        transaction,
+                        batch,
+                        grove_version,
+                    )
                     .unwrap()?;
                 let root_hash = inner_merk.root_hash().unwrap();
 

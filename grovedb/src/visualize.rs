@@ -211,7 +211,7 @@ impl GroveDb {
                             drawer,
                             path.derive_owned_with_child(key),
                             transaction,
-                        grove_version,
+                            grove_version,
                         )?;
                         drawer.up();
                     }
@@ -234,7 +234,12 @@ impl GroveDb {
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        drawer = self.draw_subtree(drawer, SubtreePathBuilder::new(), transaction, grove_version)?;
+        drawer = self.draw_subtree(
+            drawer,
+            SubtreePathBuilder::new(),
+            transaction,
+            grove_version,
+        )?;
 
         drawer.up();
         Ok(drawer)

@@ -7,8 +7,8 @@ use std::{
 };
 
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
-use grovedb_version::TryFromVersioned;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{version::GroveVersion, TryFromVersioned};
+
 use crate::{
     operations::proof::util::{
         hex_to_ascii, path_hex_to_ascii, ProvedPathKeyOptionalValue, ProvedPathKeyValue,
@@ -507,7 +507,10 @@ pub type PathKeyOptionalElementTrio = (Path, Key, Option<Element>);
 impl TryFromVersioned<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
     type Error = Error;
 
-    fn try_from_versioned(proved_path_key_value: ProvedPathKeyValue, grove_version: &GroveVersion) -> Result<Self, Self::Error> {
+    fn try_from_versioned(
+        proved_path_key_value: ProvedPathKeyValue,
+        grove_version: &GroveVersion,
+    ) -> Result<Self, Self::Error> {
         let element = Element::deserialize(proved_path_key_value.value.as_slice(), grove_version)?;
         Ok((
             proved_path_key_value.path,
@@ -521,7 +524,10 @@ impl TryFromVersioned<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
 impl TryFromVersioned<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio {
     type Error = Error;
 
-    fn try_from_versioned(proved_path_key_value: ProvedPathKeyOptionalValue, grove_version: &GroveVersion) -> Result<Self, Self::Error> {
+    fn try_from_versioned(
+        proved_path_key_value: ProvedPathKeyOptionalValue,
+        grove_version: &GroveVersion,
+    ) -> Result<Self, Self::Error> {
         let element = proved_path_key_value
             .value
             .map(|e| Element::deserialize(e.as_slice(), grove_version))
@@ -537,8 +543,8 @@ impl TryFromVersioned<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use grovedb_version::TryIntoVersioned;
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::{version::GroveVersion, TryIntoVersioned};
+
     use crate::{
         operations::proof::util::ProvedPathKeyValue, query_result_type::PathKeyOptionalElementTrio,
         Element,

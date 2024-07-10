@@ -7,8 +7,9 @@ mod tests {
         Identifier, StorageRemovalPerEpochByIdentifier,
         StorageRemovedBytes::SectionedStorageRemoval,
     };
-    use intmap::IntMap;
     use grovedb_version::version::GroveVersion;
+    use intmap::IntMap;
+
     use crate::{
         batch::GroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
@@ -21,7 +22,14 @@ mod tests {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None, grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -143,7 +151,14 @@ mod tests {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None, grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -186,7 +201,14 @@ mod tests {
         let db = make_empty_grovedb();
 
         let _insertion_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None, grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -385,7 +407,8 @@ mod tests {
                     let value_sectioned = SectionedStorageRemoval(removed_bytes);
                     Ok((key_sectioned, value_sectioned))
                 },
-                grove_version)
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to delete successfully");
 

@@ -13,6 +13,7 @@ use grovedb_merk::{
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+
 #[cfg(feature = "proof_debug")]
 use crate::query_result_type::QueryResultType;
 use crate::{
@@ -62,8 +63,10 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
-        let proof =
-            cost_return_on_error!(&mut cost, self.prove_internal(path_query, prove_options, grove_version));
+        let proof = cost_return_on_error!(
+            &mut cost,
+            self.prove_internal(path_query, prove_options, grove_version)
+        );
         #[cfg(feature = "proof_debug")]
         {
             println!("constructed proof is {}", proof);
@@ -147,7 +150,13 @@ impl GroveDb {
 
         let root_layer = cost_return_on_error!(
             &mut cost,
-            self.prove_subqueries(vec![], path_query, &mut limit, &prove_options, grove_version)
+            self.prove_subqueries(
+                vec![],
+                path_query,
+                &mut limit,
+                &prove_options,
+                grove_version
+            )
         );
 
         Ok(GroveDBProofV0 {
@@ -198,7 +207,13 @@ impl GroveDb {
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
-            self.generate_merk_proof(&subtree, &query.items, query.left_to_right, limit, grove_version)
+            self.generate_merk_proof(
+                &subtree,
+                &query.items,
+                query.left_to_right,
+                limit,
+                grove_version
+            )
         );
 
         #[cfg(feature = "proof_debug")]
@@ -253,7 +268,8 @@ impl GroveDb {
                                     )
                                 );
 
-                                let serialized_referenced_elem = referenced_elem.serialize(grove_version);
+                                let serialized_referenced_elem =
+                                    referenced_elem.serialize(grove_version);
                                 if serialized_referenced_elem.is_err() {
                                     return Err(Error::CorruptedData(String::from(
                                         "unable to serialize element",

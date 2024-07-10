@@ -2,6 +2,7 @@
 
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
+
 use crate::{operations::proof::util::ProvedPathKeyValues, Element, Error};
 
 /// Compare result tuples

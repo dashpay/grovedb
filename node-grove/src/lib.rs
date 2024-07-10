@@ -763,7 +763,10 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db
-                .root_hash(using_transaction.then_some(transaction).flatten(), grove_version)
+                .root_hash(
+                    using_transaction.then_some(transaction).flatten(),
+                    grove_version,
+                )
                 .unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {

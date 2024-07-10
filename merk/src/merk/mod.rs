@@ -525,7 +525,9 @@ where
     /// Meaning that it doesn't have a parent Merk
     pub(crate) fn load_base_root(
         &mut self,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         self.storage
@@ -536,14 +538,18 @@ where
                 if let Some(tree_root_key) = tree_root_key_opt {
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-                    TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn, grove_version).map_ok(
-                        |tree| {
-                            if let Some(t) = tree.as_ref() {
-                                self.root_tree_key = Cell::new(Some(t.key().to_vec()));
-                            }
-                            self.tree = Cell::new(tree);
-                        },
+                    TreeNode::get(
+                        &self.storage,
+                        tree_root_key,
+                        value_defined_cost_fn,
+                        grove_version,
                     )
+                    .map_ok(|tree| {
+                        if let Some(t) = tree.as_ref() {
+                            self.root_tree_key = Cell::new(Some(t.key().to_vec()));
+                        }
+                        self.tree = Cell::new(tree);
+                    })
                 } else {
                     Ok(()).wrap_with_cost(Default::default())
                 }
@@ -555,14 +561,22 @@ where
     /// Meaning that it doesn't have a parent Merk
     pub(crate) fn load_root(
         &mut self,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         // In case of successful seek for root key check if it exists
         if let Some(tree_root_key) = self.root_tree_key.get_mut() {
             // Trying to build a tree out of it, costs will be accumulated because
             // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-            TreeNode::get(&self.storage, tree_root_key, value_defined_cost_fn, grove_version).map_ok(|tree| {
+            TreeNode::get(
+                &self.storage,
+                tree_root_key,
+                value_defined_cost_fn,
+                grove_version,
+            )
+            .map_ok(|tree| {
                 self.tree = Cell::new(tree);
             })
         } else {
@@ -725,7 +739,8 @@ fn fetch_node<'db>(
     let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
         Ok(Some(
-            TreeNode::decode(key.to_vec(), &bytes, value_defined_cost_fn, grove_version).map_err(EdError)?,
+            TreeNode::decode(key.to_vec(), &bytes, value_defined_cost_fn, grove_version)
+                .map_err(EdError)?,
         ))
     } else {
         Ok(None)
@@ -1012,14 +1027,22 @@ mod test {
         ) {
             nodes.push(node.tree().encode());
             if let Some(c) = node
-                .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version)
+                .walk(
+                    true,
+                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
                 .unwrap()
                 .unwrap()
             {
                 collect(c, nodes);
             }
             if let Some(c) = node
-                .walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>, grove_version)
+                .walk(
+                    false,
+                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
                 .unwrap()
                 .unwrap()
             {

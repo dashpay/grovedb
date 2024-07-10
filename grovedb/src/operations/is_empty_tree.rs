@@ -32,6 +32,7 @@
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
+
 #[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 
@@ -55,8 +56,15 @@ impl GroveDb {
             &mut cost,
             self.check_subtree_exists_path_not_found(path.clone(), transaction, grove_version)
         );
-        merk_optional_tx!(&mut cost, self.db, path, None, transaction, subtree, grove_version, {
-            Ok(subtree.is_empty_tree().unwrap_add_cost(&mut cost)).wrap_with_cost(cost)
-        })
+        merk_optional_tx!(
+            &mut cost,
+            self.db,
+            path,
+            None,
+            transaction,
+            subtree,
+            grove_version,
+            { Ok(subtree.is_empty_tree().unwrap_add_cost(&mut cost)).wrap_with_cost(cost) }
+        )
     }
 }

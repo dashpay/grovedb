@@ -15,6 +15,7 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[rustfmt::skip]
 use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
 use grovedb_version::version::GroveVersion;
+
 use crate::{replication, Error, GroveDb, Transaction, TransactionArg};
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
@@ -166,10 +167,16 @@ impl GroveDb {
     // tx: Transaction. Function returns the data by opening merks at given tx.
     // TODO: Add a SubTreePath as param and start searching from that path instead
     // of root (as it is now)
-    pub fn get_subtrees_metadata(&self, tx: TransactionArg, grove_version: &GroveVersion) -> Result<SubtreesMetadata, Error> {
+    pub fn get_subtrees_metadata(
+        &self,
+        tx: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> Result<SubtreesMetadata, Error> {
         let mut subtrees_metadata = crate::replication::SubtreesMetadata::new();
 
-        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), tx, grove_version).value?;
+        let subtrees_root = self
+            .find_subtrees(&SubtreePath::empty(), tx, grove_version)
+            .value?;
         for subtree in subtrees_root.into_iter() {
             let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
             let path: &[&[u8]] = &subtree_path;
@@ -477,7 +484,8 @@ impl GroveDb {
 
                             // Subtree was successfully save. Time to discover new subtrees that
                             // need to be processed
-                            let subtrees_metadata = self.get_subtrees_metadata(Some(tx), grove_version)?;
+                            let subtrees_metadata =
+                                self.get_subtrees_metadata(Some(tx), grove_version)?;
                             if let Some(value) = subtrees_metadata.data.get(&chunk_prefix) {
                                 println!(
                                     "    path:{:?} done (num_processed_chunks:{:?})",
@@ -486,9 +494,12 @@ impl GroveDb {
                                 );
                             }
 
-                            if let Ok((res, new_state_sync_info)) =
-                                self.discover_subtrees(state_sync_info, subtrees_metadata, tx, grove_version)
-                            {
+                            if let Ok((res, new_state_sync_info)) = self.discover_subtrees(
+                                state_sync_info,
+                                subtrees_metadata,
+                                tx,
+                                grove_version,
+                            ) {
                                 next_chunk_ids.extend(res);
                                 Ok((next_chunk_ids, new_state_sync_info))
                             } else {

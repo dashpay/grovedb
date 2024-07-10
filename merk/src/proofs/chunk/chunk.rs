@@ -28,6 +28,7 @@
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
+
 // TODO: add copyright comment
 use crate::proofs::{Node, Op, Tree};
 use crate::{
@@ -44,7 +45,11 @@ where
     S: Fetch + Sized + Clone,
 {
     /// Returns a chunk of a given depth from a RefWalker
-    pub fn create_chunk(&mut self, depth: usize, grove_version: &GroveVersion) -> Result<Vec<Op>, Error> {
+    pub fn create_chunk(
+        &mut self,
+        depth: usize,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<Op>, Error> {
         // build the proof vector
         let mut proof = vec![];
 
@@ -70,7 +75,11 @@ where
         let has_left_child = self.tree().link(true).is_some();
         if has_left_child {
             let mut left = self
-                .walk(true, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
+                .walk(
+                    true,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
                 .unwrap()?
                 .expect("confirmed is some");
             left.create_chunk_internal(proof, remaining_depth - 1, grove_version)?;
@@ -85,7 +94,11 @@ where
 
         // traverse right
         if let Some(mut right) = self
-            .walk(false, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
+            .walk(
+                false,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
             .unwrap()?
         {
             right.create_chunk_internal(proof, remaining_depth - 1, grove_version)?;
@@ -143,7 +156,11 @@ where
     ///     .
     ///     .
     ///     .
-    pub fn generate_height_proof(&mut self, proof: &mut Vec<Op>, grove_version: &GroveVersion) -> CostResult<(), Error> {
+    pub fn generate_height_proof(
+        &mut self,
+        proof: &mut Vec<Op>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
         // TODO: look into making height proofs more efficient
         //  they will always be used in the context of some
         //  existing chunk, we don't want to repeat nodes unnecessarily
@@ -151,7 +168,11 @@ where
 
         let maybe_left = cost_return_on_error!(
             &mut cost,
-            self.walk(LEFT, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
+            self.walk(
+                LEFT,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version
+            )
         );
         let has_left_child = maybe_left.is_some();
 
@@ -297,7 +318,9 @@ pub mod tests {
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
         // should return the node hash of the root node
-        let chunk = tree_walker.create_chunk(0, grove_version).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(0, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 1);
         assert_eq!(
             chunk[0],
@@ -320,7 +343,9 @@ pub mod tests {
         //              3
         //           /      \
         //        Hash(1)   Hash(7)
-        let chunk = tree_walker.create_chunk(1, grove_version).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(1, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 5);
         assert_eq!(
             chunk,
@@ -353,7 +378,9 @@ pub mod tests {
         //       0       2 5      8
         //                / \      \
         //             H(4) H(6)   H(9)
-        let chunk = tree_walker.create_chunk(3, grove_version).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(3, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
         assert_eq!(
             chunk,
@@ -420,7 +447,9 @@ pub mod tests {
         //       0       2 5      8
         //                / \      \
         //               4   6      9
-        let chunk = tree_walker.create_chunk(4, grove_version).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(4, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
         assert_eq!(
             chunk,
@@ -481,8 +510,12 @@ pub mod tests {
 
         // build chunk with depth greater than tree
         // we should get the same result as building with the exact depth
-        let large_depth_chunk = tree_walker.create_chunk(100, grove_version).expect("should build chunk");
-        let exact_depth_chunk = tree_walker.create_chunk(4, grove_version).expect("should build chunk");
+        let large_depth_chunk = tree_walker
+            .create_chunk(100, grove_version)
+            .expect("should build chunk");
+        let exact_depth_chunk = tree_walker
+            .create_chunk(4, grove_version)
+            .expect("should build chunk");
         assert_eq!(large_depth_chunk, exact_depth_chunk);
 
         let tree_a = execute(large_depth_chunk.into_iter().map(Ok), true, |_| Ok(()))

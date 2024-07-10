@@ -40,9 +40,10 @@ use grovedb_merk::{
     TreeFeatureType,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_version::version::GroveVersion;
+
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -348,7 +349,10 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the value defined cost for a serialized value
-    pub fn value_defined_cost_for_serialized_value(value: &[u8], grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
+    pub fn value_defined_cost_for_serialized_value(
+        value: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Option<ValueDefinedCostType> {
         let element = Element::deserialize(value, grove_version).ok()?;
         element.value_defined_cost(grove_version)
     }

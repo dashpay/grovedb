@@ -9,6 +9,7 @@ use grovedb_costs::{
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+
 use crate::{
     tree::{
         kv::{ValueDefinedCostType, KV},
@@ -32,8 +33,13 @@ where
     /// ```
     /// # let grove_version = GroveVersion::latest();
     /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))], &[], None,grove_version)
-    ///         .unwrap().expect("");
+    /// # store.apply::<_, Vec<_>>(
+    ///     &[(vec![4,5,6],
+    ///     Op::Put(vec![0], BasicMerkNode))],
+    ///     &[],
+    ///     None,
+    ///     grove_version
+    ///  ).unwrap().expect("");
     ///
     /// use grovedb_merk::Op;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
@@ -93,8 +99,13 @@ where
     /// ```
     /// # let grove_version = GroveVersion::latest();
     /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))], &[], None,grove_version)
-    ///         .unwrap().expect("");
+    /// # store.apply::<_, Vec<_>>(
+    ///     &[(vec![4,5,6],
+    ///     Op::Put(vec![0], BasicMerkNode))],
+    ///     &[],
+    ///     None,
+    ///     grove_version
+    /// ).unwrap().expect("");
     ///
     /// use grovedb_merk::Op;
     /// use grovedb_merk::TreeFeatureType::BasicMerkNode;
@@ -114,7 +125,9 @@ where
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        value_defined_cost_fn: Option<&impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -191,7 +204,9 @@ where
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
-        value_defined_cost_fn: Option<&impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,

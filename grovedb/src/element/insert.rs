@@ -1,5 +1,3 @@
-
-
 //! Insert
 //! Implements functions in Element for inserting into Merk
 
@@ -12,9 +10,10 @@ use grovedb_costs::{
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_version::version::GroveVersion;
+
 use crate::Element::SumItem;
 #[cfg(feature = "full")]
 use crate::{Element, Error, Hash};
@@ -43,7 +42,8 @@ impl Element {
         let merk_feature_type =
             cost_return_on_error_default!(self.get_feature_type(merk.is_sum_tree));
         let batch_operations = if matches!(self, SumItem(..)) {
-            let value_cost = cost_return_on_error_default!(self.get_specialized_cost(grove_version));
+            let value_cost =
+                cost_return_on_error_default!(self.get_specialized_cost(grove_version));
 
             let cost = value_cost
                 + self.get_flags().as_ref().map_or(0, |flags| {
@@ -89,7 +89,8 @@ impl Element {
         };
 
         let entry = if matches!(self, SumItem(..)) {
-            let value_cost = cost_return_on_error_default!(self.get_specialized_cost(grove_version));
+            let value_cost =
+                cost_return_on_error_default!(self.get_specialized_cost(grove_version));
 
             let cost = value_cost
                 + self.get_flags().as_ref().map_or(0, |flags| {
@@ -121,8 +122,10 @@ impl Element {
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
-        let exists =
-            cost_return_on_error!(&mut cost, self.element_at_key_already_exists(merk, key, grove_version));
+        let exists = cost_return_on_error!(
+            &mut cost,
+            self.element_at_key_already_exists(merk, key, grove_version)
+        );
         if exists {
             Ok(false).wrap_with_cost(cost)
         } else {
@@ -156,7 +159,12 @@ impl Element {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations, feature_type, grove_version)
+                self.insert_into_batch_operations(
+                    key,
+                    batch_operations,
+                    feature_type,
+                    grove_version
+                )
             );
             Ok(true).wrap_with_cost(cost)
         }
@@ -225,7 +233,12 @@ impl Element {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations, feature_type, grove_version)
+                self.insert_into_batch_operations(
+                    key,
+                    batch_operations,
+                    feature_type,
+                    grove_version
+                )
             );
             Ok((true, previous_element)).wrap_with_cost(cost)
         }
@@ -323,7 +336,8 @@ impl Element {
         let merk_feature_type =
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
-        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_specialized_cost(grove_version));
+        let tree_cost =
+            cost_return_on_error_no_add!(&cost, self.get_specialized_cost(grove_version));
 
         let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {

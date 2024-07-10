@@ -42,6 +42,7 @@ use grovedb_costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH,
@@ -51,7 +52,6 @@ pub use hash::{
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use kv::KV;
 #[cfg(feature = "full")]
@@ -941,7 +941,10 @@ impl TreeNode {
         };
 
         let mut cost = OperationCost::default();
-        let tree = cost_return_on_error!(&mut cost, source.fetch(link, value_defined_cost_fn, grove_version));
+        let tree = cost_return_on_error!(
+            &mut cost,
+            source.fetch(link, value_defined_cost_fn, grove_version)
+        );
         debug_assert_eq!(tree.key(), link.key());
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,

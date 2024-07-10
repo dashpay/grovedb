@@ -20,6 +20,7 @@ use std::{collections::HashSet, fmt, ops::RangeFull};
 
 #[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 use indexmap::IndexMap;
 #[cfg(feature = "full")]
@@ -36,7 +37,7 @@ pub use verify::VerifyOptions;
 pub use verify::{ProofVerificationResult, ProvedKeyOptionalValue, ProvedKeyValue};
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
-use grovedb_version::version::GroveVersion;
+
 #[cfg(feature = "full")]
 use super::Node;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -502,8 +503,8 @@ impl From<Query> for Vec<QueryItem> {
 
 #[cfg(feature = "full")]
 impl IntoIterator for Query {
-    type Item = QueryItem;
     type IntoIter = <Vec<QueryItem> as IntoIterator>::IntoIter;
+    type Item = QueryItem;
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
@@ -667,12 +668,24 @@ where
         let (mut proof, left_absence, mut new_limit) = if left_to_right {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, left_items, limit, left_to_right, grove_version)
+                self.create_child_proof(
+                    proof_direction,
+                    left_items,
+                    limit,
+                    left_to_right,
+                    grove_version
+                )
             )
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, right_items, limit, left_to_right, grove_version)
+                self.create_child_proof(
+                    proof_direction,
+                    right_items,
+                    limit,
+                    left_to_right,
+                    grove_version
+                )
             )
         };
 
@@ -706,12 +719,24 @@ where
         let (mut right_proof, right_absence, new_limit) = if left_to_right {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, right_items, new_limit, left_to_right, grove_version)
+                self.create_child_proof(
+                    proof_direction,
+                    right_items,
+                    new_limit,
+                    left_to_right,
+                    grove_version
+                )
             )
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.create_child_proof(proof_direction, left_items, new_limit, left_to_right, grove_version)
+                self.create_child_proof(
+                    proof_direction,
+                    left_items,
+                    new_limit,
+                    left_to_right,
+                    grove_version
+                )
             )
         };
 
@@ -778,15 +803,18 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
         if !query.is_empty() {
-            self.walk(left, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
-                .flat_map_ok(|child_opt| {
-                    if let Some(mut child) = child_opt {
-                        child.create_proof(query, limit, left_to_right, grove_version)
-                    } else {
-                        Ok((LinkedList::new(), (true, true), limit))
-                            .wrap_with_cost(Default::default())
-                    }
-                })
+            self.walk(
+                left,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .flat_map_ok(|child_opt| {
+                if let Some(mut child) = child_opt {
+                    child.create_proof(query, limit, left_to_right, grove_version)
+                } else {
+                    Ok((LinkedList::new(), (true, true), limit)).wrap_with_cost(Default::default())
+                }
+            })
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
             proof.push_back(if left_to_right {

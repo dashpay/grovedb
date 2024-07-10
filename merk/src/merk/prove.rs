@@ -3,6 +3,7 @@ use std::collections::LinkedList;
 use grovedb_costs::{CostResult, CostsExt};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::RefWalker,
@@ -95,7 +96,12 @@ where
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
-                    ref_walker.create_proof(query_vec.as_slice(), limit, left_to_right, grove_version)
+                    ref_walker.create_proof(
+                        query_vec.as_slice(),
+                        limit,
+                        left_to_right,
+                        grove_version,
+                    )
                 })
                 .map_ok(|(proof, _, limit, ..)| (proof, limit))
         })

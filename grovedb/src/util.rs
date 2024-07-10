@@ -44,12 +44,13 @@ macro_rules! storage_context_with_parent_optional_tx {
 			            .unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
                         &mut $cost,
-                        Element::get_from_storage(&parent_storage, parent_key, $grove_version).map_err(|e| {
+                        Element::get_from_storage(&parent_storage, parent_key, $grove_version)
+                        .map_err(|e| {
                             Error::PathParentLayerNotFound(
                                 format!(
-				    "could not get key for parent of subtree optional on tx: {}",
-				    e
-				)
+				                    "could not get key for parent of subtree optional on tx: {}",
+				                    e
+				                )
                             )
                         })
                     );
@@ -147,8 +148,11 @@ macro_rules! storage_context_with_parent_optional_tx_internal_error {
                     let parent_storage = $db
                         .get_transactional_storage_context(parent_path, $batch, tx)
 			            .unwrap_add_cost(&mut $cost);
-                    let result = Element::get_from_storage(&parent_storage, parent_key, $grove_version)
-                        .map_err(|e| {
+                    let result = Element::get_from_storage(
+                        &parent_storage,
+                        parent_key,
+                        $grove_version
+                    ).map_err(|e| {
                             Error::PathParentLayerNotFound(
                                                 format!(
                                     "could not get key for parent of subtree optional on tx: {}",
@@ -192,8 +196,11 @@ macro_rules! storage_context_with_parent_optional_tx_internal_error {
 			            parent_path,
                         $batch
 		            ).unwrap_add_cost(&mut $cost);
-                    let result = Element::get_from_storage(&parent_storage, parent_key, $grove_version)
-                        .map_err(|e| {
+                    let result = Element::get_from_storage(
+                        &parent_storage,
+                        parent_key,
+                        $grove_version
+                    ).map_err(|e| {
                             Error::PathParentLayerNotFound(
                                 format!(
 				                    "could not get key for parent of subtree optional no tx: {}",

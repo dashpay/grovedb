@@ -1,6 +1,7 @@
 use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+
 use crate::{
     tree::{kv::ValueDefinedCostType, TreeNode},
     CryptoHash, Error,
@@ -24,7 +25,9 @@ where
     pub fn exists(
         &self,
         key: &[u8],
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         self.has_node_direct(key, value_defined_cost_fn, grove_version)
@@ -39,7 +42,9 @@ where
     pub fn exists_by_traversing_tree(
         &self,
         key: &[u8],
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         self.has_node(key, value_defined_cost_fn, grove_version)
@@ -54,7 +59,9 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error> {
         if allow_cache {
@@ -87,7 +94,9 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<TreeFeatureType>, Error> {
         if allow_cache {
@@ -113,13 +122,25 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<CryptoHash>, Error> {
         if allow_cache {
-            self.get_node_fn(key, |node| node.hash(), value_defined_cost_fn, grove_version)
+            self.get_node_fn(
+                key,
+                |node| node.hash(),
+                value_defined_cost_fn,
+                grove_version,
+            )
         } else {
-            self.get_node_direct_fn(key, |node| node.hash(), value_defined_cost_fn, grove_version)
+            self.get_node_direct_fn(
+                key,
+                |node| node.hash(),
+                value_defined_cost_fn,
+                grove_version,
+            )
         }
     }
 
@@ -129,7 +150,9 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<CryptoHash>, Error> {
         if allow_cache {
@@ -155,7 +178,9 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<CryptoHash>, Error> {
         if allow_cache {
@@ -181,7 +206,9 @@ where
         &self,
         key: &[u8],
         allow_cache: bool,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error> {
         if allow_cache {
@@ -211,17 +238,22 @@ where
     fn has_node_direct(
         &self,
         key: &[u8],
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
-        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version).map_ok(|x| x.is_some())
+        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version)
+            .map_ok(|x| x.is_some())
     }
 
     /// See if a node's field exists
     fn has_node(
         &self,
         key: &[u8],
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         self.use_tree(move |maybe_tree| {
@@ -258,16 +290,20 @@ where
         &self,
         key: &[u8],
         f: F,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<T>, Error>
     where
         F: FnOnce(&TreeNode) -> CostContext<T>,
     {
-        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version).flat_map_ok(|maybe_node| {
-            let mut cost = OperationCost::default();
-            Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost))).wrap_with_cost(cost)
-        })
+        TreeNode::get(&self.storage, key, value_defined_cost_fn, grove_version).flat_map_ok(
+            |maybe_node| {
+                let mut cost = OperationCost::default();
+                Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost))).wrap_with_cost(cost)
+            },
+        )
     }
 
     /// Generic way to get a node's field
@@ -275,7 +311,9 @@ where
         &self,
         key: &[u8],
         f: F,
-        value_defined_cost_fn: Option<impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<T>, Error>
     where
@@ -302,7 +340,12 @@ where
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break self.get_node_direct_fn(key, f, value_defined_cost_fn, grove_version);
+                        break self.get_node_direct_fn(
+                            key,
+                            f,
+                            value_defined_cost_fn,
+                            grove_version,
+                        );
                     }
                     Some(child) => cursor = child, // traverse to child
                 }
@@ -314,6 +357,7 @@ where
 #[cfg(test)]
 mod test {
     use grovedb_version::version::GroveVersion;
+
     use crate::{
         test_utils::TempMerk, tree::kv::ValueDefinedCostType, Op, TreeFeatureType::BasicMerkNode,
     };
@@ -326,7 +370,11 @@ mod test {
         let key = b"something";
 
         let result = merk
-            .has_node(key, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
+            .has_node(
+                key,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
             .unwrap()
             .unwrap();
 
@@ -341,7 +389,11 @@ mod test {
             .expect("should ...");
 
         let result = merk
-            .has_node(key, None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>, grove_version)
+            .has_node(
+                key,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
             .unwrap()
             .unwrap();
 

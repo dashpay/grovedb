@@ -40,8 +40,9 @@ use grovedb_merk::Merk;
 use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
-use integer_encoding::VarInt;
 use grovedb_version::version::GroveVersion;
+use integer_encoding::VarInt;
+
 use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::{Element, Error, Hash};
@@ -87,7 +88,8 @@ impl Element {
             merk.get(
                 key.as_ref(),
                 allow_cache,
-                Some(&Element::value_defined_cost_for_serialized_value), grove_version
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
@@ -222,11 +224,18 @@ impl Element {
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let element = cost_return_on_error!(&mut cost, Self::get(merk, key.as_ref(), allow_cache, grove_version));
+        let element = cost_return_on_error!(
+            &mut cost,
+            Self::get(merk, key.as_ref(), allow_cache, grove_version)
+        );
 
         let absolute_element = cost_return_on_error_no_add!(
             &cost,
-            element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()), grove_version)
+            element.convert_if_reference_to_absolute_reference(
+                path,
+                Some(key.as_ref()),
+                grove_version
+            )
         );
 
         Ok(absolute_element).wrap_with_cost(cost)
@@ -247,7 +256,8 @@ impl Element {
             merk.get_value_hash(
                 key.as_ref(),
                 allow_cache,
-                Some(&Element::value_defined_cost_for_serialized_value), grove_version
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
@@ -266,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_cache_changes_cost() {
-        let grove_version= GroveVersion::latest();
+        let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
         let ctx = storage

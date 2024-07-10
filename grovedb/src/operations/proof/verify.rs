@@ -8,8 +8,8 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     CryptoHash,
 };
-use grovedb_version::{TryFromVersioned, TryIntoVersioned};
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{version::GroveVersion, TryFromVersioned, TryIntoVersioned};
+
 #[cfg(feature = "proof_debug")]
 use crate::operations::proof::util::{
     hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
@@ -51,7 +51,8 @@ impl GroveDb {
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
 
-        let (root_hash, result) = Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
+        let (root_hash, result) =
+            Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
 
         Ok((root_hash, result))
     }
@@ -89,7 +90,9 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         match proof {
-            GroveDBProof::V0(proof_v0) => Self::verify_proof_v0_internal(proof_v0, query, options, grove_version),
+            GroveDBProof::V0(proof_v0) => {
+                Self::verify_proof_v0_internal(proof_v0, query, options, grove_version)
+            }
         }
     }
 
@@ -218,18 +221,17 @@ impl GroveDb {
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
-        let internal_query =
-            query
-                .query_items_at_path(current_path, grove_version)
-                .ok_or(Error::CorruptedPath(format!(
-                    "verify raw: path {} should be part of path_query {}",
-                    current_path
-                        .iter()
-                        .map(hex::encode)
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    query
-                )))?;
+        let internal_query = query
+            .query_items_at_path(current_path, grove_version)
+            .ok_or(Error::CorruptedPath(format!(
+                "verify raw: path {} should be part of path_query {}",
+                current_path
+                    .iter()
+                    .map(hex::encode)
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                query
+            )))?;
 
         let level_query = Query {
             items: internal_query.items.to_vec(),
@@ -442,7 +444,8 @@ impl GroveDb {
     {
         let mut results = vec![];
 
-        let (last_root_hash, elements) = Self::verify_subset_query(proof, first_query, grove_version)?;
+        let (last_root_hash, elements) =
+            Self::verify_subset_query(proof, first_query, grove_version)?;
         results.push(elements);
 
         // we should iterate over each chained path queries
@@ -450,7 +453,8 @@ impl GroveDb {
             let new_path_query = path_query_generator(results[results.len() - 1].clone()).ok_or(
                 Error::InvalidInput("one of the path query generators returns no path query"),
             )?;
-            let (new_root_hash, new_elements) = Self::verify_subset_query(proof, &new_path_query, grove_version)?;
+            let (new_root_hash, new_elements) =
+                Self::verify_subset_query(proof, &new_path_query, grove_version)?;
             if new_root_hash != last_root_hash {
                 return Err(Error::InvalidProof(format!(
                     "root hash for different path queries do no match, first is {}, this one is {}",

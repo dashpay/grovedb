@@ -79,7 +79,8 @@ where
             }
             cost_return_on_error!(
                 &mut cost,
-                self.source.fetch(&link.unwrap(), value_defined_cost_fn, grove_version)
+                self.source
+                    .fetch(&link.unwrap(), value_defined_cost_fn, grove_version)
             )
         };
 
@@ -128,8 +129,10 @@ where
     {
         let mut cost = OperationCost::default();
 
-        let (mut walker, maybe_child) =
-            cost_return_on_error!(&mut cost, self.detach(left, value_defined_cost_fn, grove_version));
+        let (mut walker, maybe_child) = cost_return_on_error!(
+            &mut cost,
+            self.detach(left, value_defined_cost_fn, grove_version)
+        );
         let new_child = match f(maybe_child).unwrap_add_cost(&mut cost) {
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
@@ -154,8 +157,10 @@ where
     {
         let mut cost = OperationCost::default();
 
-        let (mut walker, child) =
-            cost_return_on_error!(&mut cost, self.detach_expect(left, value_defined_cost_fn, grove_version));
+        let (mut walker, child) = cost_return_on_error!(
+            &mut cost,
+            self.detach_expect(left, value_defined_cost_fn, grove_version)
+        );
         let new_child = match f(child).unwrap_add_cost(&mut cost) {
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
@@ -377,6 +382,7 @@ where
 mod test {
     use grovedb_costs::CostsExt;
     use grovedb_version::version::GroveVersion;
+
     use super::{super::NoopCommit, *};
     use crate::tree::{TreeFeatureType::BasicMerkNode, TreeNode};
 
@@ -387,7 +393,9 @@ mod test {
         fn fetch(
             &self,
             link: &Link,
-            value_defined_cost_fn: Option<&impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            value_defined_cost_fn: Option<
+                &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+            >,
             grove_version: &GroveVersion,
         ) -> CostResult<TreeNode, Error> {
             TreeNode::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerkNode).map(Ok)

@@ -9,6 +9,7 @@ mod tests {
         OperationCost,
     };
     use grovedb_version::version::GroveVersion;
+
     use crate::{
         batch::GroveDbOp,
         reference_path::ReferencePathType::{SiblingReference, UpstreamFromElementHeightReference},
@@ -23,10 +24,24 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost_1 = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx), grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost;
         let non_batch_cost_2 = db
-            .insert(EMPTY_PATH, b"key2", Element::empty_tree(), None, Some(&tx), grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key2",
+                Element::empty_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost;
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2);
         tx.rollback().expect("expected to rollback");
@@ -50,7 +65,14 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost_1 = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx), grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost;
         let non_batch_cost_2 = db
             .insert(
@@ -103,7 +125,14 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost_1 = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx), grove_version)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost;
         let non_batch_cost_2 = db
             .insert(
