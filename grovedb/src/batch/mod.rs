@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Apply multiple GroveDB operations atomically.
 
 mod batch_structure;
@@ -91,8 +63,10 @@ use grovedb_version::version::GroveVersion;
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
+use grovedb_version::check_v0_with_cost;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 pub use options::BatchApplyOptions;
+use grovedb_version::error::GroveVersionError;
 
 pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 #[cfg(feature = "estimated_costs")]
@@ -1444,6 +1418,13 @@ impl GroveDb {
             u32,
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
+        check_v0_with_cost!(
+            "apply_batch_structure",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .apply_batch_structure
+        );
         let mut cost = OperationCost::default();
         let BatchStructure {
             mut ops_by_level_paths,
@@ -1654,6 +1635,13 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
+        check_v0_with_cost!(
+            "apply_body",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .apply_body
+        );
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
@@ -1695,6 +1683,13 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
+        check_v0_with_cost!(
+            "continue_partial_apply_body",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .continue_partial_apply_body
+        );
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
@@ -1721,6 +1716,13 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "apply_operations_without_batching",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .apply_operations_without_batching
+        );
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             match op.op {
@@ -1768,6 +1770,13 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "apply_batch",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .apply_batch
+        );
         self.apply_batch_with_element_flags_update(
             ops,
             batch_apply_options,
@@ -1795,6 +1804,13 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "apply_partial_batch",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .apply_partial_batch
+        );
         self.apply_partial_batch_with_element_flags_update(
             ops,
             batch_apply_options,
@@ -1821,6 +1837,13 @@ impl GroveDb {
         new_merk: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+        check_v0_with_cost!(
+            "open_batch_transactional_merk_at_path",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .open_batch_transactional_merk_at_path
+        );
         let mut cost = OperationCost::default();
         let storage = self
             .db
@@ -1901,6 +1924,13 @@ impl GroveDb {
         new_merk: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
+        check_v0_with_cost!(
+            "open_batch_merk_at_path",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .open_batch_merk_at_path
+        );
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
@@ -1976,6 +2006,13 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "apply_batch_with_element_flags_update",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .apply_batch_with_element_flags_update
+        );
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {
@@ -2101,6 +2138,13 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "apply_partial_batch_with_element_flags_update",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .apply_partial_batch_with_element_flags_update
+        );
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {
@@ -2338,6 +2382,13 @@ impl GroveDb {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "estimated_case_operations_for_batch",
+            grove_version
+                .grovedb_versions
+                .apply_batch
+                .estimated_case_operations_for_batch
+        );
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {

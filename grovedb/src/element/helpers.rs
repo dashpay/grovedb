@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Helpers
 //! Implements helper functions in Element
 
@@ -43,7 +15,7 @@ use grovedb_merk::{
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-
+use grovedb_version::check_v0;
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -55,6 +27,7 @@ use crate::{
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};
+use grovedb_version::error::GroveVersionError;
 
 impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -219,8 +192,15 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the required item space
-    pub fn required_item_space(len: u32, flag_len: u32, grove_version: &GroveVersion) -> u32 {
-        len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
+    pub fn required_item_space(len: u32, flag_len: u32, grove_version: &GroveVersion) -> Result<u32, Error> {
+        check_v0!(
+            "required_item_space",
+            grove_version
+                .grovedb_versions
+                .element
+                .required_item_space
+        );
+        Ok(len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1)
     }
 
     #[cfg(feature = "full")]
@@ -229,11 +209,10 @@ impl Element {
         self,
         path: &[&[u8]],
         key: Option<&[u8]>,
-        grove_version: &GroveVersion,
     ) -> Result<Element, Error> {
-        // Convert any non absolute reference type to an absolute one
+        // Convert any non-absolute reference type to an absolute one
         // we do this here because references are aggregated first then followed later
-        // to follow non absolute references, we need the path they are stored at
+        // to follow non-absolute references, we need the path they are stored at
         // this information is lost during the aggregation phase.
         Ok(match &self {
             Element::Reference(reference_path_type, ..) => match reference_path_type {
@@ -263,6 +242,13 @@ impl Element {
         is_sum_node: bool,
         grove_version: &GroveVersion,
     ) -> Result<u32, Error> {
+        check_v0!(
+            "specialized_costs_for_key_value",
+            grove_version
+                .grovedb_versions
+                .element
+                .specialized_costs_for_key_value
+        );
         // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value, grove_version)?;
         let cost = match element {
@@ -317,6 +303,13 @@ impl Element {
     #[cfg(feature = "full")]
     /// Get tree cost for the element
     pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
+        check_v0!(
+            "get_specialized_cost",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_specialized_cost
+        );
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),

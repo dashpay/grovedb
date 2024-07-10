@@ -2,7 +2,24 @@ use versioned_feature_core::FeatureVersion;
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBVersions {
+    pub apply_batch: GroveDBApplyBatchVersions,
+    pub element: GroveDBElementMethodVersions,
     pub operations: GroveDBOperationsVersions,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBApplyBatchVersions {
+    pub apply_batch_structure: FeatureVersion,
+    pub apply_body: FeatureVersion,
+    pub continue_partial_apply_body: FeatureVersion,
+    pub apply_operations_without_batching: FeatureVersion,
+    pub apply_batch: FeatureVersion,
+    pub apply_partial_batch: FeatureVersion,
+    pub open_batch_transactional_merk_at_path: FeatureVersion,
+    pub open_batch_merk_at_path: FeatureVersion,
+    pub apply_batch_with_element_flags_update: FeatureVersion,
+    pub apply_partial_batch_with_element_flags_update: FeatureVersion,
+    pub estimated_case_operations_for_batch: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -156,7 +173,6 @@ pub struct GroveDBElementMethodVersions {
     pub get_path_query: FeatureVersion,
     pub get_sized_query: FeatureVersion,
     pub path_query_push: FeatureVersion,
-    pub subquery_paths_and_value_for_sized_query: FeatureVersion,
     pub query_item: FeatureVersion,
     pub basic_push: FeatureVersion,
     pub serialize: FeatureVersion,

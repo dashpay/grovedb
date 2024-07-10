@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Get
 //! Implements functions in Element for getting
 
@@ -42,10 +14,11 @@ use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;
-
+use grovedb_version::check_v0_with_cost;
 use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::{Element, Error, Hash};
+use grovedb_version::error::GroveVersionError;
 
 impl Element {
     #[cfg(feature = "full")]
@@ -57,6 +30,13 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
+        check_v0_with_cost!(
+            "get",
+            grove_version
+                .grovedb_versions
+                .element
+                .get
+        );
         Self::get_optional(merk, key.as_ref(), allow_cache, grove_version).map(|result| {
             let value = result?;
             value.ok_or_else(|| {
@@ -81,6 +61,13 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
+        check_v0_with_cost!(
+            "get_optional",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_optional
+        );
         let mut cost = OperationCost::default();
 
         let value_opt = cost_return_on_error!(
@@ -116,6 +103,13 @@ impl Element {
         key: K,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
+        check_v0_with_cost!(
+            "get_from_storage",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_from_storage
+        );
         Self::get_optional_from_storage(storage, key.as_ref(), grove_version).map(|result| {
             let value = result?;
             value.ok_or_else(|| {
@@ -135,6 +129,13 @@ impl Element {
         key: K,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
+        check_v0_with_cost!(
+            "get_optional_from_storage",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_optional_from_storage
+        );
         let mut cost = OperationCost::default();
         let key_ref = key.as_ref();
         let node_value_opt = cost_return_on_error!(
@@ -222,6 +223,13 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
+        check_v0_with_cost!(
+            "get_with_absolute_refs",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_with_absolute_refs
+        );
         let mut cost = OperationCost::default();
 
         let element = cost_return_on_error!(
@@ -233,8 +241,7 @@ impl Element {
             &cost,
             element.convert_if_reference_to_absolute_reference(
                 path,
-                Some(key.as_ref()),
-                grove_version
+                Some(key.as_ref())
             )
         );
 
@@ -249,6 +256,13 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Hash>, Error> {
+        check_v0_with_cost!(
+            "get_value_hash",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_value_hash
+        );
         let mut cost = OperationCost::default();
 
         let value_hash = cost_return_on_error!(

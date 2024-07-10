@@ -18,6 +18,7 @@ use grovedb_merk::proofs::Query;
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use grovedb_version::{check_v0, check_v0_with_cost};
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "full")]
@@ -37,6 +38,7 @@ use crate::{
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{query_result_type::Path, Element, SizedQuery};
+use grovedb_version::error::GroveVersionError;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, Debug)]
@@ -236,6 +238,14 @@ impl Element {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error> {
+        check_v0_with_cost!(
+            "insert_subtree_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_query
+        );
+
         let sized_query = SizedQuery::new(query.clone(), None, None);
         Element::get_sized_query(
             storage,
@@ -259,6 +269,14 @@ impl Element {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Element>, Error> {
+        check_v0_with_cost!(
+            "get_query_values",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_query_values
+        );
+
         Element::get_query(
             storage,
             merk_path,
@@ -295,6 +313,14 @@ impl Element {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
+        check_v0_with_cost!(
+            "get_query_apply_function",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_query_apply_function
+        );
+
         let mut cost = OperationCost::default();
 
         let mut results = Vec::new();
@@ -370,6 +396,14 @@ impl Element {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
+        check_v0_with_cost!(
+            "get_path_query",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_path_query
+        );
+
         let path_slices = path_query
             .path
             .iter()
@@ -398,6 +432,14 @@ impl Element {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
+        check_v0_with_cost!(
+            "get_sized_query",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_sized_query
+        );
+
         Element::get_query_apply_function(
             storage,
             path,
@@ -416,6 +458,14 @@ impl Element {
         args: PathQueryPushArgs,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "path_query_push",
+            grove_version
+                .grovedb_versions
+                .element
+                .path_query_push
+        );
+
         // println!("path_query_push {} \n", args);
 
         let mut cost = OperationCost::default();
@@ -649,7 +699,7 @@ impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Takes a sized query and a key and returns subquery key and subquery as
     /// tuple
-    pub fn subquery_paths_and_value_for_sized_query(
+    fn subquery_paths_and_value_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
     ) -> (Option<Path>, Option<Query>) {
@@ -703,6 +753,14 @@ impl Element {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_v0_with_cost!(
+            "query_item",
+            grove_version
+                .grovedb_versions
+                .element
+                .query_item
+        );
+
         let mut cost = OperationCost::default();
 
         let subtree_path: SubtreePath<_> = path.into();
@@ -853,6 +911,14 @@ impl Element {
 
     #[cfg(feature = "full")]
     fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
+        check_v0!(
+            "basic_push",
+            grove_version
+                .grovedb_versions
+                .element
+                .basic_push
+        );
+
         // println!("basic_push {}", args);
         let PathQueryPushArgs {
             path,
@@ -866,7 +932,7 @@ impl Element {
         } = args;
 
         let element =
-            element.convert_if_reference_to_absolute_reference(path, key, grove_version)?;
+            element.convert_if_reference_to_absolute_reference(path, key)?;
 
         if offset.unwrap_or(0) == 0 {
             match result_type {
