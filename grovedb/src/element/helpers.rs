@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Helpers
 //! Implements helper functions in Element
 
@@ -40,6 +12,7 @@ use grovedb_merk::{
     TreeFeatureType,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
@@ -217,54 +190,17 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Get the size of an element in bytes
-    #[deprecated]
-    pub fn byte_size(&self) -> u32 {
-        match self {
-            Element::Item(item, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + item.len() as u32
-                } else {
-                    item.len() as u32
-                }
-            }
-            Element::SumItem(item, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + item.required_space() as u32
-                } else {
-                    item.required_space() as u32
-                }
-            }
-            Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.serialized_size() as u32;
-
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + path_length
-                } else {
-                    path_length
-                }
-            }
-            Element::Tree(_, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + 32
-                } else {
-                    32
-                }
-            }
-            Element::SumTree(_, _, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + 32 + 8
-                } else {
-                    32 + 8
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "full")]
     /// Get the required item space
-    pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
-        len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
+    pub fn required_item_space(
+        len: u32,
+        flag_len: u32,
+        grove_version: &GroveVersion,
+    ) -> Result<u32, Error> {
+        check_grovedb_v0!(
+            "required_item_space",
+            grove_version.grovedb_versions.element.required_item_space
+        );
+        Ok(len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1)
     }
 
     #[cfg(feature = "full")]
@@ -274,9 +210,9 @@ impl Element {
         path: &[&[u8]],
         key: Option<&[u8]>,
     ) -> Result<Element, Error> {
-        // Convert any non absolute reference type to an absolute one
+        // Convert any non-absolute reference type to an absolute one
         // we do this here because references are aggregated first then followed later
-        // to follow non absolute references, we need the path they are stored at
+        // to follow non-absolute references, we need the path they are stored at
         // this information is lost during the aggregation phase.
         Ok(match &self {
             Element::Reference(reference_path_type, ..) => match reference_path_type {
@@ -304,9 +240,17 @@ impl Element {
         key: &Vec<u8>,
         value: &[u8],
         is_sum_node: bool,
+        grove_version: &GroveVersion,
     ) -> Result<u32, Error> {
+        check_grovedb_v0!(
+            "specialized_costs_for_key_value",
+            grove_version
+                .grovedb_versions
+                .element
+                .specialized_costs_for_key_value
+        );
         // todo: we actually don't need to deserialize the whole element
-        let element = Element::deserialize(value)?;
+        let element = Element::deserialize(value, grove_version)?;
         let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
@@ -358,7 +302,11 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get tree cost for the element
-    pub fn get_specialized_cost(&self) -> Result<u32, Error> {
+    pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
+        check_grovedb_v0!(
+            "get_specialized_cost",
+            grove_version.grovedb_versions.element.get_specialized_cost
+        );
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
@@ -371,8 +319,8 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the value defined cost for a serialized value
-    pub fn value_defined_cost(&self) -> Option<ValueDefinedCostType> {
-        let Some(value_cost) = self.get_specialized_cost().ok() else {
+    pub fn value_defined_cost(&self, grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
+        let Some(value_cost) = self.get_specialized_cost(grove_version).ok() else {
             return None;
         };
 
@@ -391,21 +339,25 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the value defined cost for a serialized value
-    pub fn value_defined_cost_for_serialized_value(value: &[u8]) -> Option<ValueDefinedCostType> {
-        let element = Element::deserialize(value).ok()?;
-        element.value_defined_cost()
+    pub fn value_defined_cost_for_serialized_value(
+        value: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Option<ValueDefinedCostType> {
+        let element = Element::deserialize(value, grove_version).ok()?;
+        element.value_defined_cost(grove_version)
     }
 }
 
 #[cfg(feature = "full")]
 /// Decode from bytes
-pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
+pub fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element, Error> {
     let tree = TreeNode::decode_raw(
         bytes,
         vec![],
         Some(Element::value_defined_cost_for_serialized_value),
+        grove_version,
     )
     .map_err(|e| Error::CorruptedData(e.to_string()))?;
-    let element: Element = Element::deserialize(tree.value_as_slice())?;
+    let element: Element = Element::deserialize(tree.value_as_slice(), grove_version)?;
     Ok(element)
 }

@@ -2,6 +2,7 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::CostResult;
+use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "full")]
 use super::super::{Link, TreeNode};
@@ -20,6 +21,9 @@ pub trait Fetch {
     fn fetch(
         &self,
         link: &Link,
-        value_defined_cost_fn: Option<&impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error>;
 }

@@ -5,6 +5,7 @@ use std::{fs, net::Ipv4Addr, sync::Weak};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use grovedb_merk::debugger::NodeDbg;
 use grovedb_path::SubtreePath;
+use grovedb_version::version::GroveVersion;
 use grovedbg_types::{NodeFetchRequest, NodeUpdate, Path};
 use tokio::{
     net::ToSocketAddrs,
@@ -85,8 +86,9 @@ async fn fetch_node(
         return Err(AppError::Closed);
     };
 
+    // todo: GroveVersion::latest() to actual version
     let merk = db
-        .open_non_transactional_merk_at_path(path.as_slice().into(), None)
+        .open_non_transactional_merk_at_path(path.as_slice().into(), None, GroveVersion::latest())
         .unwrap()?;
     let node = merk.get_node_dbg(&key)?;
 
@@ -106,8 +108,9 @@ async fn fetch_root_node(
         return Err(AppError::Closed);
     };
 
+    // todo: GroveVersion::latest() to actual version
     let merk = db
-        .open_non_transactional_merk_at_path(SubtreePath::empty(), None)
+        .open_non_transactional_merk_at_path(SubtreePath::empty(), None, GroveVersion::latest())
         .unwrap()?;
 
     let node = merk.get_root_node_dbg()?;
@@ -129,7 +132,8 @@ fn node_to_update(
         right_child,
     }: NodeDbg,
 ) -> Result<NodeUpdate, crate::Error> {
-    let grovedb_element = crate::Element::deserialize(&value)?;
+    // todo: GroveVersion::latest() to actual version
+    let grovedb_element = crate::Element::deserialize(&value, GroveVersion::latest())?;
 
     let element = match grovedb_element {
         crate::Element::Item(value, ..) => grovedbg_types::Element::Item { value },

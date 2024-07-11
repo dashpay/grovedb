@@ -1,49 +1,18 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Insert
 //! Implements functions in Element for inserting into Merk
 
-use grovedb_costs::cost_return_on_error_default;
-#[cfg(feature = "full")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
+    CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
-#[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
-#[cfg(feature = "full")]
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use integer_encoding::VarInt;
 
-use crate::Element::SumItem;
-#[cfg(feature = "full")]
-use crate::{Element, Error, Hash};
+use crate::{Element, Element::SumItem, Error, Hash};
 
 impl Element {
     #[cfg(feature = "full")]
@@ -57,8 +26,11 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let serialized = cost_return_on_error_default!(self.serialize());
+        check_grovedb_v0_with_cost!("insert", grove_version.grovedb_versions.element.insert);
+
+        let serialized = cost_return_on_error_default!(self.serialize(grove_version));
 
         if !merk.is_sum_tree && self.is_sum_item() {
             return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
@@ -68,7 +40,8 @@ impl Element {
         let merk_feature_type =
             cost_return_on_error_default!(self.get_feature_type(merk.is_sum_tree));
         let batch_operations = if matches!(self, SumItem(..)) {
-            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
+            let value_cost =
+                cost_return_on_error_default!(self.get_specialized_cost(grove_version));
 
             let cost = value_cost
                 + self.get_flags().as_ref().map_or(0, |flags| {
@@ -89,10 +62,11 @@ impl Element {
             options,
             &|key, value| {
                 // it is possible that a normal item was being replaced with a
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -105,14 +79,24 @@ impl Element {
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
+        check_grovedb_v0_with_cost!(
+            "insert_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_into_batch_operations
+        );
+
+        let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
         let entry = if matches!(self, SumItem(..)) {
-            let value_cost = cost_return_on_error_default!(self.get_specialized_cost());
+            let value_cost =
+                cost_return_on_error_default!(self.get_specialized_cost(grove_version));
 
             let cost = value_cost
                 + self.get_flags().as_ref().map_or(0, |flags| {
@@ -141,14 +125,22 @@ impl Element {
         merk: &mut Merk<S>,
         key: &[u8],
         options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_if_not_exists",
+            grove_version.grovedb_versions.element.insert_if_not_exists
+        );
+
         let mut cost = OperationCost::default();
-        let exists =
-            cost_return_on_error!(&mut cost, self.element_at_key_already_exists(merk, key));
+        let exists = cost_return_on_error!(
+            &mut cost,
+            self.element_at_key_already_exists(merk, key, grove_version)
+        );
         if exists {
             Ok(false).wrap_with_cost(cost)
         } else {
-            cost_return_on_error!(&mut cost, self.insert(merk, key, options));
+            cost_return_on_error!(&mut cost, self.insert(merk, key, options, grove_version));
             Ok(true).wrap_with_cost(cost)
         }
     }
@@ -166,18 +158,32 @@ impl Element {
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_if_not_exists_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_if_not_exists_into_batch_operations
+        );
+
         let mut cost = OperationCost::default();
         let exists = cost_return_on_error!(
             &mut cost,
-            self.element_at_key_already_exists(merk, key.as_ref())
+            self.element_at_key_already_exists(merk, key.as_ref(), grove_version)
         );
         if exists {
             Ok(false).wrap_with_cost(cost)
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations, feature_type)
+                self.insert_into_batch_operations(
+                    key,
+                    batch_operations,
+                    feature_type,
+                    grove_version
+                )
             );
             Ok(true).wrap_with_cost(cost)
         }
@@ -196,11 +202,20 @@ impl Element {
         merk: &mut Merk<S>,
         key: &[u8],
         options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(bool, Option<Element>), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_if_changed_value",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_if_changed_value
+        );
+
         let mut cost = OperationCost::default();
         let previous_element = cost_return_on_error!(
             &mut cost,
-            Self::get_optional_from_storage(&merk.storage, key)
+            Self::get_optional_from_storage(&merk.storage, key, grove_version)
         );
         let needs_insert = match &previous_element {
             None => true,
@@ -209,7 +224,7 @@ impl Element {
         if !needs_insert {
             Ok((false, None)).wrap_with_cost(cost)
         } else {
-            cost_return_on_error!(&mut cost, self.insert(merk, key, options));
+            cost_return_on_error!(&mut cost, self.insert(merk, key, options, grove_version));
             Ok((true, previous_element)).wrap_with_cost(cost)
         }
     }
@@ -229,11 +244,20 @@ impl Element {
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
     ) -> CostResult<(bool, Option<Element>), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_if_changed_value_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_if_changed_value_into_batch_operations
+        );
+
         let mut cost = OperationCost::default();
         let previous_element = cost_return_on_error!(
             &mut cost,
-            Self::get_optional_from_storage(&merk.storage, key.as_ref())
+            Self::get_optional_from_storage(&merk.storage, key.as_ref(), grove_version)
         );
         let needs_insert = match &previous_element {
             None => true,
@@ -244,7 +268,12 @@ impl Element {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations, feature_type)
+                self.insert_into_batch_operations(
+                    key,
+                    batch_operations,
+                    feature_type,
+                    grove_version
+                )
             );
             Ok((true, previous_element)).wrap_with_cost(cost)
         }
@@ -262,8 +291,14 @@ impl Element {
         key: K,
         referenced_value: Hash,
         options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
+        check_grovedb_v0_with_cost!(
+            "insert_reference",
+            grove_version.grovedb_versions.element.insert_reference
+        );
+
+        let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
@@ -285,10 +320,11 @@ impl Element {
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -302,8 +338,17 @@ impl Element {
         referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
+        check_grovedb_v0_with_cost!(
+            "insert_reference_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_reference_into_batch_operations
+        );
+
+        let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
@@ -328,8 +373,14 @@ impl Element {
         key: K,
         subtree_root_hash: Hash,
         options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
+        check_grovedb_v0_with_cost!(
+            "insert_subtree",
+            grove_version.grovedb_versions.element.insert_subtree
+        );
+
+        let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
@@ -338,7 +389,8 @@ impl Element {
         let merk_feature_type =
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
-        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_specialized_cost());
+        let tree_cost =
+            cost_return_on_error_no_add!(&cost, self.get_specialized_cost(grove_version));
 
         let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
@@ -355,10 +407,11 @@ impl Element {
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes)
+                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -372,13 +425,22 @@ impl Element {
         is_replace: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
+        check_grovedb_v0_with_cost!(
+            "insert_subtree_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_subtree_into_batch_operations
+        );
+
+        let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let tree_cost = cost_return_on_error_default!(self.get_specialized_cost());
+        let tree_cost = cost_return_on_error_default!(self.get_specialized_cost(grove_version));
 
         let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
@@ -413,18 +475,19 @@ mod tests {
 
     #[test]
     fn test_success_insert() {
-        let mut merk = TempMerk::new();
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
         Element::empty_tree()
-            .insert(&mut merk, b"mykey", None)
+            .insert(&mut merk, b"mykey", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key", None)
+            .insert(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
         assert_eq!(
-            Element::get(&merk, b"another-key", true)
+            Element::get(&merk, b"another-key", true, grove_version)
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
@@ -433,30 +496,31 @@ mod tests {
 
     #[test]
     fn test_insert_if_changed_value_does_not_insert_when_value_does_not_change() {
-        let mut merk = TempMerk::new();
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
 
         Element::empty_tree()
-            .insert(&mut merk, b"mykey", None)
+            .insert(&mut merk, b"mykey", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key", None)
+            .insert(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        merk.commit();
+        merk.commit(grove_version);
 
         let (inserted, previous) = Element::new_item(b"value".to_vec())
-            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
-        merk.commit();
+        merk.commit(grove_version);
 
         assert!(!inserted);
         assert_eq!(previous, None);
         assert_eq!(
-            Element::get(&merk, b"another-key", true)
+            Element::get(&merk, b"another-key", true, grove_version)
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
@@ -465,16 +529,17 @@ mod tests {
 
     #[test]
     fn test_insert_if_changed_value_inserts_when_value_changed() {
+        let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch);
+        let mut merk = empty_path_merk(&*storage, &batch, grove_version);
 
         Element::empty_tree()
-            .insert(&mut merk, b"mykey", None)
+            .insert(&mut merk, b"mykey", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key", None)
+            .insert(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -484,9 +549,9 @@ mod tests {
             .unwrap();
 
         let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch);
+        let mut merk = empty_path_merk(&*storage, &batch, grove_version);
         let (inserted, previous) = Element::new_item(b"value2".to_vec())
-            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -497,10 +562,10 @@ mod tests {
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .unwrap();
-        let merk = empty_path_merk_read_only(&*storage);
+        let merk = empty_path_merk_read_only(&*storage, grove_version);
 
         assert_eq!(
-            Element::get(&merk, b"another-key", true)
+            Element::get(&merk, b"another-key", true, grove_version)
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value2".to_vec()),
@@ -509,13 +574,14 @@ mod tests {
 
     #[test]
     fn test_insert_if_changed_value_inserts_when_no_value() {
-        let mut merk = TempMerk::new();
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
         Element::empty_tree()
-            .insert(&mut merk, b"mykey", None)
+            .insert(&mut merk, b"mykey", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         let (inserted, previous) = Element::new_item(b"value2".to_vec())
-            .insert_if_changed_value(&mut merk, b"another-key", None)
+            .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -523,7 +589,7 @@ mod tests {
         assert_eq!(previous, None);
 
         assert_eq!(
-            Element::get(&merk, b"another-key", true)
+            Element::get(&merk, b"another-key", true, grove_version)
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value2".to_vec()),

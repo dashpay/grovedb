@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use ed::Encode;
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     error::Error,
@@ -97,19 +98,25 @@ where
     pub fn chunk_with_index(
         &mut self,
         chunk_index: usize,
+        grove_version: &GroveVersion,
     ) -> Result<(Vec<Op>, Option<usize>), Error> {
         let traversal_instructions = generate_traversal_instruction(self.height, chunk_index)?;
-        self.chunk_internal(chunk_index, traversal_instructions)
+        self.chunk_internal(chunk_index, traversal_instructions, grove_version)
     }
 
     /// Returns the chunk at a given chunk id.
-    pub fn chunk(&mut self, chunk_id: &[u8]) -> Result<(Vec<Op>, Option<Vec<u8>>), Error> {
+    pub fn chunk(
+        &mut self,
+        chunk_id: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Result<(Vec<Op>, Option<Vec<u8>>), Error> {
         let traversal_instructions = vec_bytes_as_traversal_instruction(chunk_id)?;
         let chunk_index = chunk_index_from_traversal_instruction_with_recovery(
             traversal_instructions.as_slice(),
             self.height,
         )?;
-        let (chunk, next_index) = self.chunk_internal(chunk_index, traversal_instructions)?;
+        let (chunk, next_index) =
+            self.chunk_internal(chunk_index, traversal_instructions, grove_version)?;
         let next_chunk_id = next_index
             .map(|index| generate_traversal_instruction_as_vec_bytes(self.height, index))
             .transpose()?;
@@ -122,6 +129,7 @@ where
         &mut self,
         index: usize,
         traversal_instructions: Vec<bool>,
+        grove_version: &GroveVersion,
     ) -> Result<(Vec<Op>, Option<usize>), Error> {
         // ensure that the chunk index is within bounds
         let max_chunk_index = self.len();
@@ -136,9 +144,11 @@ where
         let chunk_height = chunk_height(self.height, index).unwrap();
 
         let chunk = self.merk.walk(|maybe_walker| match maybe_walker {
-            Some(mut walker) => {
-                walker.traverse_and_build_chunk(&traversal_instructions, chunk_height)
-            }
+            Some(mut walker) => walker.traverse_and_build_chunk(
+                &traversal_instructions,
+                chunk_height,
+                grove_version,
+            ),
             None => Err(Error::ChunkingError(ChunkError::EmptyTree(
                 "cannot create chunk producer for empty Merk",
             ))),
@@ -160,12 +170,13 @@ where
         &mut self,
         chunk_id: &[u8],
         limit: Option<usize>,
+        grove_version: &GroveVersion,
     ) -> Result<MultiChunk, Error> {
         // we want to convert the chunk id to the index
         let chunk_index = vec_bytes_as_traversal_instruction(chunk_id).and_then(|instruction| {
             chunk_index_from_traversal_instruction(instruction.as_slice(), self.height)
         })?;
-        self.multi_chunk_with_limit_and_index(chunk_index, limit)
+        self.multi_chunk_with_limit_and_index(chunk_index, limit, grove_version)
     }
 
     /// Generate multichunk with chunk index
@@ -175,6 +186,7 @@ where
         &mut self,
         index: usize,
         limit: Option<usize>,
+        grove_version: &GroveVersion,
     ) -> Result<MultiChunk, Error> {
         // TODO: what happens if the vec is filled?
         //  we need to have some kind of hardhoc limit value if none is supplied.
@@ -210,6 +222,7 @@ where
             let subtree_multi_chunk_result = self.subtree_multi_chunk_with_limit(
                 current_index.expect("confirmed is not None"),
                 temp_limit,
+                grove_version,
             );
 
             let limit_too_small_error = matches!(
@@ -253,13 +266,14 @@ where
         &mut self,
         index: usize,
         limit: Option<usize>,
+        grove_version: &GroveVersion,
     ) -> Result<SubtreeChunk, Error> {
         let max_chunk_index = number_of_chunks(self.height);
         let mut chunk_index = index;
 
         // we first get the chunk at the given index
         // TODO: use the returned chunk index rather than tracking
-        let (chunk_ops, _) = self.chunk_with_index(chunk_index)?;
+        let (chunk_ops, _) = self.chunk_with_index(chunk_index, grove_version)?;
         let mut chunk_byte_length = chunk_ops.encoding_length().map_err(|_e| {
             Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
         })?;
@@ -282,7 +296,7 @@ where
             // we only perform replacements on Hash nodes
             if matches!(chunk[iteration_index], Op::Push(Node::Hash(..))) {
                 // TODO: use the returned chunk index rather than tracking
-                let (replacement_chunk, _) = self.chunk_with_index(chunk_index)?;
+                let (replacement_chunk, _) = self.chunk_with_index(chunk_index, grove_version)?;
 
                 // calculate the new total
                 let new_total = replacement_chunk.encoding_length().map_err(|_e| {
@@ -343,7 +357,10 @@ where
     /// optimizing throughput compared to random access.
     // TODO: this is not better than random access, as we are not keeping state
     //  that will make this more efficient, decide if this should be fixed or not
-    fn next_chunk(&mut self) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
+    fn next_chunk(
+        &mut self,
+        grove_version: &GroveVersion,
+    ) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
         let max_index = number_of_chunks(self.height);
         if self.index > max_index {
             return None;
@@ -352,7 +369,7 @@ where
         // get the chunk at the given index
         // return the next index as a string
         Some(
-            self.chunk_with_index(self.index)
+            self.chunk_with_index(self.index, grove_version)
                 .and_then(|(chunk, chunk_index)| {
                     chunk_index
                         .map(|index| {
@@ -366,14 +383,15 @@ where
 }
 
 /// Iterate over each chunk, returning `None` after last chunk
-impl<'db, S> Iterator for ChunkProducer<'db, S>
+impl<'db, S> ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
 {
-    type Item = Result<(Vec<Op>, Option<Vec<u8>>), Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_chunk()
+    pub fn next(
+        &mut self,
+        grove_version: &GroveVersion,
+    ) -> Option<Result<(Vec<Op>, Option<Vec<u8>>), Error>> {
+        self.next_chunk(grove_version)
     }
 }
 
@@ -451,13 +469,14 @@ mod test {
 
     #[test]
     fn test_merk_chunk_len() {
+        let grove_version = GroveVersion::latest();
         // Tree of height 5 - max of 31 elements, min of 16 elements
         // 5 will be broken into 2 layers = [3, 2]
         // exit nodes from first layer = 2^3 = 8
         // total_chunk = 1 + 8 = 9 chunks
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..20);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(5));
@@ -468,9 +487,9 @@ mod test {
         // 4 layers -> [3,3,2,2]
         // chunk_count_per_layer -> [1, 8, 64, 256]
         // total = 341 chunks
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..1000);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(10));
@@ -480,6 +499,7 @@ mod test {
 
     #[test]
     fn test_chunk_producer_iter() {
+        let grove_version = GroveVersion::latest();
         // tree with height 4
         // full tree
         //              7
@@ -492,9 +512,9 @@ mod test {
         // going to be broken into [2, 2]
         // that's a total of 5 chunks
 
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -508,17 +528,18 @@ mod test {
         // as that from the chunk producer
         for i in 1..=5 {
             assert_eq!(
-                chunks.next().unwrap().unwrap().0,
-                chunk_producer.chunk_with_index(i).unwrap().0
+                chunks.next(grove_version).unwrap().unwrap().0,
+                chunk_producer.chunk_with_index(i, grove_version).unwrap().0
             );
         }
 
         // returns None after max
-        assert!(chunks.next().is_none());
+        assert!(chunks.next(grove_version).is_none());
     }
 
     #[test]
     fn test_random_chunk_access() {
+        let grove_version = GroveVersion::latest();
         // tree with height 4
         // full tree
         //              7
@@ -531,9 +552,9 @@ mod test {
         // going to be broken into [2, 2]
         // that's a total of 5 chunks
 
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -548,8 +569,8 @@ mod test {
         assert_eq!(chunk_producer.len(), 5);
 
         // assert bounds
-        assert!(chunk_producer.chunk_with_index(0).is_err());
-        assert!(chunk_producer.chunk_with_index(6).is_err());
+        assert!(chunk_producer.chunk_with_index(0, grove_version).is_err());
+        assert!(chunk_producer.chunk_with_index(6, grove_version).is_err());
 
         // first chunk
         // expected:
@@ -559,24 +580,52 @@ mod test {
         //      /   \        /    \
         //   H(1)   H(5)    H(9)   H(13)
         let (chunk, next_chunk) = chunk_producer
-            .chunk_with_index(1)
+            .chunk_with_index(1, grove_version)
             .expect("should generate chunk");
         assert_eq!(chunk.len(), 13);
         assert_eq!(next_chunk, Some(2));
         assert_eq!(
             chunk,
             vec![
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, LEFT])),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT],
+                    grove_version
+                )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT])),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT, RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT, RIGHT],
+                    grove_version
+                )),
                 Op::Child,
                 Op::Child
             ]
@@ -588,7 +637,7 @@ mod test {
         //        /  \
         //       0    2
         let (chunk, next_chunk) = chunk_producer
-            .chunk_with_index(2)
+            .chunk_with_index(2, grove_version)
             .expect("should generate chunk");
         assert_eq!(chunk.len(), 5);
         assert_eq!(next_chunk, Some(3));
@@ -597,16 +646,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT, LEFT]
+                    &[LEFT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT]
+                    &[LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT, RIGHT]
+                    &[LEFT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]
@@ -618,7 +670,7 @@ mod test {
         //        /  \
         //       4    6
         let (chunk, next_chunk) = chunk_producer
-            .chunk_with_index(3)
+            .chunk_with_index(3, grove_version)
             .expect("should generate chunk");
         assert_eq!(chunk.len(), 5);
         assert_eq!(next_chunk, Some(4));
@@ -627,16 +679,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT, LEFT]
+                    &[LEFT, RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT]
+                    &[LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT, RIGHT]
+                    &[LEFT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]
@@ -648,7 +703,7 @@ mod test {
         //        /  \
         //       8    10
         let (chunk, next_chunk) = chunk_producer
-            .chunk_with_index(4)
+            .chunk_with_index(4, grove_version)
             .expect("should generate chunk");
         assert_eq!(chunk.len(), 5);
         assert_eq!(next_chunk, Some(5));
@@ -657,16 +712,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]
@@ -678,7 +736,7 @@ mod test {
         //        /  \
         //       12    14
         let (chunk, next_chunk) = chunk_producer
-            .chunk_with_index(5)
+            .chunk_with_index(5, grove_version)
             .expect("should generate chunk");
         assert_eq!(chunk.len(), 5);
         assert_eq!(next_chunk, None);
@@ -687,16 +745,19 @@ mod test {
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, LEFT]
+                    &[RIGHT, RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child
             ]
@@ -705,11 +766,12 @@ mod test {
 
     #[test]
     fn test_subtree_chunk_no_limit() {
+        let grove_version = GroveVersion::latest();
         // tree of height 4
         // 5 chunks
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -717,7 +779,7 @@ mod test {
         // generate multi chunk with no limit
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
         let chunk_result = chunk_producer
-            .subtree_multi_chunk_with_limit(1, None)
+            .subtree_multi_chunk_with_limit(1, None, grove_version)
             .expect("should generate chunk with limit");
 
         assert_eq!(chunk_result.remaining_limit, None);
@@ -741,11 +803,12 @@ mod test {
 
     #[test]
     fn test_subtree_chunk_with_limit() {
+        let grove_version = GroveVersion::latest();
         // tree of height 4
         // 5 chunks
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -754,12 +817,12 @@ mod test {
 
         // initial chunk is of size 453, so limit of 10 is too small
         // should return an error
-        let chunk = chunk_producer.subtree_multi_chunk_with_limit(1, Some(10));
+        let chunk = chunk_producer.subtree_multi_chunk_with_limit(1, Some(10), grove_version);
         assert!(chunk.is_err());
 
         // get just the fist chunk
         let chunk_result = chunk_producer
-            .subtree_multi_chunk_with_limit(1, Some(453))
+            .subtree_multi_chunk_with_limit(1, Some(453), grove_version)
             .expect("should generate chunk with limit");
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(2));
@@ -779,7 +842,7 @@ mod test {
 
         // get up to second chunk
         let chunk_result = chunk_producer
-            .subtree_multi_chunk_with_limit(1, Some(737))
+            .subtree_multi_chunk_with_limit(1, Some(737), grove_version)
             .expect("should generate chunk with limit");
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(3));
@@ -799,7 +862,7 @@ mod test {
 
         // get up to third chunk
         let chunk_result = chunk_producer
-            .subtree_multi_chunk_with_limit(1, Some(1021))
+            .subtree_multi_chunk_with_limit(1, Some(1021), grove_version)
             .expect("should generate chunk with limit");
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(4));
@@ -819,7 +882,7 @@ mod test {
 
         // get up to fourth chunk
         let chunk_result = chunk_producer
-            .subtree_multi_chunk_with_limit(1, Some(1305))
+            .subtree_multi_chunk_with_limit(1, Some(1305), grove_version)
             .expect("should generate chunk with limit");
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, Some(5));
@@ -839,7 +902,7 @@ mod test {
 
         // get up to fifth chunk
         let chunk_result = chunk_producer
-            .subtree_multi_chunk_with_limit(1, Some(1589))
+            .subtree_multi_chunk_with_limit(1, Some(1589), grove_version)
             .expect("should generate chunk with limit");
         assert_eq!(chunk_result.remaining_limit, Some(0));
         assert_eq!(chunk_result.next_index, None);
@@ -859,7 +922,7 @@ mod test {
 
         // limit larger than total chunk
         let chunk_result = chunk_producer
-            .subtree_multi_chunk_with_limit(1, Some(usize::MAX))
+            .subtree_multi_chunk_with_limit(1, Some(usize::MAX), grove_version)
             .expect("should generate chunk with limit");
         assert_eq!(chunk_result.remaining_limit, Some(18446744073709550026));
         assert_eq!(chunk_result.next_index, None);
@@ -880,11 +943,12 @@ mod test {
 
     #[test]
     fn test_multi_chunk_with_no_limit_trunk() {
+        let grove_version = GroveVersion::latest();
         // tree of height 4
         // 5 chunks
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -894,7 +958,7 @@ mod test {
         // we generate the chunk starting from index 1, this has no hash nodes
         // so no multi chunk will be generated
         let chunk_result = chunk_producer
-            .multi_chunk_with_limit_and_index(1, None)
+            .multi_chunk_with_limit_and_index(1, None, grove_version)
             .expect("should generate chunk with limit");
 
         assert_eq!(chunk_result.remaining_limit, None);
@@ -917,11 +981,12 @@ mod test {
 
     #[test]
     fn test_multi_chunk_with_no_limit_not_trunk() {
+        let grove_version = GroveVersion::latest();
         // tree of height 4
         // 5 chunks
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -931,7 +996,7 @@ mod test {
         // we generate the chunk starting from index 2, this has no hash nodes
         // so no multi chunk will be generated
         let chunk_result = chunk_producer
-            .multi_chunk_with_limit_and_index(2, None)
+            .multi_chunk_with_limit_and_index(2, None, grove_version)
             .expect("should generate chunk with limit");
 
         assert_eq!(chunk_result.remaining_limit, None);
@@ -952,7 +1017,7 @@ mod test {
             chunk_result.chunk[1],
             ChunkOp::Chunk(
                 chunk_producer
-                    .chunk_with_index(2)
+                    .chunk_with_index(2, grove_version)
                     .expect("should generate chunk")
                     .0
             )
@@ -961,7 +1026,7 @@ mod test {
             chunk_result.chunk[3],
             ChunkOp::Chunk(
                 chunk_producer
-                    .chunk_with_index(3)
+                    .chunk_with_index(3, grove_version)
                     .expect("should generate chunk")
                     .0
             )
@@ -970,7 +1035,7 @@ mod test {
             chunk_result.chunk[5],
             ChunkOp::Chunk(
                 chunk_producer
-                    .chunk_with_index(4)
+                    .chunk_with_index(4, grove_version)
                     .expect("should generate chunk")
                     .0
             )
@@ -979,7 +1044,7 @@ mod test {
             chunk_result.chunk[7],
             ChunkOp::Chunk(
                 chunk_producer
-                    .chunk_with_index(5)
+                    .chunk_with_index(5, grove_version)
                     .expect("should generate chunk")
                     .0
             )
@@ -988,11 +1053,12 @@ mod test {
 
     #[test]
     fn test_multi_chunk_with_limit() {
+        let grove_version = GroveVersion::latest();
         // tree of height 4
         // 5 chunks
-        let mut merk = TempMerk::new();
+        let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -1001,7 +1067,8 @@ mod test {
 
         // ensure that the remaining limit, next index and values given are correct
         // if limit is smaller than first chunk, we should get an error
-        let chunk_result = chunk_producer.multi_chunk_with_limit(vec![].as_slice(), Some(5));
+        let chunk_result =
+            chunk_producer.multi_chunk_with_limit(vec![].as_slice(), Some(5), grove_version);
         assert!(matches!(
             chunk_result,
             Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))
@@ -1011,7 +1078,8 @@ mod test {
         // data size of chunk 2 is exactly 317
         // chunk op encoding for chunk 2 = 321
         // hence limit of 317 will be insufficient
-        let chunk_result = chunk_producer.multi_chunk_with_limit_and_index(2, Some(317));
+        let chunk_result =
+            chunk_producer.multi_chunk_with_limit_and_index(2, Some(317), grove_version);
         assert!(matches!(
             chunk_result,
             Err(Error::ChunkingError(ChunkError::LimitTooSmall(..)))
@@ -1022,7 +1090,7 @@ mod test {
         // chunk 3 chunk op = 321
         // padding = 5
         let chunk_result = chunk_producer
-            .multi_chunk_with_limit_and_index(2, Some(321 + 321 + 5))
+            .multi_chunk_with_limit_and_index(2, Some(321 + 321 + 5), grove_version)
             .expect("should generate chunk");
         assert_eq!(
             chunk_result.next_index,

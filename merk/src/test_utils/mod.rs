@@ -35,6 +35,7 @@ use std::{convert::TryInto, ops::Range};
 use grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageBatch};
+use grovedb_version::version::GroveVersion;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
@@ -74,7 +75,11 @@ pub fn assert_tree_invariants(tree: &TreeNode) {
 /// Apply given batch to given tree and commit using memory only.
 /// Used by `apply_memonly` which also performs checks using
 /// `assert_tree_invariants`. Return Tree.
-pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> TreeNode {
+pub fn apply_memonly_unchecked(
+    tree: TreeNode,
+    batch: &MerkBatch<Vec<u8>>,
+    grove_version: &GroveVersion,
+) -> TreeNode {
     let is_sum_node = tree.is_sum_node();
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
     let mut tree = Walker::<PanicSource>::apply_to(
@@ -88,7 +93,7 @@ pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> Tr
                 is_sum_node,
             ))
         },
-        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
@@ -96,6 +101,7 @@ pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> Tr
                 BasicStorageRemoval(value_bytes_to_remove),
             ))
         },
+        grove_version,
     )
     .unwrap()
     .expect("apply failed")
@@ -116,8 +122,12 @@ pub fn apply_memonly_unchecked(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> Tr
 
 /// Apply given batch to given tree and commit using memory only.
 /// Perform checks using `assert_tree_invariants`. Return Tree.
-pub fn apply_memonly(tree: TreeNode, batch: &MerkBatch<Vec<u8>>) -> TreeNode {
-    let tree = apply_memonly_unchecked(tree, batch);
+pub fn apply_memonly(
+    tree: TreeNode,
+    batch: &MerkBatch<Vec<u8>>,
+    grove_version: &GroveVersion,
+) -> TreeNode {
+    let tree = apply_memonly_unchecked(tree, batch, grove_version);
     assert_tree_invariants(&tree);
     tree
 }
@@ -128,6 +138,7 @@ pub fn apply_to_memonly(
     maybe_tree: Option<TreeNode>,
     batch: &MerkBatch<Vec<u8>>,
     is_sum_tree: bool,
+    grove_version: &GroveVersion,
 ) -> Option<TreeNode> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
     Walker::<PanicSource>::apply_to(
@@ -141,7 +152,7 @@ pub fn apply_to_memonly(
                 is_sum_tree,
             ))
         },
-        None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
@@ -149,6 +160,7 @@ pub fn apply_to_memonly(
                 BasicStorageRemoval(value_bytes_to_remove),
             ))
         },
+        grove_version,
     )
     .unwrap()
     .expect("apply failed")
@@ -234,6 +246,7 @@ pub fn make_tree_rand(
     batch_size: u64,
     initial_seed: u64,
     is_sum_tree: bool,
+    grove_version: &GroveVersion,
 ) -> TreeNode {
     assert!(node_count >= batch_size);
     assert_eq!((node_count % batch_size), 0);
@@ -251,7 +264,7 @@ pub fn make_tree_rand(
     let batch_count = node_count / batch_size;
     for _ in 0..batch_count {
         let batch = make_batch_rand(batch_size, seed);
-        tree = apply_memonly(tree, &batch);
+        tree = apply_memonly(tree, &batch, grove_version);
         seed += 1;
     }
 
@@ -261,14 +274,18 @@ pub fn make_tree_rand(
 /// Create tree with initial fixed values and apply `node count` Put ops using
 /// sequential keys using memory only
 /// starting tree node is [0; 20]
-pub fn make_tree_seq(node_count: u64) -> TreeNode {
-    make_tree_seq_with_start_key(node_count, [0; 20].to_vec())
+pub fn make_tree_seq(node_count: u64, grove_version: &GroveVersion) -> TreeNode {
+    make_tree_seq_with_start_key(node_count, [0; 20].to_vec(), grove_version)
 }
 
 /// Create tree with initial fixed values and apply `node count` Put ops using
 /// sequential keys using memory only
 /// requires a starting key vector
-pub fn make_tree_seq_with_start_key(node_count: u64, start_key: Vec<u8>) -> TreeNode {
+pub fn make_tree_seq_with_start_key(
+    node_count: u64,
+    start_key: Vec<u8>,
+    grove_version: &GroveVersion,
+) -> TreeNode {
     let batch_size = if node_count >= 10_000 {
         assert_eq!(node_count % 10_000, 0);
         10_000
@@ -283,7 +300,7 @@ pub fn make_tree_seq_with_start_key(node_count: u64, start_key: Vec<u8>) -> Tree
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {
         let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        tree = apply_memonly(tree, &batch);
+        tree = apply_memonly(tree, &batch, grove_version);
     }
 
     tree
@@ -292,6 +309,7 @@ pub fn make_tree_seq_with_start_key(node_count: u64, start_key: Vec<u8>) -> Tree
 pub fn empty_path_merk<'db, S>(
     storage: &'db S,
     batch: &'db StorageBatch,
+    grove_version: &GroveVersion,
 ) -> Merk<<S as Storage<'db>>::BatchStorageContext>
 where
     S: Storage<'db>,
@@ -301,7 +319,8 @@ where
             .get_storage_context(SubtreePath::empty(), Some(batch))
             .unwrap(),
         false,
-        None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version,
     )
     .unwrap()
     .unwrap()
@@ -310,6 +329,7 @@ where
 /// Shortcut to open a Merk for read only
 pub fn empty_path_merk_read_only<'db, S>(
     storage: &'db S,
+    grove_version: &GroveVersion,
 ) -> Merk<<S as Storage<'db>>::BatchStorageContext>
 where
     S: Storage<'db>,
@@ -319,7 +339,8 @@ where
             .get_storage_context(SubtreePath::empty(), None)
             .unwrap(),
         false,
-        None::<fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        grove_version,
     )
     .unwrap()
     .unwrap()

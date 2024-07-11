@@ -14,6 +14,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[rustfmt::skip]
 use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
 use crate::{replication, Error, GroveDb, Transaction, TransactionArg};
 
@@ -88,7 +89,7 @@ impl fmt::Debug for SubtreesMetadata {
                 " prefix:{:?} -> path:{:?}",
                 hex::encode(prefix),
                 metadata_path_str
-            );
+            )?;
         }
         Ok(())
     }
@@ -166,10 +167,23 @@ impl GroveDb {
     // tx: Transaction. Function returns the data by opening merks at given tx.
     // TODO: Add a SubTreePath as param and start searching from that path instead
     // of root (as it is now)
-    pub fn get_subtrees_metadata(&self, tx: TransactionArg) -> Result<SubtreesMetadata, Error> {
-        let mut subtrees_metadata = crate::replication::SubtreesMetadata::new();
+    pub fn get_subtrees_metadata(
+        &self,
+        tx: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> Result<SubtreesMetadata, Error> {
+        check_grovedb_v0!(
+            "is_empty_tree",
+            grove_version
+                .grovedb_versions
+                .replication
+                .get_subtrees_metadata
+        );
+        let mut subtrees_metadata = SubtreesMetadata::new();
 
-        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), tx).value?;
+        let subtrees_root = self
+            .find_subtrees(&SubtreePath::empty(), tx, grove_version)
+            .value?;
         for subtree in subtrees_root.into_iter() {
             let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
             let path: &[&[u8]] = &subtree_path;
@@ -181,13 +195,14 @@ impl GroveDb {
                 (Some((parent_path, _)), Some(parent_key)) => match tx {
                     None => {
                         let parent_merk = self
-                            .open_non_transactional_merk_at_path(parent_path, None)
+                            .open_non_transactional_merk_at_path(parent_path, None, grove_version)
                             .value?;
                         if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
                             .get_value_and_value_hash(
                                 parent_key,
                                 true,
-                                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                                grove_version,
                             )
                             .value
                         {
@@ -200,13 +215,14 @@ impl GroveDb {
                     }
                     Some(t) => {
                         let parent_merk = self
-                            .open_transactional_merk_at_path(parent_path, t, None)
+                            .open_transactional_merk_at_path(parent_path, t, None, grove_version)
                             .value?;
                         if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
                             .get_value_and_value_hash(
                                 parent_key,
                                 true,
-                                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                                grove_version,
                             )
                             .value
                         {
@@ -248,7 +264,12 @@ impl GroveDb {
         global_chunk_id: &[u8],
         tx: TransactionArg,
         version: u16,
+        grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
+        check_grovedb_v0!(
+            "fetch_chunk",
+            grove_version.grovedb_versions.replication.fetch_chunk
+        );
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -256,11 +277,11 @@ impl GroveDb {
             ));
         }
 
-        let root_app_hash = self.root_hash(tx).value?;
+        let root_app_hash = self.root_hash(tx, grove_version).value?;
         let (chunk_prefix, chunk_id) =
             replication::util_split_global_chunk_id(global_chunk_id, &root_app_hash)?;
 
-        let subtrees_metadata = self.get_subtrees_metadata(tx)?;
+        let subtrees_metadata = self.get_subtrees_metadata(tx, grove_version)?;
 
         match subtrees_metadata.data.get(&chunk_prefix) {
             Some(path_data) => {
@@ -271,7 +292,7 @@ impl GroveDb {
                 match tx {
                     None => {
                         let merk = self
-                            .open_non_transactional_merk_at_path(path.into(), None)
+                            .open_non_transactional_merk_at_path(path.into(), None, grove_version)
                             .value?;
 
                         if merk.is_empty_tree().unwrap() {
@@ -281,7 +302,7 @@ impl GroveDb {
                         let chunk_producer_res = ChunkProducer::new(&merk);
                         match chunk_producer_res {
                             Ok(mut chunk_producer) => {
-                                let chunk_res = chunk_producer.chunk(&chunk_id);
+                                let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
                                 match chunk_res {
                                     Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
                                         Ok(op_bytes) => Ok(op_bytes),
@@ -301,7 +322,7 @@ impl GroveDb {
                     }
                     Some(t) => {
                         let merk = self
-                            .open_transactional_merk_at_path(path.into(), t, None)
+                            .open_transactional_merk_at_path(path.into(), t, None, grove_version)
                             .value?;
 
                         if merk.is_empty_tree().unwrap() {
@@ -311,7 +332,7 @@ impl GroveDb {
                         let chunk_producer_res = ChunkProducer::new(&merk);
                         match chunk_producer_res {
                             Ok(mut chunk_producer) => {
-                                let chunk_res = chunk_producer.chunk(&chunk_id);
+                                let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
                                 match chunk_res {
                                     Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
                                         Ok(op_bytes) => Ok(op_bytes),
@@ -347,7 +368,15 @@ impl GroveDb {
         app_hash: CryptoHash,
         tx: &'db Transaction,
         version: u16,
+        grove_version: &GroveVersion,
     ) -> Result<MultiStateSyncInfo, Error> {
+        check_grovedb_v0!(
+            "start_snapshot_syncing",
+            grove_version
+                .grovedb_versions
+                .replication
+                .start_snapshot_syncing
+        );
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -375,7 +404,7 @@ impl GroveDb {
 
         let mut root_prefix_state_sync_info = SubtreeStateSyncInfo::default();
         let root_prefix = [0u8; 32];
-        if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx) {
+        if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx, grove_version) {
             let restorer = Restorer::new(merk, app_hash, None);
             root_prefix_state_sync_info.restorer = Some(restorer);
             root_prefix_state_sync_info.pending_chunks.insert(vec![]);
@@ -407,7 +436,12 @@ impl GroveDb {
         chunk: Vec<u8>,
         tx: &'db Transaction,
         version: u16,
+        grove_version: &GroveVersion,
     ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+        check_grovedb_v0!(
+            "apply_chunk",
+            grove_version.grovedb_versions.replication.apply_chunk
+        );
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -432,7 +466,7 @@ impl GroveDb {
         }
         if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
             if let Ok((res, mut new_subtree_state_sync)) =
-                self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk)
+                self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk, grove_version)
             {
                 if !res.is_empty() {
                     for local_chunk_id in res.iter() {
@@ -462,7 +496,7 @@ impl GroveDb {
                         )),
                         Some(restorer) => {
                             if (new_subtree_state_sync.num_processed_chunks > 0)
-                                && (restorer.finalize().is_err())
+                                && (restorer.finalize(grove_version).is_err())
                             {
                                 return Err(Error::InternalError(
                                     "Unable to finalize Merk".to_string(),
@@ -472,7 +506,8 @@ impl GroveDb {
 
                             // Subtree was successfully save. Time to discover new subtrees that
                             // need to be processed
-                            let subtrees_metadata = self.get_subtrees_metadata(Some(tx))?;
+                            let subtrees_metadata =
+                                self.get_subtrees_metadata(Some(tx), grove_version)?;
                             if let Some(value) = subtrees_metadata.data.get(&chunk_prefix) {
                                 println!(
                                     "    path:{:?} done (num_processed_chunks:{:?})",
@@ -481,9 +516,12 @@ impl GroveDb {
                                 );
                             }
 
-                            if let Ok((res, new_state_sync_info)) =
-                                self.discover_subtrees(state_sync_info, subtrees_metadata, tx)
-                            {
+                            if let Ok((res, new_state_sync_info)) = self.discover_subtrees(
+                                state_sync_info,
+                                subtrees_metadata,
+                                tx,
+                                grove_version,
+                            ) {
                                 next_chunk_ids.extend(res);
                                 Ok((next_chunk_ids, new_state_sync_info))
                             } else {
@@ -515,6 +553,7 @@ impl GroveDb {
         mut state_sync_info: SubtreeStateSyncInfo<'db>,
         chunk_id: &[u8],
         chunk_data: Vec<u8>,
+        grove_version: &GroveVersion,
     ) -> Result<(Vec<Vec<u8>>, SubtreeStateSyncInfo), Error> {
         let mut res = vec![];
 
@@ -529,7 +568,7 @@ impl GroveDb {
                 if !chunk_data.is_empty() {
                     match util_decode_vec_ops(chunk_data) {
                         Ok(ops) => {
-                            match restorer.process_chunk(chunk_id, ops) {
+                            match restorer.process_chunk(chunk_id, ops, grove_version) {
                                 Ok(next_chunk_ids) => {
                                     state_sync_info.num_processed_chunks += 1;
                                     for next_chunk_id in next_chunk_ids {
@@ -576,6 +615,7 @@ impl GroveDb {
         mut state_sync_info: MultiStateSyncInfo<'db>,
         subtrees_metadata: SubtreesMetadata,
         tx: &'db Transaction,
+        grove_version: &GroveVersion,
     ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
         let mut res = vec![];
 
@@ -594,7 +634,7 @@ impl GroveDb {
                 );
 
                 let mut subtree_state_sync_info = SubtreeStateSyncInfo::default();
-                if let Ok(merk) = self.open_merk_for_replication(path.into(), tx) {
+                if let Ok(merk) = self.open_merk_for_replication(path.into(), tx, grove_version) {
                     let restorer =
                         Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
                     subtree_state_sync_info.restorer = Some(restorer);

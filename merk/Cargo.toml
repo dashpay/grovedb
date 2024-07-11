@@ -20,6 +20,7 @@ grovedb-costs = { version = "1.0.0-rc.2", path = "../costs" }
 grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize" }
 grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
 hex = { version = "0.4.3" }
+grovedb-version = { version = "1.0.0-rc.2", path = "../grovedb-version" }
 
 [dependencies.time]
 version = "0.3.34"

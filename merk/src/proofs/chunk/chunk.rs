@@ -27,6 +27,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_version::version::GroveVersion;
 
 // TODO: add copyright comment
 use crate::proofs::{Node, Op, Tree};
@@ -44,11 +45,15 @@ where
     S: Fetch + Sized + Clone,
 {
     /// Returns a chunk of a given depth from a RefWalker
-    pub fn create_chunk(&mut self, depth: usize) -> Result<Vec<Op>, Error> {
+    pub fn create_chunk(
+        &mut self,
+        depth: usize,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<Op>, Error> {
         // build the proof vector
         let mut proof = vec![];
 
-        self.create_chunk_internal(&mut proof, depth)?;
+        self.create_chunk_internal(&mut proof, depth, grove_version)?;
 
         Ok(proof)
     }
@@ -57,6 +62,7 @@ where
         &mut self,
         proof: &mut Vec<Op>,
         remaining_depth: usize,
+        grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         // at some point we will reach the depth
         // here we need to put the node hash
@@ -69,10 +75,14 @@ where
         let has_left_child = self.tree().link(true).is_some();
         if has_left_child {
             let mut left = self
-                .walk(true, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+                .walk(
+                    true,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
                 .unwrap()?
                 .expect("confirmed is some");
-            left.create_chunk_internal(proof, remaining_depth - 1)?;
+            left.create_chunk_internal(proof, remaining_depth - 1, grove_version)?;
         }
 
         // add current node's data
@@ -84,10 +94,14 @@ where
 
         // traverse right
         if let Some(mut right) = self
-            .walk(false, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            .walk(
+                false,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
             .unwrap()?
         {
-            right.create_chunk_internal(proof, remaining_depth - 1)?;
+            right.create_chunk_internal(proof, remaining_depth - 1, grove_version)?;
 
             proof.push(Op::Child);
         }
@@ -101,11 +115,12 @@ where
         &mut self,
         instructions: &[bool],
         depth: usize,
+        grove_version: &GroveVersion,
     ) -> Result<Vec<Op>, Error> {
         // base case
         if instructions.is_empty() {
             // we are at the desired node
-            return self.create_chunk(depth);
+            return self.create_chunk(depth, grove_version);
         }
 
         // link must exist
@@ -120,13 +135,14 @@ where
         let mut child = self
             .walk(
                 instructions[0],
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()?
             .expect("confirmed link exists so cannot be none");
 
         // recurse on child
-        child.traverse_and_build_chunk(&instructions[1..], depth)
+        child.traverse_and_build_chunk(&instructions[1..], depth, grove_version)
     }
 
     /// Returns the smallest amount of tree ops, that can convince
@@ -140,7 +156,11 @@ where
     ///     .
     ///     .
     ///     .
-    pub fn generate_height_proof(&mut self, proof: &mut Vec<Op>) -> CostResult<(), Error> {
+    pub fn generate_height_proof(
+        &mut self,
+        proof: &mut Vec<Op>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
         // TODO: look into making height proofs more efficient
         //  they will always be used in the context of some
         //  existing chunk, we don't want to repeat nodes unnecessarily
@@ -148,13 +168,17 @@ where
 
         let maybe_left = cost_return_on_error!(
             &mut cost,
-            self.walk(LEFT, None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>)
+            self.walk(
+                LEFT,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version
+            )
         );
         let has_left_child = maybe_left.is_some();
 
         // recurse to leftmost element
         if let Some(mut left) = maybe_left {
-            cost_return_on_error!(&mut cost, left.generate_height_proof(proof))
+            cost_return_on_error!(&mut cost, left.generate_height_proof(proof, grove_version))
         }
 
         proof.push(Op::Push(self.to_kvhash_node()));
@@ -207,6 +231,7 @@ pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
 #[cfg(test)]
 pub mod tests {
     use ed::Encode;
+    use grovedb_version::version::GroveVersion;
 
     use crate::{
         proofs::{
@@ -220,6 +245,7 @@ pub mod tests {
     };
 
     fn build_tree_10_nodes() -> TreeNode {
+        let grove_version = GroveVersion::latest();
         //              3
         //           /      \
         //          1         7
@@ -227,7 +253,7 @@ pub mod tests {
         //       0       2 5      8
         //                / \      \
         //               4   6      9
-        make_tree_seq_with_start_key(10, [0; 8].to_vec())
+        make_tree_seq_with_start_key(10, [0; 8].to_vec(), grove_version)
     }
 
     /// Traverses a tree to a certain node and returns the node hash of that
@@ -235,10 +261,14 @@ pub mod tests {
     pub fn traverse_get_node_hash(
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
+        grove_version: &GroveVersion,
     ) -> Node {
-        traverse_and_apply(walker, traverse_instructions, |walker| {
-            walker.to_hash_node().unwrap()
-        })
+        traverse_and_apply(
+            walker,
+            traverse_instructions,
+            |walker| walker.to_hash_node().unwrap(),
+            grove_version,
+        )
     }
 
     /// Traverses a tree to a certain node and returns the kv_feature_type of
@@ -246,20 +276,28 @@ pub mod tests {
     pub fn traverse_get_kv_feature_type(
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
+        grove_version: &GroveVersion,
     ) -> Node {
-        traverse_and_apply(walker, traverse_instructions, |walker| {
-            walker.to_kv_value_hash_feature_type_node()
-        })
+        traverse_and_apply(
+            walker,
+            traverse_instructions,
+            |walker| walker.to_kv_value_hash_feature_type_node(),
+            grove_version,
+        )
     }
     /// Traverses a tree to a certain node and returns the kv_hash of
     /// that node
     pub fn traverse_get_kv_hash(
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
+        grove_version: &GroveVersion,
     ) -> Node {
-        traverse_and_apply(walker, traverse_instructions, |walker| {
-            walker.to_kvhash_node()
-        })
+        traverse_and_apply(
+            walker,
+            traverse_instructions,
+            |walker| walker.to_kvhash_node(),
+            grove_version,
+        )
     }
 
     /// Traverses a tree to a certain node and returns the result of applying
@@ -268,6 +306,7 @@ pub mod tests {
         walker: &mut RefWalker<PanicSource>,
         traverse_instructions: &[bool],
         apply_fn: T,
+        grove_version: &GroveVersion,
     ) -> Node
     where
         T: Fn(&mut RefWalker<PanicSource>) -> Node,
@@ -279,25 +318,34 @@ pub mod tests {
         let mut child = walker
             .walk(
                 traverse_instructions[0],
-                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
             )
             .unwrap()
             .unwrap()
             .unwrap();
-        traverse_and_apply(&mut child, &traverse_instructions[1..], apply_fn)
+        traverse_and_apply(
+            &mut child,
+            &traverse_instructions[1..],
+            apply_fn,
+            grove_version,
+        )
     }
 
     #[test]
     fn build_chunk_from_root_depth_0() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
         // should return the node hash of the root node
-        let chunk = tree_walker.create_chunk(0).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(0, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 1);
         assert_eq!(
             chunk[0],
-            Op::Push(traverse_get_node_hash(&mut tree_walker, &[]))
+            Op::Push(traverse_get_node_hash(&mut tree_walker, &[], grove_version))
         );
 
         let computed_tree = execute(chunk.into_iter().map(Ok), true, |_| Ok(()))
@@ -308,6 +356,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_from_root_depth_1() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -316,15 +365,29 @@ pub mod tests {
         //              3
         //           /      \
         //        Hash(1)   Hash(7)
-        let chunk = tree_walker.create_chunk(1).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(1, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 5);
         assert_eq!(
             chunk,
             vec![
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT])),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Child
             ]
         );
@@ -337,6 +400,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_from_root_depth_3() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -349,47 +413,68 @@ pub mod tests {
         //       0       2 5      8
         //                / \      \
         //             H(4) H(6)   H(9)
-        let chunk = tree_walker.create_chunk(3).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(3, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
         assert_eq!(
             chunk,
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT]
+                    &[LEFT, LEFT],
+                    grove_version
                 )),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT]
+                    &[LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
                 Op::Child,
@@ -405,6 +490,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_from_root_depth_max_depth() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -416,47 +502,68 @@ pub mod tests {
         //       0       2 5      8
         //                / \      \
         //               4   6      9
-        let chunk = tree_walker.create_chunk(4).expect("should build chunk");
+        let chunk = tree_walker
+            .create_chunk(4, grove_version)
+            .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
         assert_eq!(
             chunk,
             vec![
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, LEFT]
+                    &[LEFT, LEFT],
+                    grove_version
                 )),
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[LEFT, RIGHT]
+                    &[LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[])),
-                Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
-                )),
-                Op::Push(traverse_get_kv_feature_type(
-                    &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT],
+                    grove_version
+                )),
+                Op::Parent,
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
                 Op::Child,
@@ -472,13 +579,18 @@ pub mod tests {
 
     #[test]
     fn chunk_greater_than_max_should_equal_max_depth() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
         // build chunk with depth greater than tree
         // we should get the same result as building with the exact depth
-        let large_depth_chunk = tree_walker.create_chunk(100).expect("should build chunk");
-        let exact_depth_chunk = tree_walker.create_chunk(4).expect("should build chunk");
+        let large_depth_chunk = tree_walker
+            .create_chunk(100, grove_version)
+            .expect("should build chunk");
+        let exact_depth_chunk = tree_walker
+            .create_chunk(4, grove_version)
+            .expect("should build chunk");
         assert_eq!(large_depth_chunk, exact_depth_chunk);
 
         let tree_a = execute(large_depth_chunk.into_iter().map(Ok), true, |_| Ok(()))
@@ -492,6 +604,7 @@ pub mod tests {
 
     #[test]
     fn build_chunk_after_traversal_depth_2() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -505,34 +618,43 @@ pub mod tests {
 
         // right traversal
         let chunk = tree_walker
-            .traverse_and_build_chunk(&[RIGHT], 2)
+            .traverse_and_build_chunk(&[RIGHT], 2, grove_version)
             .expect("should build chunk");
         assert_eq!(
             chunk,
             vec![
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
-                Op::Push(traverse_get_kv_feature_type(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_kv_feature_type(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Parent,
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT]
+                    &[RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, RIGHT, RIGHT]
+                    &[RIGHT, RIGHT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
                 Op::Child,
@@ -547,12 +669,13 @@ pub mod tests {
             .expect("should reconstruct tree");
         assert_eq!(
             Node::Hash(computed_tree.hash().unwrap()),
-            traverse_get_node_hash(&mut tree_walker, &[RIGHT])
+            traverse_get_node_hash(&mut tree_walker, &[RIGHT], grove_version)
         );
     }
 
     #[test]
     fn build_chunk_after_traversal_depth_1() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -564,23 +687,26 @@ pub mod tests {
 
         // instruction traversal
         let chunk = tree_walker
-            .traverse_and_build_chunk(&[RIGHT, LEFT], 1)
+            .traverse_and_build_chunk(&[RIGHT, LEFT], 1, grove_version)
             .expect("should build chunk");
         assert_eq!(
             chunk,
             vec![
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, LEFT]
+                    &[RIGHT, LEFT, LEFT],
+                    grove_version
                 )),
                 Op::Push(traverse_get_kv_feature_type(
                     &mut tree_walker,
-                    &[RIGHT, LEFT]
+                    &[RIGHT, LEFT],
+                    grove_version
                 )),
                 Op::Parent,
                 Op::Push(traverse_get_node_hash(
                     &mut tree_walker,
-                    &[RIGHT, LEFT, RIGHT]
+                    &[RIGHT, LEFT, RIGHT],
+                    grove_version
                 )),
                 Op::Child,
             ]
@@ -591,7 +717,7 @@ pub mod tests {
             .expect("should reconstruct tree");
         assert_eq!(
             Node::Hash(computed_tree.hash().unwrap()),
-            traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT])
+            traverse_get_node_hash(&mut tree_walker, &[RIGHT, LEFT], grove_version)
         );
     }
 
@@ -616,12 +742,13 @@ pub mod tests {
 
     #[test]
     fn test_height_proof_generation() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
         let mut height_proof = vec![];
         tree_walker
-            .generate_height_proof(&mut height_proof)
+            .generate_height_proof(&mut height_proof, grove_version)
             .unwrap()
             .expect("should generate height proof");
 
@@ -629,14 +756,30 @@ pub mod tests {
         assert_eq!(
             height_proof,
             vec![
-                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[LEFT, LEFT])),
-                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[LEFT])),
+                Op::Push(traverse_get_kv_hash(
+                    &mut tree_walker,
+                    &[LEFT, LEFT],
+                    grove_version
+                )),
+                Op::Push(traverse_get_kv_hash(
+                    &mut tree_walker,
+                    &[LEFT],
+                    grove_version
+                )),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[LEFT, RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[LEFT, RIGHT],
+                    grove_version
+                )),
                 Op::Child,
-                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[])),
+                Op::Push(traverse_get_kv_hash(&mut tree_walker, &[], grove_version)),
                 Op::Parent,
-                Op::Push(traverse_get_node_hash(&mut tree_walker, &[RIGHT])),
+                Op::Push(traverse_get_node_hash(
+                    &mut tree_walker,
+                    &[RIGHT],
+                    grove_version
+                )),
                 Op::Child,
             ]
         );
@@ -644,12 +787,13 @@ pub mod tests {
 
     #[test]
     fn test_height_proof_verification() {
+        let grove_version = GroveVersion::latest();
         let mut tree = build_tree_10_nodes();
         let mut tree_walker = RefWalker::new(&mut tree, PanicSource {});
 
         let mut height_proof = vec![];
         tree_walker
-            .generate_height_proof(&mut height_proof)
+            .generate_height_proof(&mut height_proof, grove_version)
             .unwrap()
             .expect("should generate height proof");
 

@@ -2,6 +2,7 @@
 
 use grovedb_costs::CostsExt;
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 
 use crate::{tree::kv::ValueDefinedCostType, Error, Merk};
 
@@ -18,7 +19,8 @@ impl<'a, S: StorageContext<'a>> Merk<S> {
                 }
                 .wrap_with_cost(Default::default())
             },
-            None::<fn(&[u8]) -> Option<ValueDefinedCostType>>, // I wish I knew why
+            None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            GroveVersion::latest(),
         )
         .unwrap()
     }

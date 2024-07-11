@@ -33,14 +33,14 @@ fn main() {
         .expect("expected successful get_path_query");
 
     // Generate proof.
-    let proof = db.prove_query(&path_query, None).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
 
     // Get hash from query proof and print to terminal along with GroveDB root hash.
-    let (hash, _result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    let (hash, _result_set) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
 
     // See if the query proof hash matches the GroveDB root hash
     println!("Does the hash generated from the query proof match the GroveDB root hash?");
-    if hash == db.root_hash(None).unwrap().unwrap() {
+    if hash == db.root_hash(None, grove_version).unwrap().unwrap() {
         println!("Yes");
     } else {
         println!("No");
@@ -52,13 +52,13 @@ fn populate(db: &GroveDb) {
 
     // Put an empty subtree into the root tree nodes at KEY1.
     // Call this SUBTREE1.
-    db.insert(root_path, KEY1, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(root_path, KEY1, Element::empty_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successful SUBTREE1 insert");
 
     // Put an empty subtree into subtree1 at KEY2.
     // Call this SUBTREE2.
-    db.insert(&[KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(&[KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successful SUBTREE2 insert");
 
@@ -71,6 +71,7 @@ fn populate(db: &GroveDb) {
             Element::new_item(i_vec.clone()),
             INSERT_OPTIONS,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successfully inserted values");

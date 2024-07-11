@@ -8,6 +8,7 @@ use grovedb_costs::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "full")]
 use super::TreeNode;
@@ -26,16 +27,22 @@ impl TreeNode {
     pub fn decode_raw(
         bytes: &[u8],
         key: Vec<u8>,
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
     ) -> Result<Self, Error> {
-        TreeNode::decode(key, bytes, value_defined_cost_fn).map_err(EdError)
+        TreeNode::decode(key, bytes, value_defined_cost_fn, grove_version).map_err(EdError)
     }
 
     /// Get value from storage given key.
     pub(crate) fn get<'db, S, K>(
         storage: &S,
         key: K,
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
     ) -> CostResult<Option<Self>, Error>
     where
         S: StorageContext<'db>,
@@ -47,7 +54,12 @@ impl TreeNode {
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
             tree_bytes
-                .map(|x| TreeNode::decode_raw(&x, key.as_ref().to_vec(), value_defined_cost_fn))
+                .map(|x| TreeNode::decode_raw(
+                    &x,
+                    key.as_ref().to_vec(),
+                    value_defined_cost_fn,
+                    grove_version
+                ))
                 .transpose()
         );
 
@@ -96,13 +108,16 @@ impl TreeNode {
         &mut self,
         key: Vec<u8>,
         input: &[u8],
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
     ) -> ed::Result<()> {
         let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
         if let Some(value_defined_cost_fn) = value_defined_cost_fn {
             tree_inner.kv.value_defined_cost =
-                value_defined_cost_fn(tree_inner.kv.value.as_slice());
+                value_defined_cost_fn(tree_inner.kv.value.as_slice(), grove_version);
         }
         self.inner = Box::new(tree_inner);
         Ok(())
@@ -113,13 +128,16 @@ impl TreeNode {
     pub fn decode(
         key: Vec<u8>,
         input: &[u8],
-        value_defined_cost_fn: Option<impl Fn(&[u8]) -> Option<ValueDefinedCostType>>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
     ) -> ed::Result<Self> {
         let mut tree_inner: TreeNodeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
         if let Some(value_defined_cost_fn) = value_defined_cost_fn {
             tree_inner.kv.value_defined_cost =
-                value_defined_cost_fn(tree_inner.kv.value.as_slice());
+                value_defined_cost_fn(tree_inner.kv.value.as_slice(), grove_version);
         }
         Ok(TreeNode::new_with_tree_inner(tree_inner))
     }
@@ -268,6 +286,7 @@ mod tests {
 
     #[test]
     fn decode_leaf_tree() {
+        let grove_version = GroveVersion::latest();
         let bytes = vec![
             0, 0, 0, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
             55, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158,
@@ -277,7 +296,8 @@ mod tests {
         let tree = TreeNode::decode(
             vec![0],
             bytes.as_slice(),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
@@ -287,6 +307,7 @@ mod tests {
 
     #[test]
     fn decode_reference_tree() {
+        let grove_version = GroveVersion::latest();
         let bytes = vec![
             1, 1, 2, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
             66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 0, 0, 55, 55, 55, 55,
@@ -297,7 +318,8 @@ mod tests {
         let tree = TreeNode::decode(
             vec![0],
             bytes.as_slice(),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         )
         .expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
@@ -319,11 +341,13 @@ mod tests {
 
     #[test]
     fn decode_invalid_bytes_as_tree() {
+        let grove_version = GroveVersion::latest();
         let bytes = vec![2, 3, 4, 5];
         let tree = TreeNode::decode(
             vec![0],
             bytes.as_slice(),
-            None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
         );
         assert!(tree.is_err());
     }

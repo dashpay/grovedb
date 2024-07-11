@@ -50,9 +50,16 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
-    db.insert(EMPTY_PATH, test_leaf, Element::empty_tree(), None, None)
-        .unwrap()
-        .unwrap();
+    db.insert(
+        EMPTY_PATH,
+        test_leaf,
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("scalars insertion without transaction", |b| {
@@ -64,6 +71,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
                     Element::new_item(k.to_vec()),
                     None,
                     None,
+                    grove_version,
                 )
                 .unwrap()
                 .unwrap();
@@ -79,9 +87,16 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
-    db.insert(EMPTY_PATH, test_leaf, Element::empty_tree(), None, None)
-        .unwrap()
-        .unwrap();
+    db.insert(
+        EMPTY_PATH,
+        test_leaf,
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("scalars insertion with transaction", |b| {
@@ -94,6 +109,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
                     Element::new_item(k.to_vec()),
                     None,
                     Some(&tx),
+                    grove_version,
                 )
                 .unwrap()
                 .unwrap();
@@ -113,9 +129,16 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     c.bench_function("root leaves insertion without transaction", |b| {
         b.iter(|| {
             for k in keys.clone() {
-                db.insert(EMPTY_PATH, &k, Element::empty_tree(), None, None)
-                    .unwrap()
-                    .unwrap();
+                db.insert(
+                    EMPTY_PATH,
+                    &k,
+                    Element::empty_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap();
             }
         })
     });
@@ -132,9 +155,16 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
         b.iter(|| {
             let tx = db.start_transaction();
             for k in keys.clone() {
-                db.insert(EMPTY_PATH, &k, Element::empty_tree(), None, Some(&tx))
-                    .unwrap()
-                    .unwrap();
+                db.insert(
+                    EMPTY_PATH,
+                    &k,
+                    Element::empty_tree(),
+                    None,
+                    Some(&tx),
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap();
             }
             db.commit_transaction(tx).unwrap().unwrap();
         })
@@ -155,6 +185,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -172,6 +203,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
                     Element::new_item(k.to_vec()),
                     None,
                     None,
+                    grove_version,
                 )
                 .unwrap()
                 .unwrap();
@@ -194,6 +226,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -212,6 +245,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
                     Element::new_item(k.to_vec()),
                     None,
                     Some(&tx),
+                    grove_version,
                 )
                 .unwrap()
                 .unwrap();

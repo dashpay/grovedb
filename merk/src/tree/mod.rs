@@ -42,6 +42,7 @@ use grovedb_costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH,
@@ -922,9 +923,10 @@ impl TreeNode {
         left: bool,
         source: &S,
         value_defined_cost_fn: Option<&V>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
-        V: Fn(&[u8]) -> Option<ValueDefinedCostType>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
@@ -939,7 +941,10 @@ impl TreeNode {
         };
 
         let mut cost = OperationCost::default();
-        let tree = cost_return_on_error!(&mut cost, source.fetch(link, value_defined_cost_fn));
+        let tree = cost_return_on_error!(
+            &mut cost,
+            source.fetch(link, value_defined_cost_fn, grove_version)
+        );
         debug_assert_eq!(tree.key(), link.key());
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,

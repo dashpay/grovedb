@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Worst case costs
 
 #[cfg(feature = "full")]
@@ -45,6 +17,7 @@ use grovedb_merk::estimated_costs::worst_case_costs::{
 use grovedb_merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
 
@@ -66,6 +39,7 @@ impl Op {
         is_in_parent_sum_tree: bool,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let propagate_if_input = || {
             if propagate {
@@ -81,6 +55,7 @@ impl Op {
                 is_in_parent_sum_tree,
                 worst_case_layer_element_estimates,
                 propagate,
+                grove_version,
             ),
             Op::InsertTreeWithRootHash { flags, sum, .. } => GroveDb::worst_case_merk_insert_tree(
                 key,
@@ -88,12 +63,14 @@ impl Op {
                 sum.is_some(),
                 is_in_parent_sum_tree,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
                 key,
                 element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::RefreshReference {
                 reference_path_type,
@@ -109,12 +86,14 @@ impl Op {
                 ),
                 is_in_parent_sum_tree,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::Patch {
                 element,
@@ -124,23 +103,27 @@ impl Op {
                 element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
+                grove_version,
             ),
             Op::Delete => GroveDb::worst_case_merk_delete_element(
                 key,
                 worst_case_layer_element_estimates,
                 propagate,
+                grove_version,
             ),
             Op::DeleteTree => GroveDb::worst_case_merk_delete_tree(
                 key,
                 false,
                 worst_case_layer_element_estimates,
                 propagate,
+                grove_version,
             ),
             Op::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
                 key,
                 true,
                 worst_case_layer_element_estimates,
                 propagate,
+                grove_version,
             ),
         }
     }
@@ -200,6 +183,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
+        grove_version: &GroveVersion,
     ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
 
@@ -215,14 +199,28 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
 
         // Then we have to get the tree
         if !self.cached_merks.contains(path) {
-            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path, false);
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                    &mut cost,
+                    path,
+                    false,
+                    grove_version,
+                )
+            );
             self.cached_merks.insert(path.clone());
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.worst_case_cost(&key, false, worst_case_layer_element_estimates, false)
+                op.worst_case_cost(
+                    &key,
+                    false,
+                    worst_case_layer_element_estimates,
+                    false,
+                    grove_version
+                )
             );
         }
 
@@ -233,15 +231,25 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
     }
 
-    fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
+    fn update_base_merk_root_key(
+        &mut self,
+        _root_key: Option<Vec<u8>>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         cost.seek_count += 1;
         let base_path = KeyInfoPath(vec![]);
         if let Some(_estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
             if !self.cached_merks.contains(&base_path) {
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
-                    &mut cost, &base_path, false,
+                cost_return_on_error_no_add!(
+                    &cost,
+                    GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                        &mut cost,
+                        &base_path,
+                        false,
+                        grove_version,
+                    )
                 );
                 self.cached_merks.insert(base_path);
             }
@@ -261,6 +269,7 @@ mod tests {
     };
     #[rustfmt::skip]
     use grovedb_merk::estimated_costs::worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber;
+    use grovedb_version::version::GroveVersion;
 
     use crate::{
         batch::{
@@ -273,6 +282,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_insert_op_worst_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -291,11 +301,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             worst_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
@@ -326,6 +337,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_with_flags_insert_op_worst_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -344,11 +356,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             worst_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
@@ -379,6 +392,7 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_item_insert_op_worst_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -397,11 +411,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             worst_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
@@ -432,12 +447,20 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_insert_op_under_element_worst_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![],
@@ -454,11 +477,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             worst_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
@@ -489,12 +513,20 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_tree_insert_op_in_sub_tree_worst_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"0", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"0",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![b"0".to_vec()],
@@ -515,11 +547,12 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert!(
             worst_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
@@ -544,12 +577,20 @@ mod tests {
 
     #[test]
     fn test_batch_worst_case_costs() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"keyb", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("successful root tree leaf insert");
+        db.insert(
+            EMPTY_PATH,
+            b"keyb",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful root tree leaf insert");
 
         let ops = vec![GroveDbOp::insert_op(
             vec![],
@@ -566,9 +607,10 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
+            grove_version,
         );
         assert!(worst_case_cost_result.value.is_ok());
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         // at the moment we just check the added bytes are the same
         assert_eq!(
             worst_case_cost_result.cost.storage_cost.added_bytes,

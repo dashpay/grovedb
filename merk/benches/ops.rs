@@ -42,7 +42,7 @@ fn insert_1m_10k_seq_memonly(c: &mut Criterion) {
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
 
-    let mut tree = Owner::new(make_tree_seq(initial_size));
+    let mut tree = Owner::new(make_tree_seq(initial_size, grove_version));
 
     let mut batches = Vec::new();
     for i in 0..n_batches {
@@ -54,7 +54,7 @@ fn insert_1m_10k_seq_memonly(c: &mut Criterion) {
 
         b.iter(|| {
             let batch = &batches[i % n_batches as usize];
-            tree.own(|tree| apply_memonly_unchecked(tree, batch));
+            tree.own(|tree| apply_memonly_unchecked(tree, batch, grove_version));
             i += 1;
         });
     });
@@ -66,7 +66,13 @@ fn insert_1m_10k_rand_memonly(c: &mut Criterion) {
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
 
-    let mut tree = Owner::new(make_tree_rand(initial_size, batch_size, 0, false));
+    let mut tree = Owner::new(make_tree_rand(
+        initial_size,
+        batch_size,
+        0,
+        false,
+        grove_version,
+    ));
 
     let mut batches = Vec::new();
     for i in 0..n_batches {
@@ -78,7 +84,7 @@ fn insert_1m_10k_rand_memonly(c: &mut Criterion) {
 
         b.iter(|| {
             let batch = &batches[i % n_batches as usize];
-            tree.own(|tree| apply_memonly_unchecked(tree, batch));
+            tree.own(|tree| apply_memonly_unchecked(tree, batch, grove_version));
             i += 1;
         });
     });
@@ -90,12 +96,12 @@ fn update_1m_10k_seq_memonly(c: &mut Criterion) {
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
 
-    let mut tree = Owner::new(make_tree_seq(initial_size));
+    let mut tree = Owner::new(make_tree_seq(initial_size, grove_version));
 
     let mut batches = Vec::new();
     for i in 0..n_batches {
         let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        tree.own(|tree| apply_memonly_unchecked(tree, &batch));
+        tree.own(|tree| apply_memonly_unchecked(tree, &batch, grove_version));
         batches.push(batch);
     }
 
@@ -104,7 +110,7 @@ fn update_1m_10k_seq_memonly(c: &mut Criterion) {
 
         b.iter(|| {
             let batch = &batches[i % n_batches as usize];
-            tree.own(|tree| apply_memonly_unchecked(tree, batch));
+            tree.own(|tree| apply_memonly_unchecked(tree, batch, grove_version));
             i += 1;
         });
     });
@@ -116,12 +122,18 @@ fn update_1m_10k_rand_memonly(c: &mut Criterion) {
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
 
-    let mut tree = Owner::new(make_tree_rand(initial_size, batch_size, 0, false));
+    let mut tree = Owner::new(make_tree_rand(
+        initial_size,
+        batch_size,
+        0,
+        false,
+        grove_version,
+    ));
 
     let mut batches = Vec::new();
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size, i);
-        tree.own(|tree| apply_memonly_unchecked(tree, &batch));
+        tree.own(|tree| apply_memonly_unchecked(tree, &batch, grove_version));
         batches.push(batch);
     }
 
@@ -130,7 +142,7 @@ fn update_1m_10k_rand_memonly(c: &mut Criterion) {
 
         b.iter(|| {
             let batch = &batches[i % n_batches as usize];
-            tree.own(|tree| apply_memonly_unchecked(tree, batch));
+            tree.own(|tree| apply_memonly_unchecked(tree, batch, grove_version));
             i += 1;
         });
     });

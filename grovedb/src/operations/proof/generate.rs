@@ -12,6 +12,9 @@ use grovedb_merk::{
     Merk, ProofWithoutEncodingResult,
 };
 use grovedb_storage::StorageContext;
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
 #[cfg(feature = "proof_debug")]
 use crate::query_result_type::QueryResultType;
@@ -31,12 +34,21 @@ impl GroveDb {
         &self,
         query: Vec<&PathQuery>,
         prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_query_many",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_query_many
+        );
         if query.len() > 1 {
-            let query = cost_return_on_error_default!(PathQuery::merge(query));
-            self.prove_query(&query, prove_options)
+            let query = cost_return_on_error_default!(PathQuery::merge(query, grove_version));
+            self.prove_query(&query, prove_options, grove_version)
         } else {
-            self.prove_query(query[0], prove_options)
+            self.prove_query(query[0], prove_options, grove_version)
         }
     }
 
@@ -48,8 +60,13 @@ impl GroveDb {
         &self,
         query: &PathQuery,
         prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
-        self.prove_internal_serialized(query, prove_options)
+        check_grovedb_v0_with_cost!(
+            "prove_query_many",
+            grove_version.grovedb_versions.operations.proof.prove_query
+        );
+        self.prove_internal_serialized(query, prove_options, grove_version)
     }
 
     /// Generates a proof and serializes it
@@ -57,10 +74,13 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
-        let proof =
-            cost_return_on_error!(&mut cost, self.prove_internal(path_query, prove_options));
+        let proof = cost_return_on_error!(
+            &mut cost,
+            self.prove_internal(path_query, prove_options, grove_version)
+        );
         #[cfg(feature = "proof_debug")]
         {
             println!("constructed proof is {}", proof);
@@ -81,6 +101,7 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
 
@@ -113,7 +134,8 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None
+                    None,
+                    grove_version,
                 )
             )
             .0;
@@ -128,7 +150,8 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None
+                    None,
+                    grove_version,
                 )
             )
             .0
@@ -141,7 +164,13 @@ impl GroveDb {
 
         let root_layer = cost_return_on_error!(
             &mut cost,
-            self.prove_subqueries(vec![], path_query, &mut limit, &prove_options)
+            self.prove_subqueries(
+                vec![],
+                path_query,
+                &mut limit,
+                &prove_options,
+                grove_version
+            )
         );
 
         Ok(GroveDBProofV0 {
@@ -160,26 +189,29 @@ impl GroveDb {
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error_no_add!(
             &cost,
             path_query
-                .query_items_at_path(path.as_slice())
-                .ok_or(Error::CorruptedPath(format!(
-                    "prove subqueries: path {} should be part of path_query {}",
-                    path.iter()
-                        .map(|a| hex_to_ascii(a))
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    path_query
-                )))
+                .query_items_at_path(path.as_slice(), grove_version)
+                .and_then(|query_items| {
+                    query_items.ok_or(Error::CorruptedPath(format!(
+                        "prove subqueries: path {} should be part of path_query {}",
+                        path.iter()
+                            .map(|a| hex_to_ascii(a))
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                        path_query
+                    )))
+                })
         );
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.as_slice().into(), None)
+            self.open_non_transactional_merk_at_path(path.as_slice().into(), None, grove_version)
         );
 
         let limit = if path.len() < path_query.path.len() {
@@ -191,7 +223,13 @@ impl GroveDb {
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
-            self.generate_merk_proof(&subtree, &query.items, query.left_to_right, limit)
+            self.generate_merk_proof(
+                &subtree,
+                &query.items,
+                query.left_to_right,
+                limit,
+                grove_version
+            )
         );
 
         #[cfg(feature = "proof_debug")]
@@ -223,7 +261,7 @@ impl GroveDb {
                     Node::KV(key, value) | Node::KVValueHash(key, value, ..)
                         if !done_with_results =>
                     {
-                        let elem = Element::deserialize(value);
+                        let elem = Element::deserialize(value, grove_version);
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
                                 let absolute_path = cost_return_on_error!(
@@ -241,11 +279,13 @@ impl GroveDb {
                                     self.follow_reference(
                                         absolute_path.as_slice().into(),
                                         true,
-                                        None
+                                        None,
+                                        grove_version
                                     )
                                 );
 
-                                let serialized_referenced_elem = referenced_elem.serialize();
+                                let serialized_referenced_elem =
+                                    referenced_elem.serialize(grove_version);
                                 if serialized_referenced_elem.is_err() {
                                     return Err(Error::CorruptedData(String::from(
                                         "unable to serialize element",
@@ -300,6 +340,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        grove_version,
                                     )
                                 );
 
@@ -379,12 +420,13 @@ impl GroveDb {
         query_items: &[QueryItem],
         left_to_right: bool,
         limit: Option<u16>,
+        grove_version: &GroveVersion,
     ) -> CostResult<ProofWithoutEncodingResult, Error>
     where
         S: StorageContext<'a> + 'a,
     {
         subtree
-            .prove_unchecked_query_items(query_items, limit, left_to_right)
+            .prove_unchecked_query_items(query_items, limit, left_to_right, grove_version)
             .map_ok(|(proof, limit)| ProofWithoutEncodingResult::new(proof, limit))
             .map_err(|e| {
                 Error::InternalError(format!(

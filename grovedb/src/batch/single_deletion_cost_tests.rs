@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Tests
 
 #[cfg(feature = "full")]
@@ -35,6 +7,7 @@ mod tests {
         Identifier, StorageRemovalPerEpochByIdentifier,
         StorageRemovedBytes::SectionedStorageRemoval,
     };
+    use grovedb_version::version::GroveVersion;
     use intmap::IntMap;
 
     use crate::{
@@ -45,17 +18,25 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_tree_costs_match_non_batch_on_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -93,7 +74,7 @@ mod tests {
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
-            .apply_batch(ops, None, Some(&tx))
+            .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
@@ -101,6 +82,7 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_item_costs_match_non_batch_on_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -110,6 +92,7 @@ mod tests {
                 Element::new_item(b"cat".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
@@ -117,7 +100,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -156,7 +139,7 @@ mod tests {
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::delete_op(vec![], b"key1".to_vec())];
         let batch_cost = db
-            .apply_batch(ops, None, Some(&tx))
+            .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
@@ -164,15 +147,23 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_tree_costs_match_non_batch_without_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -210,13 +201,20 @@ mod tests {
         let db = make_empty_grovedb();
 
         let _insertion_cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, None)
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
-            .apply_batch(ops, None, None)
+            .apply_batch(ops, None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
@@ -224,6 +222,7 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_item_costs_match_non_batch_without_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -233,12 +232,13 @@ mod tests {
                 Element::new_item(b"cat".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -283,13 +283,14 @@ mod tests {
                 Element::new_item(b"cat".to_vec()),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let ops = vec![GroveDbOp::delete_op(vec![], b"key1".to_vec())];
         let batch_cost = db
-            .apply_batch(ops, None, None)
+            .apply_batch(ops, None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
@@ -297,6 +298,7 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_tree_with_flags_costs_match_non_batch_on_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -306,6 +308,7 @@ mod tests {
                 Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
@@ -313,7 +316,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -356,7 +359,7 @@ mod tests {
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
-            .apply_batch(ops, None, Some(&tx))
+            .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
@@ -365,6 +368,7 @@ mod tests {
     #[test]
     fn test_batch_one_deletion_tree_with_identity_cost_flags_costs_match_non_batch_on_transaction()
     {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -374,6 +378,7 @@ mod tests {
                 Element::empty_tree_with_flags(Some(vec![0, 0])),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
@@ -402,6 +407,7 @@ mod tests {
                     let value_sectioned = SectionedStorageRemoval(removed_bytes);
                     Ok((key_sectioned, value_sectioned))
                 },
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to delete successfully");
@@ -469,6 +475,7 @@ mod tests {
                     Ok((key_sectioned, value_sectioned))
                 },
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to delete successfully");
@@ -481,6 +488,7 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_item_with_flags_costs_match_non_batch_on_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -490,6 +498,7 @@ mod tests {
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
@@ -497,7 +506,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, Some(&tx))
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -536,7 +545,7 @@ mod tests {
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::delete_op(vec![], b"key1".to_vec())];
         let batch_cost = db
-            .apply_batch(ops, None, Some(&tx))
+            .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
@@ -544,6 +553,7 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_tree_with_flags_costs_match_non_batch_without_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -553,12 +563,13 @@ mod tests {
                 Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -607,13 +618,14 @@ mod tests {
                 Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
-            .apply_batch(ops, None, None)
+            .apply_batch(ops, None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
@@ -621,6 +633,7 @@ mod tests {
 
     #[test]
     fn test_batch_one_deletion_item_with_flags_costs_match_non_batch_without_transaction() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
         let insertion_cost = db
@@ -630,12 +643,13 @@ mod tests {
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let non_batch_cost = db
-            .delete(EMPTY_PATH, b"key1", None, None)
+            .delete(EMPTY_PATH, b"key1", None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -680,13 +694,14 @@ mod tests {
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert successfully");
 
         let ops = vec![GroveDbOp::delete_op(vec![], b"key1".to_vec())];
         let batch_cost = db
-            .apply_batch(ops, None, None)
+            .apply_batch(ops, None, None, grove_version)
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);

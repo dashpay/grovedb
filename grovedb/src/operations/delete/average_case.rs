@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Average case delete cost
 
 use grovedb_costs::{
@@ -39,6 +11,9 @@ use grovedb_merk::{
     HASH_LENGTH_U32,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use intmap::IntMap;
 
 use crate::{
@@ -58,7 +33,16 @@ impl GroveDb {
         stop_path_height: Option<u16>,
         validate: bool,
         estimated_layer_info: IntMap<EstimatedLayerInformation>,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
+        check_grovedb_v0_with_cost!(
+            "average_case_delete_operations_for_delete_up_tree_while_empty",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete_up_tree
+                .average_case_delete_operations_for_delete_up_tree_while_empty
+        );
         let mut cost = OperationCost::default();
 
         let stop_path_height = stop_path_height.unwrap_or_default();
@@ -134,14 +118,15 @@ impl GroveDb {
                 );
                 let op = cost_return_on_error!(
                     &mut cost,
-                    Self::average_case_delete_operation_for_delete_internal::<S>(
+                    Self::average_case_delete_operation_for_delete::<S>(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
                         is_sum_tree,
                         validate,
                         check_if_tree,
                         except_keys_count,
-                        (key_len, estimated_element_size)
+                        (key_len, estimated_element_size),
+                        grove_version,
                     )
                 );
                 ops.push(op);
@@ -150,8 +135,8 @@ impl GroveDb {
         }
     }
 
-    /// Average case delete operation for delete internal
-    pub fn average_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
+    /// Average case delete operation for delete
+    pub fn average_case_delete_operation_for_delete<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
         parent_tree_is_sum_tree: bool,
@@ -159,24 +144,41 @@ impl GroveDb {
         check_if_tree: bool,
         except_keys_count: u16,
         estimated_key_element_size: EstimatedKeyAndElementSize,
+        grove_version: &GroveVersion,
     ) -> CostResult<GroveDbOp, Error> {
+        check_grovedb_v0_with_cost!(
+            "average_case_delete_operation_for_delete",
+            grove_version
+                .grovedb_versions
+                .operations
+                .delete
+                .average_case_delete_operation_for_delete
+        );
         let mut cost = OperationCost::default();
 
         if validate {
-            GroveDb::add_average_case_get_merk_at_path::<S>(
-                &mut cost,
-                path,
-                false,
-                parent_tree_is_sum_tree,
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_average_case_get_merk_at_path::<S>(
+                    &mut cost,
+                    path,
+                    false,
+                    parent_tree_is_sum_tree,
+                    grove_version,
+                )
             );
         }
         if check_if_tree {
-            GroveDb::add_average_case_get_raw_cost::<S>(
-                &mut cost,
-                path,
-                key,
-                estimated_key_element_size.1,
-                parent_tree_is_sum_tree,
+            cost_return_on_error_no_add!(
+                &cost,
+                GroveDb::add_average_case_get_raw_cost::<S>(
+                    &mut cost,
+                    path,
+                    key,
+                    estimated_key_element_size.1,
+                    parent_tree_is_sum_tree,
+                    grove_version,
+                )
             );
         }
         // in the worst case this is a tree

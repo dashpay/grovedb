@@ -37,6 +37,7 @@ use bincode::{
 use grovedb_merk::{Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 use grovedb_visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
@@ -187,13 +188,14 @@ impl GroveDb {
         mut drawer: Drawer<W>,
         path: SubtreePathBuilder<'_, B>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
         storage_context_optional_tx!(self.db, (&path).into(), None, transaction, storage, {
             let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
             while let Some((key, element)) = iter
-                .next_element()
+                .next_element(grove_version)
                 .unwrap()
                 .expect("cannot get next element")
             {
@@ -209,6 +211,7 @@ impl GroveDb {
                             drawer,
                             path.derive_owned_with_child(key),
                             transaction,
+                            grove_version,
                         )?;
                         drawer.up();
                     }
@@ -227,10 +230,16 @@ impl GroveDb {
         &self,
         mut drawer: Drawer<W>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        drawer = self.draw_subtree(drawer, SubtreePathBuilder::new(), transaction)?;
+        drawer = self.draw_subtree(
+            drawer,
+            SubtreePathBuilder::new(),
+            transaction,
+            grove_version,
+        )?;
 
         drawer.up();
         Ok(drawer)
@@ -240,9 +249,10 @@ impl GroveDb {
         &self,
         mut drawer: Drawer<W>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.write(b"root")?;
-        drawer = self.draw_root_tree(drawer, transaction)?;
+        drawer = self.draw_root_tree(drawer, transaction, grove_version)?;
         drawer.flush()?;
         Ok(drawer)
     }
@@ -250,7 +260,7 @@ impl GroveDb {
 
 impl Visualize for GroveDb {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
-        self.visualize_start(drawer, None)
+        self.visualize_start(drawer, None, GroveVersion::latest())
     }
 }
 

@@ -74,7 +74,7 @@ pub fn add_worst_case_get_merk_node(
     not_prefixed_key_len: u32,
     max_element_size: u32,
     is_sum_node: bool,
-) {
+) -> Result<(), Error> {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
     cost.seek_count += 1;
@@ -83,6 +83,7 @@ pub fn add_worst_case_get_merk_node(
     // worst case, the node has both the left and right link present.
     cost.storage_loaded_bytes +=
         TreeNode::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node);
+    Ok(())
 }
 
 #[cfg(feature = "full")]
