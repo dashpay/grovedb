@@ -1,6 +1,6 @@
 [package]
 name = "grovedbg-types"
-version = "0.1.0"
+version = "1.0.0-rc.2"
 edition = "2021"
 
 [dependencies]
