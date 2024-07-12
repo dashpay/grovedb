@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-visualize"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 edition = "2021"
 license = "MIT"
 description = "Visualizer extension crate for GroveDB"
@@ -12,4 +12,4 @@ repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
 hex = "0.4.3"
-itertools = "0.10.3"
+itertools = "0.12.1"

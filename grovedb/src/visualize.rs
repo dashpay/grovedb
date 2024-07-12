@@ -30,10 +30,14 @@
 
 use std::io::{Result, Write};
 
-use bincode::Options;
+use bincode::{
+    config,
+    config::{BigEndian, Configuration},
+};
 use grovedb_merk::{Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
 use grovedb_storage::StorageContext;
+use grovedb_version::version::GroveVersion;
 use grovedb_visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
@@ -44,12 +48,24 @@ use crate::{
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
-            Element::Item(value, _) => {
+            Element::Item(value, flags) => {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
-            Element::SumItem(value, _) => {
+            Element::SumItem(value, flags) => {
                 drawer.write(format!("sum_item: {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
@@ -64,13 +80,26 @@ impl Visualize for Element {
                 // }
                 // drawer.write(b"]")?;
             }
-            Element::Tree(root_key, _) => {
+            Element::Tree(root_key, flags) => {
                 drawer.write(b"tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
-            Element::SumTree(root_key, ..) => {
+            Element::SumTree(root_key, value, flags) => {
                 drawer.write(b"sum_tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!(" {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
             }
         }
         Ok(drawer)
@@ -92,6 +121,21 @@ impl Visualize for ReferencePathType {
             }
             ReferencePathType::UpstreamRootHeightReference(height, end_path) => {
                 drawer.write(b"upstream root height reference: ")?;
+                drawer.write(format!("[height: {height}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+                height,
+                end_path,
+            ) => {
+                drawer.write(b"upstream root height with parent path addition reference: ")?;
                 drawer.write(format!("[height: {height}").as_bytes())?;
                 drawer.write(
                     end_path
@@ -144,13 +188,14 @@ impl GroveDb {
         mut drawer: Drawer<W>,
         path: SubtreePathBuilder<'_, B>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
         storage_context_optional_tx!(self.db, (&path).into(), None, transaction, storage, {
             let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
             while let Some((key, element)) = iter
-                .next_element()
+                .next_element(grove_version)
                 .unwrap()
                 .expect("cannot get next element")
             {
@@ -166,6 +211,7 @@ impl GroveDb {
                             drawer,
                             path.derive_owned_with_child(key),
                             transaction,
+                            grove_version,
                         )?;
                         drawer.up();
                     }
@@ -184,10 +230,16 @@ impl GroveDb {
         &self,
         mut drawer: Drawer<W>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        drawer = self.draw_subtree(drawer, SubtreePathBuilder::new(), transaction)?;
+        drawer = self.draw_subtree(
+            drawer,
+            SubtreePathBuilder::new(),
+            transaction,
+            grove_version,
+        )?;
 
         drawer.up();
         Ok(drawer)
@@ -197,9 +249,10 @@ impl GroveDb {
         &self,
         mut drawer: Drawer<W>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> Result<Drawer<W>> {
         drawer.write(b"root")?;
-        drawer = self.draw_root_tree(drawer, transaction)?;
+        drawer = self.draw_root_tree(drawer, transaction, grove_version)?;
         drawer.flush()?;
         Ok(drawer)
     }
@@ -207,18 +260,17 @@ impl GroveDb {
 
 impl Visualize for GroveDb {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
-        self.visualize_start(drawer, None)
+        self.visualize_start(drawer, None, GroveVersion::latest())
     }
 }
 
 #[allow(dead_code)]
 pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
-        bincode::DefaultOptions::default()
-            .with_varint_encoding()
-            .reject_trailing_bytes()
-            .deserialize::<Element>(bytes)
+        let config = config::standard().with_big_endian().with_no_limit();
+        bincode::decode_from_slice::<Element, Configuration<BigEndian>>(bytes, config)
             .expect("unable to deserialize Element")
+            .0
     }));
 }
 

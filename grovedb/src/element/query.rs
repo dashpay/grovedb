@@ -1,33 +1,7 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Query
 //! Implements functions in Element for querying
+
+use std::fmt;
 
 #[cfg(feature = "full")]
 use grovedb_costs::{
@@ -36,13 +10,20 @@ use grovedb_costs::{
 };
 #[cfg(feature = "full")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
+#[cfg(feature = "full")]
+use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
+#[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use grovedb_version::{
+    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
-use crate::query_result_type::Path;
+#[cfg(feature = "full")]
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::{
     element::helpers::raw_decode,
@@ -53,11 +34,58 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{Element, SizedQuery};
+use crate::{query_result_type::Path, Element, SizedQuery};
+
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(Copy, Clone, Debug)]
+pub struct QueryOptions {
+    pub allow_get_raw: bool,
+    pub allow_cache: bool,
+    /// Should we decrease the limit of elements found when we have no
+    /// subelements in the subquery? This should generally be set to true,
+    /// as having it false could mean very expensive queries. The queries
+    /// would be expensive because we could go through many many trees where the
+    /// sub elements have no matches, hence the limit would not decrease and
+    /// hence we would continue on the increasingly expensive query.
+    pub decrease_limit_on_range_with_no_sub_elements: bool,
+    pub error_if_intermediate_path_tree_not_present: bool,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for QueryOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "QueryOptions {{")?;
+        writeln!(f, "  allow_get_raw: {}", self.allow_get_raw)?;
+        writeln!(f, "  allow_cache: {}", self.allow_cache)?;
+        writeln!(
+            f,
+            "  decrease_limit_on_range_with_no_sub_elements: {}",
+            self.decrease_limit_on_range_with_no_sub_elements
+        )?;
+        writeln!(
+            f,
+            "  error_if_intermediate_path_tree_not_present: {}",
+            self.error_if_intermediate_path_tree_not_present
+        )?;
+        write!(f, "}}")
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl Default for QueryOptions {
+    fn default() -> Self {
+        QueryOptions {
+            allow_get_raw: false,
+            allow_cache: true,
+            decrease_limit_on_range_with_no_sub_elements: true,
+            error_if_intermediate_path_tree_not_present: true,
+        }
+    }
+}
 
 #[cfg(feature = "full")]
 /// Path query push arguments
@@ -73,12 +101,129 @@ where
     pub subquery_path: Option<Path>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
-    pub allow_get_raw: bool,
-    pub allow_cache: bool,
+    pub query_options: QueryOptions,
     pub result_type: QueryResultType,
     pub results: &'a mut Vec<QueryResultElement>,
     pub limit: &'a mut Option<u16>,
     pub offset: &'a mut Option<u16>,
+}
+
+#[cfg(feature = "full")]
+fn format_query(query: &Query, indent: usize) -> String {
+    let indent_str = " ".repeat(indent);
+    let mut output = format!("{}Query {{\n", indent_str);
+
+    output += &format!("{}  items: [\n", indent_str);
+    for item in &query.items {
+        output += &format!("{}    {},\n", indent_str, item);
+    }
+    output += &format!("{}  ],\n", indent_str);
+
+    output += &format!(
+        "{}  default_subquery_branch: {}\n",
+        indent_str,
+        format_subquery_branch(&query.default_subquery_branch, indent + 2)
+    );
+
+    if let Some(ref branches) = query.conditional_subquery_branches {
+        output += &format!("{}  conditional_subquery_branches: {{\n", indent_str);
+        for (item, branch) in branches {
+            output += &format!(
+                "{}    {}: {},\n",
+                indent_str,
+                item,
+                format_subquery_branch(branch, indent + 4)
+            );
+        }
+        output += &format!("{}  }},\n", indent_str);
+    }
+
+    output += &format!("{}  left_to_right: {}\n", indent_str, query.left_to_right);
+    output += &format!("{}}}", indent_str);
+
+    output
+}
+
+#[cfg(feature = "full")]
+fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
+    let indent_str = " ".repeat(indent);
+    let mut output = "SubqueryBranch {{\n".to_string();
+
+    if let Some(ref path) = branch.subquery_path {
+        output += &format!("{}  subquery_path: {:?},\n", indent_str, path);
+    }
+
+    if let Some(ref subquery) = branch.subquery {
+        output += &format!(
+            "{}  subquery: {},\n",
+            indent_str,
+            format_query(subquery, indent + 2)
+        );
+    }
+
+    output += &format!("{}}}", " ".repeat(indent));
+
+    output
+}
+
+#[cfg(feature = "full")]
+impl<'db, 'ctx, 'a> fmt::Display for PathQueryPushArgs<'db, 'ctx, 'a>
+where
+    'db: 'ctx,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "PathQueryPushArgs {{")?;
+        writeln!(
+            f,
+            "  key: {}",
+            self.key.map_or("None".to_string(), hex_to_ascii)
+        )?;
+        writeln!(f, "  element: {}", self.element)?;
+        writeln!(
+            f,
+            "  path: [{}]",
+            self.path
+                .iter()
+                .map(|p| hex_to_ascii(p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        writeln!(
+            f,
+            "  subquery_path: {}",
+            self.subquery_path
+                .as_ref()
+                .map_or("None".to_string(), |p| format!(
+                    "[{}]",
+                    p.iter()
+                        .map(|e| hex_to_ascii(e.as_slice()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+        )?;
+        writeln!(
+            f,
+            "  subquery: {}",
+            self.subquery
+                .as_ref()
+                .map_or("None".to_string(), |q| format!("\n{}", format_query(q, 4)))
+        )?;
+        writeln!(f, "  left_to_right: {}", self.left_to_right)?;
+        writeln!(f, "  query_options: {}", self.query_options)?;
+        writeln!(f, "  result_type: {}", self.result_type)?;
+        writeln!(
+            f,
+            "  results: [{}]",
+            self.results
+                .iter()
+                .map(|r| format!("{}", r))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+        writeln!(f, "  limit: {:?}", self.limit)?;
+        writeln!(f, "  offset: {:?}", self.offset)?;
+        write!(f, "}}")
+    }
 }
 
 impl Element {
@@ -88,17 +233,25 @@ impl Element {
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
         query: &Query,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_subtree_into_batch_operations",
+            grove_version.grovedb_versions.element.get_query
+        );
+
         let sized_query = SizedQuery::new(query.clone(), None, None);
         Element::get_sized_query(
             storage,
             merk_path,
             &sized_query,
-            true,
+            query_options,
             result_type,
             transaction,
+            grove_version,
         )
         .map_ok(|(elements, _)| elements)
     }
@@ -109,14 +262,23 @@ impl Element {
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
         query: &Query,
+        query_options: QueryOptions,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<Vec<Element>, Error> {
+        check_grovedb_v0_with_cost!(
+            "get_query_values",
+            grove_version.grovedb_versions.element.get_query_values
+        );
+
         Element::get_query(
             storage,
             merk_path,
             query,
+            query_options,
             QueryElementResultType,
             transaction,
+            grove_version,
         )
         .flat_map_ok(|result_items| {
             let elements: Vec<Element> = result_items
@@ -139,12 +301,20 @@ impl Element {
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        allow_get_raw: bool,
-        allow_cache: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
-        add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
+        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
+        check_grovedb_v0_with_cost!(
+            "get_query_apply_function",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_query_apply_function
+        );
+
         let mut cost = OperationCost::default();
 
         let mut results = Vec::new();
@@ -166,10 +336,10 @@ impl Element {
                         transaction,
                         &mut limit,
                         &mut offset,
-                        allow_get_raw,
-                        allow_cache,
+                        query_options,
                         result_type,
                         add_element_function,
+                        grove_version,
                     )
                 );
                 if limit == Some(0) {
@@ -189,10 +359,10 @@ impl Element {
                         transaction,
                         &mut limit,
                         &mut offset,
-                        allow_get_raw,
-                        allow_cache,
+                        query_options,
                         result_type,
                         add_element_function,
+                        grove_version,
                     )
                 );
                 if limit == Some(0) {
@@ -215,37 +385,16 @@ impl Element {
     pub fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
-        allow_cache: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
-        let path_slices = path_query
-            .path
-            .iter()
-            .map(|x| x.as_slice())
-            .collect::<Vec<_>>();
-        Element::get_query_apply_function(
-            storage,
-            path_slices.as_slice(),
-            &path_query.query,
-            false,
-            allow_cache,
-            result_type,
-            transaction,
-            Element::path_query_push,
-        )
-    }
+        check_grovedb_v0_with_cost!(
+            "get_path_query",
+            grove_version.grovedb_versions.element.get_path_query
+        );
 
-    #[cfg(feature = "full")]
-    /// Returns a vector of elements including trees, and the number of skipped
-    /// elements
-    pub fn get_raw_path_query(
-        storage: &RocksDbStorage,
-        path_query: &PathQuery,
-        allow_cache: bool,
-        result_type: QueryResultType,
-        transaction: TransactionArg,
-    ) -> CostResult<(QueryResultElements, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -255,11 +404,11 @@ impl Element {
             storage,
             path_slices.as_slice(),
             &path_query.query,
-            true,
-            allow_cache,
+            query_options,
             result_type,
             transaction,
             Element::path_query_push,
+            grove_version,
         )
     }
 
@@ -269,25 +418,41 @@ impl Element {
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        allow_cache: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
+        check_grovedb_v0_with_cost!(
+            "get_sized_query",
+            grove_version.grovedb_versions.element.get_sized_query
+        );
+
         Element::get_query_apply_function(
             storage,
             path,
             sized_query,
-            false,
-            allow_cache,
+            query_options,
             result_type,
             transaction,
             Element::path_query_push,
+            grove_version,
         )
     }
 
     #[cfg(feature = "full")]
     /// Push arguments to path query
-    fn path_query_push(args: PathQueryPushArgs) -> CostResult<(), Error> {
+    fn path_query_push(
+        args: PathQueryPushArgs,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "path_query_push",
+            grove_version.grovedb_versions.element.path_query_push
+        );
+
+        // println!("path_query_push {} \n", args);
+
         let mut cost = OperationCost::default();
 
         let PathQueryPushArgs {
@@ -299,14 +464,19 @@ impl Element {
             subquery_path,
             subquery,
             left_to_right,
-            allow_get_raw,
-            allow_cache,
+            query_options,
             result_type,
             results,
             limit,
             offset,
         } = args;
-        if element.is_tree() {
+        let QueryOptions {
+            allow_get_raw,
+            allow_cache,
+            decrease_limit_on_range_with_no_sub_elements,
+            ..
+        } = query_options;
+        if element.is_any_tree() {
             let mut path_vec = path.to_vec();
             let key = cost_return_on_error_no_add!(
                 &cost,
@@ -330,14 +500,20 @@ impl Element {
                     Element::get_path_query(
                         storage,
                         &inner_path_query,
-                        allow_cache,
+                        query_options,
                         result_type,
-                        transaction
+                        transaction,
+                        grove_version,
                     )
                 );
 
                 if let Some(limit) = limit {
-                    *limit = limit.saturating_sub(sub_elements.len() as u16);
+                    if sub_elements.is_empty() && decrease_limit_on_range_with_no_sub_elements {
+                        // we should decrease by 1 in this case
+                        *limit = limit.saturating_sub(1);
+                    } else {
+                        *limit = limit.saturating_sub(sub_elements.len() as u16);
+                    }
                 }
                 if let Some(offset) = offset {
                     *offset = offset.saturating_sub(skipped);
@@ -361,6 +537,7 @@ impl Element {
                                     None,
                                     transaction,
                                     subtree,
+                                    grove_version,
                                     {
                                         results.push(QueryResultElement::ElementResultItem(
                                             cost_return_on_error!(
@@ -370,6 +547,7 @@ impl Element {
                                                     path_vec.as_slice(),
                                                     subquery_path_last_key.as_slice(),
                                                     allow_cache,
+                                                    grove_version,
                                                 )
                                             ),
                                         ));
@@ -384,6 +562,7 @@ impl Element {
                                     None,
                                     transaction,
                                     subtree,
+                                    grove_version,
                                     {
                                         results.push(QueryResultElement::KeyElementPairResultItem(
                                             (
@@ -395,6 +574,7 @@ impl Element {
                                                         path_vec.as_slice(),
                                                         subquery_path_last_key.as_slice(),
                                                         allow_cache,
+                                                        grove_version,
                                                     )
                                                 ),
                                             ),
@@ -410,6 +590,7 @@ impl Element {
                                     None,
                                     transaction,
                                     subtree,
+                                    grove_version,
                                     {
                                         results.push(
                                             QueryResultElement::PathKeyElementTrioResultItem((
@@ -422,6 +603,7 @@ impl Element {
                                                         path_vec.as_slice(),
                                                         subquery_path_last_key.as_slice(),
                                                         allow_cache,
+                                                        grove_version,
                                                     )
                                                 ),
                                             )),
@@ -446,22 +628,24 @@ impl Element {
             } else if allow_get_raw {
                 cost_return_on_error_no_add!(
                     &cost,
-                    Element::basic_push(PathQueryPushArgs {
-                        storage,
-                        transaction,
-                        key: Some(key),
-                        element,
-                        path,
-                        subquery_path,
-                        subquery,
-                        left_to_right,
-                        allow_get_raw,
-                        allow_cache,
-                        result_type,
-                        results,
-                        limit,
-                        offset,
-                    })
+                    Element::basic_push(
+                        PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key),
+                            element,
+                            path,
+                            subquery_path,
+                            subquery,
+                            left_to_right,
+                            query_options,
+                            result_type,
+                            results,
+                            limit,
+                            offset,
+                        },
+                        grove_version
+                    )
                 );
             } else {
                 return Err(Error::InvalidPath(
@@ -474,22 +658,24 @@ impl Element {
         } else {
             cost_return_on_error_no_add!(
                 &cost,
-                Element::basic_push(PathQueryPushArgs {
-                    storage,
-                    transaction,
-                    key,
-                    element,
-                    path,
-                    subquery_path,
-                    subquery,
-                    left_to_right,
-                    allow_get_raw,
-                    allow_cache,
-                    result_type,
-                    results,
-                    limit,
-                    offset,
-                })
+                Element::basic_push(
+                    PathQueryPushArgs {
+                        storage,
+                        transaction,
+                        key,
+                        element,
+                        path,
+                        subquery_path,
+                        subquery,
+                        left_to_right,
+                        query_options,
+                        result_type,
+                        results,
+                        limit,
+                        offset,
+                    },
+                    grove_version
+                )
             );
         }
         Ok(()).wrap_with_cost(cost)
@@ -498,7 +684,7 @@ impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Takes a sized query and a key and returns subquery key and subquery as
     /// tuple
-    pub fn subquery_paths_and_value_for_sized_query(
+    fn subquery_paths_and_value_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
     ) -> (Option<Path>, Option<Query>) {
@@ -530,6 +716,12 @@ impl Element {
         (subquery_path, subquery)
     }
 
+    /// `decrease_limit_on_range_with_no_sub_elements` should generally be set
+    /// to true, as having it false could mean very expensive queries.
+    /// The queries would be expensive because we could go through many many
+    /// trees where the sub elements have no matches, hence the limit would
+    /// not decrease and hence we would continue on the increasingly
+    /// expensive query.
     #[cfg(feature = "full")]
     // TODO: refactor
     fn query_item(
@@ -541,11 +733,16 @@ impl Element {
         transaction: TransactionArg,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
-        allow_get_raw: bool,
-        allow_cache: bool,
+        query_options: QueryOptions,
         result_type: QueryResultType,
-        add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
+        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "query_item",
+            grove_version.grovedb_versions.element.query_item
+        );
+
         let mut cost = OperationCost::default();
 
         let subtree_path: SubtreePath<_> = path.into();
@@ -553,43 +750,71 @@ impl Element {
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res = merk_optional_tx!(
+                let element_res = merk_optional_tx_internal_error!(
                     &mut cost,
                     storage,
                     subtree_path,
                     None,
                     transaction,
                     subtree,
-                    { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }
+                    grove_version,
+                    {
+                        Element::get(&subtree, key, query_options.allow_cache, grove_version)
+                            .unwrap_add_cost(&mut cost)
+                    }
                 );
                 match element_res {
                     Ok(element) => {
                         let (subquery_path, subquery) =
                             Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                        add_element_function(PathQueryPushArgs {
-                            storage,
-                            transaction,
-                            key: Some(key.as_slice()),
-                            element,
-                            path,
-                            subquery_path,
-                            subquery,
-                            left_to_right: sized_query.query.left_to_right,
-                            allow_get_raw,
-                            allow_cache,
-                            result_type,
-                            results,
-                            limit,
-                            offset,
-                        })
+                        match add_element_function(
+                            PathQueryPushArgs {
+                                storage,
+                                transaction,
+                                key: Some(key.as_slice()),
+                                element,
+                                path,
+                                subquery_path,
+                                subquery,
+                                left_to_right: sized_query.query.left_to_right,
+                                query_options,
+                                result_type,
+                                results,
+                                limit,
+                                offset,
+                            },
+                            grove_version,
+                        )
                         .unwrap_add_cost(&mut cost)
+                        {
+                            Ok(_) => Ok(()),
+                            Err(e) => {
+                                if !query_options.error_if_intermediate_path_tree_not_present {
+                                    match e {
+                                        Error::PathParentLayerNotFound(_) => Ok(()),
+                                        _ => Err(e),
+                                    }
+                                } else {
+                                    Err(e)
+                                }
+                            }
+                        }
                     }
                     Err(Error::PathKeyNotFound(_)) => Ok(()),
-                    Err(e) => Err(e),
+                    Err(e) => {
+                        if !query_options.error_if_intermediate_path_tree_not_present {
+                            match e {
+                                Error::PathParentLayerNotFound(_) => Ok(()),
+                                _ => Err(e),
+                            }
+                        } else {
+                            Err(e)
+                        }
+                    }
                 }
             } else {
                 Err(Error::InternalError(
-                    "QueryItem must be a Key if not a range",
+                    "QueryItem must be a Key if not a range".to_string(),
                 ))
             }
         } else {
@@ -610,7 +835,8 @@ impl Element {
                         raw_decode(
                             iter.value()
                                 .unwrap_add_cost(&mut cost)
-                                .expect("if key exists then value should too")
+                                .expect("if key exists then value should too"),
+                            grove_version
                         )
                     );
                     let key = iter
@@ -619,9 +845,8 @@ impl Element {
                         .expect("key should exist");
                     let (subquery_path, subquery) =
                         Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                    cost_return_on_error!(
-                        &mut cost,
-                        add_element_function(PathQueryPushArgs {
+                    let result_with_cost = add_element_function(
+                        PathQueryPushArgs {
                             storage,
                             transaction,
                             key: Some(key),
@@ -630,14 +855,29 @@ impl Element {
                             subquery_path,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
-                            allow_get_raw,
-                            allow_cache,
+                            query_options,
                             result_type,
                             results,
                             limit,
                             offset,
-                        })
+                        },
+                        grove_version,
                     );
+                    let result = result_with_cost.unwrap_add_cost(&mut cost);
+                    match result {
+                        Ok(x) => x,
+                        Err(e) => {
+                            if !query_options.error_if_intermediate_path_tree_not_present {
+                                match e {
+                                    Error::PathKeyNotFound(_)
+                                    | Error::PathParentLayerNotFound(_) => (),
+                                    _ => return Err(e).wrap_with_cost(cost),
+                                }
+                            } else {
+                                return Err(e).wrap_with_cost(cost);
+                            }
+                        }
+                    }
                     if sized_query.query.left_to_right {
                         iter.next().unwrap_add_cost(&mut cost);
                     } else {
@@ -652,7 +892,13 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
+    fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
+        check_grovedb_v0!(
+            "basic_push",
+            grove_version.grovedb_versions.element.basic_push
+        );
+
+        // println!("basic_push {}", args);
         let PathQueryPushArgs {
             path,
             key,
@@ -672,14 +918,18 @@ impl Element {
                     results.push(QueryResultElement::ElementResultItem(element));
                 }
                 QueryResultType::QueryKeyElementPairResultType => {
-                    let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
+                    let key = key.ok_or(Error::CorruptedPath(
+                        "basic push must have a key".to_string(),
+                    ))?;
                     results.push(QueryResultElement::KeyElementPairResultItem((
                         Vec::from(key),
                         element,
                     )));
                 }
                 QueryResultType::QueryPathKeyElementTrioResultType => {
-                    let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
+                    let key = key.ok_or(Error::CorruptedPath(
+                        "basic push must have a key".to_string(),
+                    ))?;
                     let path = path.iter().map(|a| a.to_vec()).collect();
                     results.push(QueryResultElement::PathKeyElementTrioResultItem((
                         path,
@@ -711,9 +961,10 @@ impl Element {
 mod tests {
     use grovedb_merk::proofs::Query;
     use grovedb_storage::{Storage, StorageBatch};
+    use grovedb_version::version::GroveVersion;
 
     use crate::{
-        element::*,
+        element::{query::QueryOptions, *},
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
             QueryResultType::{QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType},
@@ -724,7 +975,8 @@ mod tests {
 
     #[test]
     fn test_get_query() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -732,6 +984,7 @@ mod tests {
             Element::new_item(b"ayyd".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -741,6 +994,7 @@ mod tests {
             Element::new_item(b"ayyc".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -750,6 +1004,7 @@ mod tests {
             Element::new_item(b"ayya".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -759,6 +1014,7 @@ mod tests {
             Element::new_item(b"ayyb".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -769,9 +1025,16 @@ mod tests {
         query.insert_key(b"a".to_vec());
 
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyc".to_vec())
@@ -783,9 +1046,16 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyb".to_vec()),
@@ -798,9 +1068,16 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayyb".to_vec()),
                 Element::new_item(b"ayyc".to_vec()),
@@ -814,9 +1091,16 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
-                .unwrap()
-                .expect("expected successful get_query"),
+            Element::get_query_values(
+                &db.db,
+                &[TEST_LEAF],
+                &query,
+                QueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyb".to_vec()),
@@ -827,7 +1111,8 @@ mod tests {
 
     #[test]
     fn test_get_query_with_path() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -835,6 +1120,7 @@ mod tests {
             Element::new_item(b"ayyd".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -844,6 +1130,7 @@ mod tests {
             Element::new_item(b"ayyc".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -853,6 +1140,7 @@ mod tests {
             Element::new_item(b"ayya".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -862,6 +1150,7 @@ mod tests {
             Element::new_item(b"ayyb".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -875,8 +1164,10 @@ mod tests {
                 &db.db,
                 &[TEST_LEAF],
                 &query,
+                QueryOptions::default(),
                 QueryPathKeyElementTrioResultType,
-                None
+                None,
+                grove_version
             )
             .unwrap()
             .expect("expected successful get_query")
@@ -898,29 +1189,34 @@ mod tests {
 
     #[test]
     fn test_get_range_query() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         let batch = StorageBatch::new();
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
+            .open_non_transactional_merk_at_path(
+                [TEST_LEAF].as_ref().into(),
+                Some(&batch),
+                grove_version,
+            )
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d", None)
+            .insert(&mut merk, b"d", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c", None)
+            .insert(&mut merk, b"c", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a", None)
+            .insert(&mut merk, b"a", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b", None)
+            .insert(&mut merk, b"b", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -938,9 +1234,10 @@ mod tests {
             storage,
             &[TEST_LEAF],
             &ascending_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -972,9 +1269,10 @@ mod tests {
             storage,
             &[TEST_LEAF],
             &backwards_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1002,30 +1300,35 @@ mod tests {
 
     #[test]
     fn test_get_range_inclusive_query() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         let batch = StorageBatch::new();
 
         let storage = &db.db;
         let mut merk = db
-            .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
+            .open_non_transactional_merk_at_path(
+                [TEST_LEAF].as_ref().into(),
+                Some(&batch),
+                grove_version,
+            )
             .unwrap()
             .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d", None)
+            .insert(&mut merk, b"d", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c", None)
+            .insert(&mut merk, b"c", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a", None)
+            .insert(&mut merk, b"a", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b", None)
+            .insert(&mut merk, b"b", None, grove_version)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1061,9 +1364,10 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &ascending_query,
-                true,
+                QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("expected successful get_query"),
@@ -1078,9 +1382,10 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
-                true,
+                QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("expected successful get_query"),
@@ -1098,9 +1403,10 @@ mod tests {
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
-                true,
+                QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
+                grove_version,
             )
             .unwrap()
             .expect("expected successful get_query"),
@@ -1110,7 +1416,8 @@ mod tests {
 
     #[test]
     fn test_get_limit_query() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -1118,6 +1425,7 @@ mod tests {
             Element::new_item(b"ayyd".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -1127,6 +1435,7 @@ mod tests {
             Element::new_item(b"ayyc".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -1136,6 +1445,7 @@ mod tests {
             Element::new_item(b"ayya".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -1145,6 +1455,7 @@ mod tests {
             Element::new_item(b"ayyb".to_vec()),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert element");
@@ -1160,9 +1471,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1186,9 +1498,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1207,9 +1520,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1228,9 +1542,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1248,9 +1563,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1273,9 +1589,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1297,9 +1614,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_full_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1322,9 +1640,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1347,9 +1666,10 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_backwards_query,
-            true,
+            QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("expected successful get_query");
@@ -1375,7 +1695,10 @@ impl<I: RawIterator> ElementsIterator<I> {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next_element(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
+    pub fn next_element(
+        &mut self,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
         Ok(if self.raw_iter.valid().unwrap_add_cost(&mut cost) {
@@ -1385,7 +1708,7 @@ impl<I: RawIterator> ElementsIterator<I> {
                 .unwrap_add_cost(&mut cost)
                 .zip(self.raw_iter.value().unwrap_add_cost(&mut cost))
             {
-                let element = cost_return_on_error_no_add!(&cost, raw_decode(value));
+                let element = cost_return_on_error_no_add!(&cost, raw_decode(value, grove_version));
                 let key_vec = key.to_vec();
                 self.raw_iter.next().unwrap_add_cost(&mut cost);
                 Some((key_vec, element))

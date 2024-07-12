@@ -20,6 +20,7 @@ fn main() {
         Element::Item(val1.to_vec(), None),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful key1 insert");
@@ -31,6 +32,7 @@ fn main() {
         Element::Item(val2.to_vec(), None),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful key2 insert");
@@ -42,10 +44,10 @@ fn main() {
     // function to get them from the RocksDB backing store.
 
     // Get value 1
-    let result1 = db.get(root_path, key1, None).unwrap();
+    let result1 = db.get(root_path, key1, None, grove_version).unwrap();
 
     // Get value 2
-    let result2 = db.get(root_path, key2, None).unwrap();
+    let result2 = db.get(root_path, key2, None, grove_version).unwrap();
 
     // Print the values to terminal
     println!("{:?}", result1);

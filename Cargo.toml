@@ -1,4 +1,6 @@
 [workspace]
+resolver = "2"
+exclude = ["grovedb/grovedbg"]
 members = [
     "costs",
     "grovedb",
@@ -7,4 +9,6 @@ members = [
     "storage",
     "visualize",
     "path",
+    "grovedbg-types",
+    "grovedb-version"
 ]

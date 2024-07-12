@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Fuzz tests
 
 #![cfg(tests)]
@@ -71,7 +43,13 @@ fn fuzz_396148930387069749() {
 fn fuzz_case(seed: u64, using_sum_trees: bool) {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let initial_size = (rng.gen::<u64>() % 10) + 1;
-    let tree = make_tree_rand(initial_size, initial_size, seed, using_sum_trees);
+    let tree = make_tree_rand(
+        initial_size,
+        initial_size,
+        seed,
+        using_sum_trees,
+        grove_version,
+    );
     let mut map = Map::from_iter(tree.iter());
     let mut maybe_tree = Some(tree);
     println!("====== MERK FUZZ ======");
@@ -83,7 +61,7 @@ fn fuzz_case(seed: u64, using_sum_trees: bool) {
         let batch = make_batch(maybe_tree.as_ref(), batch_size, rng.gen::<u64>());
         println!("BATCH {}", j);
         println!("{:?}", batch);
-        maybe_tree = apply_to_memonly(maybe_tree, &batch, using_sum_trees);
+        maybe_tree = apply_to_memonly(maybe_tree, &batch, using_sum_trees, grove_version);
         apply_to_map(&mut map, &batch);
         assert_map(maybe_tree.as_ref(), &map);
         if let Some(tree) = &maybe_tree {
@@ -95,7 +73,7 @@ fn fuzz_case(seed: u64, using_sum_trees: bool) {
 }
 
 #[cfg(feature = "full")]
-fn make_batch(maybe_tree: Option<&Tree>, size: u64, seed: u64) -> Vec<BatchEntry> {
+fn make_batch(maybe_tree: Option<&TreeNode>, size: u64, seed: u64) -> Vec<BatchEntry> {
     let rng: RefCell<SmallRng> = RefCell::new(SeedableRng::seed_from_u64(seed));
     let mut batch = Vec::with_capacity(size as usize);
 
@@ -170,7 +148,7 @@ fn apply_to_map(map: &mut Map, batch: &Batch) {
 }
 
 #[cfg(feature = "full")]
-fn assert_map(maybe_tree: Option<&Tree>, map: &Map) {
+fn assert_map(maybe_tree: Option<&TreeNode>, map: &Map) {
     if map.is_empty() {
         assert!(maybe_tree.is_none(), "expected tree to be None");
         return;

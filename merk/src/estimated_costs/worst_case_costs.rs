@@ -37,7 +37,7 @@ use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use crate::{
     error::Error,
     merk::defaults::MAX_PREFIXED_KEY_SIZE,
-    tree::{kv::KV, Link, Tree},
+    tree::{kv::KV, Link, TreeNode},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH,
 };
 
@@ -52,7 +52,7 @@ pub enum WorstCaseLayerInformation {
 }
 
 #[cfg(feature = "full")]
-impl Tree {
+impl TreeNode {
     /// Return worst case size of encoded tree
     pub fn worst_case_encoded_tree_size(
         not_prefixed_key_len: u32,
@@ -74,7 +74,7 @@ pub fn add_worst_case_get_merk_node(
     not_prefixed_key_len: u32,
     max_element_size: u32,
     is_sum_node: bool,
-) {
+) -> Result<(), Error> {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
     cost.seek_count += 1;
@@ -82,7 +82,8 @@ pub fn add_worst_case_get_merk_node(
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
     cost.storage_loaded_bytes +=
-        Tree::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node);
+        TreeNode::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node);
+    Ok(())
 }
 
 #[cfg(feature = "full")]

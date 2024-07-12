@@ -33,7 +33,7 @@ use std::io::{Result, Write};
 use grovedb_storage::StorageContext;
 use grovedb_visualize::{Drawer, Visualize};
 
-use crate::{tree::Tree, Merk};
+use crate::{tree::TreeNode, Merk};
 
 /// Visualizeable Merk
 pub struct VisualizeableMerk<'a, S, F> {
@@ -52,12 +52,12 @@ impl<'a, S, F> VisualizeableMerk<'a, S, F> {
 }
 
 struct VisualizableTree<'a, F> {
-    tree: &'a Tree,
+    tree: &'a TreeNode,
     deserialize_fn: F,
 }
 
 impl<'a, F> VisualizableTree<'a, F> {
-    fn new(tree: &'a Tree, deserialize_fn: F) -> Self {
+    fn new(tree: &'a TreeNode, deserialize_fn: F) -> Self {
         Self {
             tree,
             deserialize_fn,
@@ -87,9 +87,9 @@ impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Vi
 impl<'a, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize for VisualizableTree<'a, F> {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         drawer.write(b"[key: ")?;
-        drawer = self.tree.inner.key_as_slice().visualize(drawer)?;
+        drawer = self.tree.inner.kv.key_as_ref().visualize(drawer)?;
         drawer.write(b", value: ")?;
-        drawer = (self.deserialize_fn)(self.tree.inner.value_as_slice()).visualize(drawer)?;
+        drawer = (self.deserialize_fn)(self.tree.inner.kv.value_as_slice()).visualize(drawer)?;
 
         drawer.down();
         drawer.write(b"\n")?;

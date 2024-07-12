@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Insert operations
 
 #[cfg(feature = "full")]
@@ -43,6 +15,9 @@ use grovedb_storage::rocksdb_storage::{
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
 use grovedb_storage::{Storage, StorageBatch};
+use grovedb_version::{
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 
 #[cfg(feature = "full")]
 use crate::{
@@ -97,11 +72,17 @@ impl GroveDb {
         element: Element,
         options: Option<InsertOptions>,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        check_grovedb_v0_with_cost!(
+            "insert",
+            grove_version.grovedb_versions.operations.insert.insert
+        );
+
         let subtree_path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
 
@@ -113,6 +94,7 @@ impl GroveDb {
                 options.unwrap_or_default(),
                 transaction,
                 &batch,
+                grove_version,
             )
         } else {
             self.insert_without_transaction(
@@ -121,6 +103,7 @@ impl GroveDb {
                 element,
                 options.unwrap_or_default(),
                 &batch,
+                grove_version,
             )
         };
 
@@ -139,7 +122,17 @@ impl GroveDb {
         options: InsertOptions,
         transaction: &'db Transaction,
         batch: &StorageBatch,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_on_transaction",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_on_transaction
+        );
+
         let mut cost = OperationCost::default();
 
         let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
@@ -153,13 +146,20 @@ impl GroveDb {
                 element,
                 options,
                 transaction,
-                batch
+                batch,
+                grove_version
             )
         );
         merk_cache.insert(path.clone(), merk);
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_with_transaction(merk_cache, path, transaction, batch)
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                path,
+                transaction,
+                batch,
+                grove_version
+            )
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -172,7 +172,17 @@ impl GroveDb {
         element: Element,
         options: InsertOptions,
         batch: &StorageBatch,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_without_transaction",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_without_transaction
+        );
+
         let mut cost = OperationCost::default();
 
         let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>> =
@@ -180,13 +190,20 @@ impl GroveDb {
 
         let merk = cost_return_on_error!(
             &mut cost,
-            self.add_element_without_transaction(&path.to_vec(), key, element, options, batch)
+            self.add_element_without_transaction(
+                &path.to_vec(),
+                key,
+                element,
+                options,
+                batch,
+                grove_version
+            )
         );
         merk_cache.insert(path.clone(), merk);
 
         cost_return_on_error!(
             &mut cost,
-            self.propagate_changes_without_transaction(merk_cache, path, batch)
+            self.propagate_changes_without_transaction(merk_cache, path, batch, grove_version)
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -205,12 +222,27 @@ impl GroveDb {
         options: InsertOptions,
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+        check_grovedb_v0_with_cost!(
+            "add_element_on_transaction",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .add_element_on_transaction
+        );
+
         let mut cost = OperationCost::default();
 
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.clone(), transaction, Some(batch))
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
         );
         // if we don't allow a tree override then we should check
 
@@ -218,7 +250,12 @@ impl GroveDb {
             let maybe_element_bytes = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into
-                    .get(key, true)
+                    .get(
+                        key,
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version,
+                    )
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
             if let Some(element_bytes) = maybe_element_bytes {
@@ -231,11 +268,13 @@ impl GroveDb {
                 if options.validate_insertion_does_not_override_tree {
                     let element = cost_return_on_error_no_add!(
                         &cost,
-                        Element::deserialize(element_bytes.as_slice()).map_err(|_| {
-                            Error::CorruptedData(String::from("unable to deserialize element"))
-                        })
+                        Element::deserialize(element_bytes.as_slice(), grove_version).map_err(
+                            |_| {
+                                Error::CorruptedData(String::from("unable to deserialize element"))
+                            }
+                        )
                     );
-                    if element.is_tree() {
+                    if element.is_any_tree() {
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))
@@ -260,13 +299,19 @@ impl GroveDb {
                     self.open_transactional_merk_at_path(
                         referenced_path.into(),
                         transaction,
-                        Some(batch)
+                        Some(batch),
+                        grove_version,
                     )
                 );
 
                 let referenced_element_value_hash_opt = cost_return_on_error!(
                     &mut cost,
-                    Element::get_value_hash(&subtree_for_reference, referenced_key, true)
+                    Element::get_value_hash(
+                        &subtree_for_reference,
+                        referenced_key,
+                        true,
+                        grove_version
+                    )
                 );
 
                 let referenced_element_value_hash = cost_return_on_error!(
@@ -294,6 +339,7 @@ impl GroveDb {
                         key,
                         referenced_element_value_hash,
                         Some(options.as_merk_options()),
+                        grove_version,
                     )
                 );
             }
@@ -310,7 +356,8 @@ impl GroveDb {
                             &mut subtree_to_insert_into,
                             key,
                             NULL_HASH,
-                            Some(options.as_merk_options())
+                            Some(options.as_merk_options()),
+                            grove_version
                         )
                     );
                 }
@@ -321,7 +368,8 @@ impl GroveDb {
                     element.insert(
                         &mut subtree_to_insert_into,
                         key,
-                        Some(options.as_merk_options())
+                        Some(options.as_merk_options()),
+                        grove_version
                     )
                 );
             }
@@ -342,18 +390,33 @@ impl GroveDb {
         element: Element,
         options: InsertOptions,
         batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
+        check_grovedb_v0_with_cost!(
+            "add_element_without_transaction",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .add_element_without_transaction
+        );
+
         let mut cost = OperationCost::default();
         let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.into(), Some(batch))
+            self.open_non_transactional_merk_at_path(path.into(), Some(batch), grove_version)
         );
 
         if options.checks_for_override() {
             let maybe_element_bytes = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into
-                    .get(key, true)
+                    .get(
+                        key,
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version
+                    )
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
             if let Some(element_bytes) = maybe_element_bytes {
@@ -366,11 +429,13 @@ impl GroveDb {
                 if options.validate_insertion_does_not_override_tree {
                     let element = cost_return_on_error_no_add!(
                         &cost,
-                        Element::deserialize(element_bytes.as_slice()).map_err(|_| {
-                            Error::CorruptedData(String::from("unable to deserialize element"))
-                        })
+                        Element::deserialize(element_bytes.as_slice(), grove_version).map_err(
+                            |_| {
+                                Error::CorruptedData(String::from("unable to deserialize element"))
+                            }
+                        )
                     );
-                    if element.is_tree() {
+                    if element.is_any_tree() {
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))
@@ -392,13 +457,22 @@ impl GroveDb {
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(referenced_path.into(), Some(batch))
+                    self.open_non_transactional_merk_at_path(
+                        referenced_path.into(),
+                        Some(batch),
+                        grove_version
+                    )
                 );
 
                 // when there is no transaction, we don't want to use caching
                 let referenced_element_value_hash_opt = cost_return_on_error!(
                     &mut cost,
-                    Element::get_value_hash(&subtree_for_reference, referenced_key, false)
+                    Element::get_value_hash(
+                        &subtree_for_reference,
+                        referenced_key,
+                        false,
+                        grove_version
+                    )
                 );
 
                 let referenced_element_value_hash = cost_return_on_error!(
@@ -425,7 +499,8 @@ impl GroveDb {
                         &mut subtree_to_insert_into,
                         key,
                         referenced_element_value_hash,
-                        Some(options.as_merk_options())
+                        Some(options.as_merk_options()),
+                        grove_version
                     )
                 );
             }
@@ -442,7 +517,8 @@ impl GroveDb {
                             &mut subtree_to_insert_into,
                             key,
                             NULL_HASH,
-                            Some(options.as_merk_options())
+                            Some(options.as_merk_options()),
+                            grove_version
                         )
                     );
                 }
@@ -453,7 +529,8 @@ impl GroveDb {
                     element.insert(
                         &mut subtree_to_insert_into,
                         key,
-                        Some(options.as_merk_options())
+                        Some(options.as_merk_options()),
+                        grove_version
                     )
                 );
             }
@@ -469,21 +546,31 @@ impl GroveDb {
         key: &[u8],
         element: Element,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        check_grovedb_v0_with_cost!(
+            "insert_if_not_exists",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_if_not_exists
+        );
+
         let mut cost = OperationCost::default();
         let subtree_path: SubtreePath<_> = path.into();
 
         if cost_return_on_error!(
             &mut cost,
-            self.has_raw(subtree_path.clone(), key, transaction)
+            self.has_raw(subtree_path.clone(), key, transaction, grove_version)
         ) {
             Ok(false).wrap_with_cost(cost)
         } else {
-            self.insert(subtree_path, key, element, None, transaction)
+            self.insert(subtree_path, key, element, None, transaction, grove_version)
                 .map_ok(|_| true)
                 .add_cost(cost)
         }
@@ -498,17 +585,27 @@ impl GroveDb {
         key: &[u8],
         element: Element,
         transaction: TransactionArg,
+        grove_version: &GroveVersion,
     ) -> CostResult<(bool, Option<Element>), Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        check_grovedb_v0_with_cost!(
+            "insert_if_changed_value",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_if_changed_value
+        );
+
         let mut cost = OperationCost::default();
         let subtree_path: SubtreePath<B> = path.into();
 
         let previous_element = cost_return_on_error!(
             &mut cost,
-            self.get_raw_optional(subtree_path.clone(), key, transaction)
+            self.get_raw_optional(subtree_path.clone(), key, transaction, grove_version)
         );
         let needs_insert = match &previous_element {
             None => true,
@@ -517,7 +614,7 @@ impl GroveDb {
         if !needs_insert {
             Ok((false, None)).wrap_with_cost(cost)
         } else {
-            self.insert(subtree_path, key, element, None, transaction)
+            self.insert(subtree_path, key, element, None, transaction, grove_version)
                 .map_ok(|_| (true, previous_element))
                 .add_cost(cost)
         }
@@ -531,6 +628,7 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
+    use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
     use crate::{
@@ -541,13 +639,21 @@ mod tests {
 
     #[test]
     fn test_non_root_insert_item_without_transaction() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
-        db.insert([TEST_LEAF].as_ref(), b"key", element.clone(), None, None)
-            .unwrap()
-            .expect("successful insert");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key",
+            element.clone(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful insert");
         assert_eq!(
-            db.get([TEST_LEAF].as_ref(), b"key", None)
+            db.get([TEST_LEAF].as_ref(), b"key", None, grove_version)
                 .unwrap()
                 .expect("successful get"),
             element
@@ -556,7 +662,8 @@ mod tests {
 
     #[test]
     fn test_non_root_insert_subtree_then_insert_item_without_transaction() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
 
         // Insert a subtree first
@@ -566,6 +673,7 @@ mod tests {
             Element::empty_tree(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful subtree insert");
@@ -576,11 +684,12 @@ mod tests {
             element.clone(),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successful value insert");
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None)
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
                 .unwrap()
                 .expect("successful get"),
             element
@@ -589,13 +698,16 @@ mod tests {
 
     #[test]
     fn test_non_root_insert_item_with_transaction() {
+        let grove_version = GroveVersion::latest();
         let item_key = b"key3";
 
-        let db = make_test_grovedb();
+        let db = make_test_grovedb(grove_version);
         let transaction = db.start_transaction();
 
         // Check that there's no such key in the DB
-        let result = db.get([TEST_LEAF].as_ref(), item_key, None).unwrap();
+        let result = db
+            .get([TEST_LEAF].as_ref(), item_key, None, grove_version)
+            .unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
         let element1 = Element::new_item(b"ayy".to_vec());
@@ -606,17 +718,25 @@ mod tests {
             element1,
             None,
             Some(&transaction),
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert an item into GroveDB");
 
         // The key was inserted inside the transaction, so it shouldn't be
         // possible to get it back without committing or using transaction
-        let result = db.get([TEST_LEAF].as_ref(), item_key, None).unwrap();
+        let result = db
+            .get([TEST_LEAF].as_ref(), item_key, None, grove_version)
+            .unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
         // Check that the element can be retrieved when transaction is passed
         let result_with_transaction = db
-            .get([TEST_LEAF].as_ref(), item_key, Some(&transaction))
+            .get(
+                [TEST_LEAF].as_ref(),
+                item_key,
+                Some(&transaction),
+                grove_version,
+            )
             .unwrap()
             .expect("Expected to work");
         assert_eq!(result_with_transaction, Element::new_item(b"ayy".to_vec()));
@@ -626,7 +746,7 @@ mod tests {
 
         // Check that the change was committed
         let result = db
-            .get([TEST_LEAF].as_ref(), item_key, None)
+            .get([TEST_LEAF].as_ref(), item_key, None, grove_version)
             .unwrap()
             .expect("Expected transaction to work");
         assert_eq!(result, Element::new_item(b"ayy".to_vec()));
@@ -634,13 +754,16 @@ mod tests {
 
     #[test]
     fn test_non_root_insert_subtree_with_transaction() {
+        let grove_version = GroveVersion::latest();
         let subtree_key = b"subtree_key";
 
-        let db = make_test_grovedb();
+        let db = make_test_grovedb(grove_version);
         let transaction = db.start_transaction();
 
         // Check that there's no such key in the DB
-        let result = db.get([TEST_LEAF].as_ref(), subtree_key, None).unwrap();
+        let result = db
+            .get([TEST_LEAF].as_ref(), subtree_key, None, grove_version)
+            .unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
         db.insert(
@@ -649,15 +772,23 @@ mod tests {
             Element::empty_tree(),
             None,
             Some(&transaction),
+            grove_version,
         )
         .unwrap()
         .expect("cannot insert an item into GroveDB");
 
-        let result = db.get([TEST_LEAF].as_ref(), subtree_key, None).unwrap();
+        let result = db
+            .get([TEST_LEAF].as_ref(), subtree_key, None, grove_version)
+            .unwrap();
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
         let result_with_transaction = db
-            .get([TEST_LEAF].as_ref(), subtree_key, Some(&transaction))
+            .get(
+                [TEST_LEAF].as_ref(),
+                subtree_key,
+                Some(&transaction),
+                grove_version,
+            )
             .unwrap()
             .expect("Expected to work");
         assert_eq!(result_with_transaction, Element::empty_tree());
@@ -665,7 +796,7 @@ mod tests {
         db.commit_transaction(transaction).unwrap().unwrap();
 
         let result = db
-            .get([TEST_LEAF].as_ref(), subtree_key, None)
+            .get([TEST_LEAF].as_ref(), subtree_key, None, grove_version)
             .unwrap()
             .expect("Expected transaction to work");
         assert_eq!(result, Element::empty_tree());
@@ -673,15 +804,28 @@ mod tests {
 
     #[test]
     fn test_insert_if_not_exists() {
-        let db = make_test_grovedb();
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
 
         // Insert twice at the same path
         assert!(db
-            .insert_if_not_exists([TEST_LEAF].as_ref(), b"key1", Element::empty_tree(), None)
+            .insert_if_not_exists(
+                [TEST_LEAF].as_ref(),
+                b"key1",
+                Element::empty_tree(),
+                None,
+                grove_version
+            )
             .unwrap()
             .expect("Provided valid path"));
         assert!(!db
-            .insert_if_not_exists([TEST_LEAF].as_ref(), b"key1", Element::empty_tree(), None)
+            .insert_if_not_exists(
+                [TEST_LEAF].as_ref(),
+                b"key1",
+                Element::empty_tree(),
+                None,
+                grove_version
+            )
             .unwrap()
             .expect("Provided valid path"));
 
@@ -692,6 +836,7 @@ mod tests {
                 b"key1",
                 Element::empty_tree(),
                 None,
+                grove_version,
             )
             .unwrap();
         assert!(matches!(result, Err(Error::InvalidParentLayerPath(_))));
@@ -699,6 +844,7 @@ mod tests {
 
     #[test]
     fn test_one_insert_item_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -709,6 +855,7 @@ mod tests {
                 Element::new_item(b"cat".to_vec()),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("should insert");
@@ -758,12 +905,20 @@ mod tests {
 
     #[test]
     fn test_one_insert_sum_item_in_sum_tree_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"s", Element::empty_sum_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("expected to add upper tree");
+        db.insert(
+            EMPTY_PATH,
+            b"s",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to add upper tree");
 
         let cost = db
             .insert(
@@ -772,6 +927,7 @@ mod tests {
                 Element::new_sum_item(5),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("should insert");
@@ -816,12 +972,20 @@ mod tests {
 
     #[test]
     fn test_one_insert_sum_item_under_sum_item_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"s", Element::empty_sum_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("expected to add upper tree");
+        db.insert(
+            EMPTY_PATH,
+            b"s",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to add upper tree");
 
         db.insert(
             [b"s".as_slice()].as_ref(),
@@ -829,6 +993,7 @@ mod tests {
             Element::new_sum_item(5),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .expect("should insert");
@@ -840,6 +1005,7 @@ mod tests {
                 Element::new_sum_item(6),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("should insert");
@@ -867,13 +1033,18 @@ mod tests {
         // Child Heights 2
 
         // Total 37 + 85 + 48 = 170
+
+        // replaced bytes
+        // 133 for key1 (higher node/same merk level)
+        // ?
+
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 7,
                 storage_cost: StorageCost {
                     added_bytes: 170,
-                    replaced_bytes: 209, // todo: verify
+                    replaced_bytes: 217,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 232,
@@ -884,12 +1055,20 @@ mod tests {
 
     #[test]
     fn test_one_insert_bigger_sum_item_under_sum_item_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"s", Element::empty_sum_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("expected to add upper tree");
+        db.insert(
+            EMPTY_PATH,
+            b"s",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to add upper tree");
 
         db.insert(
             [b"s".as_slice()].as_ref(),
@@ -897,6 +1076,7 @@ mod tests {
             Element::new_sum_item(126),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .expect("should insert");
@@ -909,6 +1089,7 @@ mod tests {
                 Element::new_sum_item(32768),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("should insert");
@@ -942,7 +1123,7 @@ mod tests {
                 seek_count: 7,
                 storage_cost: StorageCost {
                     added_bytes: 170,
-                    replaced_bytes: 211, // todo: verify
+                    replaced_bytes: 217, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 237,
@@ -953,6 +1134,7 @@ mod tests {
 
     #[test]
     fn test_one_insert_item_cost_with_flags() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -963,6 +1145,7 @@ mod tests {
                 Element::new_item_with_flags(b"cat".to_vec(), Some(b"dog".to_vec())),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost;
         // Explanation for 183 storage_written_bytes
@@ -1012,11 +1195,19 @@ mod tests {
 
     #[test]
     fn test_one_insert_empty_tree_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
         let cost = db
-            .insert(EMPTY_PATH, b"key1", Element::empty_tree(), None, Some(&tx))
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::empty_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
             .cost;
         // Explanation for 183 storage_written_bytes
 
@@ -1064,6 +1255,7 @@ mod tests {
 
     #[test]
     fn test_one_insert_empty_sum_tree_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1074,6 +1266,7 @@ mod tests {
                 Element::empty_sum_tree(),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost;
         // Explanation for 183 storage_written_bytes
@@ -1123,6 +1316,7 @@ mod tests {
 
     #[test]
     fn test_one_insert_empty_tree_cost_with_flags() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1133,6 +1327,7 @@ mod tests {
                 Element::empty_tree_with_flags(Some(b"cat".to_vec())),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost;
         // Explanation for 183 storage_written_bytes
@@ -1185,12 +1380,20 @@ mod tests {
 
     #[test]
     fn test_one_insert_item_cost_under_tree() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1199,6 +1402,7 @@ mod tests {
                 Element::new_item(b"test".to_vec()),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .unwrap();
@@ -1256,6 +1460,7 @@ mod tests {
 
     #[test]
     fn test_one_insert_item_with_apple_flags_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1266,6 +1471,7 @@ mod tests {
                 Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .unwrap();
@@ -1319,12 +1525,20 @@ mod tests {
 
     #[test]
     fn test_one_insert_item_with_flags_cost_under_tree() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
 
         let cost = db
             .insert(
@@ -1333,6 +1547,7 @@ mod tests {
                 Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .unwrap();
@@ -1404,6 +1619,7 @@ mod tests {
 
     #[test]
     fn test_one_insert_item_with_flags_cost_under_tree_with_flags() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1413,6 +1629,7 @@ mod tests {
             Element::empty_tree_with_flags(Some(b"cat".to_vec())),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1424,6 +1641,7 @@ mod tests {
                 Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .unwrap();
@@ -1497,6 +1715,7 @@ mod tests {
 
     #[test]
     fn test_one_update_item_same_cost_at_root() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1506,6 +1725,7 @@ mod tests {
             Element::new_item(b"cat".to_vec()),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1517,6 +1737,7 @@ mod tests {
                 Element::new_item(b"dog".to_vec()),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert");
@@ -1563,12 +1784,20 @@ mod tests {
 
     #[test]
     fn test_one_update_same_cost_in_underlying_tree() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -1576,6 +1805,7 @@ mod tests {
             Element::new_item(b"cat".to_vec()),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1587,6 +1817,7 @@ mod tests {
                 Element::new_item(b"dog".to_vec()),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert");
@@ -1607,6 +1838,7 @@ mod tests {
 
     #[test]
     fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1616,6 +1848,7 @@ mod tests {
             Element::empty_sum_tree(),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1626,6 +1859,7 @@ mod tests {
             Element::new_sum_item(15),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1637,6 +1871,7 @@ mod tests {
                 Element::new_sum_item(1000000),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert");
@@ -1658,6 +1893,7 @@ mod tests {
     #[test]
     fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item_parent_sum_tree_already_big(
     ) {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1667,6 +1903,7 @@ mod tests {
             Element::empty_sum_tree(),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1677,6 +1914,7 @@ mod tests {
             Element::new_sum_item(1000000),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1687,6 +1925,7 @@ mod tests {
             Element::new_sum_item(15),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1698,6 +1937,7 @@ mod tests {
                 Element::new_sum_item(1000000),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert");
@@ -1707,7 +1947,7 @@ mod tests {
                 seek_count: 9, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 405, // todo: verify this
+                    replaced_bytes: 409, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 487, // todo verify this
@@ -1718,6 +1958,7 @@ mod tests {
 
     #[test]
     fn test_one_update_same_cost_in_underlying_sum_tree_smaller_sum_item() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -1727,6 +1968,7 @@ mod tests {
             Element::empty_sum_tree(),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1737,6 +1979,7 @@ mod tests {
             Element::new_sum_item(1000000),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1748,6 +1991,7 @@ mod tests {
                 Element::new_sum_item(15),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert");
@@ -1768,12 +2012,20 @@ mod tests {
 
     #[test]
     fn test_one_update_bigger_cost() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -1781,6 +2033,7 @@ mod tests {
             Element::new_item(b"test".to_vec()),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1792,6 +2045,7 @@ mod tests {
                 Element::new_item(b"test1".to_vec()),
                 None,
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert");
@@ -1812,12 +2066,20 @@ mod tests {
 
     #[test]
     fn test_one_update_tree_bigger_cost_with_flags() {
+        let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .unwrap();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -1825,6 +2087,7 @@ mod tests {
             Element::new_tree(None),
             None,
             Some(&tx),
+            grove_version,
         )
         .unwrap()
         .unwrap();
@@ -1840,6 +2103,7 @@ mod tests {
                     base_root_storage_is_free: true,
                 }),
                 Some(&tx),
+                grove_version,
             )
             .cost_as_result()
             .expect("expected to insert");

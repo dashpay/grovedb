@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Owner
 
 use std::ops::{Deref, DerefMut};
@@ -89,6 +61,27 @@ impl<T> Owner<T> {
         let (new_value, return_value) = f(old_value);
         self.inner = Some(new_value);
         return_value
+    }
+
+    /// Takes temporary ownership of the contained value by passing it to `f`.
+    /// The function must return a result of the same type (the same value, or a
+    /// new value to take its place).
+    ///
+    /// Like `own`, but uses a tuple return type which allows specifying a value
+    /// to return from the call to `own_result` for convenience.
+    pub fn own_result<F, E>(&mut self, f: F) -> Result<(), E>
+    where
+        F: FnOnce(T) -> Result<T, E>,
+    {
+        let old_value = unwrap(self.inner.take());
+        let new_value_result = f(old_value);
+        match new_value_result {
+            Ok(new_value) => {
+                self.inner = Some(new_value);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Sheds the `Owner` container and returns the value it contained.

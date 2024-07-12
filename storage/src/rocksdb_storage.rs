@@ -28,7 +28,7 @@
 
 //! GroveDB storage layer implemented over RocksDB backend.
 mod storage;
-mod storage_context;
+pub mod storage_context;
 pub mod test_utils;
 #[cfg(test)]
 mod tests;

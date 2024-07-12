@@ -5,17 +5,19 @@ mod merge;
 use std::{
     cmp,
     cmp::Ordering,
+    fmt,
     hash::Hash,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use grovedb_storage::RawIterator;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::error::Error;
+use crate::proofs::hex_to_ascii;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
@@ -31,6 +33,50 @@ pub enum QueryItem {
     RangeAfter(RangeFrom<Vec<u8>>),
     RangeAfterTo(Range<Vec<u8>>),
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for QueryItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QueryItem::Key(key) => write!(f, "Key({})", hex_to_ascii(key)),
+            QueryItem::Range(range) => write!(
+                f,
+                "Range({} .. {})",
+                hex_to_ascii(&range.start),
+                hex_to_ascii(&range.end)
+            ),
+            QueryItem::RangeInclusive(range) => write!(
+                f,
+                "RangeInclusive({} ..= {})",
+                hex_to_ascii(range.start()),
+                hex_to_ascii(range.end())
+            ),
+            QueryItem::RangeFull(_) => write!(f, "RangeFull"),
+            QueryItem::RangeFrom(range) => {
+                write!(f, "RangeFrom({} ..)", hex_to_ascii(&range.start))
+            }
+            QueryItem::RangeTo(range) => write!(f, "RangeTo(.. {})", hex_to_ascii(&range.end)),
+            QueryItem::RangeToInclusive(range) => {
+                write!(f, "RangeToInclusive(..= {})", hex_to_ascii(&range.end))
+            }
+            QueryItem::RangeAfter(range) => {
+                write!(f, "RangeAfter({} <..)", hex_to_ascii(&range.start))
+            }
+            QueryItem::RangeAfterTo(range) => write!(
+                f,
+                "RangeAfterTo({} <.. {})",
+                hex_to_ascii(&range.start),
+                hex_to_ascii(&range.end)
+            ),
+            QueryItem::RangeAfterToInclusive(range) => write!(
+                f,
+                "RangeAfterToInclusive({} <..= {})",
+                hex_to_ascii(range.start()),
+                hex_to_ascii(range.end())
+            ),
+        }
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -295,11 +341,13 @@ impl QueryItem {
                     iter.seek(end).flat_map(|_| iter.prev())
                 }
             }
-            QueryItem::RangeInclusive(range_inclusive) => iter.seek(if left_to_right {
-                range_inclusive.start()
-            } else {
-                range_inclusive.end()
-            }),
+            QueryItem::RangeInclusive(range_inclusive) => {
+                if left_to_right {
+                    iter.seek(range_inclusive.start())
+                } else {
+                    iter.seek_for_prev(range_inclusive.end())
+                }
+            }
             QueryItem::RangeFull(..) => {
                 if left_to_right {
                     iter.seek_to_first()
@@ -379,7 +427,7 @@ impl QueryItem {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
+    pub fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
         for (ai, bi) in a.iter().zip(b.iter()) {
             match ai.cmp(bi) {
                 Ordering::Equal => continue,

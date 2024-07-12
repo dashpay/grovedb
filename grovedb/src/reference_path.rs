@@ -28,22 +28,22 @@
 
 //! Space efficient methods for referencing other elements in GroveDB
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use std::fmt;
 
+use bincode::{Decode, Encode};
 #[cfg(feature = "full")]
 use grovedb_visualize::visualize_to_vec;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-#[cfg(any(feature = "full", feature = "verify"))]
-use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]
+#[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
 /// Reference path variants
-#[derive(Hash, Eq, PartialEq, Serialize, Deserialize, Clone)]
+#[derive(Hash, Eq, PartialEq, Encode, Decode, Clone)]
 pub enum ReferencePathType {
     /// Holds the absolute path to the element the reference points to
     AbsolutePathReference(Vec<Vec<u8>>),
@@ -53,6 +53,16 @@ pub enum ReferencePathType {
     /// first 2 elements, subpath = [a, b] we can then append some other
     /// path [p, q] result = [a, b, p, q]
     UpstreamRootHeightReference(u8, Vec<Vec<u8>>),
+
+    /// This is very similar to the UpstreamRootHeightReference, however
+    /// it appends to the absolute path when resolving the parent of the
+    /// reference. If the reference is stored at 15/9/80/7 then 80 will be
+    /// appended to what we are referring to. For example if we have the
+    /// reference at [a, b, c, d, e, f] (e is the parent path here) and we
+    /// have in the UpstreamRootHeightWithParentPathAdditionReference the
+    /// height set to 2 and the addon path set to [x, y], we would get as a
+    /// result [a, b, x, y, e]
+    UpstreamRootHeightWithParentPathAdditionReference(u8, Vec<Vec<u8>>),
 
     /// This discards the last n elements from the current path and appends a
     /// new path to the subpath. If current path is [a, b, c, d] and we
@@ -76,7 +86,82 @@ pub enum ReferencePathType {
     SiblingReference(Vec<u8>),
 }
 
-#[cfg(feature = "full")]
+// Helper function to display paths
+fn display_path(path: &[Vec<u8>]) -> String {
+    path.iter()
+        .map(hex::encode)
+        .collect::<Vec<String>>()
+        .join("/")
+}
+
+impl fmt::Display for ReferencePathType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                write!(f, "AbsolutePathReference({})", display_path(path))
+            }
+            ReferencePathType::UpstreamRootHeightReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamRootHeightReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamRootHeightWithParentPathAdditionReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::UpstreamFromElementHeightReference(height, path) => {
+                write!(
+                    f,
+                    "UpstreamFromElementHeightReference({}, {})",
+                    height,
+                    display_path(path)
+                )
+            }
+            ReferencePathType::CousinReference(key) => {
+                write!(f, "CousinReference({})", hex::encode(key))
+            }
+            ReferencePathType::RemovedCousinReference(path) => {
+                write!(f, "RemovedCousinReference({})", display_path(path))
+            }
+            ReferencePathType::SiblingReference(key) => {
+                write!(f, "SiblingReference({})", hex::encode(key))
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl ReferencePathType {
+    /// Given the reference path type and the current qualified path (path+key),
+    /// this computes the absolute path of the item the reference is pointing
+    /// to.
+    pub fn absolute_path_using_current_qualified_path<B: AsRef<[u8]>>(
+        self,
+        current_qualified_path: &[B],
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        path_from_reference_qualified_path_type(self, current_qualified_path)
+    }
+
+    /// Given the reference path type, the current path and the terminal key,
+    /// this computes the absolute path of the item the reference is
+    /// pointing to.
+    pub fn absolute_path<B: AsRef<[u8]>>(
+        self,
+        current_path: &[B],
+        current_key: Option<&[u8]>,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        path_from_reference_path_type(self, current_path, current_key)
+    }
+}
+
+#[cfg(any(feature = "full", feature = "visualize"))]
 impl fmt::Debug for ReferencePathType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -86,7 +171,7 @@ impl fmt::Debug for ReferencePathType {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
@@ -95,7 +180,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
         None => Err(Error::CorruptedPath(
-            "qualified path should always have an element",
+            "qualified path should always have an element".to_string(),
         )),
         Some((key, path)) => {
             path_from_reference_path_type(reference_path_type, path, Some(key.as_ref()))
@@ -103,7 +188,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
@@ -128,6 +213,25 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
                 .map(|x| x.as_ref().to_vec())
                 .collect::<Vec<_>>();
             subpath_as_vec.append(&mut path);
+            Ok(subpath_as_vec)
+        }
+        ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+            no_of_elements_to_keep,
+            mut path,
+        ) => {
+            if usize::from(no_of_elements_to_keep) > current_path.len() || current_path.is_empty() {
+                return Err(Error::InvalidInput(
+                    "reference stored path cannot satisfy reference constraints",
+                ));
+            }
+            let last = current_path.last().unwrap().as_ref().to_vec();
+            let current_path_iter = current_path.iter();
+            let mut subpath_as_vec = current_path_iter
+                .take(no_of_elements_to_keep as usize)
+                .map(|x| x.as_ref().to_vec())
+                .collect::<Vec<_>>();
+            subpath_as_vec.append(&mut path);
+            subpath_as_vec.push(last);
             Ok(subpath_as_vec)
         }
 
@@ -224,6 +328,7 @@ impl ReferencePathType {
                     .sum::<usize>()
             }
             ReferencePathType::UpstreamRootHeightReference(_, path)
+            | ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(_, path)
             | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
                 1 + 1
                     + path
@@ -246,6 +351,7 @@ impl ReferencePathType {
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::Query;
+    use grovedb_version::version::GroveVersion;
 
     use crate::{
         reference_path::{path_from_reference_path_type, ReferencePathType},
@@ -263,6 +369,27 @@ mod tests {
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+        );
+    }
+
+    #[test]
+    fn test_upstream_root_height_with_parent_addition_reference() {
+        let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
+        // selects the first 2 elements from the stored path and appends the new path.
+        let ref1 = ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+            2,
+            vec![b"c".to_vec(), b"d".to_vec()],
+        );
+        let final_path = path_from_reference_path_type(ref1, &stored_path, None).unwrap();
+        assert_eq!(
+            final_path,
+            vec![
+                b"a".to_vec(),
+                b"b".to_vec(),
+                b"c".to_vec(),
+                b"d".to_vec(),
+                b"m".to_vec()
+            ]
         );
     }
 
@@ -339,7 +466,8 @@ mod tests {
 
     #[test]
     fn test_query_many_with_different_reference_types() {
-        let db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let db = make_deep_tree(grove_version);
 
         db.insert(
             [TEST_LEAF, b"innertree4"].as_ref(),
@@ -351,6 +479,7 @@ mod tests {
             ])),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -364,6 +493,7 @@ mod tests {
             )),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -377,6 +507,7 @@ mod tests {
             )),
             None,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -387,7 +518,7 @@ mod tests {
         let path_query =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query);
         let result = db
-            .query_item_value(&path_query, true, None)
+            .query_item_value(&path_query, true, true, true, None, grove_version)
             .unwrap()
             .expect("should query items");
         assert_eq!(result.0.len(), 5);
@@ -403,12 +534,12 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should generate proof");
-        let (hash, result) =
-            GroveDb::verify_query_raw(&proof, &path_query).expect("should verify proof");
-        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+        let (hash, result) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
         assert_eq!(result.len(), 5);
     }
 }

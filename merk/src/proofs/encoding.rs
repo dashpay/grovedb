@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Proofs encoding
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -464,8 +436,9 @@ impl<'a> Iterator for Decoder<'a> {
 mod test {
     use super::super::{Node, Op};
     use crate::{
+        proofs::Decoder,
         tree::HASH_LENGTH,
-        TreeFeatureType::{BasicMerk, SummedMerk},
+        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
     };
 
     #[test]
@@ -567,7 +540,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            BasicMerk,
+            BasicMerkNode,
         ));
         assert_eq!(op.encoding_length(), 43);
 
@@ -585,7 +558,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            SummedMerk(6),
+            SummedMerkNode(6),
         ));
         assert_eq!(op.encoding_length(), 44);
 
@@ -683,7 +656,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            BasicMerk,
+            BasicMerkNode,
         ));
         assert_eq!(op.encoding_length(), 43);
 
@@ -701,7 +674,7 @@ mod test {
             vec![1, 2, 3],
             vec![4, 5, 6],
             [0; 32],
-            SummedMerk(5),
+            SummedMerkNode(5),
         ));
         assert_eq!(op.encoding_length(), 44);
 
@@ -860,7 +833,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                BasicMerk
+                BasicMerkNode
             ))
         );
 
@@ -875,7 +848,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                SummedMerk(6)
+                SummedMerkNode(6)
             ))
         );
     }
@@ -960,7 +933,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                BasicMerk
+                BasicMerkNode
             ))
         );
 
@@ -975,7 +948,7 @@ mod test {
                 vec![1, 2, 3],
                 vec![4, 5, 6],
                 [0; 32],
-                SummedMerk(6)
+                SummedMerkNode(6)
             ))
         );
     }
@@ -992,6 +965,24 @@ mod test {
         let bytes = [0x11];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::Child);
+    }
+
+    #[test]
+    fn decode_multiple_child() {
+        let bytes = [0x11, 0x11, 0x11, 0x10];
+        let decoder = Decoder {
+            bytes: &bytes,
+            offset: 0,
+        };
+
+        let mut vecop = vec![];
+        for op in decoder {
+            match op {
+                Ok(op) => vecop.push(op),
+                Err(e) => eprintln!("Error decoding: {:?}", e),
+            }
+        }
+        assert_eq!(vecop, vec![Op::Child, Op::Child, Op::Child, Op::Parent]);
     }
 
     #[test]

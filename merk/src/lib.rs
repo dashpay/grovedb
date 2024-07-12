@@ -30,12 +30,12 @@
 
 // #![deny(missing_docs)]
 
-#[cfg(feature = "full")]
-extern crate core;
-
 /// The top-level store API.
 #[cfg(feature = "full")]
-mod merk;
+pub mod merk;
+
+#[cfg(feature = "grovedbg")]
+pub mod debugger;
 
 #[cfg(feature = "full")]
 pub use crate::merk::{chunks::ChunkProducer, options::MerkOptions, restore::Restorer};
@@ -70,12 +70,8 @@ mod visualize;
 
 #[cfg(feature = "full")]
 pub use ed;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use error::Error;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use proofs::query::execute_proof;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use proofs::query::verify_query;
 #[cfg(feature = "full")]
 pub use tree::{
     BatchEntry, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,
@@ -86,8 +82,9 @@ pub use tree::{CryptoHash, TreeFeatureType};
 
 #[cfg(feature = "full")]
 pub use crate::merk::{
-    defaults::ROOT_KEY_KEY, IsSumTree, KVIterator, Merk, MerkType, ProofConstructionResult,
-    ProofWithoutEncodingResult, RootHashKeyAndSum,
+    defaults::ROOT_KEY_KEY,
+    prove::{ProofConstructionResult, ProofWithoutEncodingResult},
+    IsSumTree, KVIterator, Merk, MerkType, RootHashKeyAndSum,
 };
 #[cfg(feature = "full")]
 pub use crate::visualize::VisualizeableMerk;

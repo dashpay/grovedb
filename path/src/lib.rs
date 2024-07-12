@@ -44,7 +44,7 @@ mod tests {
     use super::*;
     use crate::util::calculate_hash;
 
-    fn assert_path_properties<'b, B>(path: SubtreePath<'b, B>, reference: Vec<Vec<u8>>)
+    fn assert_path_properties<B>(path: SubtreePath<'_, B>, reference: Vec<Vec<u8>>)
     where
         B: AsRef<[u8]> + std::fmt::Debug,
     {
@@ -62,6 +62,7 @@ mod tests {
         let subtree_path_builder = subtree_path_ref.derive_owned();
         assert_eq!(calculate_hash(&path), calculate_hash(&subtree_path_ref));
         assert_eq!(calculate_hash(&path), calculate_hash(&subtree_path_builder));
+        assert_eq!(path.len(), reference.len());
     }
 
     #[test]

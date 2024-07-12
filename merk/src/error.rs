@@ -1,32 +1,6 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Errors
+#[cfg(feature = "full")]
+use crate::proofs::chunk::error::ChunkError;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
@@ -57,13 +31,29 @@ pub enum Error {
     #[error("corrupted code execution error {0}")]
     CorruptedCodeExecution(&'static str),
 
+    /// Corrupted state
+    #[error("corrupted state: {0}")]
+    CorruptedState(&'static str),
+
     /// Chunking error
+    #[cfg(feature = "full")]
     #[error("chunking error {0}")]
-    ChunkingError(&'static str),
+    ChunkingError(ChunkError),
+
+    // TODO: remove
+    /// Old chunking error
+    #[error("chunking error {0}")]
+    OldChunkingError(&'static str),
 
     /// Chunk restoring error
+    #[cfg(feature = "full")]
     #[error("chunk restoring error {0}")]
-    ChunkRestoringError(String),
+    ChunkRestoringError(ChunkError),
+
+    // TODO: remove
+    /// Chunk restoring error
+    #[error("chunk restoring error {0}")]
+    OldChunkRestoringError(String),
 
     /// Key not found error
     #[error("key not found error {0}")]
@@ -87,7 +77,7 @@ pub enum Error {
 
     /// Not supported error
     #[error("not supported error {0}")]
-    NotSupported(&'static str),
+    NotSupported(String),
 
     /// Request amount exceeded error
     #[error("request amount exceeded error {0}")]
@@ -96,6 +86,10 @@ pub enum Error {
     /// Invalid operation error
     #[error("invalid operation error {0}")]
     InvalidOperation(&'static str),
+
+    /// Internal error
+    #[error("internal error {0}")]
+    InternalError(&'static str),
 
     /// Specialized costs error
     #[error("specialized costs error {0}")]
@@ -119,4 +113,14 @@ pub enum Error {
     /// Costs errors
     #[error("costs error: {0}")]
     CostsError(grovedb_costs::error::Error),
+    // Version errors
+    #[error(transparent)]
+    /// Version error
+    VersionError(grovedb_version::error::GroveVersionError),
+}
+
+impl From<grovedb_version::error::GroveVersionError> for Error {
+    fn from(value: grovedb_version::error::GroveVersionError) -> Self {
+        Error::VersionError(value)
+    }
 }

@@ -1,51 +1,32 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Helpers
 //! Implements helper functions in Element
 
 #[cfg(feature = "full")]
-use grovedb_merk::{
-    tree::{kv::KV, Tree},
-    TreeFeatureType,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+use grovedb_merk::tree::kv::{
+    ValueDefinedCostType,
+    ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
+#[cfg(feature = "full")]
+use grovedb_merk::{
+    tree::{kv::KV, TreeNode},
+    TreeFeatureType,
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
+};
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
+#[cfg(feature = "full")]
+use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{element::SUM_ITEM_COST_SIZE, Element, Error};
+use crate::reference_path::ReferencePathType;
 #[cfg(feature = "full")]
 use crate::{
-    element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
-    reference_path::{path_from_reference_path_type, ReferencePathType},
+    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     ElementFlags,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{Element, Error};
 
 impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -59,12 +40,38 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    /// Decoded the integer value in the SumItem element type, returns 0 for
-    /// everything else
+    /// Decoded the integer value in the SumItem element type
     pub fn as_sum_item_value(&self) -> Result<i64, Error> {
         match self {
             Element::SumItem(value, _) => Ok(*value),
             _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumItem element type
+    pub fn into_sum_item_value(self) -> Result<i64, Error> {
+        match self {
+            Element::SumItem(value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a sum item")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumTree element type
+    pub fn as_sum_tree_value(&self) -> Result<i64, Error> {
+        match self {
+            Element::SumTree(_, value, _) => Ok(*value),
+            _ => Err(Error::WrongElementType("expected a sum tree")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumTree element type
+    pub fn into_sum_tree_value(self) -> Result<i64, Error> {
+        match self {
+            Element::SumTree(_, value, _) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a sum tree")),
         }
     }
 
@@ -87,21 +94,48 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Gives the reference path type in the Reference element type
+    pub fn into_reference_path_type(self) -> Result<ReferencePathType, Error> {
+        match self {
+            Element::Reference(value, ..) => Ok(value),
+            _ => Err(Error::WrongElementType("expected a reference")),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree but not a sum tree
+    pub fn is_basic_tree(&self) -> bool {
+        matches!(self, Element::Tree(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
-    pub fn is_tree(&self) -> bool {
+    pub fn is_any_tree(&self) -> bool {
         matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a reference
+    pub fn is_reference(&self) -> bool {
+        matches!(self, Element::Reference(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is an item
-    pub fn is_item(&self) -> bool {
+    pub fn is_any_item(&self) -> bool {
         matches!(self, Element::Item(..) | Element::SumItem(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is an item
+    pub fn is_basic_item(&self) -> bool {
+        matches!(self, Element::Item(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -114,8 +148,8 @@ impl Element {
     /// Get the tree feature type
     pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
-            true => Ok(SummedMerk(self.sum_value_or_default())),
-            false => Ok(BasicMerk),
+            true => Ok(SummedMerkNode(self.sum_value_or_default())),
+            false => Ok(BasicMerkNode),
         }
     }
 
@@ -156,54 +190,17 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Get the size of an element in bytes
-    #[deprecated]
-    pub fn byte_size(&self) -> u32 {
-        match self {
-            Element::Item(item, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + item.len() as u32
-                } else {
-                    item.len() as u32
-                }
-            }
-            Element::SumItem(item, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + item.required_space() as u32
-                } else {
-                    item.required_space() as u32
-                }
-            }
-            Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.serialized_size() as u32;
-
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + path_length
-                } else {
-                    path_length
-                }
-            }
-            Element::Tree(_, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + 32
-                } else {
-                    32
-                }
-            }
-            Element::SumTree(_, _, element_flag) => {
-                if let Some(flag) = element_flag {
-                    flag.len() as u32 + 32 + 8
-                } else {
-                    32 + 8
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "full")]
     /// Get the required item space
-    pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
-        len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
+    pub fn required_item_space(
+        len: u32,
+        flag_len: u32,
+        grove_version: &GroveVersion,
+    ) -> Result<u32, Error> {
+        check_grovedb_v0!(
+            "required_item_space",
+            grove_version.grovedb_versions.element.required_item_space
+        );
+        Ok(len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1)
     }
 
     #[cfg(feature = "full")]
@@ -213,9 +210,9 @@ impl Element {
         path: &[&[u8]],
         key: Option<&[u8]>,
     ) -> Result<Element, Error> {
-        // Convert any non absolute reference type to an absolute one
+        // Convert any non-absolute reference type to an absolute one
         // we do this here because references are aggregated first then followed later
-        // to follow non absolute references, we need the path they are stored at
+        // to follow non-absolute references, we need the path they are stored at
         // this information is lost during the aggregation phase.
         Ok(match &self {
             Element::Reference(reference_path_type, ..) => match reference_path_type {
@@ -243,9 +240,17 @@ impl Element {
         key: &Vec<u8>,
         value: &[u8],
         is_sum_node: bool,
+        grove_version: &GroveVersion,
     ) -> Result<u32, Error> {
+        check_grovedb_v0!(
+            "specialized_costs_for_key_value",
+            grove_version
+                .grovedb_versions
+                .element
+                .specialized_costs_for_key_value
+        );
         // todo: we actually don't need to deserialize the whole element
-        let element = Element::deserialize(value)?;
+        let element = Element::deserialize(value, grove_version)?;
         let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
@@ -297,7 +302,11 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get tree cost for the element
-    pub fn get_specialized_cost(&self) -> Result<u32, Error> {
+    pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
+        check_grovedb_v0!(
+            "get_specialized_cost",
+            grove_version.grovedb_versions.element.get_specialized_cost
+        );
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
@@ -307,12 +316,48 @@ impl Element {
             )),
         }
     }
+
+    #[cfg(feature = "full")]
+    /// Get the value defined cost for a serialized value
+    pub fn value_defined_cost(&self, grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
+        let Some(value_cost) = self.get_specialized_cost(grove_version).ok() else {
+            return None;
+        };
+
+        let cost = value_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        match self {
+            Element::Tree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::SumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "full")]
+    /// Get the value defined cost for a serialized value
+    pub fn value_defined_cost_for_serialized_value(
+        value: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Option<ValueDefinedCostType> {
+        let element = Element::deserialize(value, grove_version).ok()?;
+        element.value_defined_cost(grove_version)
+    }
 }
 
 #[cfg(feature = "full")]
 /// Decode from bytes
-pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
-    let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
-    let element: Element = Element::deserialize(tree.value_as_slice())?;
+pub fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element, Error> {
+    let tree = TreeNode::decode_raw(
+        bytes,
+        vec![],
+        Some(Element::value_defined_cost_for_serialized_value),
+        grove_version,
+    )
+    .map_err(|e| Error::CorruptedData(e.to_string()))?;
+    let element: Element = Element::deserialize(tree.value_as_slice(), grove_version)?;
     Ok(element)
 }

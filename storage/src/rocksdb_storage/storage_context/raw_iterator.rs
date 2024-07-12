@@ -48,7 +48,7 @@ pub struct PrefixedRocksDbRawIterator<I> {
 
 impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Db>> {
     fn seek_to_first(&mut self) -> CostContext<()> {
-        self.raw_iterator.seek(&self.prefix);
+        self.raw_iterator.seek(self.prefix);
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
@@ -169,7 +169,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
 
 impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Tx<'a>>> {
     fn seek_to_first(&mut self) -> CostContext<()> {
-        self.raw_iterator.seek(&self.prefix);
+        self.raw_iterator.seek(self.prefix);
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 

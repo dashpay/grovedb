@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Merk proofs
 
 #[cfg(feature = "full")]
@@ -104,9 +76,58 @@ pub enum Node {
     KVValueHash(Vec<u8>, Vec<u8>, CryptoHash),
 
     /// Represents, the key, value, value_hash and feature_type of a tree node
+    /// Used by Sum trees
     KVValueHashFeatureType(Vec<u8>, Vec<u8>, CryptoHash, TreeFeatureType),
 
     /// Represents the key, value of some referenced node and value_hash of
     /// current tree node
     KVRefValueHash(Vec<u8>, Vec<u8>, CryptoHash),
+}
+
+use std::fmt;
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let node_string = match self {
+            Node::Hash(hash) => format!("Hash(HASH[{}])", hex::encode(hash)),
+            Node::KVHash(kv_hash) => format!("KVHash(HASH[{}])", hex::encode(kv_hash)),
+            Node::KV(key, value) => {
+                format!("KV({}, {})", hex_to_ascii(key), hex_to_ascii(value))
+            }
+            Node::KVValueHash(key, value, value_hash) => format!(
+                "KVValueHash({}, {}, HASH[{}])",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash)
+            ),
+            Node::KVDigest(key, value_hash) => format!(
+                "KVDigest({}, HASH[{}])",
+                hex_to_ascii(key),
+                hex::encode(value_hash)
+            ),
+            Node::KVRefValueHash(key, value, value_hash) => format!(
+                "KVRefValueHash({}, {}, HASH[{}])",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash)
+            ),
+            Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => format!(
+                "KVValueHashFeatureType({}, {}, HASH[{}], {:?})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                feature_type
+            ),
+        };
+        write!(f, "{}", node_string)
+    }
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
+        hex::encode(hex_value)
+    } else {
+        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
+    }
 }

@@ -36,7 +36,7 @@ fn main() {
 
     // Execute the query and collect the result items in "elements".
     let (elements, _) = db
-        .query_item_value(&path_query, true, None)
+        .query_item_value(&path_query, true, false, true,None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -48,13 +48,13 @@ fn populate(db: &GroveDb) {
     let root_path: &[&[u8]] = &[];
     // Put an empty subtree into the root tree nodes at KEY1.
     // Call this SUBTREE1.
-    db.insert(root_path, KEY1, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(root_path, KEY1, Element::empty_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successful SUBTREE1 insert");
 
     // Put an empty subtree into subtree1 at KEY2.
     // Call this SUBTREE2.
-    db.insert(&[KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None)
+    db.insert(&[KEY1], KEY2, Element::empty_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successful SUBTREE2 insert");
 
@@ -67,6 +67,7 @@ fn populate(db: &GroveDb) {
             Element::new_item(i_vec.clone()),
             INSERT_OPTIONS,
             None,
+            grove_version,
         )
         .unwrap()
         .expect("successfully inserted values");

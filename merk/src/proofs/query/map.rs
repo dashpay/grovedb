@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Query
 
 #![allow(unstable_name_collisions)]
@@ -394,37 +366,5 @@ mod tests {
         let mut range = map.range(..&[1u8, 2, 5][..]);
         range.next().unwrap().unwrap();
         assert_eq!(range.next().unwrap().unwrap(), (&[1][..], &[1][..]));
-    }
-}
-
-#[cfg(feature = "full")]
-/// `BTreeMapExtras` provides extra functionality to work with `BTreeMap` that
-/// either missed or unstable
-/// NOTE: We can easily remove this when the following feature will be rolled
-/// out into stable rust: https://github.com/rust-lang/rust/issues/62924
-trait BTreeMapExtras {
-    type K;
-    type V;
-
-    /// Returns `None` if `BTreeMap` is empty otherwise the first key-value pair
-    /// in the map. The key in this pair is the minimum key in the map.
-    fn first_key_value(&self) -> Option<(&Self::K, &Self::V)>;
-
-    /// Returns `None` if `BTreeMap` is empty otherwise the last key-value pair
-    /// in the map. The key in this pair is the maximum key in the map.
-    fn last_key_value(&self) -> Option<(&Self::K, &Self::V)>;
-}
-
-#[cfg(feature = "full")]
-impl<KK: Ord, VV: Ord> BTreeMapExtras for BTreeMap<KK, VV> {
-    type K = KK;
-    type V = VV;
-
-    fn first_key_value(&self) -> Option<(&Self::K, &Self::V)> {
-        self.iter().next()
-    }
-
-    fn last_key_value(&self) -> Option<(&Self::K, &Self::V)> {
-        self.iter().next_back()
     }
 }

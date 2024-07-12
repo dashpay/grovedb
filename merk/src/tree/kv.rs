@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Merk tree key-values
 
 #[cfg(feature = "full")]
@@ -45,7 +17,7 @@ use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, Specialized
 use crate::{
     tree::{
         hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
-        tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerk},
+        tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerkNode},
     },
     Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
@@ -197,60 +169,57 @@ impl KV {
         }
     }
 
+    /// Replaces the `KV`'s value with the given value, does not update the hash
+    /// or value hash.
+    #[inline]
+    pub fn put_value_no_update_of_hashes(mut self, value: Vec<u8>) -> Self {
+        self.value = value;
+        self
+    }
+
     /// Replaces the `KV`'s value with the given value, updates the hash,
     /// value hash and returns the modified `KV`.
     #[inline]
     pub fn put_value_then_update(mut self, value: Vec<u8>) -> CostContext<Self> {
-        let mut cost = OperationCost::default();
-        // TODO: length check?
         self.value = value;
+        self.update_hashes()
+    }
+
+    /// Updates the hash, value hash and returns the modified `KV`.
+    #[inline]
+    pub fn update_hashes(mut self) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
         self.value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
 
-    /// Replaces the `KV`'s value with the given value, updates the hash,
-    /// value hash and returns the modified `KV`.
-    /// This is used when we want a fixed cost, for example in sum trees
+    /// Updates the hashes and returns the modified `KV`.
     #[inline]
-    pub fn put_value_with_fixed_cost_then_update(
+    pub fn update_hashes_using_reference_value_hash(
         mut self,
-        value: Vec<u8>,
-        value_cost: u32,
-    ) -> CostContext<Self> {
-        self.value_defined_cost = Some(SpecializedValueDefinedCost(value_cost));
-        self.put_value_then_update(value)
-    }
-
-    /// Replaces the `KV`'s value with the given value and value hash,
-    /// updates the hash and returns the modified `KV`.
-    #[inline]
-    pub fn put_value_and_reference_value_hash_then_update(
-        mut self,
-        value: Vec<u8>,
         reference_value_hash: CryptoHash,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
-        let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
+        let actual_value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
         let combined_value_hash =
             combine_hash(&actual_value_hash, &reference_value_hash).unwrap_add_cost(&mut cost);
-        self.value = value;
         self.value_hash = combined_value_hash;
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
 
-    /// Replaces the `KV`'s value with the given value and value hash,
-    /// updates the hash and returns the modified `KV`.
+    /// Replaces the `KV`'s value with the given value, does not update the
+    /// hashes, value hash and returns the modified `KV`.
+    /// This is used when we want a fixed cost, for example in sum trees
     #[inline]
-    pub fn put_value_with_reference_value_hash_and_value_cost_then_update(
+    pub fn put_value_with_fixed_cost_no_update_of_hashes(
         mut self,
         value: Vec<u8>,
-        reference_value_hash: CryptoHash,
-        value_cost: u32,
-    ) -> CostContext<Self> {
-        self.value_defined_cost = Some(LayeredValueDefinedCost(value_cost));
-        self.put_value_and_reference_value_hash_then_update(value, reference_value_hash)
+        value_cost: ValueDefinedCostType,
+    ) -> Self {
+        self.value_defined_cost = Some(value_cost);
+        self.put_value_no_update_of_hashes(value)
     }
 
     /// Returns the key as a slice.
@@ -532,7 +501,7 @@ impl Decode for KV {
         let mut kv = Self {
             key: Vec::with_capacity(0),
             value: Vec::with_capacity(128),
-            feature_type: BasicMerk,
+            feature_type: BasicMerkNode,
             value_defined_cost: None,
             hash: NULL_HASH,
             value_hash: NULL_HASH,
@@ -563,11 +532,11 @@ impl Terminated for KV {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tree::tree_feature_type::TreeFeatureType::SummedMerk;
+    use crate::tree::tree_feature_type::TreeFeatureType::SummedMerkNode;
 
     #[test]
     fn new_kv() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerk).unwrap();
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerkNode).unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);
         assert_eq!(kv.value_as_slice(), &[4, 5, 6]);
@@ -576,7 +545,7 @@ mod test {
 
     #[test]
     fn with_value() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerk)
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerkNode)
             .unwrap()
             .put_value_then_update(vec![7, 8, 9])
             .unwrap();
@@ -588,7 +557,7 @@ mod test {
 
     #[test]
     fn encode_and_decode_kv() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerk).unwrap();
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, BasicMerkNode).unwrap();
         let mut encoded_kv = vec![];
         kv.encode_into(&mut encoded_kv).expect("encoded");
         let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();
@@ -596,7 +565,7 @@ mod test {
 
         assert_eq!(kv, decoded_kv);
 
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, SummedMerk(20)).unwrap();
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], None, SummedMerkNode(20)).unwrap();
         let mut encoded_kv = vec![];
         kv.encode_into(&mut encoded_kv).expect("encoded");
         let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();

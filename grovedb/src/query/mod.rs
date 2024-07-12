@@ -1,41 +1,20 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Queries
 
-use std::cmp::Ordering;
+use std::{
+    borrow::{Cow, Cow::Borrowed},
+    cmp::Ordering,
+    fmt,
+};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
-use grovedb_merk::proofs::query::SubqueryBranch;
+use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::Query;
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use indexmap::IndexMap;
 
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::query_result_type::PathKey;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -56,6 +35,20 @@ pub struct PathQuery {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for PathQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PathQuery {{ path: [")?;
+        for (i, path_element) in self.path.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", hex_to_ascii(path_element))?;
+        }
+        write!(f, "], query: {} }}", self.query)
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
 /// Holds a query to apply to a tree and an optional limit/offset value.
 /// Limit and offset values affect the size of the result set.
@@ -66,6 +59,20 @@ pub struct SizedQuery {
     pub limit: Option<u16>,
     /// Offset
     pub offset: Option<u16>,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl fmt::Display for SizedQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SizedQuery {{ query: {}", self.query)?;
+        if let Some(limit) = self.limit {
+            write!(f, ", limit: {}", limit)?;
+        }
+        if let Some(offset) = self.offset {
+            write!(f, ", offset: {}", offset)?;
+        }
+        write!(f, " }}")
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -128,7 +135,18 @@ impl PathQuery {
     }
 
     /// Gets the path of all terminal keys
-    pub fn terminal_keys(&self, max_results: usize) -> Result<Vec<PathKey>, Error> {
+    pub fn terminal_keys(
+        &self,
+        max_results: usize,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<PathKey>, Error> {
+        check_grovedb_v0!(
+            "merge",
+            grove_version
+                .grovedb_versions
+                .path_query_methods
+                .terminal_keys
+        );
         let mut result: Vec<(Vec<Vec<u8>>, Vec<u8>)> = vec![];
         self.query
             .query
@@ -138,7 +156,14 @@ impl PathQuery {
     }
 
     /// Combines multiple path queries into one equivalent path query
-    pub fn merge(mut path_queries: Vec<&PathQuery>) -> Result<Self, Error> {
+    pub fn merge(
+        mut path_queries: Vec<&PathQuery>,
+        grove_version: &GroveVersion,
+    ) -> Result<Self, Error> {
+        check_grovedb_v0!(
+            "merge",
+            grove_version.grovedb_versions.path_query_methods.merge
+        );
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
                 "merge function requires at least 1 path query",
@@ -158,13 +183,14 @@ impl PathQuery {
         path_queries.into_iter().try_for_each(|path_query| {
             if path_query.query.offset.is_some() {
                 return Err(Error::NotSupported(
-                    "can not merge pathqueries with offsets",
+                    "can not merge pathqueries with offsets".to_string(),
                 ));
             }
             if path_query.query.limit.is_some() {
                 return Err(Error::NotSupported(
                     "can not merge pathqueries with limits, consider setting the limit after the \
-                     merge",
+                     merge"
+                        .to_string(),
                 ));
             }
             path_query
@@ -268,24 +294,307 @@ impl PathQuery {
             }
         }
     }
+
+    pub fn query_items_at_path(
+        &self,
+        path: &[&[u8]],
+        grove_version: &GroveVersion,
+    ) -> Result<Option<SinglePathSubquery>, Error> {
+        check_grovedb_v0!(
+            "query_items_at_path",
+            grove_version
+                .grovedb_versions
+                .path_query_methods
+                .query_items_at_path
+        );
+        fn recursive_query_items<'b>(
+            query: &'b Query,
+            path: &[&[u8]],
+        ) -> Option<SinglePathSubquery<'b>> {
+            if path.is_empty() {
+                return Some(SinglePathSubquery::from_query(query));
+            }
+
+            let key = path[0];
+            let path_after_top_removed = &path[1..];
+
+            if let Some(conditional_branches) = &query.conditional_subquery_branches {
+                for (query_item, subquery_branch) in conditional_branches {
+                    if query_item.contains(key) {
+                        if let Some(subquery_path) = &subquery_branch.subquery_path {
+                            if path_after_top_removed.len() <= subquery_path.len() {
+                                if path_after_top_removed
+                                    .iter()
+                                    .zip(subquery_path)
+                                    .all(|(a, b)| *a == b.as_slice())
+                                {
+                                    return if path_after_top_removed.len() == subquery_path.len() {
+                                        subquery_branch.subquery.as_ref().map(|subquery| {
+                                            SinglePathSubquery::from_query(subquery)
+                                        })
+                                    } else {
+                                        let last_path_item = path.len() == subquery_path.len();
+                                        let has_subquery = subquery_branch.subquery.is_some();
+                                        Some(SinglePathSubquery::from_key_when_in_path(
+                                            &subquery_path[path_after_top_removed.len()],
+                                            last_path_item,
+                                            has_subquery,
+                                        ))
+                                    };
+                                }
+                            } else if path_after_top_removed
+                                .iter()
+                                .take(subquery_path.len())
+                                .zip(subquery_path)
+                                .all(|(a, b)| *a == b.as_slice())
+                            {
+                                if let Some(subquery) = &subquery_branch.subquery {
+                                    return recursive_query_items(
+                                        subquery,
+                                        &path_after_top_removed[subquery_path.len()..],
+                                    );
+                                }
+                            }
+                        } else if let Some(subquery) = &subquery_branch.subquery {
+                            return recursive_query_items(subquery, path_after_top_removed);
+                        }
+
+                        return None;
+                    }
+                }
+            }
+
+            if let Some(subquery_path) = &query.default_subquery_branch.subquery_path {
+                if path_after_top_removed.len() <= subquery_path.len() {
+                    if path_after_top_removed
+                        .iter()
+                        .zip(subquery_path)
+                        .all(|(a, b)| *a == b.as_slice())
+                    {
+                        // The paths are equal for example if we had a sub path of
+                        // path : 1 / 2
+                        // subquery : All items
+
+                        // If we are asking what is the subquery when we are at 1 / 2
+                        // we should get
+                        return if path_after_top_removed.len() == subquery_path.len() {
+                            query
+                                .default_subquery_branch
+                                .subquery
+                                .as_ref()
+                                .map(|subquery| SinglePathSubquery::from_query(subquery))
+                        } else {
+                            let last_path_item = path.len() == subquery_path.len();
+                            let has_subquery = query.default_subquery_branch.subquery.is_some();
+                            Some(SinglePathSubquery::from_key_when_in_path(
+                                &subquery_path[path_after_top_removed.len()],
+                                last_path_item,
+                                has_subquery,
+                            ))
+                        };
+                    }
+                } else if path_after_top_removed
+                    .iter()
+                    .take(subquery_path.len())
+                    .zip(subquery_path)
+                    .all(|(a, b)| *a == b.as_slice())
+                {
+                    if let Some(subquery) = &query.default_subquery_branch.subquery {
+                        return recursive_query_items(
+                            subquery,
+                            &path_after_top_removed[subquery_path.len()..],
+                        );
+                    }
+                }
+            } else if let Some(subquery) = &query.default_subquery_branch.subquery {
+                return recursive_query_items(subquery, path_after_top_removed);
+            }
+
+            None
+        }
+
+        let self_path_len = self.path.len();
+        let given_path_len = path.len();
+
+        Ok(match given_path_len.cmp(&self_path_len) {
+            Ordering::Less => {
+                if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
+                    Some(SinglePathSubquery::from_key_when_in_path(
+                        &self.path[given_path_len],
+                        false,
+                        true,
+                    ))
+                } else {
+                    None
+                }
+            }
+            Ordering::Equal => {
+                if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
+                    Some(SinglePathSubquery::from_path_query(self))
+                } else {
+                    None
+                }
+            }
+            Ordering::Greater => {
+                if !self.path.iter().zip(path).all(|(a, b)| a.as_slice() == *b) {
+                    return Ok(None);
+                }
+                recursive_query_items(&self.query.query, &path[self_path_len..])
+            }
+        })
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(Debug, Clone, PartialEq)]
+pub enum HasSubquery<'a> {
+    NoSubquery,
+    Always,
+    Conditionally(Cow<'a, IndexMap<QueryItem, SubqueryBranch>>),
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl<'a> fmt::Display for HasSubquery<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HasSubquery::NoSubquery => write!(f, "NoSubquery"),
+            HasSubquery::Always => write!(f, "Always"),
+            HasSubquery::Conditionally(map) => {
+                writeln!(f, "Conditionally {{")?;
+                for (query_item, subquery_branch) in map.iter() {
+                    writeln!(f, "  {query_item}: {subquery_branch},")?;
+                }
+                write!(f, "}}")
+            }
+        }
+    }
+}
+
+impl<'a> HasSubquery<'a> {
+    /// Checks to see if we have a subquery on a specific key
+    pub fn has_subquery_on_key(&self, key: &[u8]) -> bool {
+        match self {
+            HasSubquery::NoSubquery => false,
+            HasSubquery::Conditionally(conditionally) => conditionally
+                .keys()
+                .any(|query_item| query_item.contains(key)),
+            HasSubquery::Always => true,
+        }
+    }
+}
+
+/// This represents a query where the items might be borrowed, it is used to get
+/// subquery information
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct SinglePathSubquery<'a> {
+    /// Items
+    pub items: Cow<'a, Vec<QueryItem>>,
+    /// Default subquery branch
+    pub has_subquery: HasSubquery<'a>,
+    /// Left to right?
+    pub left_to_right: bool,
+    /// In the path of the path_query, or in a subquery path
+    pub in_path: Option<Cow<'a, Key>>,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl<'a> fmt::Display for SinglePathSubquery<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "InternalCowItemsQuery {{")?;
+        writeln!(f, "  items: [")?;
+        for item in self.items.iter() {
+            writeln!(f, "    {item},")?;
+        }
+        writeln!(f, "  ]")?;
+        writeln!(f, "  has_subquery: {}", self.has_subquery)?;
+        writeln!(f, "  left_to_right: {}", self.left_to_right)?;
+        match &self.in_path {
+            Some(path) => writeln!(f, "  in_path: Some({})", hex_to_ascii(path)),
+            None => writeln!(f, "  in_path: None"),
+        }?;
+        write!(f, "}}")
+    }
+}
+
+impl<'a> SinglePathSubquery<'a> {
+    /// Checks to see if we have a subquery on a specific key
+    pub fn has_subquery_or_matching_in_path_on_key(&self, key: &[u8]) -> bool {
+        if self.has_subquery.has_subquery_on_key(key) {
+            true
+        } else if let Some(path) = self.in_path.as_ref() {
+            path.as_slice() == key
+        } else {
+            false
+        }
+    }
+
+    pub fn from_key_when_in_path(
+        key: &'a Vec<u8>,
+        subquery_is_last_path_item: bool,
+        subquery_has_inner_subquery: bool,
+    ) -> SinglePathSubquery<'a> {
+        // in this case there should be no in_path, because we are trying to get this
+        // level of items and nothing underneath
+        let in_path = if subquery_is_last_path_item && !subquery_has_inner_subquery {
+            None
+        } else {
+            Some(Borrowed(key))
+        };
+        SinglePathSubquery {
+            items: Cow::Owned(vec![QueryItem::Key(key.clone())]),
+            has_subquery: HasSubquery::NoSubquery,
+            left_to_right: true,
+            in_path,
+        }
+    }
+
+    pub fn from_path_query(path_query: &PathQuery) -> SinglePathSubquery {
+        Self::from_query(&path_query.query.query)
+    }
+
+    pub fn from_query(query: &Query) -> SinglePathSubquery {
+        let has_subquery = if query.default_subquery_branch.subquery.is_some()
+            || query.default_subquery_branch.subquery_path.is_some()
+        {
+            HasSubquery::Always
+        } else if let Some(conditional) = query.conditional_subquery_branches.as_ref() {
+            HasSubquery::Conditionally(Cow::Borrowed(conditional))
+        } else {
+            HasSubquery::NoSubquery
+        };
+        SinglePathSubquery {
+            items: Cow::Borrowed(&query.items),
+            has_subquery,
+            left_to_right: query.left_to_right,
+            in_path: None,
+        }
+    }
 }
 
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use std::ops::RangeFull;
+    use std::{borrow::Cow, ops::RangeFull};
 
-    use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
+    use grovedb_merk::proofs::{
+        query::{query_item::QueryItem, SubqueryBranch},
+        Query,
+    };
+    use grovedb_version::version::GroveVersion;
+    use indexmap::IndexMap;
 
     use crate::{
+        query::{HasSubquery, SinglePathSubquery},
         query_result_type::QueryResultType,
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
-        Element, GroveDb, PathQuery,
+        Element, GroveDb, PathQuery, SizedQuery,
     };
 
     #[test]
     fn test_same_path_different_query_merge() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         // starting with no subquery, just a single path and a key query
         let mut query_one = Query::new();
@@ -293,9 +602,13 @@ mod tests {
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
-        let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_one, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_one) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_one, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_one.len(), 1);
 
         let mut query_two = Query::new();
@@ -303,35 +616,49 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
-        let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_two, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_two) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_two, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("should merge path queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("should merge path queries");
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        let (_, result_set_tree) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&merged_path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_tree) =
+            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_tree.len(), 2);
     }
 
     #[test]
     fn test_different_same_length_path_with_different_query_merge() {
+        let grove_version = GroveVersion::latest();
         // Tests for
         // [a, c, Q]
         // [a, m, Q]
-        let temp_db = make_deep_tree();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query_one = Query::new();
         query_one.insert_key(b"key1".to_vec());
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
-        let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_one, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_one) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_one, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_one.len(), 1);
 
         let mut query_two = Query::new();
@@ -339,25 +666,33 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
-        let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_two, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_two) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_two, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("expect to merge path queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db
+            .prove_query(&merged_path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
         let (_, result_set_merged) =
-            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
+            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query, grove_version)
                 .expect("should execute proof");
         assert_eq!(result_set_merged.len(), 2);
 
         let keys = [b"key1".to_vec(), b"key4".to_vec()];
         let values = [b"value1".to_vec(), b"value4".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set_merged, expected_result_set);
 
@@ -373,9 +708,13 @@ mod tests {
             query_one.clone(),
         );
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
-        let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_one, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_one) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_one, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_one.len(), 3);
 
         let mut query_two = Query::new();
@@ -390,9 +729,13 @@ mod tests {
             query_two.clone(),
         );
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
-        let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_two, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_two) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_two, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
         let mut query_three = Query::new();
@@ -407,9 +750,13 @@ mod tests {
             query_three.clone(),
         );
 
-        let proof = temp_db.prove_query(&path_query_three).unwrap().unwrap();
-        let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_three)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_three, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_two) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_three, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
         #[rustfmt::skip]
@@ -439,9 +786,11 @@ mod tests {
 
         }
 
-        let merged_path_query =
-            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .expect("expect to merge path queries");
+        let merged_path_query = PathQuery::merge(
+            vec![&path_query_one, &path_query_two, &path_query_three],
+            grove_version,
+        )
+        .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
         let conditional_subquery_branches = merged_path_query
@@ -534,16 +883,22 @@ mod tests {
             .query_raw(
                 &merged_path_query,
                 true,
+                true,
+                true,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None,
+                grove_version,
             )
             .value
             .expect("expected to get results");
         assert_eq!(result_set_merged.len(), 7);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db
+            .prove_query(&merged_path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
         let (_, proved_result_set_merged) =
-            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
+            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query, grove_version)
                 .expect("should execute proof");
         assert_eq!(proved_result_set_merged.len(), 7);
 
@@ -565,14 +920,15 @@ mod tests {
             b"value10".to_vec(),
             b"value11".to_vec(),
         ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(proved_result_set_merged, expected_result_set);
     }
 
     #[test]
     fn test_different_length_paths_merge() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query_one = Query::new();
         query_one.insert_all();
@@ -586,9 +942,13 @@ mod tests {
             query_one,
         );
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
-        let (_, result_set_one) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_one, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_one) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_one, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_one.len(), 6);
 
         let mut query_two = Query::new();
@@ -603,18 +963,26 @@ mod tests {
             query_two,
         );
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
-        let (_, result_set_two) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_two, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set_two) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_two, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("expect to merge path queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let proof = temp_db
+            .prove_query(&merged_path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
         let (_, result_set_merged) =
-            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
+            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query, grove_version)
                 .expect("should execute proof");
         assert_eq!(result_set_merged.len(), 8);
 
@@ -638,23 +1006,28 @@ mod tests {
             b"value10".to_vec(),
             b"value11".to_vec(),
         ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set_merged, expected_result_set);
     }
 
     #[test]
     fn test_same_path_and_different_path_query_merge() {
-        let temp_db = make_deep_tree();
+        let grove_version = GroveVersion::latest();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query_one = Query::new();
         query_one.insert_key(b"key1".to_vec());
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_one, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_one, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
 
         let mut query_two = Query::new();
@@ -662,9 +1035,13 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_two, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_two, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
 
         let mut query_three = Query::new();
@@ -674,37 +1051,52 @@ mod tests {
             query_three,
         );
 
-        let proof = temp_db.prove_query(&path_query_three).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_three)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_three, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_three, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 2);
 
-        let merged_path_query =
-            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .expect("should merge three queries");
+        let merged_path_query = PathQuery::merge(
+            vec![&path_query_one, &path_query_two, &path_query_three],
+            grove_version,
+        )
+        .expect("should merge three queries");
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&merged_path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 4);
     }
 
     #[test]
     fn test_equal_path_merge() {
+        let grove_version = GroveVersion::latest();
         // [a, b, Q]
         // [a, b, Q2]
         // We should be able to merge this if Q and Q2 have no subqueries.
 
-        let temp_db = make_deep_tree();
+        let temp_db = make_deep_tree(grove_version);
 
         let mut query_one = Query::new();
         query_one.insert_key(b"key1".to_vec());
         let path_query_one =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_one, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_one, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
 
         let mut query_two = Query::new();
@@ -712,17 +1104,26 @@ mod tests {
         let path_query_two =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_two, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_two, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 1);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("should merge three queries");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("should merge three queries");
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&merged_path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 2);
 
         // [a, b, Q]
@@ -735,9 +1136,13 @@ mod tests {
             query_one,
         );
 
-        let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_one)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_one, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_one, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 2);
 
         let mut query_one = Query::new();
@@ -752,9 +1157,13 @@ mod tests {
             query_one,
         );
 
-        let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &path_query_two)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&path_query_two, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &path_query_two, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 3);
 
         #[rustfmt::skip]
@@ -784,8 +1193,9 @@ mod tests {
 
         }
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .expect("expected to be able to merge path_query");
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version)
+                .expect("expected to be able to merge path_query");
 
         // we expect the common path to be the path of both before merge
         assert_eq!(
@@ -826,16 +1236,478 @@ mod tests {
             .query_raw(
                 &merged_path_query,
                 true,
+                true,
+                true,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 None,
+                grove_version,
             )
             .value
             .expect("expected to get results");
         assert_eq!(result_set_merged.len(), 4);
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        let (_, result_set) = GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query)
-            .expect("should execute proof");
+        let proof = temp_db
+            .prove_query(&merged_path_query, None, grove_version)
+            .unwrap()
+            .unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query_raw(proof.as_slice(), &merged_path_query, grove_version)
+                .expect("should execute proof");
         assert_eq!(result_set.len(), 4);
+    }
+
+    #[test]
+    fn test_path_query_items_with_subquery_and_inner_subquery_path() {
+        let grove_version = GroveVersion::latest();
+        // Constructing the keys and paths
+        let root_path_key_1 = b"root_path_key_1".to_vec();
+        let root_path_key_2 = b"root_path_key_2".to_vec();
+        let root_item_key = b"root_item_key".to_vec();
+        let subquery_path_key_1 = b"subquery_path_key_1".to_vec();
+        let subquery_path_key_2 = b"subquery_path_key_2".to_vec();
+        let subquery_item_key = b"subquery_item_key".to_vec();
+        let inner_subquery_path_key = b"inner_subquery_path_key".to_vec();
+
+        // Constructing the subquery
+        let subquery = Query {
+            items: vec![QueryItem::Key(subquery_item_key.clone())],
+            default_subquery_branch: SubqueryBranch {
+                subquery_path: Some(vec![inner_subquery_path_key.clone()]),
+                subquery: None,
+            },
+            left_to_right: true,
+            conditional_subquery_branches: None,
+        };
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![root_path_key_1.clone(), root_path_key_2.clone()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(root_item_key.clone())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![
+                            subquery_path_key_1.clone(),
+                            subquery_path_key_2.clone(),
+                        ]),
+                        subquery: Some(Box::new(subquery)),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        {
+            let path = vec![root_path_key_1.as_slice()];
+            let first = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                first,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(root_path_key_2.clone())]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: Some(Cow::Borrowed(&root_path_key_2)),
+                }
+            );
+        }
+
+        {
+            let path = vec![root_path_key_1.as_slice(), root_path_key_2.as_slice()];
+
+            let second = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                second,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(root_item_key.clone())]),
+                    has_subquery: HasSubquery::Always, /* This is correct because there's a
+                                                        * subquery for one item */
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+
+        {
+            let path = vec![
+                root_path_key_1.as_slice(),
+                root_path_key_2.as_slice(),
+                root_item_key.as_slice(),
+            ];
+
+            let third = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                third,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_1.clone())]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_1))
+                }
+            );
+        }
+
+        {
+            let path = vec![
+                root_path_key_1.as_slice(),
+                root_path_key_2.as_slice(),
+                root_item_key.as_slice(),
+                subquery_path_key_1.as_slice(),
+            ];
+
+            let fourth = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                fourth,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(subquery_path_key_2.clone())]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: Some(Cow::Borrowed(&subquery_path_key_2))
+                }
+            );
+        }
+
+        {
+            let path = vec![
+                root_path_key_1.as_slice(),
+                root_path_key_2.as_slice(),
+                root_item_key.as_slice(),
+                subquery_path_key_1.as_slice(),
+                subquery_path_key_2.as_slice(),
+            ];
+
+            let fifth = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                fifth,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(subquery_item_key.clone())]),
+                    has_subquery: HasSubquery::Always, /* This means that we should be able to
+                                                        * add items underneath */
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+
+        {
+            let path = vec![
+                root_path_key_1.as_slice(),
+                root_path_key_2.as_slice(),
+                root_item_key.as_slice(),
+                subquery_path_key_1.as_slice(),
+                subquery_path_key_2.as_slice(),
+                subquery_item_key.as_slice(),
+            ];
+
+            let sixth = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                sixth,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(inner_subquery_path_key.clone())]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_path_query_items_with_subquery_path() {
+        let grove_version = GroveVersion::latest();
+        // Constructing the keys and paths
+        let root_path_key = b"higher".to_vec();
+        let dash_key = b"dash".to_vec();
+        let quantum_key = b"quantum".to_vec();
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![root_path_key.clone()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![quantum_key.clone()]),
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(100),
+                offset: None,
+            },
+        };
+
+        // Validating the PathQuery structure
+        {
+            let path = vec![root_path_key.as_slice()];
+            let first = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                first,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::RangeFull(RangeFull)]),
+                    has_subquery: HasSubquery::Always,
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+
+        {
+            let path = vec![root_path_key.as_slice(), dash_key.as_slice()];
+
+            let second = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                second,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(quantum_key.clone())]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: None, // There should be no path because we are at the end of the path
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_conditional_subquery_refusing_elements() {
+        let grove_version = GroveVersion::latest();
+        let empty_vec: Vec<u8> = vec![];
+        let zero_vec: Vec<u8> = vec![0];
+
+        let mut conditional_subquery_branches = IndexMap::new();
+        conditional_subquery_branches.insert(
+            QueryItem::Key(b"".to_vec()),
+            SubqueryBranch {
+                subquery_path: Some(vec![zero_vec.clone()]),
+                subquery: Some(Query::new().into()),
+            },
+        );
+
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![zero_vec.clone()]),
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: Some(conditional_subquery_branches),
+                },
+                limit: Some(100),
+                offset: None,
+            },
+        };
+
+        {
+            let path = vec![TEST_LEAF, empty_vec.as_slice()];
+
+            let second = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                second,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(zero_vec.clone())]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: Some(Cow::Borrowed(&zero_vec)),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_complex_path_query_with_conditional_subqueries() {
+        let grove_version = GroveVersion::latest();
+        let identity_id =
+            hex::decode("8b8948a6801501bbe0431e3d994dcf71cf5a2a0939fe51b0e600076199aba4fb")
+                .unwrap();
+
+        let key_20 = vec![20u8];
+
+        let key_80 = vec![80u8];
+
+        let inner_conditional_subquery_branches = IndexMap::from([(
+            QueryItem::Key(vec![80]),
+            SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                })),
+            },
+        )]);
+
+        let conditional_subquery_branches = IndexMap::from([
+            (
+                QueryItem::Key(vec![]),
+                SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(Box::new(Query {
+                        items: vec![QueryItem::Key(identity_id.to_vec())],
+                        default_subquery_branch: SubqueryBranch {
+                            subquery_path: None,
+                            subquery: None,
+                        },
+                        left_to_right: true,
+                        conditional_subquery_branches: None,
+                    })),
+                },
+            ),
+            (
+                QueryItem::Key(vec![20]),
+                SubqueryBranch {
+                    subquery_path: Some(vec![identity_id.to_vec()]),
+                    subquery: Some(Box::new(Query {
+                        items: vec![QueryItem::Key(vec![80]), QueryItem::Key(vec![0xc0])],
+                        default_subquery_branch: SubqueryBranch {
+                            subquery_path: None,
+                            subquery: None,
+                        },
+                        conditional_subquery_branches: Some(
+                            inner_conditional_subquery_branches.clone(),
+                        ),
+                        left_to_right: true,
+                    })),
+                },
+            ),
+        ]);
+
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(vec![20]), QueryItem::Key(vec![96])],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    conditional_subquery_branches: Some(conditional_subquery_branches.clone()),
+                    left_to_right: true,
+                },
+                limit: Some(100),
+                offset: None,
+            },
+        };
+
+        {
+            let path = vec![];
+            let first = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                first,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(vec![20]), QueryItem::Key(vec![96]),]),
+                    has_subquery: HasSubquery::Conditionally(Cow::Borrowed(
+                        &conditional_subquery_branches
+                    )),
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+
+        {
+            let path = vec![key_20.as_slice()];
+            let query = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                query,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(identity_id.clone()),]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: Some(Cow::Borrowed(&identity_id)),
+                }
+            );
+        }
+
+        {
+            let path = vec![key_20.as_slice(), identity_id.as_slice()];
+            let query = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                query,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::Key(vec![80]), QueryItem::Key(vec![0xc0]),]),
+                    has_subquery: HasSubquery::Conditionally(Cow::Borrowed(
+                        &inner_conditional_subquery_branches
+                    )),
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
+
+        {
+            let path = vec![key_20.as_slice(), identity_id.as_slice(), key_80.as_slice()];
+            let query = path_query
+                .query_items_at_path(&path, grove_version)
+                .expect("expected valid version")
+                .expect("expected query items");
+
+            assert_eq!(
+                query,
+                SinglePathSubquery {
+                    items: Cow::Owned(vec![QueryItem::RangeFull(RangeFull)]),
+                    has_subquery: HasSubquery::NoSubquery,
+                    left_to_right: true,
+                    in_path: None,
+                }
+            );
+        }
     }
 }

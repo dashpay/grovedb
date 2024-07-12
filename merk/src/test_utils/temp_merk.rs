@@ -38,7 +38,9 @@ use grovedb_storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
     Storage,
 };
+use grovedb_version::version::GroveVersion;
 
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::Merk;
 
@@ -54,7 +56,7 @@ pub struct TempMerk {
 impl TempMerk {
     /// Opens a `TempMerk` at the given file path, creating a new one if it
     /// does not exist.
-    pub fn new() -> Self {
+    pub fn new(grove_version: &GroveVersion) -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let batch = Box::leak(Box::new(StorageBatch::new()));
 
@@ -62,7 +64,14 @@ impl TempMerk {
             .get_storage_context(SubtreePath::empty(), Some(batch))
             .unwrap();
 
-        let merk = Merk::open_base(context, false).unwrap().unwrap();
+        let merk = Merk::open_base(
+            context,
+            false,
+            None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
         TempMerk {
             storage,
             merk,
@@ -71,7 +80,7 @@ impl TempMerk {
     }
 
     /// Commits pending batch operations.
-    pub fn commit(&mut self) {
+    pub fn commit(&mut self, grove_version: &GroveVersion) {
         let batch = unsafe { Box::from_raw(self.batch as *const _ as *mut StorageBatch) };
         self.storage
             .commit_multi_context_batch(*batch, None)
@@ -82,7 +91,14 @@ impl TempMerk {
             .storage
             .get_storage_context(SubtreePath::empty(), Some(self.batch))
             .unwrap();
-        self.merk = Merk::open_base(context, false).unwrap().unwrap();
+        self.merk = Merk::open_base(
+            context,
+            false,
+            None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
     }
 }
 
@@ -100,7 +116,7 @@ impl Drop for TempMerk {
 #[cfg(feature = "full")]
 impl Default for TempMerk {
     fn default() -> Self {
-        Self::new()
+        Self::new(GroveVersion::latest())
     }
 }
 

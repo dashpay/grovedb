@@ -1,37 +1,14 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! GroveDB Errors
+
+use std::convert::Infallible;
 
 /// GroveDB Errors
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("infallible")]
+    /// This error can not happen, used for generics
+    Infallible,
     // Input data errors
     #[error("cyclic reference path")]
     /// Cyclic reference
@@ -44,10 +21,10 @@ pub enum Error {
     MissingReference(String),
     #[error("internal error: {0}")]
     /// Internal error
-    InternalError(&'static str),
+    InternalError(String),
     #[error("invalid proof: {0}")]
     /// Invalid proof
-    InvalidProof(&'static str),
+    InvalidProof(String),
     #[error("invalid input: {0}")]
     /// Invalid input
     InvalidInput(&'static str),
@@ -90,7 +67,7 @@ pub enum Error {
     /// The corrupted path represents a consistency error in internal groveDB
     /// logic
     #[error("corrupted path: {0}")]
-    CorruptedPath(&'static str),
+    CorruptedPath(String),
 
     // Query errors
     #[error("invalid query: {0}")]
@@ -113,6 +90,10 @@ pub enum Error {
     /// Corrupted data
     CorruptedData(String),
 
+    #[error("data storage error: {0}")]
+    /// Corrupted storage
+    CorruptedStorage(String),
+
     #[error("invalid code execution error: {0}")]
     /// Invalid code execution
     InvalidCodeExecution(&'static str),
@@ -132,18 +113,22 @@ pub enum Error {
     /// Deleting non empty tree
     DeletingNonEmptyTree(&'static str),
 
+    #[error("clearing tree with subtrees not allowed error: {0}")]
+    /// Clearing tree with subtrees not allowed
+    ClearingTreeWithSubtreesNotAllowed(&'static str),
+
     // Client allowed errors
     #[error("just in time element flags client error: {0}")]
     /// Just in time element flags client error
-    JustInTimeElementFlagsClientError(&'static str),
+    JustInTimeElementFlagsClientError(String),
 
     #[error("split removal bytes client error: {0}")]
     /// Split removal bytes client error
-    SplitRemovalBytesClientError(&'static str),
+    SplitRemovalBytesClientError(String),
 
     #[error("client returned non client error: {0}")]
     /// Client returned non client error
-    ClientReturnedNonClientError(&'static str),
+    ClientReturnedNonClientError(String),
 
     #[error("override not allowed error: {0}")]
     /// Override not allowed
@@ -156,10 +141,33 @@ pub enum Error {
     // Support errors
     #[error("not supported: {0}")]
     /// Not supported
-    NotSupported(&'static str),
+    NotSupported(String),
 
     // Merk errors
     #[error("merk error: {0}")]
     /// Merk error
     MerkError(grovedb_merk::error::Error),
+
+    // Version errors
+    #[error(transparent)]
+    /// Version error
+    VersionError(grovedb_version::error::GroveVersionError),
+}
+
+impl From<Infallible> for Error {
+    fn from(_value: Infallible) -> Self {
+        Self::Infallible
+    }
+}
+
+impl From<grovedb_merk::error::Error> for Error {
+    fn from(value: grovedb_merk::Error) -> Self {
+        Error::MerkError(value)
+    }
+}
+
+impl From<grovedb_version::error::GroveVersionError> for Error {
+    fn from(value: grovedb_version::error::GroveVersionError) -> Self {
+        Error::VersionError(value)
+    }
 }

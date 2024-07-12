@@ -28,8 +28,11 @@
 
 //! Tree hashes tests
 
-use grovedb_merk::tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH};
+use grovedb_merk::tree::{
+    combine_hash, kv::ValueDefinedCostType, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH,
+};
 use grovedb_storage::StorageBatch;
+use grovedb_version::version::GroveVersion;
 
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},
@@ -38,7 +41,8 @@ use crate::{
 
 #[test]
 fn test_node_hashes_when_inserting_item() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
 
     db.insert(
         [TEST_LEAF].as_ref(),
@@ -46,6 +50,7 @@ fn test_node_hashes_when_inserting_item() {
         Element::new_item(b"baguette".to_vec()),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful subtree insert");
@@ -53,24 +58,43 @@ fn test_node_hashes_when_inserting_item() {
     let batch = StorageBatch::new();
 
     let test_leaf_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
     let (elem_value, elem_value_hash) = test_leaf_merk
-        .get_value_and_value_hash(b"key1", true)
+        .get_value_and_value_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_kv_hash = test_leaf_merk
-        .get_kv_hash(b"key1", true)
+        .get_kv_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_node_hash = test_leaf_merk
-        .get_hash(b"key1", true)
+        .get_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -90,7 +114,8 @@ fn test_node_hashes_when_inserting_item() {
 
 #[test]
 fn test_tree_hashes_when_inserting_empty_tree() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
 
     db.insert(
         [TEST_LEAF].as_ref(),
@@ -98,6 +123,7 @@ fn test_tree_hashes_when_inserting_empty_tree() {
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful subtree insert");
@@ -105,30 +131,53 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     let batch = StorageBatch::new();
 
     let test_leaf_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
     let (elem_value, elem_value_hash) = test_leaf_merk
-        .get_value_and_value_hash(b"key1", true)
+        .get_value_and_value_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_kv_hash = test_leaf_merk
-        .get_kv_hash(b"key1", true)
+        .get_kv_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let elem_node_hash = test_leaf_merk
-        .get_hash(b"key1", true)
+        .get_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
 
     let underlying_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF, b"key1"].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
@@ -150,7 +199,8 @@ fn test_tree_hashes_when_inserting_empty_tree() {
 
 #[test]
 fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
-    let db = make_test_grovedb();
+    let grove_version = GroveVersion::latest();
+    let db = make_test_grovedb(grove_version);
 
     db.insert(
         [TEST_LEAF].as_ref(),
@@ -158,6 +208,7 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful subtree insert");
@@ -168,6 +219,7 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
         Element::empty_tree(),
         None,
         None,
+        grove_version,
     )
     .unwrap()
     .expect("successful subtree insert");
@@ -175,19 +227,32 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     let batch = StorageBatch::new();
 
     let under_top_merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
     let middle_merk_key1 = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"].as_ref().into(), Some(&batch))
+        .open_non_transactional_merk_at_path(
+            [TEST_LEAF, b"key1"].as_ref().into(),
+            Some(&batch),
+            grove_version,
+        )
         .unwrap()
         .expect("should open merk");
 
     // Let's first verify that the lowest nodes hashes are as we expect
 
     let (elem_value, elem_value_hash) = middle_merk_key1
-        .get_value_and_value_hash(b"key2", true)
+        .get_value_and_value_hash(
+            b"key2",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -196,6 +261,7 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
         .open_non_transactional_merk_at_path(
             [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
             Some(&batch),
+            grove_version,
         )
         .unwrap()
         .expect("should open merk");
@@ -210,7 +276,12 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     assert_eq!(elem_value_hash, combined_value_hash_key2);
 
     let elem_kv_hash = middle_merk_key1
-        .get_kv_hash(b"key2", true)
+        .get_kv_hash(
+            b"key2",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get kv hash")
         .expect("value hash should be some");
@@ -220,7 +291,12 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     assert_eq!(elem_kv_hash, kv_hash_key2);
 
     let elem_node_hash = middle_merk_key1
-        .get_hash(b"key2", true)
+        .get_hash(
+            b"key2",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get kv hash")
         .expect("value hash should be some");
@@ -238,7 +314,12 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     assert_eq!(root_hash, node_hash_key2);
 
     let (middle_elem_value_key1, middle_elem_value_hash_key1) = under_top_merk
-        .get_value_and_value_hash(b"key1", true)
+        .get_value_and_value_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -248,7 +329,7 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
         "0201046b65793200"
     );
 
-    let element = Element::deserialize(middle_elem_value_key1.as_slice())
+    let element = Element::deserialize(middle_elem_value_key1.as_slice(), grove_version)
         .expect("expected to deserialize element");
 
     assert_eq!(element, Element::new_tree(Some(b"key2".to_vec())));
@@ -276,7 +357,12 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     );
 
     let middle_elem_kv_hash_key1 = under_top_merk
-        .get_kv_hash(b"key1", true)
+        .get_kv_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -290,7 +376,12 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     );
 
     let middle_elem_node_hash_key1 = under_top_merk
-        .get_hash(b"key1", true)
+        .get_hash(
+            b"key1",
+            true,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");

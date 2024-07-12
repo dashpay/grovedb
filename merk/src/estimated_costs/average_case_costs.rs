@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Average case costs for Merk
 
 #[cfg(feature = "full")]
@@ -37,7 +9,7 @@ use integer_encoding::VarInt;
 use crate::{
     error::Error,
     estimated_costs::LAYER_COST_SIZE,
-    tree::{kv::KV, Link, Tree},
+    tree::{kv::KV, Link, TreeNode},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
 
@@ -55,10 +27,12 @@ pub type AverageFlagsSize = u32;
 pub type Weight = u8;
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated number of sum trees
+#[derive(Default)]
 pub enum EstimatedSumTrees {
     /// No sum trees
+    #[default]
     NoSumTrees,
     /// Some sum trees
     SomeSumTrees {
@@ -72,12 +46,6 @@ pub enum EstimatedSumTrees {
 }
 
 #[cfg(feature = "full")]
-impl Default for EstimatedSumTrees {
-    fn default() -> Self {
-        EstimatedSumTrees::NoSumTrees
-    }
-}
-
 #[cfg(feature = "full")]
 impl EstimatedSumTrees {
     fn estimated_size(&self) -> Result<u32, Error> {
@@ -95,7 +63,7 @@ impl EstimatedSumTrees {
 }
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated layer sizes
 pub enum EstimatedLayerSizes {
     /// All subtrees
@@ -263,7 +231,7 @@ pub type EstimatedLevelNumber = u32;
 pub type EstimatedToBeEmpty = bool;
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Information on an estimated layer
 pub struct EstimatedLayerInformation {
     /// Is sum tree?
@@ -278,7 +246,7 @@ pub struct EstimatedLayerInformation {
 impl EstimatedLayerInformation {}
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated elements and level number of a layer
 pub enum EstimatedLayerCount {
     /// Potentially at max elements
@@ -318,7 +286,7 @@ impl EstimatedLayerCount {
 }
 
 #[cfg(feature = "full")]
-impl Tree {
+impl TreeNode {
     /// Return estimate of average encoded tree size
     pub fn average_case_encoded_tree_size(
         not_prefixed_key_len: u32,
@@ -340,18 +308,19 @@ pub fn add_average_case_get_merk_node(
     not_prefixed_key_len: u32,
     approximate_element_size: u32,
     is_sum_tree: bool,
-) {
+) -> Result<(), Error> {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
     cost.seek_count += 1;
 
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
-    cost.storage_loaded_bytes += Tree::average_case_encoded_tree_size(
+    cost.storage_loaded_bytes += TreeNode::average_case_encoded_tree_size(
         not_prefixed_key_len,
         approximate_element_size,
         is_sum_tree,
     );
+    Ok(())
 }
 
 #[cfg(feature = "full")]
@@ -461,16 +430,16 @@ pub fn add_average_case_merk_propagate(
             estimated_sum_trees,
             average_flags_size,
         ) => {
-            let flags_len = average_flags_size.unwrap_or(0);
-
             // it is normal to have LAYER_COST_SIZE here, as we add estimated sum tree
             // additions right after
-            let value_len = LAYER_COST_SIZE + flags_len;
+            let value_len = LAYER_COST_SIZE
+                + average_flags_size
+                    .map_or(0, |flags_len| flags_len + flags_len.required_space() as u32);
             // in order to simplify calculations we get the estimated size and remove the
             // cost for the basic merk
             let sum_tree_addition = estimated_sum_trees.estimated_size()?;
             nodes_updated
-                * (KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                * (KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     *average_key_size as u32,
                     value_len,
                     *is_sum_tree,
@@ -520,7 +489,7 @@ pub fn add_average_case_merk_propagate(
                         let flags_len = average_flags_size.unwrap_or(0);
                         let value_len = LAYER_COST_SIZE + flags_len;
                         let sum_tree_addition = estimated_sum_trees.estimated_size()?;
-                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                        let cost = KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                             *average_key_size as u32,
                             value_len,
                             in_sum_tree,

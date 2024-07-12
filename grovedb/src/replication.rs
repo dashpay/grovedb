@@ -1,989 +1,659 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
-//! Replication
-
 use std::{
-    collections::VecDeque,
-    iter::{empty, once},
+    collections::{BTreeMap, BTreeSet},
+    fmt,
 };
 
 use grovedb_merk::{
-    proofs::{Node, Op},
-    Merk, TreeFeatureType,
+    ed::Encode,
+    merk::restore::Restorer,
+    proofs::{Decoder, Op},
+    tree::{hash::CryptoHash, kv::ValueDefinedCostType, value_hash},
+    ChunkProducer,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext},
-    Storage, StorageContext,
-};
+use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[rustfmt::skip]
+use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
+use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
-use crate::{Element, Error, GroveDb, Hash, Transaction};
+use crate::{replication, Error, GroveDb, Transaction, TransactionArg};
 
-const OPS_PER_CHUNK: usize = 128;
+pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
-impl GroveDb {
-    /// Creates a chunk producer to replicate GroveDb.
-    pub fn chunks(&self) -> SubtreeChunkProducer {
-        SubtreeChunkProducer::new(self)
-    }
+pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
+
+#[derive(Default)]
+struct SubtreeStateSyncInfo<'db> {
+    // Current Chunk restorer
+    restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
+    // Set of global chunk ids requested to be fetched and pending for processing. For the
+    // description of global chunk id check fetch_chunk().
+    pending_chunks: BTreeSet<Vec<u8>>,
+    // Number of processed chunks in current prefix (Path digest)
+    num_processed_chunks: usize,
 }
 
-/// Subtree chunks producer.
-pub struct SubtreeChunkProducer<'db> {
-    grove_db: &'db GroveDb,
-    cache: Option<SubtreeChunkProducerCache<'db>>,
+// Struct governing state sync
+pub struct MultiStateSyncInfo<'db> {
+    // Map of current processing subtrees
+    // SubtreePrefix (Path digest) -> SubtreeStateSyncInfo
+    current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
+    // Set of processed prefixes (Path digests)
+    processed_prefixes: BTreeSet<SubtreePrefix>,
+    // Root app_hash
+    app_hash: [u8; 32],
+    // Version of state sync protocol,
+    version: u16,
 }
 
-struct SubtreeChunkProducerCache<'db> {
-    current_merk_path: Vec<Vec<u8>>,
-    current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
-    // This needed to be an `Option` because it requires a reference on Merk but it's within the
-    // same struct and during struct init a referenced Merk would be moved inside a struct,
-    // using `Option` this init happens in two steps.
-    current_chunk_producer:
-        Option<grovedb_merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
-}
-
-impl<'db> SubtreeChunkProducer<'db> {
-    fn new(storage: &'db GroveDb) -> Self {
-        SubtreeChunkProducer {
-            grove_db: storage,
-            cache: None,
-        }
-    }
-
-    /// Chunks in current producer
-    pub fn chunks_in_current_producer(&self) -> usize {
-        self.cache
-            .as_ref()
-            .and_then(|c| c.current_chunk_producer.as_ref().map(|p| p.len()))
-            .unwrap_or(0)
-    }
-
-    /// Get chunk
-    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
-    {
-        let path_iter = path.into_iter();
-
-        if let Some(SubtreeChunkProducerCache {
-            current_merk_path, ..
-        }) = &self.cache
-        {
-            if !itertools::equal(current_merk_path, path_iter.clone()) {
-                self.cache = None;
-            }
-        }
-
-        if self.cache.is_none() {
-            let current_merk = self
-                .grove_db
-                .open_non_transactional_merk_at_path(
-                    path_iter.clone().collect::<Vec<_>>().as_slice().into(),
-                    None,
-                )
-                .unwrap()?;
-
-            if current_merk.root_key().is_none() {
-                return Ok(Vec::new());
-            }
-
-            self.cache = Some(SubtreeChunkProducerCache {
-                current_merk_path: path_iter.map(|p| p.to_vec()).collect(),
-                current_merk,
-                current_chunk_producer: None,
-            });
-            let cache = self.cache.as_mut().expect("exists at this point");
-            cache.current_chunk_producer = Some(
-                grovedb_merk::ChunkProducer::new(&cache.current_merk)
-                    .map_err(|e| Error::CorruptedData(e.to_string()))?,
-            );
-        }
-
-        self.cache
-            .as_mut()
-            .expect("must exist at this point")
-            .current_chunk_producer
-            .as_mut()
-            .expect("must exist at this point")
-            .chunk(index)
-            .map_err(|e| Error::CorruptedData(e.to_string()))
-    }
-}
-
-// TODO: make generic over storage_cost context
-type MerkRestorer<'db> = grovedb_merk::Restorer<PrefixedRocksDbImmediateStorageContext<'db>>;
-
-type Path = Vec<Vec<u8>>;
-
-/// Structure to drive GroveDb restore process.
-pub struct Restorer<'db> {
-    current_merk_restorer: Option<MerkRestorer<'db>>,
-    current_merk_chunk_index: usize,
-    current_merk_path: Path,
-    queue: VecDeque<(Path, Vec<u8>, Hash, TreeFeatureType)>,
-    grove_db: &'db GroveDb,
-    tx: &'db Transaction<'db>,
-}
-
-/// Indicates what next piece of information `Restorer` expects or wraps a
-/// successful result.
-#[derive(Debug)]
-pub enum RestorerResponse {
-    AwaitNextChunk { path: Vec<Vec<u8>>, index: usize },
-    Ready,
-}
-
-#[derive(Debug)]
-pub struct RestorerError(String);
-
-impl<'db> Restorer<'db> {
-    /// Create a GroveDb restorer using a backing storage_cost and root hash.
-    pub fn new(
-        grove_db: &'db GroveDb,
-        root_hash: Hash,
-        tx: &'db Transaction<'db>,
-    ) -> Result<Self, RestorerError> {
-        Ok(Restorer {
-            tx,
-            current_merk_restorer: Some(MerkRestorer::new(
-                Merk::open_base(
-                    grove_db
-                        .db
-                        .get_immediate_storage_context(SubtreePath::empty(), tx)
-                        .unwrap(),
-                    false,
-                )
-                .unwrap()
-                .map_err(|e| RestorerError(e.to_string()))?,
-                None,
-                root_hash,
-            )),
-            current_merk_chunk_index: 0,
-            current_merk_path: vec![],
-            queue: VecDeque::new(),
-            grove_db,
-        })
-    }
-
-    /// Process next chunk and receive instruction on what to do next.
-    pub fn process_chunk(
-        &mut self,
-        chunk_ops: impl IntoIterator<Item = Op>,
-    ) -> Result<RestorerResponse, RestorerError> {
-        if self.current_merk_restorer.is_none() {
-            // Last restorer was consumed and no more Merks to process.
-            return Ok(RestorerResponse::Ready);
-        }
-        // First we decode a chunk to take out info about nested trees to add them into
-        // todo list.
-        let mut ops = Vec::new();
-        for op in chunk_ops {
-            ops.push(op);
-            match ops.last().expect("just inserted") {
-                Op::Push(Node::KVValueHashFeatureType(
-                    key,
-                    value_bytes,
-                    value_hash,
-                    feature_type,
-                ))
-                | Op::PushInverted(Node::KVValueHashFeatureType(
-                    key,
-                    value_bytes,
-                    value_hash,
-                    feature_type,
-                )) => {
-                    if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) =
-                        Element::deserialize(value_bytes)
-                            .map_err(|e| RestorerError(e.to_string()))?
-                    {
-                        if root_key.is_none() || self.current_merk_path.last() == Some(key) {
-                            // We add only subtrees of the current subtree to queue, skipping
-                            // itself; Also skipping empty Merks.
-                            continue;
-                        }
-                        let mut path = self.current_merk_path.clone();
-                        path.push(key.clone());
-                        // The value hash is the root tree hash
-                        self.queue.push_back((
-                            path,
-                            value_bytes.to_owned(),
-                            *value_hash,
-                            *feature_type,
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Process chunk using Merk's possibilities.
-        let remaining = self
-            .current_merk_restorer
-            .as_mut()
-            .expect("restorer exists at this point")
-            .process_chunk(ops)
-            .map_err(|e| RestorerError(e.to_string()))?;
-
-        self.current_merk_chunk_index += 1;
-
-        if remaining == 0 {
-            // If no more chunks for this Merk required decide if we're done or take a next
-            // Merk to process.
-            self.current_merk_restorer
-                .take()
-                .expect("restorer exists at this point")
-                .finalize()
-                .map_err(|e| RestorerError(e.to_string()))?;
-            if let Some((next_path, combining_value, expected_hash, _)) = self.queue.pop_front() {
-                // Process next subtree.
-                let merk = self
-                    .grove_db
-                    .open_merk_for_replication(next_path.as_slice().into(), self.tx)
-                    .map_err(|e| RestorerError(e.to_string()))?;
-                self.current_merk_restorer = Some(MerkRestorer::new(
-                    merk,
-                    Some(combining_value),
-                    expected_hash,
-                ));
-                self.current_merk_chunk_index = 0;
-                self.current_merk_path = next_path;
-
-                Ok(RestorerResponse::AwaitNextChunk {
-                    path: self.current_merk_path.clone(),
-                    index: self.current_merk_chunk_index,
-                })
-            } else {
-                Ok(RestorerResponse::Ready)
-            }
-        } else {
-            // Request a chunk at the same path but with incremented index.
-            Ok(RestorerResponse::AwaitNextChunk {
-                path: self.current_merk_path.clone(),
-                index: self.current_merk_chunk_index,
-            })
+impl<'db> Default for MultiStateSyncInfo<'db> {
+    fn default() -> Self {
+        Self {
+            current_prefixes: BTreeMap::new(),
+            processed_prefixes: BTreeSet::new(),
+            app_hash: [0; 32],
+            version: CURRENT_STATE_SYNC_VERSION,
         }
     }
 }
 
-/// Chunk producer wrapper which uses bigger messages that may include chunks of
-/// requested subtree with its right siblings.
-///
-/// Because `Restorer` builds GroveDb replica breadth-first way from top to
-/// bottom it makes sense to send a subtree's siblings next instead of its own
-/// subtrees.
-pub struct SiblingsChunkProducer<'db> {
-    chunk_producer: SubtreeChunkProducer<'db>,
+// Struct containing information about current subtrees found in GroveDB
+pub struct SubtreesMetadata {
+    // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent
+    // Subtree elem_value_hash) Note: Parent Subtree actual_value_hash, Parent Subtree
+    // elem_value_hash are needed when verifying the new constructed subtree after wards.
+    pub data: BTreeMap<SubtreePrefix, (Vec<Vec<u8>>, CryptoHash, CryptoHash)>,
 }
 
-#[derive(Debug)]
-pub struct GroveChunk {
-    subtree_chunks: Vec<(usize, Vec<Op>)>,
+impl SubtreesMetadata {
+    pub fn new() -> SubtreesMetadata {
+        SubtreesMetadata {
+            data: BTreeMap::new(),
+        }
+    }
 }
 
-impl<'db> SiblingsChunkProducer<'db> {
-    /// New
-    pub fn new(chunk_producer: SubtreeChunkProducer<'db>) -> Self {
-        SiblingsChunkProducer { chunk_producer }
+impl Default for SubtreesMetadata {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    /// Get a collection of chunks possibly from different Merks with the first
-    /// one as requested.
-    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<GroveChunk>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,
-    {
-        let path_iter = path.into_iter();
-        let mut result = Vec::new();
-        let mut ops_count = 0;
-
-        if path_iter.len() == 0 {
-            // We're at the root of GroveDb, no siblings here.
-            self.process_subtree_chunks(&mut result, &mut ops_count, empty(), index)?;
-            return Ok(result);
-        };
-
-        // Get siblings on the right to send chunks of multiple Merks if it meets the
-        // limit.
-
-        let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
-
-        let mut parent_path = path_iter;
-        let requested_key = parent_path.next_back();
-
-        let parent_ctx = self
-            .chunk_producer
-            .grove_db
-            .db
-            .get_storage_context(
-                parent_path.clone().collect::<Vec<_>>().as_slice().into(),
-                None,
-            )
-            .unwrap();
-        let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
-
-        if let Some(key) = requested_key {
-            siblings_iter.fast_forward(key)?;
+impl fmt::Debug for SubtreesMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (prefix, metadata) in self.data.iter() {
+            let metadata_path = &metadata.0;
+            let metadata_path_str = util_path_to_string(metadata_path);
+            writeln!(
+                f,
+                " prefix:{:?} -> path:{:?}",
+                hex::encode(prefix),
+                metadata_path_str
+            )?;
         }
-
-        while let Some(element) = siblings_iter.next_element().unwrap()? {
-            if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
-                siblings_keys.push_back(key);
-            }
-        }
-
-        let mut current_index = index;
-        // Process each subtree
-        while let Some(subtree_key) = siblings_keys.pop_front() {
-            #[allow(clippy::map_identity)]
-            let subtree_path = parent_path
-                .clone()
-                .map(|x| x)
-                .chain(once(subtree_key.as_slice()));
-
-            self.process_subtree_chunks(&mut result, &mut ops_count, subtree_path, current_index)?;
-            // Going to a next sibling, should start from 0.
-
-            if ops_count >= OPS_PER_CHUNK {
-                break;
-            }
-            current_index = 0;
-        }
-
-        Ok(result)
-    }
-
-    /// Process one subtree's chunks
-    fn process_subtree_chunks<'p, P>(
-        &mut self,
-        result: &mut Vec<GroveChunk>,
-        ops_count: &mut usize,
-        subtree_path: P,
-        from_index: usize,
-    ) -> Result<(), Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
-    {
-        let path_iter = subtree_path.into_iter();
-
-        let mut current_index = from_index;
-        let mut subtree_chunks = Vec::new();
-
-        loop {
-            let ops = self
-                .chunk_producer
-                .get_chunk(path_iter.clone(), current_index)?;
-
-            *ops_count += ops.len();
-            subtree_chunks.push((current_index, ops));
-            current_index += 1;
-            if current_index >= self.chunk_producer.chunks_in_current_producer()
-                || *ops_count >= OPS_PER_CHUNK
-            {
-                break;
-            }
-        }
-
-        result.push(GroveChunk { subtree_chunks });
-
         Ok(())
     }
 }
 
-/// `Restorer` wrapper that applies multiple chunks at once and eventually
-/// returns less requests. It is named by analogy with IO types that do less
-/// syscalls.
-pub struct BufferedRestorer<'db> {
-    restorer: Restorer<'db>,
+// Converts a path into a human-readable string (for debugging)
+pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
+    let mut subtree_path_str: Vec<String> = vec![];
+    for subtree in path {
+        let string = std::str::from_utf8(subtree).expect("should be able to convert path");
+        subtree_path_str.push(
+            string
+                .parse()
+                .expect("should be able to parse path to string"),
+        );
+    }
+    subtree_path_str
 }
 
-impl<'db> BufferedRestorer<'db> {
-    /// New
-    pub fn new(restorer: Restorer<'db>) -> Self {
-        BufferedRestorer { restorer }
-    }
-
-    /// Process next chunk and receive instruction on what to do next.
-    pub fn process_grove_chunks<I>(&mut self, chunks: I) -> Result<RestorerResponse, RestorerError>
-    where
-        I: IntoIterator<Item = GroveChunk> + ExactSizeIterator,
-    {
-        let mut response = RestorerResponse::Ready;
-
-        for c in chunks.into_iter() {
-            for ops in c.subtree_chunks.into_iter().map(|x| x.1) {
-                if !ops.is_empty() {
-                    response = self.restorer.process_chunk(ops)?;
-                }
-            }
-        }
-
-        Ok(response)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use rand::RngCore;
-    use tempfile::TempDir;
-
-    use super::*;
-    use crate::{
-        batch::GroveDbOp,
-        reference_path::ReferencePathType,
-        tests::{common::EMPTY_PATH, make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
-    };
-
-    fn replicate(original_db: &GroveDb) -> TempDir {
-        let replica_tempdir = TempDir::new().unwrap();
-
-        {
-            let replica_db = GroveDb::open(replica_tempdir.path()).unwrap();
-            let mut chunk_producer = original_db.chunks();
-            let tx = replica_db.start_transaction();
-
-            let mut restorer = Restorer::new(
-                &replica_db,
-                original_db.root_hash(None).unwrap().unwrap(),
-                &tx,
-            )
-            .expect("cannot create restorer");
-
-            // That means root tree chunk with index 0
-            let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
-
-            loop {
-                let chunk = chunk_producer
-                    .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
-                    .expect("cannot get next chunk");
-                match restorer.process_chunk(chunk).expect("cannot process chunk") {
-                    RestorerResponse::Ready => break,
-                    RestorerResponse::AwaitNextChunk { path, index } => {
-                        next_chunk = (path, index);
-                    }
-                }
-            }
-
-            replica_db.commit_transaction(tx).unwrap().unwrap();
-        }
-        replica_tempdir
-    }
-
-    fn replicate_bigger_messages(original_db: &GroveDb) -> TempDir {
-        let replica_tempdir = TempDir::new().unwrap();
-
-        {
-            let replica_grove_db = GroveDb::open(replica_tempdir.path()).unwrap();
-            let mut chunk_producer = SiblingsChunkProducer::new(original_db.chunks());
-            let tx = replica_grove_db.start_transaction();
-
-            let mut restorer = BufferedRestorer::new(
-                Restorer::new(
-                    &replica_grove_db,
-                    original_db.root_hash(None).unwrap().unwrap(),
-                    &tx,
-                )
-                .expect("cannot create restorer"),
-            );
-
-            // That means root tree chunk with index 0
-            let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
-
-            loop {
-                let chunks = chunk_producer
-                    .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
-                    .expect("cannot get next chunk");
-                match restorer
-                    .process_grove_chunks(chunks.into_iter())
-                    .expect("cannot process chunk")
-                {
-                    RestorerResponse::Ready => break,
-                    RestorerResponse::AwaitNextChunk { path, index } => {
-                        next_chunk = (path, index);
-                    }
-                }
-            }
-
-            replica_grove_db.commit_transaction(tx).unwrap().unwrap();
-        }
-
-        replica_tempdir
-    }
-
-    fn test_replication_internal<'a, I, R, F>(
-        original_db: &TempGroveDb,
-        to_compare: I,
-        replicate_fn: F,
-    ) where
-        R: AsRef<[u8]> + 'a,
-        I: Iterator<Item = &'a [R]>,
-        F: Fn(&GroveDb) -> TempDir,
-    {
-        let expected_root_hash = original_db.root_hash(None).unwrap().unwrap();
-
-        let replica_tempdir = replicate_fn(original_db);
-
-        let replica = GroveDb::open(replica_tempdir.path()).unwrap();
-        assert_eq!(
-            replica.root_hash(None).unwrap().unwrap(),
-            expected_root_hash
-        );
-
-        for full_path in to_compare {
-            let (key, path) = full_path.split_last().unwrap();
-            assert_eq!(
-                original_db.get(path, key.as_ref(), None).unwrap().unwrap(),
-                replica.get(path, key.as_ref(), None).unwrap().unwrap()
-            );
-        }
-    }
-
-    fn test_replication<'a, I, R>(original_db: &TempGroveDb, to_compare: I)
-    where
-        R: AsRef<[u8]> + 'a,
-        I: Iterator<Item = &'a [R]> + Clone,
-    {
-        test_replication_internal(original_db, to_compare.clone(), replicate);
-        test_replication_internal(original_db, to_compare, replicate_bigger_messages);
-    }
-
-    #[test]
-    fn replicate_wrong_root_hash() {
-        let db = make_test_grovedb();
-        let mut bad_hash = db.root_hash(None).unwrap().unwrap();
-        bad_hash[0] = bad_hash[0].wrapping_add(1);
-
-        let tmp_dir = TempDir::new().unwrap();
-        let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
-        let tx = restored_db.start_transaction();
-        let mut restorer = Restorer::new(&restored_db, bad_hash, &tx).unwrap();
-        let mut chunks = db.chunks();
-        assert!(restorer
-            .process_chunk(chunks.get_chunk([], 0).unwrap())
-            .is_err());
-    }
-
-    #[test]
-    fn replicate_provide_wrong_tree() {
-        let db = make_test_grovedb();
-        db.insert(
-            &[TEST_LEAF],
-            b"key1",
-            Element::new_item(b"ayya".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[ANOTHER_TEST_LEAF],
-            b"key1",
-            Element::new_item(b"ayyb".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-
-        let expected_hash = db.root_hash(None).unwrap().unwrap();
-
-        let tmp_dir = TempDir::new().unwrap();
-        let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
-        let tx = restored_db.start_transaction();
-        let mut restorer = Restorer::new(&restored_db, expected_hash, &tx).unwrap();
-        let mut chunks = db.chunks();
-
-        let next_op = restorer
-            .process_chunk(chunks.get_chunk([], 0).unwrap())
-            .unwrap();
-        match next_op {
-            RestorerResponse::AwaitNextChunk { path, index } => {
-                // Feed restorer a wrong Merk!
-                let chunk = if path == [TEST_LEAF] {
-                    chunks.get_chunk([ANOTHER_TEST_LEAF], index).unwrap()
-                } else {
-                    chunks.get_chunk([TEST_LEAF], index).unwrap()
-                };
-                assert!(restorer.process_chunk(chunk).is_err());
-            }
-            _ => {}
-        }
-    }
-
-    #[test]
-    fn replicate_nested_grovedb() {
-        let db = make_test_grovedb();
-        db.insert(
-            &[TEST_LEAF],
-            b"key1",
-            Element::new_item(b"ayya".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[TEST_LEAF],
-            b"key2",
-            Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("should insert reference");
-        db.insert(
-            &[ANOTHER_TEST_LEAF],
-            b"key2",
-            Element::empty_tree(),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[ANOTHER_TEST_LEAF, b"key2"],
-            b"key3",
-            Element::empty_tree(),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[ANOTHER_TEST_LEAF, b"key2", b"key3"],
-            b"key4",
-            Element::new_item(b"ayyb".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-
-        let to_compare = [
-            [TEST_LEAF].as_ref(),
-            [TEST_LEAF, b"key1"].as_ref(),
-            [TEST_LEAF, b"key2"].as_ref(),
-            [ANOTHER_TEST_LEAF].as_ref(),
-            [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
-            [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
-            [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
-        ];
-        test_replication(&db, to_compare.into_iter());
-    }
-
-    #[test]
-    fn replicate_nested_grovedb_with_sum_trees() {
-        let db = make_test_grovedb();
-        db.insert(
-            &[TEST_LEAF],
-            b"key1",
-            Element::new_item(b"ayya".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[TEST_LEAF],
-            b"key2",
-            Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("should insert reference");
-        db.insert(
-            &[ANOTHER_TEST_LEAF],
-            b"key2",
-            Element::empty_sum_tree(),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[ANOTHER_TEST_LEAF, b"key2"],
-            b"sumitem",
-            Element::new_sum_item(15),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[ANOTHER_TEST_LEAF, b"key2"],
-            b"key3",
-            Element::empty_tree(),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[ANOTHER_TEST_LEAF, b"key2", b"key3"],
-            b"key4",
-            Element::new_item(b"ayyb".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-
-        let to_compare = [
-            [TEST_LEAF].as_ref(),
-            [TEST_LEAF, b"key1"].as_ref(),
-            [TEST_LEAF, b"key2"].as_ref(),
-            [ANOTHER_TEST_LEAF].as_ref(),
-            [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
-            [ANOTHER_TEST_LEAF, b"key2", b"sumitem"].as_ref(),
-            [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
-            [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
-        ];
-        test_replication(&db, to_compare.into_iter());
-    }
-
-    // TODO: Highlights a bug in replication
-    #[test]
-    fn replicate_grovedb_with_sum_tree() {
-        let db = make_test_grovedb();
-        db.insert(&[TEST_LEAF], b"key1", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("cannot insert an element");
-        db.insert(
-            &[TEST_LEAF, b"key1"],
-            b"key2",
-            Element::new_item(vec![4]),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-        db.insert(
-            &[TEST_LEAF, b"key1"],
-            b"key3",
-            Element::new_item(vec![10]),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-
-        let to_compare = [
-            [TEST_LEAF].as_ref(),
-            [ANOTHER_TEST_LEAF].as_ref(),
-            [TEST_LEAF, b"key1"].as_ref(),
-            [TEST_LEAF, b"key1", b"key2"].as_ref(),
-            [TEST_LEAF, b"key1", b"key3"].as_ref(),
-        ];
-        test_replication(&db, to_compare.into_iter());
-    }
-
-    #[test]
-    fn replicate_a_big_one() {
-        const HEIGHT: usize = 3;
-        const SUBTREES_FOR_EACH: usize = 3;
-        const SCALARS_FOR_EACH: usize = 600;
-
-        let db = make_test_grovedb();
-        let mut to_compare = Vec::new();
-
-        let mut rng = rand::thread_rng();
-        let mut subtrees: VecDeque<Vec<[u8; 8]>> = VecDeque::new();
-
-        // Generate root tree leafs
-        for _ in 0..SUBTREES_FOR_EACH {
-            let mut bytes = [0; 8];
-            rng.fill_bytes(&mut bytes);
-            db.insert(EMPTY_PATH, &bytes, Element::empty_tree(), None, None)
-                .unwrap()
-                .unwrap();
-            subtrees.push_front(vec![bytes]);
-            to_compare.push(vec![bytes]);
-        }
-
-        while let Some(path) = subtrees.pop_front() {
-            let mut batch = Vec::new();
-
-            if path.len() < HEIGHT {
-                for _ in 0..SUBTREES_FOR_EACH {
-                    let mut bytes = [0; 8];
-                    rng.fill_bytes(&mut bytes);
-
-                    batch.push(GroveDbOp::insert_op(
-                        path.iter().map(|x| x.to_vec()).collect(),
-                        bytes.to_vec(),
-                        Element::empty_tree(),
-                    ));
-
-                    let mut new_path = path.clone();
-                    new_path.push(bytes);
-                    subtrees.push_front(new_path.clone());
-                    to_compare.push(new_path.clone());
-                }
-            }
-
-            for _ in 0..SCALARS_FOR_EACH {
-                let mut bytes = [0; 8];
-                let mut bytes_val = vec![];
-                rng.fill_bytes(&mut bytes);
-                rng.fill_bytes(&mut bytes_val);
-
-                batch.push(GroveDbOp::insert_op(
-                    path.iter().map(|x| x.to_vec()).collect(),
-                    bytes.to_vec(),
-                    Element::new_item(bytes_val),
-                ));
-
-                let mut new_path = path.clone();
-                new_path.push(bytes);
-                to_compare.push(new_path.clone());
-            }
-
-            db.apply_batch(batch, None, None).unwrap().unwrap();
-        }
-
-        test_replication(&db, to_compare.iter().map(|x| x.as_slice()));
-    }
-
-    #[test]
-    fn replicate_from_checkpoint() {
-        // Create a simple GroveDb first
-        let db = make_test_grovedb();
-        db.insert(
-            &[TEST_LEAF],
-            b"key1",
-            Element::new_item(b"ayya".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        db.insert(
-            &[ANOTHER_TEST_LEAF],
-            b"key2",
-            Element::new_item(b"ayyb".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-
-        // Save its state with checkpoint
-        let checkpoint_dir_parent = TempDir::new().unwrap();
-        let checkpoint_dir = checkpoint_dir_parent.path().join("cp");
-        db.create_checkpoint(&checkpoint_dir).unwrap();
-
-        // Alter the db to make difference between current state and checkpoint
-        db.delete(&[TEST_LEAF], b"key1", None, None)
-            .unwrap()
-            .unwrap();
-        db.insert(
-            &[TEST_LEAF],
-            b"key3",
-            Element::new_item(b"ayyd".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        db.insert(
-            &[ANOTHER_TEST_LEAF],
-            b"key2",
-            Element::new_item(b"ayyc".to_vec()),
-            None,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-
-        let checkpoint_db = GroveDb::open(&checkpoint_dir).unwrap();
-
-        // Ensure checkpoint differs from current state
-        assert_ne!(
-            checkpoint_db
-                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
-                .unwrap()
-                .unwrap(),
-            db.get(&[ANOTHER_TEST_LEAF], b"key2", None)
-                .unwrap()
-                .unwrap(),
-        );
-
-        // Build a replica from checkpoint
-        let replica_dir = replicate(&checkpoint_db);
-        let replica_db = GroveDb::open(&replica_dir).unwrap();
-
-        assert_eq!(
-            checkpoint_db.root_hash(None).unwrap().unwrap(),
-            replica_db.root_hash(None).unwrap().unwrap()
-        );
-
-        assert_eq!(
-            checkpoint_db
-                .get(&[TEST_LEAF], b"key1", None)
-                .unwrap()
-                .unwrap(),
-            replica_db
-                .get(&[TEST_LEAF], b"key1", None)
-                .unwrap()
-                .unwrap(),
-        );
-        assert_eq!(
-            checkpoint_db
-                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
-                .unwrap()
-                .unwrap(),
-            replica_db
-                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
-                .unwrap()
-                .unwrap(),
-        );
-        assert!(matches!(
-            replica_db.get(&[TEST_LEAF], b"key3", None).unwrap(),
-            Err(Error::PathKeyNotFound(_))
+// Splits the given global chunk id into [SUBTREE_PREFIX:CHUNK_ID]
+pub fn util_split_global_chunk_id(
+    global_chunk_id: &[u8],
+    app_hash: &[u8],
+) -> Result<(crate::SubtreePrefix, Vec<u8>), Error> {
+    let chunk_prefix_length: usize = 32;
+    if global_chunk_id.len() < chunk_prefix_length {
+        return Err(Error::CorruptedData(
+            "expected global chunk id of at least 32 length".to_string(),
         ));
+    }
 
-        // Drop original db and checkpoint dir too to ensure there is no dependency
-        drop(db);
-        drop(checkpoint_db);
-        drop(checkpoint_dir);
+    if global_chunk_id == app_hash {
+        let array_of_zeros: [u8; 32] = [0; 32];
+        let root_chunk_prefix_key: crate::SubtreePrefix = array_of_zeros;
+        return Ok((root_chunk_prefix_key, vec![]));
+    }
 
-        assert_eq!(
-            replica_db
-                .get(&[ANOTHER_TEST_LEAF], b"key2", None)
-                .unwrap()
-                .unwrap(),
-            Element::new_item(b"ayyb".to_vec())
+    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
+    let mut array = [0u8; 32];
+    array.copy_from_slice(chunk_prefix);
+    let chunk_prefix_key: crate::SubtreePrefix = array;
+    Ok((chunk_prefix_key, chunk_id.to_vec()))
+}
+
+pub fn util_encode_vec_ops(chunk: Vec<Op>) -> Result<Vec<u8>, Error> {
+    let mut res = vec![];
+    for op in chunk {
+        op.encode_into(&mut res)
+            .map_err(|e| Error::CorruptedData(format!("unable to encode chunk: {}", e)))?;
+    }
+    Ok(res)
+}
+
+pub fn util_decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
+    let decoder = Decoder::new(&chunk);
+    let mut res = vec![];
+    for op in decoder {
+        match op {
+            Ok(op) => res.push(op),
+            Err(e) => {
+                return Err(Error::CorruptedData(format!(
+                    "unable to decode chunk: {}",
+                    e
+                )));
+            }
+        }
+    }
+    Ok(res)
+}
+
+#[cfg(feature = "full")]
+impl GroveDb {
+    // Returns the discovered subtrees found recursively along with their associated
+    // metadata Params:
+    // tx: Transaction. Function returns the data by opening merks at given tx.
+    // TODO: Add a SubTreePath as param and start searching from that path instead
+    // of root (as it is now)
+    pub fn get_subtrees_metadata(
+        &self,
+        tx: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> Result<SubtreesMetadata, Error> {
+        check_grovedb_v0!(
+            "is_empty_tree",
+            grove_version
+                .grovedb_versions
+                .replication
+                .get_subtrees_metadata
         );
+        let mut subtrees_metadata = SubtreesMetadata::new();
+
+        let subtrees_root = self
+            .find_subtrees(&SubtreePath::empty(), tx, grove_version)
+            .value?;
+        for subtree in subtrees_root.into_iter() {
+            let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
+            let path: &[&[u8]] = &subtree_path;
+            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+
+            let current_path = SubtreePath::from(path);
+
+            match (current_path.derive_parent(), subtree.last()) {
+                (Some((parent_path, _)), Some(parent_key)) => match tx {
+                    None => {
+                        let parent_merk = self
+                            .open_non_transactional_merk_at_path(parent_path, None, grove_version)
+                            .value?;
+                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
+                            .get_value_and_value_hash(
+                                parent_key,
+                                true,
+                                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                                grove_version,
+                            )
+                            .value
+                        {
+                            let actual_value_hash = value_hash(&elem_value).unwrap();
+                            subtrees_metadata.data.insert(
+                                prefix,
+                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
+                            );
+                        }
+                    }
+                    Some(t) => {
+                        let parent_merk = self
+                            .open_transactional_merk_at_path(parent_path, t, None, grove_version)
+                            .value?;
+                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
+                            .get_value_and_value_hash(
+                                parent_key,
+                                true,
+                                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                                grove_version,
+                            )
+                            .value
+                        {
+                            let actual_value_hash = value_hash(&elem_value).unwrap();
+                            subtrees_metadata.data.insert(
+                                prefix,
+                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
+                            );
+                        }
+                    }
+                },
+                _ => {
+                    subtrees_metadata.data.insert(
+                        prefix,
+                        (
+                            current_path.to_vec(),
+                            CryptoHash::default(),
+                            CryptoHash::default(),
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(subtrees_metadata)
+    }
+
+    // Fetch a chunk by global chunk id (should be called by ABCI when
+    // LoadSnapshotChunk method is called) Params:
+    // global_chunk_id: Global chunk id in the following format:
+    // [SUBTREE_PREFIX:CHUNK_ID] SUBTREE_PREFIX: 32 bytes (mandatory) (All zeros
+    // = Root subtree) CHUNK_ID: 0.. bytes (optional) Traversal instructions to
+    // the root of the given chunk. Traversal instructions are "1" for left, and
+    // "0" for right. TODO: Compact CHUNK_ID into bitset for size optimization
+    // as a subtree can be big hence traversal instructions for the deepest chunks
+    // tx: Transaction. Function returns the data by opening merks at given tx.
+    // Returns the Chunk proof operators for the requested chunk encoded in bytes
+    pub fn fetch_chunk(
+        &self,
+        global_chunk_id: &[u8],
+        tx: TransactionArg,
+        version: u16,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<u8>, Error> {
+        check_grovedb_v0!(
+            "fetch_chunk",
+            grove_version.grovedb_versions.replication.fetch_chunk
+        );
+        // For now, only CURRENT_STATE_SYNC_VERSION is supported
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+
+        let root_app_hash = self.root_hash(tx, grove_version).value?;
+        let (chunk_prefix, chunk_id) =
+            replication::util_split_global_chunk_id(global_chunk_id, &root_app_hash)?;
+
+        let subtrees_metadata = self.get_subtrees_metadata(tx, grove_version)?;
+
+        match subtrees_metadata.data.get(&chunk_prefix) {
+            Some(path_data) => {
+                let subtree = &path_data.0;
+                let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
+                let path: &[&[u8]] = &subtree_path;
+
+                match tx {
+                    None => {
+                        let merk = self
+                            .open_non_transactional_merk_at_path(path.into(), None, grove_version)
+                            .value?;
+
+                        if merk.is_empty_tree().unwrap() {
+                            return Ok(vec![]);
+                        }
+
+                        let chunk_producer_res = ChunkProducer::new(&merk);
+                        match chunk_producer_res {
+                            Ok(mut chunk_producer) => {
+                                let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
+                                match chunk_res {
+                                    Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
+                                        Ok(op_bytes) => Ok(op_bytes),
+                                        Err(_) => Err(Error::CorruptedData(
+                                            "Unable to create to load chunk".to_string(),
+                                        )),
+                                    },
+                                    Err(_) => Err(Error::CorruptedData(
+                                        "Unable to create to load chunk".to_string(),
+                                    )),
+                                }
+                            }
+                            Err(_) => Err(Error::CorruptedData(
+                                "Unable to create Chunk producer".to_string(),
+                            )),
+                        }
+                    }
+                    Some(t) => {
+                        let merk = self
+                            .open_transactional_merk_at_path(path.into(), t, None, grove_version)
+                            .value?;
+
+                        if merk.is_empty_tree().unwrap() {
+                            return Ok(vec![]);
+                        }
+
+                        let chunk_producer_res = ChunkProducer::new(&merk);
+                        match chunk_producer_res {
+                            Ok(mut chunk_producer) => {
+                                let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
+                                match chunk_res {
+                                    Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
+                                        Ok(op_bytes) => Ok(op_bytes),
+                                        Err(_) => Err(Error::CorruptedData(
+                                            "Unable to create to load chunk".to_string(),
+                                        )),
+                                    },
+                                    Err(_) => Err(Error::CorruptedData(
+                                        "Unable to create to load chunk".to_string(),
+                                    )),
+                                }
+                            }
+                            Err(_) => Err(Error::CorruptedData(
+                                "Unable to create Chunk producer".to_string(),
+                            )),
+                        }
+                    }
+                }
+            }
+            None => Err(Error::CorruptedData("Prefix not found".to_string())),
+        }
+    }
+
+    // Starts a state sync process (should be called by ABCI when OfferSnapshot
+    // method is called) Params:
+    // state_sync_info: Consumed StateSyncInfo
+    // app_hash: Snapshot's AppHash
+    // tx: Transaction for the state sync
+    // Returns the StateSyncInfo transferring ownership back to the caller)
+    pub fn start_snapshot_syncing<'db>(
+        &'db self,
+        mut state_sync_info: MultiStateSyncInfo<'db>,
+        app_hash: CryptoHash,
+        tx: &'db Transaction,
+        version: u16,
+        grove_version: &GroveVersion,
+    ) -> Result<MultiStateSyncInfo, Error> {
+        check_grovedb_v0!(
+            "start_snapshot_syncing",
+            grove_version
+                .grovedb_versions
+                .replication
+                .start_snapshot_syncing
+        );
+        // For now, only CURRENT_STATE_SYNC_VERSION is supported
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+        if version != state_sync_info.version {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+
+        if !state_sync_info.current_prefixes.is_empty()
+            || !state_sync_info.processed_prefixes.is_empty()
+        {
+            return Err(Error::InternalError(
+                "GroveDB has already started a snapshot syncing".to_string(),
+            ));
+        }
+
+        println!(
+            "    starting:{:?}...",
+            replication::util_path_to_string(&[])
+        );
+
+        let mut root_prefix_state_sync_info = SubtreeStateSyncInfo::default();
+        let root_prefix = [0u8; 32];
+        if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx, grove_version) {
+            let restorer = Restorer::new(merk, app_hash, None);
+            root_prefix_state_sync_info.restorer = Some(restorer);
+            root_prefix_state_sync_info.pending_chunks.insert(vec![]);
+            state_sync_info
+                .current_prefixes
+                .insert(root_prefix, root_prefix_state_sync_info);
+            state_sync_info.app_hash = app_hash;
+        } else {
+            return Err(Error::InternalError(
+                "Unable to open merk for replication".to_string(),
+            ));
+        }
+
+        Ok(state_sync_info)
+    }
+
+    // Apply a chunk (should be called by ABCI when ApplySnapshotChunk method is
+    // called) Params:
+    // state_sync_info: Consumed MultiStateSyncInfo
+    // global_chunk_id: Global chunk id
+    // chunk: Chunk proof operators encoded in bytes
+    // tx: Transaction for the state sync
+    // Returns the next set of global chunk ids that can be fetched from sources (+
+    // the MultiStateSyncInfo transferring ownership back to the caller)
+    pub fn apply_chunk<'db>(
+        &'db self,
+        mut state_sync_info: MultiStateSyncInfo<'db>,
+        global_chunk_id: &[u8],
+        chunk: Vec<u8>,
+        tx: &'db Transaction,
+        version: u16,
+        grove_version: &GroveVersion,
+    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+        check_grovedb_v0!(
+            "apply_chunk",
+            grove_version.grovedb_versions.replication.apply_chunk
+        );
+        // For now, only CURRENT_STATE_SYNC_VERSION is supported
+        if version != CURRENT_STATE_SYNC_VERSION {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+        if version != state_sync_info.version {
+            return Err(Error::CorruptedData(
+                "Unsupported state sync protocol version".to_string(),
+            ));
+        }
+
+        let mut next_chunk_ids = vec![];
+
+        let (chunk_prefix, chunk_id) =
+            replication::util_split_global_chunk_id(global_chunk_id, &state_sync_info.app_hash)?;
+
+        if state_sync_info.current_prefixes.is_empty() {
+            return Err(Error::InternalError(
+                "GroveDB is not in syncing mode".to_string(),
+            ));
+        }
+        if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
+            if let Ok((res, mut new_subtree_state_sync)) =
+                self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk, grove_version)
+            {
+                if !res.is_empty() {
+                    for local_chunk_id in res.iter() {
+                        let mut next_global_chunk_id = chunk_prefix.to_vec();
+                        next_global_chunk_id.extend(local_chunk_id.to_vec());
+                        next_chunk_ids.push(next_global_chunk_id);
+                    }
+
+                    // re-insert subtree_state_sync in state_sync_info
+                    state_sync_info
+                        .current_prefixes
+                        .insert(chunk_prefix, new_subtree_state_sync);
+                    Ok((next_chunk_ids, state_sync_info))
+                } else {
+                    if !new_subtree_state_sync.pending_chunks.is_empty() {
+                        // re-insert subtree_state_sync in state_sync_info
+                        state_sync_info
+                            .current_prefixes
+                            .insert(chunk_prefix, new_subtree_state_sync);
+                        return Ok((vec![], state_sync_info));
+                    }
+
+                    // Subtree is finished. We can save it.
+                    match new_subtree_state_sync.restorer.take() {
+                        None => Err(Error::InternalError(
+                            "Unable to finalize subtree".to_string(),
+                        )),
+                        Some(restorer) => {
+                            if (new_subtree_state_sync.num_processed_chunks > 0)
+                                && (restorer.finalize(grove_version).is_err())
+                            {
+                                return Err(Error::InternalError(
+                                    "Unable to finalize Merk".to_string(),
+                                ));
+                            }
+                            state_sync_info.processed_prefixes.insert(chunk_prefix);
+
+                            // Subtree was successfully save. Time to discover new subtrees that
+                            // need to be processed
+                            let subtrees_metadata =
+                                self.get_subtrees_metadata(Some(tx), grove_version)?;
+                            if let Some(value) = subtrees_metadata.data.get(&chunk_prefix) {
+                                println!(
+                                    "    path:{:?} done (num_processed_chunks:{:?})",
+                                    replication::util_path_to_string(&value.0),
+                                    new_subtree_state_sync.num_processed_chunks
+                                );
+                            }
+
+                            if let Ok((res, new_state_sync_info)) = self.discover_subtrees(
+                                state_sync_info,
+                                subtrees_metadata,
+                                tx,
+                                grove_version,
+                            ) {
+                                next_chunk_ids.extend(res);
+                                Ok((next_chunk_ids, new_state_sync_info))
+                            } else {
+                                Err(Error::InternalError(
+                                    "Unable to discover Subtrees".to_string(),
+                                ))
+                            }
+                        }
+                    }
+                }
+            } else {
+                Err(Error::InternalError(
+                    "Unable to process incoming chunk".to_string(),
+                ))
+            }
+        } else {
+            Err(Error::InternalError("Invalid incoming prefix".to_string()))
+        }
+    }
+
+    // Apply a chunk using the given SubtreeStateSyncInfo
+    // state_sync_info: Consumed SubtreeStateSyncInfo
+    // chunk_id: Local chunk id
+    // chunk_data: Chunk proof operators encoded in bytes
+    // Returns the next set of global chunk ids that can be fetched from sources (+
+    // the SubtreeStateSyncInfo transferring ownership back to the caller)
+    fn apply_inner_chunk<'db>(
+        &'db self,
+        mut state_sync_info: SubtreeStateSyncInfo<'db>,
+        chunk_id: &[u8],
+        chunk_data: Vec<u8>,
+        grove_version: &GroveVersion,
+    ) -> Result<(Vec<Vec<u8>>, SubtreeStateSyncInfo), Error> {
+        let mut res = vec![];
+
+        match &mut state_sync_info.restorer {
+            Some(restorer) => {
+                if !state_sync_info.pending_chunks.contains(chunk_id) {
+                    return Err(Error::InternalError(
+                        "Incoming global_chunk_id not expected".to_string(),
+                    ));
+                }
+                state_sync_info.pending_chunks.remove(chunk_id);
+                if !chunk_data.is_empty() {
+                    match util_decode_vec_ops(chunk_data) {
+                        Ok(ops) => {
+                            match restorer.process_chunk(chunk_id, ops, grove_version) {
+                                Ok(next_chunk_ids) => {
+                                    state_sync_info.num_processed_chunks += 1;
+                                    for next_chunk_id in next_chunk_ids {
+                                        state_sync_info
+                                            .pending_chunks
+                                            .insert(next_chunk_id.clone());
+                                        res.push(next_chunk_id);
+                                    }
+                                }
+                                _ => {
+                                    return Err(Error::InternalError(
+                                        "Unable to process incoming chunk".to_string(),
+                                    ));
+                                }
+                            };
+                        }
+                        Err(_) => {
+                            return Err(Error::CorruptedData(
+                                "Unable to decode incoming chunk".to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {
+                return Err(Error::InternalError(
+                    "Invalid internal state (restorer".to_string(),
+                ));
+            }
+        }
+
+        Ok((res, state_sync_info))
+    }
+
+    // Prepares SubtreeStateSyncInfos for the freshly discovered subtrees in
+    // subtrees_metadata and returns the root global chunk ids for all of those
+    // new subtrees. state_sync_info: Consumed MultiStateSyncInfo
+    // subtrees_metadata: Metadata about discovered subtrees
+    // chunk_data: Chunk proof operators
+    // Returns the next set of global chunk ids that can be fetched from sources (+
+    // the MultiStateSyncInfo transferring ownership back to the caller)
+    fn discover_subtrees<'db>(
+        &'db self,
+        mut state_sync_info: MultiStateSyncInfo<'db>,
+        subtrees_metadata: SubtreesMetadata,
+        tx: &'db Transaction,
+        grove_version: &GroveVersion,
+    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+        let mut res = vec![];
+
+        for (prefix, prefix_metadata) in &subtrees_metadata.data {
+            if !state_sync_info.processed_prefixes.contains(prefix)
+                && !state_sync_info.current_prefixes.contains_key(prefix)
+            {
+                let (current_path, s_actual_value_hash, s_elem_value_hash) = &prefix_metadata;
+
+                let subtree_path: Vec<&[u8]> =
+                    current_path.iter().map(|vec| vec.as_slice()).collect();
+                let path: &[&[u8]] = &subtree_path;
+                println!(
+                    "    path:{:?} starting...",
+                    replication::util_path_to_string(&prefix_metadata.0)
+                );
+
+                let mut subtree_state_sync_info = SubtreeStateSyncInfo::default();
+                if let Ok(merk) = self.open_merk_for_replication(path.into(), tx, grove_version) {
+                    let restorer =
+                        Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
+                    subtree_state_sync_info.restorer = Some(restorer);
+                    subtree_state_sync_info.pending_chunks.insert(vec![]);
+
+                    state_sync_info
+                        .current_prefixes
+                        .insert(*prefix, subtree_state_sync_info);
+
+                    let root_chunk_prefix = prefix.to_vec();
+                    res.push(root_chunk_prefix.to_vec());
+                } else {
+                    return Err(Error::InternalError(
+                        "Unable to open Merk for replication".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok((res, state_sync_info))
     }
 }

@@ -1,31 +1,3 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Tree proofs
 
 #[cfg(feature = "full")]
@@ -43,6 +15,12 @@ use super::{Node, Op};
 use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, NULL_HASH};
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{error::Error, tree::CryptoHash};
+#[cfg(feature = "full")]
+use crate::{
+    proofs::chunk::chunk::{LEFT, RIGHT},
+    Link,
+    TreeFeatureType::SummedMerkNode,
+};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Contains a tree's child node and its hash. The hash can always be assumed to
@@ -53,6 +31,36 @@ pub struct Child {
     pub tree: Box<Tree>,
     /// Hash
     pub hash: CryptoHash,
+}
+
+impl Child {
+    #[cfg(feature = "full")]
+    pub fn as_link(&self) -> Link {
+        let (key, sum) = match &self.tree.node {
+            Node::KV(key, _) | Node::KVValueHash(key, ..) => (key.as_slice(), None),
+            Node::KVValueHashFeatureType(key, _, _, feature_type) => {
+                let sum_value = match feature_type {
+                    SummedMerkNode(sum) => Some(*sum),
+                    _ => None,
+                };
+                (key.as_slice(), sum_value)
+            }
+            // for the connection between the trunk and leaf chunks, we don't
+            // have the child key so we must first write in an empty one. once
+            // the leaf gets verified, we can write in this key to its parent
+            _ => (&[] as &[u8], None),
+        };
+
+        Link::Reference {
+            hash: self.hash,
+            sum,
+            child_heights: (
+                self.tree.child_heights.0 as u8,
+                self.tree.child_heights.1 as u8,
+            ),
+            key: key.to_vec(),
+        }
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -68,6 +76,8 @@ pub struct Tree {
     pub right: Option<Child>,
     /// Height
     pub height: usize,
+    /// Child Heights
+    pub child_heights: (usize, usize),
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -79,6 +89,7 @@ impl From<Node> for Tree {
             left: None,
             right: None,
             height: 1,
+            child_heights: (0, 0),
         }
     }
 }
@@ -167,6 +178,42 @@ impl Tree {
         Ok(())
     }
 
+    #[cfg(feature = "full")]
+    /// Does an in-order traversal over references to all the nodes in the tree,
+    /// calling `visit_node` for each with the current traversal path.
+    pub fn visit_refs_track_traversal_and_parent<
+        F: FnMut(&Self, &mut Vec<bool>, Option<&[u8]>) -> Result<(), Error>,
+    >(
+        &self,
+        base_traversal_instruction: &mut Vec<bool>,
+        parent_key: Option<&[u8]>,
+        visit_node: &mut F,
+    ) -> Result<(), Error> {
+        if let Some(child) = &self.left {
+            base_traversal_instruction.push(LEFT);
+            child.tree.visit_refs_track_traversal_and_parent(
+                base_traversal_instruction,
+                Some(self.key()),
+                visit_node,
+            )?;
+            base_traversal_instruction.pop();
+        }
+
+        visit_node(self, base_traversal_instruction, parent_key)?;
+
+        if let Some(child) = &self.right {
+            base_traversal_instruction.push(RIGHT);
+            child.tree.visit_refs_track_traversal_and_parent(
+                base_traversal_instruction,
+                Some(self.key()),
+                visit_node,
+            )?;
+            base_traversal_instruction.pop();
+        }
+
+        Ok(())
+    }
+
     /// Returns an immutable reference to the child on the given side, if any.
     #[cfg(any(feature = "full", feature = "verify"))]
     pub const fn child(&self, left: bool) -> Option<&Child> {
@@ -201,6 +248,13 @@ impl Tree {
         }
 
         self.height = self.height.max(child.height + 1);
+
+        // update child height
+        if left {
+            self.child_heights.0 = child.height;
+        } else {
+            self.child_heights.1 = child.height;
+        }
 
         let hash = child.hash().unwrap_add_cost(&mut cost);
         let tree = Box::new(child);
@@ -238,13 +292,24 @@ impl Tree {
             _ => panic!("Expected node to be type KV"),
         }
     }
+
+    #[cfg(feature = "full")]
+    pub(crate) fn sum(&self) -> Option<i64> {
+        match self.node {
+            Node::KVValueHashFeatureType(.., feature_type) => match feature_type {
+                SummedMerkNode(sum) => Some(sum),
+                _ => None,
+            },
+            _ => panic!("Expected node to be type KVValueHashFeatureType"),
+        }
+    }
 }
 
 #[cfg(feature = "full")]
 /// `LayerIter` iterates over the nodes in a `Tree` at a given depth. Nodes are
 /// visited in order.
 pub struct LayerIter<'a> {
-    stack: Vec<&'a Tree>,
+    stack: Vec<(&'a Tree, usize)>,
     depth: usize,
 }
 
@@ -257,24 +322,8 @@ impl<'a> LayerIter<'a> {
             depth,
         };
 
-        iter.traverse_to_start(tree, depth);
+        iter.stack.push((tree, 0));
         iter
-    }
-
-    /// Builds up the stack by traversing through left children to the desired
-    /// depth.
-    fn traverse_to_start(&mut self, tree: &'a Tree, remaining_depth: usize) {
-        self.stack.push(tree);
-
-        if remaining_depth == 0 {
-            return;
-        }
-
-        if let Some(child) = tree.child(true) {
-            self.traverse_to_start(&child.tree, remaining_depth - 1)
-        } else {
-            panic!("Could not traverse to given layer")
-        }
     }
 }
 
@@ -283,32 +332,20 @@ impl<'a> Iterator for LayerIter<'a> {
     type Item = &'a Tree;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let item = self.stack.pop();
-        let mut popped = item;
-
-        loop {
-            if self.stack.is_empty() {
-                return item;
-            }
-
-            let parent = self.stack.last().unwrap();
-            let left_child = parent.child(true).unwrap();
-            let right_child = parent.child(false).unwrap();
-
-            if left_child.tree.as_ref() == popped.unwrap() {
-                self.stack.push(&right_child.tree);
-
-                while self.stack.len() - 1 < self.depth {
-                    let parent = self.stack.last().unwrap();
-                    let left_child = parent.child(true).unwrap();
-                    self.stack.push(&left_child.tree);
+        while let Some((item, item_depth)) = self.stack.pop() {
+            if item_depth != self.depth {
+                if let Some(right_child) = item.child(false) {
+                    self.stack.push((&right_child.tree, item_depth + 1))
                 }
-
-                return item;
+                if let Some(left_child) = item.child(true) {
+                    self.stack.push((&left_child.tree, item_depth + 1))
+                }
             } else {
-                popped = self.stack.pop();
+                return Some(item);
             }
         }
+
+        None
     }
 }
 
@@ -471,7 +508,19 @@ where
         .wrap_with_cost(cost);
     }
 
-    Ok(stack.pop().unwrap()).wrap_with_cost(cost)
+    let tree = stack.pop().unwrap();
+
+    if tree.child_heights.0.max(tree.child_heights.1)
+        - tree.child_heights.0.min(tree.child_heights.1)
+        > 1
+    {
+        return Err(Error::InvalidProofError(
+            "Expected proof to result in a valid avl tree".to_string(),
+        ))
+        .wrap_with_cost(cost);
+    }
+
+    Ok(tree).wrap_with_cost(cost)
 }
 
 #[cfg(feature = "full")]
@@ -554,5 +603,105 @@ mod test {
             assert_node(iter.next().unwrap(), i);
         }
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn execute_non_avl_tree() {
+        let non_avl_tree_proof = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::Parent,
+            Op::Push(Node::KV(vec![3], vec![3])),
+            Op::Parent,
+        ];
+        let execution_result =
+            execute(non_avl_tree_proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(execution_result.is_err());
+    }
+
+    #[test]
+    fn child_to_link() {
+        let basic_merk_tree = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::Parent,
+            Op::Push(Node::KV(vec![3], vec![3])),
+            Op::Child,
+        ];
+        let tree = execute(basic_merk_tree.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        let left_link = tree.left.as_ref().unwrap().as_link();
+        let right_link = tree.right.as_ref().unwrap().as_link();
+
+        assert_eq!(
+            left_link,
+            Link::Reference {
+                hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
+                sum: None,
+                child_heights: (0, 0),
+                key: vec![1]
+            }
+        );
+
+        assert_eq!(
+            right_link,
+            Link::Reference {
+                hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
+                sum: None,
+                child_heights: (0, 0),
+                key: vec![3]
+            }
+        );
+
+        let sum_merk_tree = vec![
+            Op::Push(Node::KVValueHashFeatureType(
+                vec![1],
+                vec![1],
+                [0; 32],
+                SummedMerkNode(3),
+            )),
+            Op::Push(Node::KVValueHashFeatureType(
+                vec![2],
+                vec![2],
+                [0; 32],
+                SummedMerkNode(1),
+            )),
+            Op::Parent,
+            Op::Push(Node::KVValueHashFeatureType(
+                vec![3],
+                vec![3],
+                [0; 32],
+                SummedMerkNode(1),
+            )),
+            Op::Child,
+        ];
+        let tree = execute(sum_merk_tree.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        let left_link = tree.left.as_ref().unwrap().as_link();
+        let right_link = tree.right.as_ref().unwrap().as_link();
+
+        assert_eq!(
+            left_link,
+            Link::Reference {
+                hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
+                sum: Some(3),
+                child_heights: (0, 0),
+                key: vec![1]
+            }
+        );
+
+        assert_eq!(
+            right_link,
+            Link::Reference {
+                hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
+                sum: Some(1),
+                child_heights: (0, 0),
+                key: vec![3]
+            }
+        );
     }
 }
