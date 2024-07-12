@@ -26,7 +26,7 @@ nohash-hasher = { version = "0.2.0", optional = true }
 indexmap = { version = "2.2.6"}
 intmap = { version = "2.0.0", optional = true }
 grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
-grovedbg-types = { path = "../grovedbg-types", optional = true }
+grovedbg-types = { version = "1.0.0-rc.2", path = "../grovedbg-types", optional = true }
 tokio = { version = "1.37.0", features = ["rt-multi-thread", "net"], optional = true }
 axum = { version = "0.7.5", features = ["macros"], optional = true }
 tower-http = { version = "0.5.2", features = ["fs"], optional = true }
