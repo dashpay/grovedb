@@ -2,6 +2,10 @@
 name = "grovedbg-types"
 version = "1.0.0-rc.2"
 edition = "2021"
+description = "Common type definitions for data exchange over GroveDBG protocol"
+authors = ["Evgeny Fomin <evgeny.fomin@dash.org>"]
+license = "MIT"
+repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
 serde = { version = "1.0.201", features = ["derive"] }
