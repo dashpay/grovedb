@@ -121,7 +121,7 @@ impl fmt::Display for Element {
             Element::SumItem(sum_value, flags) => {
                 write!(
                     f,
-                    "SumItem({}{}",
+                    "SumItem({}{})",
                     sum_value,
                     flags
                         .as_ref()
@@ -131,7 +131,7 @@ impl fmt::Display for Element {
             Element::SumTree(root_key, sum_value, flags) => {
                 write!(
                     f,
-                    "SumTree({}, {}{}",
+                    "SumTree({}, {}{})",
                     root_key.as_ref().map_or("None".to_string(), hex::encode),
                     sum_value,
                     flags
