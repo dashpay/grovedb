@@ -237,10 +237,6 @@ From here we can build:
 There is a work in progress implementation of a debugger layer for GroveDB. To use this library with
 these capabilities enabled one needs to set a dependency with `grovedbg` feature.
 
-At build time this requires two environment dependencies:
-1. `wasm32-unknown-unknown` Rust toolchain;
-2. [trunk](https://trunkrs.dev/) utility.
-
 Then, to launch visualizer tool to observe the database structure inside of your browser on a port,
 let's say 10000, the following snippet should do:
 
