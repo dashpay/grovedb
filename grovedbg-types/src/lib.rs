@@ -62,3 +62,44 @@ pub enum Element {
         sibling_key: Key,
     },
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathQuery {
+    pub path: Path,
+    pub query: SizedQuery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SizedQuery {
+    pub query: Query,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Query {
+    pub items: Vec<QueryItem>,
+    pub default_subquery_branch: SubqueryBranch,
+    pub conditional_subquery_branches: Vec<(QueryItem, SubqueryBranch)>,
+    pub left_to_right: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum QueryItem {
+    Key(Vec<u8>),
+    Range { start: Key, end: Key },
+    RangeInclusive { start: Key, end: Key },
+    RangeFull,
+    RangeFrom(Key),
+    RangeTo(Key),
+    RangeToInclusive(Key),
+    RangeAfter(Key),
+    RangeAfterTo { after: Key, to: Key },
+    RangeAfterToInclusive { after: Key, to: Key },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubqueryBranch {
+    pub subquery_path: Option<Vec<PathSegment>>,
+    pub subquery: Option<Box<Query>>,
+}
