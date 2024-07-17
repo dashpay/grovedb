@@ -1,0 +1,10 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+grovedb = { git = "https://github.com/dashpay/grovedb.git", features = [ "full" ] }
+costs = { git = "https://github.com/dashpay/grovedb.git", package = "grovedb-costs" }
+rand = "0.8.5"
+tempfile = "3.3.0"
