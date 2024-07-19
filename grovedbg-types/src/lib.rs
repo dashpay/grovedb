@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub type Key = Vec<u8>;
@@ -103,3 +105,12 @@ pub struct SubqueryBranch {
     pub subquery_path: Option<Vec<PathSegment>>,
     pub subquery: Option<Box<Query>>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Proof {
+    merk_proof: MerkProof,
+    lower_layers: BTreeMap<Key, Proof>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MerkProof {}

@@ -6,7 +6,10 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::po
 use grovedb_merk::debugger::NodeDbg;
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
-use grovedbg_types::{NodeFetchRequest, NodeUpdate, Path};
+use grovedbg_types::{
+    NodeFetchRequest, NodeUpdate, Path, PathQuery, Query, QueryItem, SizedQuery, SubqueryBranch,
+};
+use indexmap::IndexMap;
 use tokio::{
     net::ToSocketAddrs,
     sync::mpsc::{self, Sender},
@@ -26,16 +29,18 @@ where
         let grovedbg_tmp =
             tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
         let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
-        let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
+        // let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
+        let grovedbg_www = "/home/yolo/dash/grovedbg/dist";
 
-        fs::write(&grovedbg_zip, &GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
-        zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
-            .expect("cannot extract grovedbg contents");
+        // fs::write(&grovedbg_zip, &GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
+        // zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
+        //     .expect("cannot extract grovedbg contents");
 
         let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
         let app = Router::new()
             .route("/fetch_node", post(fetch_node))
             .route("/fetch_root_node", post(fetch_root_node))
+            .route("/execute_path_query", post(execute_path_query))
             .fallback_service(ServeDir::new(grovedbg_www))
             .with_state((shutdown_send, grovedb));
 
@@ -120,6 +125,100 @@ async fn fetch_root_node(
         Ok(Json(Some(node_update)))
     } else {
         Ok(None.into())
+    }
+}
+
+async fn execute_path_query(
+    State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
+    Json(json_path_query): Json<PathQuery>,
+) -> Result<Json<grovedbg_types::Proof>, AppError> {
+    let Some(db) = grovedb.upgrade() else {
+        shutdown.send(()).await.ok();
+        return Err(AppError::Closed);
+    };
+
+    let path_query = path_query_to_grovedb(json_path_query);
+    db.prove_query(&path_query, None, &GroveVersion::latest());
+    todo!()
+}
+
+fn path_query_to_grovedb(query: PathQuery) -> crate::PathQuery {
+    let PathQuery {
+        path,
+        query:
+            SizedQuery {
+                limit,
+                offset,
+                query: inner_query,
+            },
+    } = query;
+
+    crate::PathQuery {
+        path,
+        query: crate::SizedQuery {
+            query: query_to_grovedb(inner_query),
+            limit,
+            offset,
+        },
+    }
+}
+
+fn query_to_grovedb(query: Query) -> crate::Query {
+    crate::Query {
+        items: query.items.into_iter().map(query_item_to_grovedb).collect(),
+        default_subquery_branch: subquery_branch_to_grovedb(query.default_subquery_branch),
+        conditional_subquery_branches: conditional_subquery_branches_to_grovedb(
+            query.conditional_subquery_branches,
+        ),
+        left_to_right: query.left_to_right,
+    }
+}
+
+fn conditional_subquery_branches_to_grovedb(
+    conditional_subquery_branches: Vec<(QueryItem, SubqueryBranch)>,
+) -> Option<IndexMap<crate::QueryItem, grovedb_merk::proofs::query::SubqueryBranch>> {
+    if conditional_subquery_branches.is_empty() {
+        None
+    } else {
+        Some(
+            conditional_subquery_branches
+                .into_iter()
+                .map(|(item, branch)| {
+                    (
+                        query_item_to_grovedb(item),
+                        subquery_branch_to_grovedb(branch),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+fn subquery_branch_to_grovedb(
+    subquery_branch: SubqueryBranch,
+) -> grovedb_merk::proofs::query::SubqueryBranch {
+    grovedb_merk::proofs::query::SubqueryBranch {
+        subquery_path: subquery_branch.subquery_path,
+        subquery: subquery_branch
+            .subquery
+            .map(|q| Box::new(query_to_grovedb(*q))),
+    }
+}
+
+fn query_item_to_grovedb(item: QueryItem) -> crate::QueryItem {
+    match item {
+        QueryItem::Key(x) => crate::QueryItem::Key(x),
+        QueryItem::Range { start, end } => crate::QueryItem::Range(start..end),
+        QueryItem::RangeInclusive { start, end } => crate::QueryItem::RangeInclusive(start..=end),
+        QueryItem::RangeFull => crate::QueryItem::RangeFull(..),
+        QueryItem::RangeFrom(x) => crate::QueryItem::RangeFrom(x..),
+        QueryItem::RangeTo(x) => crate::QueryItem::RangeTo(..x),
+        QueryItem::RangeToInclusive(x) => crate::QueryItem::RangeToInclusive(..=x),
+        QueryItem::RangeAfter(x) => crate::QueryItem::RangeAfter(x..),
+        QueryItem::RangeAfterTo { after, to } => crate::QueryItem::RangeAfterTo(after..to),
+        QueryItem::RangeAfterToInclusive { after, to } => {
+            crate::QueryItem::RangeAfterToInclusive(after..=to)
+        }
     }
 }
 
