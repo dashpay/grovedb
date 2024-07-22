@@ -9,3 +9,4 @@ repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
 serde = { version = "1.0.201", features = ["derive"] }
+serde_with = { version = "3.9.0", features = ["base64"] }

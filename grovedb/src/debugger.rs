@@ -1,13 +1,19 @@
 //! GroveDB debugging support module.
 
-use std::{fs, net::Ipv4Addr, sync::Weak};
+use std::{collections::BTreeMap, fs, net::Ipv4Addr, sync::Weak};
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
-use grovedb_merk::debugger::NodeDbg;
+use grovedb_merk::{
+    debugger::NodeDbg,
+    proofs::{Decoder, Node, Op},
+    TreeFeatureType,
+};
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 use grovedbg_types::{
-    NodeFetchRequest, NodeUpdate, Path, PathQuery, Query, QueryItem, SizedQuery, SubqueryBranch,
+    Key,
+    MerkProofNode, MerkProofOp, NodeFetchRequest, NodeUpdate, Path, PathQuery, Query, QueryItem,
+    SizedQuery, SubqueryBranch,
 };
 use indexmap::IndexMap;
 use tokio::{
@@ -16,7 +22,11 @@ use tokio::{
 };
 use tower_http::services::ServeDir;
 
-use crate::{reference_path::ReferencePathType, GroveDb};
+use crate::{
+    operations::proof::{GroveDBProof, LayerProof, ProveOptions},
+    reference_path::ReferencePathType,
+    GroveDb,
+};
 
 const GROVEDBG_ZIP: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip")).len()] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
@@ -138,8 +148,86 @@ async fn execute_path_query(
     };
 
     let path_query = path_query_to_grovedb(json_path_query);
-    db.prove_query(&path_query, None, &GroveVersion::latest());
-    todo!()
+
+    let grovedb_proof = db
+        .prove_internal(&path_query, None, &GroveVersion::latest())
+        .unwrap()?;
+    Ok(Json(proof_to_grovedbg(grovedb_proof)?))
+}
+
+fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, grovedb_merk::Error> {
+    if let GroveDBProof::V0(proof) = proof {
+        Ok(grovedbg_types::Proof {
+            root_layer: proof_layer_to_grovedbg(proof.root_layer)?,
+            prove_options: prove_options_to_grovedbg(proof.prove_options),
+        })
+    } else {
+        todo!()
+    }
+}
+
+fn proof_layer_to_grovedbg(
+    proof_layer: LayerProof,
+) -> Result<grovedbg_types::ProofLayer, grovedb_merk::Error> {
+    Ok(grovedbg_types::ProofLayer {
+        merk_proof: merk_proof_to_grovedbg(&proof_layer.merk_proof)?,
+        lower_layers: proof_layer
+            .lower_layers
+            .into_iter()
+            .map(|(k, v)| proof_layer_to_grovedbg(v).map(|layer| (k, layer)))
+            .collect::<Result<BTreeMap<Vec<u8>, grovedbg_types::ProofLayer>, grovedb_merk::Error>>(
+            )?,
+    })
+}
+
+fn merk_proof_to_grovedbg(merk_proof: &[u8]) -> Result<Vec<MerkProofOp>, grovedb_merk::Error> {
+    let decoder = Decoder::new(merk_proof);
+    decoder
+        .map(|op_result| op_result.map(merk_proof_op_to_grovedbg))
+        .collect::<Result<Vec<MerkProofOp>, _>>()
+}
+fn merk_proof_op_to_grovedbg(op: Op) -> MerkProofOp {
+    match op {
+        Op::Push(node) => MerkProofOp::Push(merk_proof_node_to_grovedbg(node)),
+        Op::PushInverted(node) => MerkProofOp::PushInverted(merk_proof_node_to_grovedbg(node)),
+        Op::Parent => MerkProofOp::Parent,
+        Op::Child => MerkProofOp::Child,
+        Op::ParentInverted => MerkProofOp::ParentInverted,
+        Op::ChildInverted => MerkProofOp::ChildInverted,
+    }
+}
+
+fn merk_proof_node_to_grovedbg(node: Node) -> MerkProofNode {
+    match node {
+        Node::Hash(hash) => MerkProofNode::Hash(hash),
+        Node::KVHash(hash) => MerkProofNode::KVHash(hash),
+        Node::KVDigest(key, hash) => MerkProofNode::KVDigest(key, hash),
+        Node::KV(key, value) => MerkProofNode::KV(key, value),
+        Node::KVValueHash(key, value, hash) => MerkProofNode::KVValueHash(key, value, hash),
+        Node::KVValueHashFeatureType(key, value, hash, TreeFeatureType::BasicMerkNode) => {
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                value,
+                hash,
+                grovedbg_types::TreeFeatureType::BasicMerkNode,
+            )
+        }
+        Node::KVValueHashFeatureType(key, value, hash, TreeFeatureType::SummedMerkNode(sum)) => {
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                value,
+                hash,
+                grovedbg_types::TreeFeatureType::SummedMerkNode(sum),
+            )
+        }
+        Node::KVRefValueHash(key, value, hash) => MerkProofNode::KVRefValueHash(key, value, hash),
+    }
+}
+
+fn prove_options_to_grovedbg(options: ProveOptions) -> grovedbg_types::ProveOptions {
+    grovedbg_types::ProveOptions {
+        decrease_limit_on_empty_sub_query_result: options.decrease_limit_on_empty_sub_query_result,
+    }
 }
 
 fn path_query_to_grovedb(query: PathQuery) -> crate::PathQuery {

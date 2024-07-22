@@ -97,7 +97,7 @@ impl GroveDb {
     }
 
     /// Generates a proof
-    fn prove_internal(
+    pub(crate) fn prove_internal(
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
