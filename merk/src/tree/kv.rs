@@ -252,6 +252,10 @@ impl KV {
         &self.hash
     }
 
+    pub fn feature_type(&self) -> TreeFeatureType {
+        self.feature_type
+    }
+
     /// Consumes the `KV` and returns its key without allocating or cloning.
     #[inline]
     pub fn take_key(self) -> Vec<u8> {

@@ -31,6 +31,11 @@ pub struct NodeUpdate {
     #[serde_as(as = "Base64")]
     pub key: Key,
     pub element: Element,
+    pub feature_type: TreeFeatureType,
+    #[serde_as(as = "Base64")]
+    pub value_hash: CryptoHash,
+    #[serde_as(as = "Base64")]
+    pub kv_digest_hash: CryptoHash,
 }
 
 #[serde_as]
@@ -39,49 +44,71 @@ pub enum Element {
     Subtree {
         #[serde_as(as = "Option<Base64>")]
         root_key: Option<Key>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     Sumtree {
         #[serde_as(as = "Option<Base64>")]
         root_key: Option<Key>,
         sum: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     Item {
         #[serde_as(as = "Base64")]
         value: Vec<u8>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     SumItem {
         value: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     AbsolutePathReference {
         #[serde_as(as = "Vec<Base64>")]
         path: Path,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     UpstreamRootHeightReference {
         n_keep: u32,
         #[serde_as(as = "Vec<Base64>")]
         path_append: Vec<PathSegment>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     UpstreamRootHeightWithParentPathAdditionReference {
         n_keep: u32,
         #[serde_as(as = "Vec<Base64>")]
         path_append: Vec<PathSegment>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     UpstreamFromElementHeightReference {
         n_remove: u32,
         #[serde_as(as = "Vec<Base64>")]
         path_append: Vec<PathSegment>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     CousinReference {
         #[serde_as(as = "Base64")]
         swap_parent: PathSegment,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     RemovedCousinReference {
         #[serde_as(as = "Vec<Base64>")]
         swap_parent: Vec<PathSegment>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
     SiblingReference {
         #[serde_as(as = "Base64")]
         sibling_key: Key,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
     },
 }
 
@@ -184,24 +211,21 @@ pub enum MerkProofNode {
         #[serde_as(as = "Base64")] Key,
         #[serde_as(as = "Base64")] CryptoHash,
     ),
-    KV(
-        #[serde_as(as = "Base64")] Key,
-        #[serde_as(as = "Base64")] Vec<u8>,
-    ),
+    KV(#[serde_as(as = "Base64")] Key, Element),
     KVValueHash(
         #[serde_as(as = "Base64")] Key,
-        #[serde_as(as = "Base64")] Vec<u8>,
+        Element,
         #[serde_as(as = "Base64")] CryptoHash,
     ),
     KVValueHashFeatureType(
         #[serde_as(as = "Base64")] Key,
-        #[serde_as(as = "Base64")] Vec<u8>,
+        Element,
         #[serde_as(as = "Base64")] CryptoHash,
         TreeFeatureType,
     ),
     KVRefValueHash(
         #[serde_as(as = "Base64")] Key,
-        #[serde_as(as = "Base64")] Vec<u8>,
+        Element,
         #[serde_as(as = "Base64")] CryptoHash,
     ),
 }
