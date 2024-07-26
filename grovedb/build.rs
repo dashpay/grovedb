@@ -6,8 +6,8 @@ fn main() {
     use sha2::{digest::FixedOutput, Digest, Sha256};
 
     const GROVEDBG_SHA256: [u8; 32] =
-        hex!("206d865949e7f12b843c342cea3b172d4c78d4eb754b80d272164d59f62a2276");
-    const GROVEDBG_VERSION: &str = "v1.0.0-rc.3";
+        hex!("d1152b9a0257e02625efc223a98a9f2b9a2aa7ade133a7c32fee1e5f7d3a607e");
+    const GROVEDBG_VERSION: &str = "v1.0.0-rc.4";
 
     let out_dir = PathBuf::from(&env::var_os("OUT_DIR").unwrap());
     let grovedbg_zip_path = out_dir.join("grovedbg.zip");
