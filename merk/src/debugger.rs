@@ -16,8 +16,8 @@ impl<'a, S: StorageContext<'a>> Merk<S> {
                     value: tree.inner.value_as_slice().to_owned(),
                     left_child: tree.link(true).map(|link| link.key().to_owned()),
                     right_child: tree.link(false).map(|link| link.key().to_owned()),
-                    value_hash: tree.inner.kv.value_hash().clone(),
-                    kv_digest_hash: tree.inner.kv.hash().clone(),
+                    value_hash: *tree.inner.kv.value_hash(),
+                    kv_digest_hash: *tree.inner.kv.hash(),
                     feature_type: tree.inner.kv.feature_type(),
                 }
                 .wrap_with_cost(Default::default())
@@ -35,8 +35,8 @@ impl<'a, S: StorageContext<'a>> Merk<S> {
                 value: tree.inner.value_as_slice().to_owned(),
                 left_child: tree.link(true).map(|link| link.key().to_owned()),
                 right_child: tree.link(false).map(|link| link.key().to_owned()),
-                value_hash: tree.inner.kv.value_hash().clone(),
-                kv_digest_hash: tree.inner.kv.hash().clone(),
+                value_hash: *tree.inner.kv.value_hash(),
+                kv_digest_hash: *tree.inner.kv.hash(),
                 feature_type: tree.inner.kv.feature_type(),
             })
         }))
