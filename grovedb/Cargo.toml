@@ -1,7 +1,7 @@
 [package]
 name = "grovedb"
 description = "Fully featured database using balanced hierarchical authenticated data structures"
-version = "1.0.0-rc.2"
+version = "1.0.0"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
 edition = "2021"
 license = "MIT"
@@ -11,29 +11,29 @@ readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [dependencies]
-grovedb-merk = { version = "1.0.0-rc.2", path = "../merk", optional = true, default-features = false }
+grovedb-merk = { version = "1.0.0", path = "../merk", optional = true, default-features = false }
 thiserror = { version = "1.0.59", optional = true }
 tempfile = { version = "3.10.1", optional = true }
 bincode = { version = "2.0.0-rc.3" }
-grovedb-storage = { version = "1.0.0-rc.2", path = "../storage", optional = true }
-grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize", optional = true }
-hex = { version = "0.4.3"}
+grovedb-storage = { version = "1.0.0", path = "../storage", optional = true }
+grovedb-visualize = { version = "1.0.0", path = "../visualize", optional = true }
+hex = "0.4.3"
 itertools = { version = "0.12.1", optional = true }
-derive_more = { version = "0.99.18" }
+derive_more = "0.99.18"
 integer-encoding = { version = "4.0.0", optional = true }
-grovedb-costs = { version = "1.0.0-rc.2", path = "../costs", optional = true }
+grovedb-costs = { version = "1.0.0", path = "../costs", optional = true }
 nohash-hasher = { version = "0.2.0", optional = true }
-indexmap = { version = "2.2.6"}
+indexmap = "2.2.6"
 intmap = { version = "2.0.0", optional = true }
-grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
-grovedbg-types = { version = "1.0.0-rc.2", path = "../grovedbg-types", optional = true }
+grovedb-path = { version = "1.0.0", path = "../path" }
+grovedbg-types = { version = "1.0.0", path = "../grovedbg-types", optional = true }
 tokio = { version = "1.37.0", features = ["rt-multi-thread", "net"], optional = true }
 axum = { version = "0.7.5", features = ["macros"], optional = true }
 tower-http = { version = "0.5.2", features = ["fs"], optional = true }
 blake3 = "1.4.0"
 bitvec = "1"
 zip-extensions = { version ="0.6.2", optional = true }
-grovedb-version = "1.0.0-rc.2"
+grovedb-version = { path = "../grovedb-version", version = "1.0.0" }
 
 [dev-dependencies]
 rand = "0.8.5"
