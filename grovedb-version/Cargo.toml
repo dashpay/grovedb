@@ -2,13 +2,13 @@
 name = "grovedb-version"
 authors = ["Samuel Westrich <sam@dash.org>"]
 description = "Versioning library for Platform"
-version = "1.0.0-rc.2"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 
 [dependencies]
-thiserror = { version = "1.0.59" }
-versioned-feature-core = { git = "https://github.com/dashpay/versioned-feature-core", version = "1.0.0" }
+thiserror = "1.0.59"
+versioned-feature-core = "1.0.0"
 
 [features]
 mock-versions = []
