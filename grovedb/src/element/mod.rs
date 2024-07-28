@@ -63,6 +63,10 @@ pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 pub type SumValue = i64;
 
 #[cfg(any(feature = "full", feature = "verify"))]
+/// if the item is deleted or updated should we cascade
+pub type CascadeOnUpdate = bool;
+
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Variants of GroveDB stored entities
 ///
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -82,6 +86,12 @@ pub enum Element {
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+    /// A reference to an object by its path
+    BidirectionalReference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
+    /// An ordinary value that has a backwards reference
+    ItemWithBackwardsReferences(Vec<u8>, Vec<(ReferencePathType, CascadeOnUpdate)>, Option<ElementFlags>),
+    /// Signed integer value that can be totaled in a sum tree that has a backwards reference
+    SumItemWithBackwardsReferences(SumValue, Vec<(ReferencePathType, CascadeOnUpdate)>, Option<ElementFlags>),
 }
 
 impl fmt::Display for Element {
@@ -101,6 +111,17 @@ impl fmt::Display for Element {
                 write!(
                     f,
                     "Reference({}, max_hop: {}{})",
+                    path,
+                    max_hop.map_or("None".to_string(), |h| h.to_string()),
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::BidirectionalReference(path, max_hop, flags) => {
+                write!(
+                    f,
+                    "BidirectionalReference({}, max_hop: {}{})",
                     path,
                     max_hop.map_or("None".to_string(), |h| h.to_string()),
                     flags
@@ -139,6 +160,42 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::ItemWithBackwardsReferences(data, backwards_references, flags) => {
+                let backwards_references_count = backwards_references.len();
+                let backwards_references_info = if backwards_references_count < 4 {
+                    backwards_references.iter().map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|")
+                } else {
+                    let first_backwards_references = backwards_references.iter().take(3).map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|");
+                    format!("{}...{} total backwards references", first_backwards_references, backwards_references_count)
+                };
+                write!(
+                    f,
+                    "ItemWithBackwardsReferences({}, backwards_references: {}{})",
+                    hex_to_ascii(data),
+                    backwards_references_info,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::SumItemWithBackwardsReferences(sum_value, backwards_references, flags) => {
+                let backwards_references_count = backwards_references.len();
+                let backwards_references_info = if backwards_references_count < 4 {
+                    backwards_references.iter().map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|")
+                } else {
+                    let first_backwards_references = backwards_references.iter().take(3).map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|");
+                    format!("{}...{} total backwards references", first_backwards_references, backwards_references_count)
+                };
+                write!(
+                    f,
+                    "SumItemWithBackwardsReferences({}, backwards_references: {}{})",
+                    sum_value,
+                    backwards_references_info,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -151,6 +208,9 @@ impl Element {
             Element::Tree(..) => "tree",
             Element::SumItem(..) => "sum item",
             Element::SumTree(..) => "sum tree",
+            Element::BidirectionalReference(..) => "bidirectional reference",
+            Element::ItemWithBackwardsReferences(..) => "item with backwards references",
+            Element::SumItemWithBackwardsReferences(..) => "sum item with backwards references",
         }
     }
 }

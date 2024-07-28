@@ -338,7 +338,9 @@ impl GroveDb {
                             Element::Tree(None, _)
                             | Element::SumTree(None, ..)
                             | Element::SumItem(..)
+                            | Element::SumItemWithBackwardsReferences(..)
                             | Element::Item(..)
+                            | Element::ItemWithBackwardsReferences(..)
                             | Element::Reference(..) => {
                                 return Err(Error::InvalidProof(
                                     "Proof has lower layer for a non Tree".into(),

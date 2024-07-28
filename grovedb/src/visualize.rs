@@ -58,8 +58,27 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::ItemWithBackwardsReferences(value, backwards_references, flags) => {
+                drawer.write(format!("item_with_backwards_references {}:", backwards_references.len()).as_bytes())?;
+                drawer = value.visualize(drawer)?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
             Element::SumItem(value, flags) => {
                 drawer.write(format!("sum_item: {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
+            Element::SumItemWithBackwardsReferences(value, backwards_references, flags) => {
+                drawer.write(format!("sum_item_with_backwards_references: {value} | {}", backwards_references.len()).as_bytes())?;
 
                 if let Some(f) = flags {
                     if !f.is_empty() {

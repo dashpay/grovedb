@@ -222,7 +222,7 @@ where {
                     )),
                 }
             }
-            Element::Item(..) | Element::SumItem(..) | Element::SumTree(..) => Ok(element),
+            Element::Item(..) | Element::SumItem(..) | Element::SumTree(..) | Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..) => Ok(element),
             Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
         }
     }
@@ -339,8 +339,8 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(item),
-                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                        Element::Item(item, _) | Element::ItemWithBackwardsReferences(item, ..) => Ok(item),
+                        Element::SumItem(item, _) | Element::SumItemWithBackwardsReferences(item, ..) => Ok(item.encode_var_vec()),
                         Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
@@ -432,8 +432,8 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
-                        Element::SumItem(sum_value, _) => {
+                        Element::Item(item, _) | Element::ItemWithBackwardsReferences(item, ..) => Ok(QueryItemOrSumReturnType::ItemData(item)),
+                        Element::SumItem(sum_value, _) | Element::SumItemWithBackwardsReferences(sum_value, ..)  => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
                         Element::SumTree(_, sum_value, _) => {
@@ -519,8 +519,8 @@ where {
                                 )),
                             }
                         }
-                        Element::SumItem(item, _) => Ok(item),
-                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => {
+                        Element::SumItem(item, _) | Element::SumItemWithBackwardsReferences(item, ..) => Ok(item),
+                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) | Element::ItemWithBackwardsReferences(..) => {
                             Err(Error::InvalidQuery(
                                 "path_queries over sum items can only refer to sum items and \
                                  references",
