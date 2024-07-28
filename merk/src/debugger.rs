@@ -4,7 +4,7 @@ use grovedb_costs::CostsExt;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-use crate::{tree::kv::ValueDefinedCostType, Error, Merk};
+use crate::{tree::kv::ValueDefinedCostType, CryptoHash, Error, Merk, TreeFeatureType};
 
 impl<'a, S: StorageContext<'a>> Merk<S> {
     pub fn get_node_dbg(&self, key: &[u8]) -> Result<Option<NodeDbg>, Error> {
@@ -16,6 +16,9 @@ impl<'a, S: StorageContext<'a>> Merk<S> {
                     value: tree.inner.value_as_slice().to_owned(),
                     left_child: tree.link(true).map(|link| link.key().to_owned()),
                     right_child: tree.link(false).map(|link| link.key().to_owned()),
+                    value_hash: *tree.inner.kv.value_hash(),
+                    kv_digest_hash: *tree.inner.kv.hash(),
+                    feature_type: tree.inner.kv.feature_type(),
                 }
                 .wrap_with_cost(Default::default())
             },
@@ -32,6 +35,9 @@ impl<'a, S: StorageContext<'a>> Merk<S> {
                 value: tree.inner.value_as_slice().to_owned(),
                 left_child: tree.link(true).map(|link| link.key().to_owned()),
                 right_child: tree.link(false).map(|link| link.key().to_owned()),
+                value_hash: *tree.inner.kv.value_hash(),
+                kv_digest_hash: *tree.inner.kv.hash(),
+                feature_type: tree.inner.kv.feature_type(),
             })
         }))
     }
@@ -43,4 +49,7 @@ pub struct NodeDbg {
     pub value: Vec<u8>,
     pub left_child: Option<Vec<u8>>,
     pub right_child: Option<Vec<u8>>,
+    pub value_hash: CryptoHash,
+    pub kv_digest_hash: CryptoHash,
+    pub feature_type: TreeFeatureType,
 }

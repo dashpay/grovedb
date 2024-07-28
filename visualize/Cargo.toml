@@ -1,14 +1,12 @@
 [package]
 name = "grovedb-visualize"
-version = "1.0.0-rc.2"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
-description = "Visualizer extension crate for GroveDB"
+description = "Debug prints extension crate for GroveDB"
 homepage = "https://www.grovedb.org/"
 documentation = "https://docs.rs/grovedb-visualize"
 repository = "https://github.com/dashpay/grovedb"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 hex = "0.4.3"

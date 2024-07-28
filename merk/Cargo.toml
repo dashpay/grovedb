@@ -1,7 +1,7 @@
 [package]
 name = "grovedb-merk"
 description = "Merkle key/value store adapted for GroveDB"
-version = "1.0.0-rc.2"
+version = "1.0.0"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>", "Matt Bell <mappum@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -12,15 +12,15 @@ documentation = "https://docs.rs/grovedb-merk"
 
 [dependencies]
 thiserror = "1.0.58"
-grovedb-storage = { version = "1.0.0-rc.2", path = "../storage", optional = true }
+grovedb-storage = { version = "1.0.0", path = "../storage", optional = true }
 failure = "0.1.8"
 integer-encoding = "4.0.0"
 indexmap = "2.2.6"
-grovedb-costs = { version = "1.0.0-rc.2", path = "../costs" }
-grovedb-visualize = { version = "1.0.0-rc.2", path = "../visualize" }
-grovedb-path = { version = "1.0.0-rc.2", path = "../path" }
-hex = { version = "0.4.3" }
-grovedb-version = { version = "1.0.0-rc.2", path = "../grovedb-version" }
+grovedb-costs = { version = "1.0.0", path = "../costs" }
+grovedb-visualize = { version = "1.0.0", path = "../visualize" }
+grovedb-path = { version = "1.0.0", path = "../path" }
+hex = "0.4.3"
+grovedb-version = { version = "1.0.0", path = "../grovedb-version" }
 
 [dependencies.time]
 version = "0.3.34"

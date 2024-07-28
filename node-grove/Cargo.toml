@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 grovedb = { path = "../grovedb", features = ["full", "estimated_costs"] }
-grovedb-version = { path = "../grovedb-version" }
+grovedb-version =  { path = "../grovedb-version", version = "1.0.0" }
 
 [dependencies.neon]
 version = "0.10.1"

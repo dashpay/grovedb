@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-costs"
-version = "1.0.0-rc.2"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Costs extension crate for GroveDB"

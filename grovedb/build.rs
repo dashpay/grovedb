@@ -1,36 +1,33 @@
 #[cfg(feature = "grovedbg")]
 fn main() {
-    use std::{
-        env,
-        path::PathBuf,
-        process::{Command, ExitStatus, Output},
-    };
+    use std::{env, fs::File, io::Cursor, path::PathBuf};
+
+    use hex_literal::hex;
+    use sha2::{digest::FixedOutput, Digest, Sha256};
+
+    const GROVEDBG_SHA256: [u8; 32] =
+        hex!("c6636f10b43c703128b621a7c4b94139a1a7d0a603e26fca1771734a7994bb7c");
+    const GROVEDBG_VERSION: &str = "v1.0.0-rc.5";
 
     let out_dir = PathBuf::from(&env::var_os("OUT_DIR").unwrap());
+    let grovedbg_zip_path = out_dir.join("grovedbg.zip");
 
-    let Output {
-        status,
-        stdout,
-        stderr,
-    } = Command::new("trunk")
-        .arg("build")
-        .arg("--release")
-        .arg("--dist")
-        .arg(&out_dir)
-        .arg("grovedbg/index.html")
-        .output()
-        .expect("cannot start trunk process");
+    if !grovedbg_zip_path.exists() {
+        let response = reqwest::blocking::get(format!("https://github.com/dashpay/grovedbg/releases/download/{GROVEDBG_VERSION}/grovedbg-{GROVEDBG_VERSION}.zip"))
+        .expect("can't download GroveDBG artifact");
 
-    if !status.success() {
-        let stdout_msg = String::from_utf8_lossy(&stdout);
-        let stderr_msg = String::from_utf8_lossy(&stderr);
-        let bindgen_version = env::var_os("TRUNK_TOOLS_WASM_BINDGEN").unwrap_or_default();
-        panic!("Error running `trunk build --release`\nbindgen version:{bindgen_version:?}\n{stdout_msg}\n{stderr_msg}");
+        let mut grovedbg_zip = File::create(&grovedbg_zip_path).unwrap();
+        let mut content = Cursor::new(response.bytes().unwrap());
+        std::io::copy(&mut content, &mut grovedbg_zip).unwrap();
     }
 
-    let zip_file = out_dir.join("grovedbg.zip");
-    zip_extensions::write::zip_create_from_directory(&zip_file, &out_dir)
-        .expect("can't create a grovedbg zip archive");
+    let mut grovedbg_zip = File::open(&grovedbg_zip_path).unwrap();
+
+    let mut sha256 = Sha256::new();
+    std::io::copy(&mut grovedbg_zip, &mut sha256).unwrap();
+    let hash = sha256.finalize_fixed();
+
+    assert_eq!(hash.as_slice(), GROVEDBG_SHA256);
 }
 
 #[cfg(not(feature = "grovedbg"))]
