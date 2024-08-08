@@ -3919,8 +3919,8 @@ mod tests {
 
     #[test]
     fn test_grovedb_verify_corrupted_reference() {
-        // This test is dedicated to a case when references are out of sync, but `verify_grovedb` must detect
-        // this case as any other inconsistency
+        // This test is dedicated to a case when references are out of sync, but
+        // `verify_grovedb` must detect this case as any other inconsistency
 
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -3981,6 +3981,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+
         let proof = db
             .prove_query(&query, None, grove_version)
             .unwrap()
@@ -3992,6 +3993,6 @@ mod tests {
         ));
 
         // `verify_grovedb` must identify issues
-        assert!(db.verify_grovedb(None, grove_version).unwrap().len() > 0);
+        assert!(db.verify_grovedb(None, true, grove_version).unwrap().len() > 0);
     }
 }
