@@ -204,7 +204,7 @@ use grovedb_version::version::GroveVersion;
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-use reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type};
+use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
 
