@@ -758,6 +758,8 @@ pub fn make_deep_tree_with_sum_trees(grove_version: &GroveVersion) -> TempGroveD
 }
 
 mod tests {
+    use grovedb_merk::proofs::query::SubqueryBranch;
+
     use super::*;
 
     #[test]
@@ -3913,5 +3915,84 @@ mod tests {
             elem_result,
             Err(Error::PathParentLayerNotFound(..))
         ));
+    }
+
+    #[test]
+    fn test_grovedb_verify_corrupted_reference() {
+        // This test is dedicated to a case when references are out of sync, but
+        // `verify_grovedb` must detect this case as any other inconsistency
+
+        let grove_version = GroveVersion::latest();
+        let db = make_deep_tree(grove_version);
+
+        // Insert a reference
+        db.insert(
+            &[TEST_LEAF, b"innertree"],
+            b"ref",
+            Element::Reference(
+                ReferencePathType::AbsolutePathReference(vec![
+                    ANOTHER_TEST_LEAF.to_vec(),
+                    b"innertree2".to_vec(),
+                    b"key3".to_vec(),
+                ]),
+                None,
+                None,
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Ensure we can prove and verify the inserted reference
+        let query = PathQuery {
+            path: vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(b"ref".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    conditional_subquery_branches: None,
+                    left_to_right: true,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+        let proof = db
+            .prove_query(&query, None, grove_version)
+            .unwrap()
+            .unwrap();
+
+        let (hash, _) = GroveDb::verify_query(&proof, &query, grove_version).unwrap();
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
+
+        // Update referenced value to break things
+        db.insert(
+            &[ANOTHER_TEST_LEAF.to_vec(), b"innertree2".to_vec()],
+            b"key3",
+            Element::Item(b"idk something else i guess?".to_vec(), None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let proof = db
+            .prove_query(&query, None, grove_version)
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            GroveDb::verify_query(&proof, &query, grove_version),
+            Err(_)
+        ));
+
+        // `verify_grovedb` must identify issues
+        assert!(db.verify_grovedb(None, true, grove_version).unwrap().len() > 0);
     }
 }
