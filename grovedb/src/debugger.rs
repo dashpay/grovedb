@@ -35,14 +35,16 @@ where
     A: ToSocketAddrs + Send + 'static,
 {
     std::thread::spawn(move || {
-        let grovedbg_tmp =
-            tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
-        let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
-        let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
+        // let grovedbg_tmp =
+        //     tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
+        // let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
+        // let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
 
-        fs::write(&grovedbg_zip, &GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
-        zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
-            .expect("cannot extract grovedbg contents");
+        // fs::write(&grovedbg_zip, &GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
+        // zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
+        //     .expect("cannot extract grovedbg contents");
+
+        let grovedbg_www = "/home/yolo/dash/grovedbg/dist";
 
         let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
         let app = Router::new()
@@ -471,7 +473,9 @@ fn node_to_update(
         key,
         value,
         left_child,
+        left_merk_hash,
         right_child,
+        right_merk_hash,
         value_hash,
         kv_digest_hash,
         feature_type,
@@ -487,7 +491,9 @@ fn node_to_update(
         key,
         element,
         left_child,
+        left_merk_hash,
         right_child,
+        right_merk_hash,
         feature_type: match feature_type {
             TreeFeatureType::BasicMerkNode => grovedbg_types::TreeFeatureType::BasicMerkNode,
             TreeFeatureType::SummedMerkNode(x) => {

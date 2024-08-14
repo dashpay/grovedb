@@ -25,7 +25,11 @@ pub struct NodeUpdate {
     #[serde_as(as = "Option<Base64>")]
     pub left_child: Option<Key>,
     #[serde_as(as = "Option<Base64>")]
+    pub left_merk_hash: Option<CryptoHash>,
+    #[serde_as(as = "Option<Base64>")]
     pub right_child: Option<Key>,
+    #[serde_as(as = "Option<Base64>")]
+    pub right_merk_hash: Option<CryptoHash>,
     #[serde_as(as = "Vec<Base64>")]
     pub path: Path,
     #[serde_as(as = "Base64")]
