@@ -758,6 +758,7 @@ pub fn make_deep_tree_with_sum_trees(grove_version: &GroveVersion) -> TempGroveD
 }
 
 mod tests {
+    use batch::GroveDbOp;
     use grovedb_merk::proofs::query::SubqueryBranch;
 
     use super::*;
@@ -1189,7 +1190,12 @@ mod tests {
             )
             .unwrap();
 
-        assert!(matches!(result, Err(Error::MissingReference(_))));
+        dbg!(&result);
+
+        assert!(matches!(
+            result,
+            Err(Error::CorruptedReferencePathKeyNotFound(_))
+        ));
     }
 
     #[test]
@@ -1228,24 +1234,15 @@ mod tests {
         }
 
         // Add one more reference
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            &keygen(MAX_REFERENCE_HOPS + 1),
-            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
-                TEST_LEAF.to_vec(),
-                keygen(MAX_REFERENCE_HOPS),
-            ])),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("expected insert");
-
         let result = db
-            .get(
+            .insert(
                 [TEST_LEAF].as_ref(),
                 &keygen(MAX_REFERENCE_HOPS + 1),
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    keygen(MAX_REFERENCE_HOPS),
+                ])),
+                None,
                 None,
                 grove_version,
             )
@@ -3994,5 +3991,132 @@ mod tests {
 
         // `verify_grovedb` must identify issues
         assert!(db.verify_grovedb(None, true, grove_version).unwrap().len() > 0);
+    }
+
+    #[test]
+    fn test_verify_corrupted_long_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refc",
+            Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refb",
+            Element::new_reference(ReferencePathType::SiblingReference(b"refc".to_vec())),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refa",
+            Element::new_reference(ReferencePathType::SiblingReference(b"refb".to_vec())),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(db
+            .verify_grovedb(None, true, grove_version)
+            .unwrap()
+            .is_empty());
+
+        // Breaking things there:
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item(b"not hello >:(".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(!db
+            .verify_grovedb(None, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_verify_corrupted_long_reference_batch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![
+            GroveDbOp::insert_op(
+                vec![TEST_LEAF.to_vec()],
+                b"value".to_vec(),
+                Element::new_item(b"hello".to_vec()),
+            ),
+            GroveDbOp::insert_op(
+                vec![TEST_LEAF.to_vec()],
+                b"refc".to_vec(),
+                Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
+            ),
+            GroveDbOp::insert_op(
+                vec![TEST_LEAF.to_vec()],
+                b"refb".to_vec(),
+                Element::new_reference(ReferencePathType::SiblingReference(b"refc".to_vec())),
+            ),
+            GroveDbOp::insert_op(
+                vec![TEST_LEAF.to_vec()],
+                b"refa".to_vec(),
+                Element::new_reference(ReferencePathType::SiblingReference(b"refb".to_vec())),
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .unwrap();
+
+        assert!(db
+            .verify_grovedb(None, true, grove_version)
+            .unwrap()
+            .is_empty());
+
+        // Breaking things there:
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item(b"not hello >:(".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(!db
+            .verify_grovedb(None, true, grove_version)
+            .unwrap()
+            .is_empty());
     }
 }

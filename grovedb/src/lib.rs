@@ -1063,46 +1063,26 @@ impl GroveDb {
                             "expected merk to contain value at key".to_string(),
                         ))?;
 
-                    // Absolute path to the referenced merk and the key in that merk:
-                    let (referenced_path, referenced_key) = {
+                    let referenced_value_hash = {
                         let mut full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
                         )?;
-                        let key = full_path.pop().ok_or_else(|| {
-                            Error::MissingReference(
-                                "can't resolve reference path to absolute path".to_owned(),
+                        let item = self
+                            .follow_reference(
+                                (full_path.as_slice()).into(),
+                                true,
+                                None,
+                                grove_version,
                             )
-                        })?;
-                        (full_path, key)
+                            .unwrap()?;
+                        item.value_hash(grove_version).unwrap()?
                     };
-
-                    // Open another subtree, one that is referenced:
-                    let referenced_merk = self
-                        .open_non_transactional_merk_at_path(
-                            (referenced_path.as_slice()).into(),
-                            None,
-                            grove_version,
-                        )
-                        .unwrap()?;
-
-                    // Get value hash of the referenced item
-                    let (_, referenced_value_hash) = referenced_merk
-                        .get_value_and_value_hash(
-                            &referenced_key,
-                            true,
-                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                            grove_version,
-                        )
-                        .unwrap()
-                        .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
 
                     // Take the current item (reference) hash and combine it with referenced value's
                     // hash
+
                     let self_actual_value_hash = value_hash(&kv_value).unwrap();
                     let combined_value_hash =
                         combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap();
@@ -1223,44 +1203,22 @@ impl GroveDb {
                             "expected merk to contain value at key".to_string(),
                         ))?;
 
-                    // Absolute path to the referenced merk and the key in that merk:
-                    let (referenced_path, referenced_key) = {
+                    let referenced_value_hash = {
                         let mut full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
                         )?;
-                        let key = full_path.pop().ok_or_else(|| {
-                            Error::MissingReference(
-                                "can't resolve reference path to absolute path".to_owned(),
+                        let item = self
+                            .follow_reference(
+                                (full_path.as_slice()).into(),
+                                true,
+                                Some(transaction),
+                                grove_version,
                             )
-                        })?;
-                        (full_path, key)
+                            .unwrap()?;
+                        item.value_hash(grove_version).unwrap()?
                     };
-
-                    // Open another subtree, one that is referenced:
-                    let referenced_merk = self
-                        .open_transactional_merk_at_path(
-                            (referenced_path.as_slice()).into(),
-                            transaction,
-                            None,
-                            grove_version,
-                        )
-                        .unwrap()?;
-
-                    // Get value hash of the referenced item
-                    let (_, referenced_value_hash) = referenced_merk
-                        .get_value_and_value_hash(
-                            &referenced_key,
-                            true,
-                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                            grove_version,
-                        )
-                        .unwrap()
-                        .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
 
                     // Take the current item (reference) hash and combine it with referenced value's
                     // hash

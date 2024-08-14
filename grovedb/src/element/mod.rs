@@ -34,6 +34,8 @@ use grovedb_visualize::visualize_to_vec;
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
+#[cfg(feature = "full")]
+use crate::OperationCost;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Optional meta-data to be stored per element
@@ -152,6 +154,15 @@ impl Element {
             Element::SumItem(..) => "sum item",
             Element::SumTree(..) => "sum tree",
         }
+    }
+
+    #[cfg(feature = "full")]
+    pub(crate) fn value_hash(
+        &self,
+        grove_version: &grovedb_version::version::GroveVersion,
+    ) -> grovedb_costs::CostResult<grovedb_merk::CryptoHash, crate::Error> {
+        let bytes = grovedb_costs::cost_return_on_error_default!(self.serialize(grove_version));
+        crate::value_hash(&bytes).map(Result::Ok)
     }
 }
 

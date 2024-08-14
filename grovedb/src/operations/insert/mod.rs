@@ -7,6 +7,7 @@ use std::{collections::HashMap, option::Option::None};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use grovedb_merk::tree::value_hash;
 #[cfg(feature = "full")]
 use grovedb_merk::{tree::NULL_HASH, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
@@ -293,44 +294,18 @@ impl GroveDb {
                         .wrap_with_cost(OperationCost::default())
                 );
 
-                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let subtree_for_reference = cost_return_on_error!(
+                let referenced_item = cost_return_on_error!(
                     &mut cost,
-                    self.open_transactional_merk_at_path(
-                        referenced_path.into(),
-                        transaction,
-                        Some(batch),
-                        grove_version,
-                    )
-                );
-
-                let referenced_element_value_hash_opt = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_value_hash(
-                        &subtree_for_reference,
-                        referenced_key,
-                        true,
+                    self.follow_reference(
+                        reference_path.as_slice().into(),
+                        false,
+                        Some(transaction),
                         grove_version
                     )
                 );
 
-                let referenced_element_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_element_value_hash_opt
-                        .ok_or({
-                            let reference_string = reference_path
-                                .iter()
-                                .map(hex::encode)
-                                .collect::<Vec<String>>()
-                                .join("/");
-                            Error::MissingReference(format!(
-                                "reference {}/{} can not be found",
-                                reference_string,
-                                hex::encode(key)
-                            ))
-                        })
-                        .wrap_with_cost(OperationCost::default())
-                );
+                let referenced_element_value_hash =
+                    cost_return_on_error!(&mut cost, referenced_item.value_hash(grove_version));
 
                 cost_return_on_error!(
                     &mut cost,
@@ -452,46 +427,18 @@ impl GroveDb {
                     path_from_reference_path_type(reference_path.clone(), path, Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
-
-                // TODO unwrap?
-                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let subtree_for_reference = cost_return_on_error!(
+                let referenced_item = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(
-                        referenced_path.into(),
-                        Some(batch),
-                        grove_version
-                    )
-                );
-
-                // when there is no transaction, we don't want to use caching
-                let referenced_element_value_hash_opt = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_value_hash(
-                        &subtree_for_reference,
-                        referenced_key,
+                    self.follow_reference(
+                        reference_path.as_slice().into(),
                         false,
+                        None,
                         grove_version
                     )
                 );
 
-                let referenced_element_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_element_value_hash_opt
-                        .ok_or({
-                            let reference_string = reference_path
-                                .iter()
-                                .map(hex::encode)
-                                .collect::<Vec<String>>()
-                                .join("/");
-                            Error::MissingReference(format!(
-                                "reference {}/{} can not be found",
-                                reference_string,
-                                hex::encode(key)
-                            ))
-                        })
-                        .wrap_with_cost(OperationCost::default())
-                );
+                let referenced_element_value_hash =
+                    cost_return_on_error!(&mut cost, referenced_item.value_hash(grove_version));
 
                 cost_return_on_error!(
                     &mut cost,
