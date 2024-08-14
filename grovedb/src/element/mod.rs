@@ -16,6 +16,9 @@ pub(crate) mod helpers;
 mod insert;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod query;
+use grovedb_costs::{cost_return_on_error_default, CostContext, CostsExt, OperationCost};
+use grovedb_merk::{tree::value_hash, CryptoHash};
+use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::QueryOptions;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -152,6 +155,14 @@ impl Element {
             Element::SumItem(..) => "sum item",
             Element::SumTree(..) => "sum tree",
         }
+    }
+
+    pub(crate) fn value_hash(
+        &self,
+        grove_version: &GroveVersion,
+    ) -> CostContext<Result<CryptoHash, crate::Error>> {
+        let bytes = cost_return_on_error_default!(self.serialize(grove_version));
+        value_hash(&bytes).map(Result::Ok)
     }
 }
 

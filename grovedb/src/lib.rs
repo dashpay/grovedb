@@ -1077,7 +1077,7 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
-                        value_hash(&item.serialize(grove_version)?).unwrap()
+                        item.value_hash(grove_version).unwrap()?
                     };
 
                     // Take the current item (reference) hash and combine it with referenced value's
@@ -1217,7 +1217,7 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
-                        value_hash(&item.serialize(grove_version)?).unwrap()
+                        item.value_hash(grove_version).unwrap()?
                     };
 
                     // Take the current item (reference) hash and combine it with referenced value's

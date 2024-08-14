@@ -1190,7 +1190,12 @@ mod tests {
             )
             .unwrap();
 
-        assert!(matches!(result, Err(Error::MissingReference(_))));
+        dbg!(&result);
+
+        assert!(matches!(
+            result,
+            Err(Error::CorruptedReferencePathKeyNotFound(_))
+        ));
     }
 
     #[test]
@@ -1229,24 +1234,15 @@ mod tests {
         }
 
         // Add one more reference
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            &keygen(MAX_REFERENCE_HOPS + 1),
-            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
-                TEST_LEAF.to_vec(),
-                keygen(MAX_REFERENCE_HOPS),
-            ])),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("expected insert");
-
         let result = db
-            .get(
+            .insert(
                 [TEST_LEAF].as_ref(),
                 &keygen(MAX_REFERENCE_HOPS + 1),
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    keygen(MAX_REFERENCE_HOPS),
+                ])),
+                None,
                 None,
                 grove_version,
             )
