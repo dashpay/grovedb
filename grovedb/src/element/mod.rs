@@ -16,9 +16,6 @@ pub(crate) mod helpers;
 mod insert;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod query;
-use grovedb_costs::{cost_return_on_error_default, CostContext, CostsExt, OperationCost};
-use grovedb_merk::{tree::value_hash, CryptoHash};
-use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::QueryOptions;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -37,6 +34,8 @@ use grovedb_visualize::visualize_to_vec;
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
+#[cfg(feature = "full")]
+use crate::OperationCost;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Optional meta-data to be stored per element
@@ -157,12 +156,13 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub(crate) fn value_hash(
         &self,
-        grove_version: &GroveVersion,
-    ) -> CostContext<Result<CryptoHash, crate::Error>> {
-        let bytes = cost_return_on_error_default!(self.serialize(grove_version));
-        value_hash(&bytes).map(Result::Ok)
+        grove_version: &grovedb_version::version::GroveVersion,
+    ) -> grovedb_costs::CostResult<grovedb_merk::CryptoHash, crate::Error> {
+        let bytes = grovedb_costs::cost_return_on_error_default!(self.serialize(grove_version));
+        crate::value_hash(&bytes).map(Result::Ok)
     }
 }
 
