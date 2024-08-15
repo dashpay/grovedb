@@ -59,9 +59,7 @@ use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion, TryIntoVersioned};
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
@@ -2060,6 +2058,9 @@ impl GroveDb {
                     .commit_multi_context_batch(storage_batch, Some(tx))
                     .map_err(|e| e.into())
             );
+
+            let issues = self.visualize_verify_grovedb(true, &Default::default()).unwrap();
+            println!("tx_issues are {}", issues.iter().map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c)).collect::<Vec<_>>().join(" | "));
         } else {
             cost_return_on_error!(
                 &mut cost,
@@ -2087,6 +2088,9 @@ impl GroveDb {
                     .commit_multi_context_batch(storage_batch, None)
                     .map_err(|e| e.into())
             );
+
+            let issues = self.visualize_verify_grovedb(true, &Default::default()).unwrap();
+            println!("non_tx_issues are {}", issues.iter().map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c)).collect::<Vec<_>>().join(" | "));
         }
         Ok(()).wrap_with_cost(cost)
     }
