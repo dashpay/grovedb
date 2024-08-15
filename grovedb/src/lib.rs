@@ -899,11 +899,12 @@ impl GroveDb {
     /// Method to visualize hash mismatch after verification
     pub fn visualize_verify_grovedb(
         &self,
+        transaction: TransactionArg,
         verify_references: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<String, (String, String, String)>, Error> {
         Ok(self
-            .verify_grovedb(None, verify_references, grove_version)?
+            .verify_grovedb(transaction, verify_references, grove_version)?
             .iter()
             .map(|(path, (root_hash, expected, actual))| {
                 (
