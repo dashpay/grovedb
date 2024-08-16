@@ -46,14 +46,10 @@ use grovedb_costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{
-    tree::{
-        kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-        value_hash, NULL_HASH,
-    },
-    CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
-    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
-};
+use grovedb_merk::{tree::{
+    kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+    value_hash, NULL_HASH,
+}, CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum, TreeFeatureType::{BasicMerkNode, SummedMerkNode}, Op};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
@@ -79,9 +75,61 @@ use crate::{
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
+/// An operation with extra information about merge status
+/// Merging happens for some operations that will could change the element
+/// with just in time element flag updates.
+///
+/// If already merged is true and merged_op doesn't exist that means that there is no
+/// point to try to merge again.
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct MergeQualifiedGroveOp {
+    unmerged_op: GroveOp,
+    merged_op: Option<GroveOp>,
+    already_merged: bool,
+}
+
+impl MergeQualifiedGroveOp {
+    #[inline]
+    pub fn op(&self) -> &GroveOp {
+        if let Some(op) = &self.merged_op {
+            op
+        } else {
+            &self.unmerged_op
+        }
+    }
+
+    #[inline]
+    pub fn op_mut(&mut self) -> &mut GroveOp {
+        if let Some(op) = &mut self.merged_op {
+            op
+        } else {
+            &mut self.unmerged_op
+        }
+    }
+
+    #[inline]
+    pub fn take_op(self) -> GroveOp {
+        if let Some(op) = self.merged_op {
+            op
+        } else {
+            self.unmerged_op
+        }
+    }
+}
+
+impl From<GroveOp> for MergeQualifiedGroveOp {
+    fn from(value: GroveOp) -> Self {
+        MergeQualifiedGroveOp {
+            unmerged_op: value,
+            merged_op: None,
+            already_merged: false,
+        }
+    }
+}
+
 /// Operations
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub enum Op {
+pub enum GroveOp {
     /// Replace tree root key
     ReplaceTreeRootKey {
         /// Hash
@@ -139,29 +187,29 @@ pub enum Op {
     DeleteSumTree,
 }
 
-impl Op {
+impl GroveOp {
     fn to_u8(&self) -> u8 {
         match self {
-            Op::DeleteTree => 0,
-            Op::DeleteSumTree => 1,
-            Op::Delete => 2,
-            Op::InsertTreeWithRootHash { .. } => 3,
-            Op::ReplaceTreeRootKey { .. } => 4,
-            Op::RefreshReference { .. } => 5,
-            Op::Replace { .. } => 6,
-            Op::Patch { .. } => 7,
-            Op::Insert { .. } => 8,
+            GroveOp::DeleteTree => 0,
+            GroveOp::DeleteSumTree => 1,
+            GroveOp::Delete => 2,
+            GroveOp::InsertTreeWithRootHash { .. } => 3,
+            GroveOp::ReplaceTreeRootKey { .. } => 4,
+            GroveOp::RefreshReference { .. } => 5,
+            GroveOp::Replace { .. } => 6,
+            GroveOp::Patch { .. } => 7,
+            GroveOp::Insert { .. } => 8,
         }
     }
 }
 
-impl PartialOrd for Op {
+impl PartialOrd for GroveOp {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Op {
+impl Ord for GroveOp {
     fn cmp(&self, other: &Self) -> Ordering {
         self.to_u8().cmp(&other.to_u8())
     }
@@ -340,7 +388,7 @@ pub struct GroveDbOp {
     /// Key of an element in the subtree
     pub key: KeyInfo,
     /// Operation to perform on the key
-    pub op: Op,
+    pub op: GroveOp,
 }
 
 impl fmt::Debug for GroveDbOp {
@@ -353,10 +401,10 @@ impl fmt::Debug for GroveDbOp {
         self.key.visualize(key_drawer).unwrap();
 
         let op_dbg = match &self.op {
-            Op::Insert { element } => format!("Insert {:?}", element),
-            Op::Replace { element } => format!("Replace {:?}", element),
-            Op::Patch { element, .. } => format!("Patch {:?}", element),
-            Op::RefreshReference {
+            GroveOp::Insert { element } => format!("Insert {:?}", element),
+            GroveOp::Replace { element } => format!("Replace {:?}", element),
+            GroveOp::Patch { element, .. } => format!("Patch {:?}", element),
+            GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
                 trust_refresh_reference,
@@ -367,11 +415,11 @@ impl fmt::Debug for GroveDbOp {
                     reference_path_type, max_reference_hop, trust_refresh_reference
                 )
             }
-            Op::Delete => "Delete".to_string(),
-            Op::DeleteTree => "Delete Tree".to_string(),
-            Op::DeleteSumTree => "Delete Sum Tree".to_string(),
-            Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
-            Op::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
+            GroveOp::Delete => "Delete".to_string(),
+            GroveOp::DeleteTree => "Delete Tree".to_string(),
+            GroveOp::DeleteSumTree => "Delete Sum Tree".to_string(),
+            GroveOp::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
+            GroveOp::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
@@ -389,7 +437,7 @@ impl GroveDbOp {
         Self {
             path,
             key: KnownKey(key),
-            op: Op::Insert { element },
+            op: GroveOp::Insert { element },
         }
     }
 
@@ -398,7 +446,7 @@ impl GroveDbOp {
         Self {
             path,
             key,
-            op: Op::Insert { element },
+            op: GroveOp::Insert { element },
         }
     }
 
@@ -408,7 +456,7 @@ impl GroveDbOp {
         Self {
             path,
             key: KnownKey(key),
-            op: Op::Replace { element },
+            op: GroveOp::Replace { element },
         }
     }
 
@@ -417,7 +465,7 @@ impl GroveDbOp {
         Self {
             path,
             key,
-            op: Op::Replace { element },
+            op: GroveOp::Replace { element },
         }
     }
 
@@ -432,7 +480,7 @@ impl GroveDbOp {
         Self {
             path,
             key: KnownKey(key),
-            op: Op::Patch {
+            op: GroveOp::Patch {
                 element,
                 change_in_bytes,
             },
@@ -449,7 +497,7 @@ impl GroveDbOp {
         Self {
             path,
             key,
-            op: Op::Patch {
+            op: GroveOp::Patch {
                 element,
                 change_in_bytes,
             },
@@ -469,7 +517,7 @@ impl GroveDbOp {
         Self {
             path,
             key: KnownKey(key),
-            op: Op::RefreshReference {
+            op: GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
                 flags,
@@ -484,7 +532,7 @@ impl GroveDbOp {
         Self {
             path,
             key: KnownKey(key),
-            op: Op::Delete,
+            op: GroveOp::Delete,
         }
     }
 
@@ -495,9 +543,9 @@ impl GroveDbOp {
             path,
             key: KnownKey(key),
             op: if is_sum_tree {
-                Op::DeleteSumTree
+                GroveOp::DeleteSumTree
             } else {
-                Op::DeleteTree
+                GroveOp::DeleteTree
             },
         }
     }
@@ -507,7 +555,7 @@ impl GroveDbOp {
         Self {
             path,
             key,
-            op: Op::Delete,
+            op: GroveOp::Delete,
         }
     }
 
@@ -517,9 +565,9 @@ impl GroveDbOp {
             path,
             key,
             op: if is_sum_tree {
-                Op::DeleteSumTree
+                GroveOp::DeleteSumTree
             } else {
-                Op::DeleteTree
+                GroveOp::DeleteTree
             },
         }
     }
@@ -562,7 +610,7 @@ impl GroveDbOp {
                         None
                     }
                 })
-                .collect::<Vec<Op>>();
+                .collect::<Vec<GroveOp>>();
             if !doubled_ops.is_empty() {
                 doubled_ops.push(op.op.clone());
                 same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
@@ -572,7 +620,7 @@ impl GroveDbOp {
         let inserts = ops
             .iter()
             .filter_map(|current_op| match current_op.op {
-                Op::Insert { .. } | Op::Replace { .. } => Some(current_op.clone()),
+                GroveOp::Insert { .. } | GroveOp::Replace { .. } => Some(current_op.clone()),
                 _ => None,
             })
             .collect::<Vec<GroveDbOp>>();
@@ -580,7 +628,7 @@ impl GroveDbOp {
         let deletes = ops
             .iter()
             .filter_map(|current_op| {
-                if let Op::Delete = current_op.op {
+                if let GroveOp::Delete = current_op.op {
                     Some(current_op.clone())
                 } else {
                     None
@@ -627,7 +675,7 @@ impl GroveDbOp {
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
     repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
-    same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<Op>)>,
+    same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<GroveOp>)>,
     insert_ops_below_deleted_ops: Vec<(GroveDbOp, Vec<GroveDbOp>)>, /* the deleted op first,
                                                                      * then inserts under */
 }
@@ -662,8 +710,8 @@ trait TreeCache<G, SR> {
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
-        ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
-        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
+        ops_at_path_by_key: BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
+        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
@@ -726,7 +774,7 @@ where
     fn process_reference<'a>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
-        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, Op>,
+        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
         recursions_allowed: u8,
         intermediate_reference_info: Option<&'a ReferencePathType>,
         grove_version: &GroveVersion,
@@ -865,7 +913,7 @@ where
     fn follow_reference_get_value_hash<'a>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
-        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, Op>,
+        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
         recursions_allowed: u8,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error> {
@@ -875,14 +923,16 @@ where
         }
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
-        if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
+
+        // However the operation might either be merged or unmerged, if it is unmerged we need to merge it with the state first
+        if let Some(qualified_op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
-            match op {
-                Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => Err(
+            match qualified_op.op() {
+                GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => Err(
                     Error::InvalidBatchOperation("references can not point to trees being updated"),
                 )
                 .wrap_with_cost(cost),
-                Op::Insert { element } | Op::Replace { element } | Op::Patch { element, .. } => {
+                GroveOp::Insert { element } | GroveOp::Replace { element } | GroveOp::Patch { element, .. } => {
                     match element {
                         Element::Item(..) | Element::SumItem(..) => {
                             let serialized = cost_return_on_error_no_add!(
@@ -915,7 +965,7 @@ where
                         }
                     }
                 }
-                Op::RefreshReference {
+                GroveOp::RefreshReference {
                     reference_path_type,
                     trust_refresh_reference,
                     ..
@@ -934,7 +984,7 @@ where
                         grove_version,
                     )
                 }
-                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
+                GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => {
                     Err(Error::InvalidBatchOperation(
                         "references can not point to something currently being deleted",
                     ))
@@ -1000,8 +1050,8 @@ where
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
-        ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
-        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
+        ops_at_path_by_key: BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
+        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
@@ -1020,10 +1070,10 @@ where
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
         let is_sum_tree = merk.is_sum_tree;
 
-        let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
+        let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
-            match op {
-                Op::Insert { element } | Op::Replace { element } | Op::Patch { element, .. } => {
+            match op.take_op() {
+                GroveOp::Insert { element } | GroveOp::Replace { element } | GroveOp::Patch { element, .. } => {
                     match &element {
                         Element::Reference(path_reference, element_max_reference_hop, _) => {
                             let merk_feature_type = cost_return_on_error!(
@@ -1126,7 +1176,7 @@ where
                         }
                     }
                 }
-                Op::RefreshReference {
+                GroveOp::RefreshReference {
                     reference_path_type,
                     max_reference_hop,
                     flags,
@@ -1212,7 +1262,7 @@ where
                         )
                     );
                 }
-                Op::Delete => {
+                GroveOp::Delete => {
                     cost_return_on_error!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -1225,7 +1275,7 @@ where
                         )
                     );
                 }
-                Op::DeleteTree => {
+                GroveOp::DeleteTree => {
                     cost_return_on_error!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -1237,7 +1287,7 @@ where
                         )
                     );
                 }
-                Op::DeleteSumTree => {
+                GroveOp::DeleteSumTree => {
                     cost_return_on_error!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -1249,7 +1299,7 @@ where
                         )
                     );
                 }
-                Op::ReplaceTreeRootKey {
+                GroveOp::ReplaceTreeRootKey {
                     hash,
                     root_key,
                     sum,
@@ -1267,7 +1317,7 @@ where
                         )
                     );
                 }
-                Op::InsertTreeWithRootHash {
+                GroveOp::InsertTreeWithRootHash {
                     hash,
                     root_key,
                     flags,
@@ -1499,16 +1549,16 @@ impl GroveDb {
                                 {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            vacant_entry.insert(Op::ReplaceTreeRootKey {
+                                            vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
                                                 hash: root_hash,
                                                 root_key: calculated_root_key,
                                                 sum: sum_value,
-                                            });
+                                            }.into());
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
-                                            match mutable_occupied_entry {
-                                                Op::ReplaceTreeRootKey {
+                                            match mutable_occupied_entry.op_mut() {
+                                                GroveOp::ReplaceTreeRootKey {
                                                     hash,
                                                     root_key,
                                                     sum,
@@ -1517,33 +1567,33 @@ impl GroveDb {
                                                     *root_key = calculated_root_key;
                                                     *sum = sum_value;
                                                 }
-                                                Op::InsertTreeWithRootHash { .. } => {
+                                                GroveOp::InsertTreeWithRootHash { .. } => {
                                                     return Err(Error::CorruptedCodeExecution(
                                                         "we can not do this operation twice",
                                                     ))
                                                     .wrap_with_cost(cost);
                                                 }
-                                                Op::Insert { element }
-                                                | Op::Replace { element }
-                                                | Op::Patch { element, .. } => {
+                                                GroveOp::Insert { element }
+                                                | GroveOp::Replace { element }
+                                                | GroveOp::Patch { element, .. } => {
                                                     if let Element::Tree(_, flags) = element {
                                                         *mutable_occupied_entry =
-                                                            Op::InsertTreeWithRootHash {
+                                                            GroveOp::InsertTreeWithRootHash {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 sum: None,
-                                                            };
+                                                            }.into();
                                                     } else if let Element::SumTree(.., flags) =
                                                         element
                                                     {
                                                         *mutable_occupied_entry =
-                                                            Op::InsertTreeWithRootHash {
+                                                            GroveOp::InsertTreeWithRootHash {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 sum: sum_value,
-                                                            };
+                                                            }.into();
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -1551,14 +1601,14 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
-                                                Op::RefreshReference { .. } => {
+                                                GroveOp::RefreshReference { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "insertion of element under a refreshed \
                                                          reference",
                                                     ))
                                                     .wrap_with_cost(cost);
                                                 }
-                                                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
+                                                GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => {
                                                     if calculated_root_key.is_some() {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "modification of tree when it will be \
@@ -1571,28 +1621,28 @@ impl GroveDb {
                                         }
                                     }
                                 } else {
-                                    let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
+                                    let mut ops_on_path: BTreeMap<KeyInfo, MergeQualifiedGroveOp> = BTreeMap::new();
                                     ops_on_path.insert(
                                         key.clone(),
-                                        Op::ReplaceTreeRootKey {
+                                        GroveOp::ReplaceTreeRootKey {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
                                             sum: sum_value,
-                                        },
+                                        }.into(),
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
-                                let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
+                                let mut ops_on_path: BTreeMap<KeyInfo, MergeQualifiedGroveOp> = BTreeMap::new();
                                 ops_on_path.insert(
                                     key.clone(),
-                                    Op::ReplaceTreeRootKey {
+                                    GroveOp::ReplaceTreeRootKey {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
                                         sum: sum_value,
-                                    },
+                                    }.into(),
                                 );
-                                let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>> =
+                                let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, MergeQualifiedGroveOp>> =
                                     BTreeMap::new();
                                 ops_on_level.insert(KeyInfoPath(parent_path.to_vec()), ops_on_path);
                                 ops_by_level_paths.insert(current_level - 1, ops_on_level);
@@ -1721,7 +1771,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             match op.op {
-                Op::Insert { element } | Op::Replace { element } => {
+                GroveOp::Insert { element } | GroveOp::Replace { element } => {
                     // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
@@ -1737,7 +1787,7 @@ impl GroveDb {
                         )
                     );
                 }
-                Op::Delete => {
+                GroveOp::Delete => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(

@@ -25,14 +25,15 @@ use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, Op,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, GroveOp,
         TreeCache,
     },
     Error, GroveDb,
 };
+use crate::batch::MergeQualifiedGroveOp;
 
 #[cfg(feature = "full")]
-impl Op {
+impl GroveOp {
     fn worst_case_cost(
         &self,
         key: &KeyInfo,
@@ -49,7 +50,7 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::worst_case_merk_replace_tree(
+            GroveOp::ReplaceTreeRootKey { sum, .. } => GroveDb::worst_case_merk_replace_tree(
                 key,
                 sum.is_some(),
                 is_in_parent_sum_tree,
@@ -57,7 +58,7 @@ impl Op {
                 propagate,
                 grove_version,
             ),
-            Op::InsertTreeWithRootHash { flags, sum, .. } => GroveDb::worst_case_merk_insert_tree(
+            GroveOp::InsertTreeWithRootHash { flags, sum, .. } => GroveDb::worst_case_merk_insert_tree(
                 key,
                 flags,
                 sum.is_some(),
@@ -65,14 +66,14 @@ impl Op {
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
+            GroveOp::Insert { element } => GroveDb::worst_case_merk_insert_element(
                 key,
                 element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::RefreshReference {
+            GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
                 flags,
@@ -88,14 +89,14 @@ impl Op {
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Replace { element } => GroveDb::worst_case_merk_replace_element(
+            GroveOp::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Patch {
+            GroveOp::Patch {
                 element,
                 change_in_bytes: _,
             } => GroveDb::worst_case_merk_replace_element(
@@ -105,20 +106,20 @@ impl Op {
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Delete => GroveDb::worst_case_merk_delete_element(
+            GroveOp::Delete => GroveDb::worst_case_merk_delete_element(
                 key,
                 worst_case_layer_element_estimates,
                 propagate,
                 grove_version,
             ),
-            Op::DeleteTree => GroveDb::worst_case_merk_delete_tree(
+            GroveOp::DeleteTree => GroveDb::worst_case_merk_delete_tree(
                 key,
                 false,
                 worst_case_layer_element_estimates,
                 propagate,
                 grove_version,
             ),
-            Op::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
+            GroveOp::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
                 key,
                 true,
                 worst_case_layer_element_estimates,
@@ -178,8 +179,8 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
-        ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
-        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
+        ops_at_path_by_key: BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
+        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
@@ -214,7 +215,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.worst_case_cost(
+                op.op().worst_case_cost(
                     &key,
                     false,
                     worst_case_layer_element_estimates,

@@ -26,14 +26,15 @@ use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, Op,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, GroveOp,
         TreeCache,
     },
     Error, GroveDb,
 };
+use crate::batch::MergeQualifiedGroveOp;
 
 #[cfg(feature = "full")]
-impl Op {
+impl GroveOp {
     /// Get the estimated average case cost of the op. Calls a lower level
     /// function to calculate the estimate based on the type of op. Returns
     /// CostResult.
@@ -53,14 +54,14 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::average_case_merk_replace_tree(
+            GroveOp::ReplaceTreeRootKey { sum, .. } => GroveDb::average_case_merk_replace_tree(
                 key,
                 layer_element_estimates,
                 sum.is_some(),
                 propagate,
                 grove_version,
             ),
-            Op::InsertTreeWithRootHash { flags, sum, .. } => {
+            GroveOp::InsertTreeWithRootHash { flags, sum, .. } => {
                 GroveDb::average_case_merk_insert_tree(
                     key,
                     flags,
@@ -70,14 +71,14 @@ impl Op {
                     grove_version,
                 )
             }
-            Op::Insert { element } => GroveDb::average_case_merk_insert_element(
+            GroveOp::Insert { element } => GroveDb::average_case_merk_insert_element(
                 key,
                 element,
                 in_tree_using_sums,
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::RefreshReference {
+            GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
                 flags,
@@ -93,14 +94,14 @@ impl Op {
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Replace { element } => GroveDb::average_case_merk_replace_element(
+            GroveOp::Replace { element } => GroveDb::average_case_merk_replace_element(
                 key,
                 element,
                 in_tree_using_sums,
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Patch {
+            GroveOp::Patch {
                 element,
                 change_in_bytes,
             } => GroveDb::average_case_merk_patch_element(
@@ -111,20 +112,20 @@ impl Op {
                 propagate_if_input(),
                 grove_version,
             ),
-            Op::Delete => GroveDb::average_case_merk_delete_element(
+            GroveOp::Delete => GroveDb::average_case_merk_delete_element(
                 key,
                 layer_element_estimates,
                 propagate,
                 grove_version,
             ),
-            Op::DeleteTree => GroveDb::average_case_merk_delete_tree(
+            GroveOp::DeleteTree => GroveDb::average_case_merk_delete_tree(
                 key,
                 false,
                 layer_element_estimates,
                 propagate,
                 grove_version,
             ),
-            Op::DeleteSumTree => GroveDb::average_case_merk_delete_tree(
+            GroveOp::DeleteSumTree => GroveDb::average_case_merk_delete_tree(
                 key,
                 true,
                 layer_element_estimates,
@@ -184,8 +185,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
-        ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
-        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
+        ops_at_path_by_key: BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
+        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
@@ -247,7 +248,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.average_case_cost(&key, layer_element_estimates, false, grove_version)
+                op.op().average_case_cost(&key, layer_element_estimates, false, grove_version)
             );
         }
 

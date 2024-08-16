@@ -985,7 +985,7 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            false,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
@@ -1027,7 +1027,7 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            false,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
@@ -1054,7 +1054,7 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            false,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
@@ -1073,7 +1073,7 @@ impl GroveDb {
                         let item = self
                             .follow_reference(
                                 (full_path.as_slice()).into(),
-                                true,
+                                false,
                                 None,
                                 grove_version,
                             )
@@ -1123,7 +1123,7 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            false,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
@@ -1167,7 +1167,7 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            false,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
@@ -1194,7 +1194,7 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            false,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
@@ -1213,7 +1213,7 @@ impl GroveDb {
                         let item = self
                             .follow_reference(
                                 (full_path.as_slice()).into(),
-                                true,
+                                false,
                                 Some(transaction),
                                 grove_version,
                             )
