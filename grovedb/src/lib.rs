@@ -1065,7 +1065,7 @@ impl GroveDb {
                         ))?;
 
                     let referenced_value_hash = {
-                        let mut full_path = path_from_reference_path_type(
+                        let full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
@@ -1205,7 +1205,7 @@ impl GroveDb {
                         ))?;
 
                     let referenced_value_hash = {
-                        let mut full_path = path_from_reference_path_type(
+                        let full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),

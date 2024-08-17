@@ -4071,22 +4071,22 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         let ops = vec![
-            GroveDbOp::insert_op(
+            GroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"value".to_vec(),
                 Element::new_item(b"hello".to_vec()),
             ),
-            GroveDbOp::insert_op(
+            GroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"refc".to_vec(),
                 Element::new_reference(ReferencePathType::SiblingReference(b"value".to_vec())),
             ),
-            GroveDbOp::insert_op(
+            GroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"refb".to_vec(),
                 Element::new_reference(ReferencePathType::SiblingReference(b"refc".to_vec())),
             ),
-            GroveDbOp::insert_op(
+            GroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"refa".to_vec(),
                 Element::new_reference(ReferencePathType::SiblingReference(b"refb".to_vec())),

@@ -22,16 +22,15 @@ use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
 
-use crate::Element;
+use crate::{batch::MergeQualifiedGroveOp, Element};
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, GroveOp,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, GroveOp, KeyInfoPath,
         TreeCache,
     },
     Error, GroveDb,
 };
-use crate::batch::MergeQualifiedGroveOp;
 
 #[cfg(feature = "full")]
 impl GroveOp {
@@ -71,7 +70,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::Insert { element } => GroveDb::average_case_merk_insert_element(
+            GroveOp::InsertOrReplace { element } => GroveDb::average_case_merk_insert_element(
                 key,
                 element,
                 in_tree_using_sums,
@@ -248,7 +247,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.op().average_case_cost(&key, layer_element_estimates, false, grove_version)
+                op.op()
+                    .average_case_cost(&key, layer_element_estimates, false, grove_version)
             );
         }
 
@@ -322,7 +322,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -391,7 +391,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree_with_flags(Some(b"cat".to_vec())),
@@ -458,7 +458,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::new_item(b"cat".to_vec()),
@@ -531,7 +531,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -617,7 +617,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"0".to_vec()],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -775,7 +775,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),

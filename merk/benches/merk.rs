@@ -39,9 +39,11 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
 use rand::prelude::*;
+use grovedb_version::version::GroveVersion;
 
 /// 1 million gets in 2k batches
 pub fn get(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
     let num_batches = initial_size / batch_size;
@@ -95,6 +97,7 @@ pub fn get(c: &mut Criterion) {
 
 /// 1 million sequential inserts in 2k batches
 pub fn insert_1m_2k_seq(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -136,6 +139,7 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
 
 /// 1 million random inserts in 2k batches
 pub fn insert_1m_2k_rand(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -177,6 +181,7 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
 
 /// 1 million sequential updates in 2k batches
 pub fn update_1m_2k_seq(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -237,6 +242,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
 
 /// 1 million random updates in 2k batches
 pub fn update_1m_2k_rand(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -297,6 +303,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
 
 /// 1 million random deletes in 2k batches
 pub fn delete_1m_2k_rand(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -382,6 +389,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
 
 /// 1 million random proofs in 2k batches
 pub fn prove_1m_2k_rand(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -434,6 +442,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
 
 /// Build 1 million trunk chunks in 2k batches, random
 pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -477,6 +486,7 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
 
 /// Chunk producer random 1 million
 pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -518,6 +528,7 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
 
 /// Chunk iter 1 million
 pub fn chunk_iter_1m_1(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
@@ -565,6 +576,7 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
 
 /// Restore merk of size 500
 pub fn restore_500_1(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let merk_size = 500;
 
     let mut merk = TempMerk::new(grove_version);

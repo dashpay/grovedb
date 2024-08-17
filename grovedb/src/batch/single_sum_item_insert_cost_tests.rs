@@ -42,7 +42,7 @@ mod tests {
             )
             .cost;
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"sum_tree".to_vec()],
             b"key1".to_vec(),
             Element::new_sum_item(150),
@@ -57,7 +57,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_sum_tree(),
@@ -134,7 +134,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_sum_tree(),
@@ -220,7 +220,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_sum_tree(),
@@ -306,7 +306,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"0".to_vec()],
             b"key1".to_vec(),
             Element::empty_sum_tree(),
@@ -396,7 +396,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"0".to_vec()],
             b"key1".to_vec(),
             Element::empty_sum_tree(),
@@ -487,7 +487,7 @@ mod tests {
         .unwrap()
         .expect("expected to insert sum tree");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"sum_tree".to_vec()],
             b"key1".to_vec(),
             Element::new_sum_item_with_flags(15, Some([0; 42].to_vec())),
@@ -562,7 +562,7 @@ mod tests {
         .unwrap()
         .expect("expected to insert sum tree");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"sum_tree".to_vec()],
             b"key1".to_vec(),
             Element::new_sum_item_with_flags(15, Some([0; 43].to_vec())),
@@ -648,7 +648,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_sum_item_with_flags(100000, None),
@@ -714,7 +714,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_sum_item_with_flags(100000, Some(vec![1])),
@@ -780,7 +780,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_sum_item_with_flags(5, None),
@@ -846,7 +846,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_sum_item_with_flags(5, Some(vec![1])),

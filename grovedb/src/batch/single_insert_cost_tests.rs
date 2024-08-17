@@ -42,7 +42,7 @@ mod tests {
             )
             .cost;
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -57,7 +57,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -122,7 +122,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::new_item(b"cat".to_vec()),
@@ -200,7 +200,7 @@ mod tests {
 
         assert_eq!(cost.storage_cost.added_bytes, 143);
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -293,7 +293,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -375,7 +375,7 @@ mod tests {
         .unwrap()
         .expect("successful root tree leaf insert");
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"0".to_vec()],
             b"key1".to_vec(),
             Element::empty_tree(),
@@ -453,7 +453,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::new_item([0u8; 59].to_vec()),
@@ -516,7 +516,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![],
             b"key1".to_vec(),
             Element::new_item([0u8; 60].to_vec()),
@@ -601,7 +601,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_item_with_flags(b"value100".to_vec(), Some(vec![1])),
@@ -667,7 +667,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
@@ -756,7 +756,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_item_with_flags(b"value".to_vec(), Some(vec![1])),
@@ -821,7 +821,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_item_with_flags(b"value".to_vec(), Some(vec![0, 1])),
@@ -911,7 +911,7 @@ mod tests {
         .expect("expected to insert item");
 
         // We are adding 1 byte to the flags
-        let ops = vec![GroveDbOp::insert_op(
+        let ops = vec![GroveDbOp::insert_or_replace_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
             Element::new_tree_with_flags(None, Some(vec![0, 1, 1])),
