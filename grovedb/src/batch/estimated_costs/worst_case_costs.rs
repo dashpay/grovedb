@@ -21,7 +21,7 @@ use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
 
-use crate::{batch::QualifiedGroveDbOp, Element};
+use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
@@ -67,7 +67,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::InsertOrReplace { element } => GroveDb::worst_case_merk_insert_element(
+            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => GroveDb::worst_case_merk_insert_element(
                 key,
                 element,
                 is_in_parent_sum_tree,

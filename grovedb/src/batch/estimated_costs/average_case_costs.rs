@@ -22,7 +22,7 @@ use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
 
-use crate::{batch::GroveDBOp, Element};
+use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
@@ -70,7 +70,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::InsertOrReplace { element } => GroveDb::average_case_merk_insert_element(
+            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => GroveDb::average_case_merk_insert_element(
                 key,
                 element,
                 in_tree_using_sums,
