@@ -180,8 +180,8 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
-        ops_at_path_by_key: BTreeMap<KeyInfo, QualifiedGroveDbOp>,
-        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, QualifiedGroveDbOp>,
+        ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
+        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
@@ -216,7 +216,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.op().worst_case_cost(
+                op.worst_case_cost(
                     &key,
                     false,
                     worst_case_layer_element_estimates,
