@@ -14,15 +14,14 @@ use grovedb_visualize::{DebugByteVectors, DebugBytes};
 #[cfg(feature = "full")]
 use nohash_hasher::IntMap;
 
-use crate::batch::MergeQualifiedGroveOp;
 #[cfg(feature = "full")]
 use crate::{
-    batch::{key_info::KeyInfo, GroveDbOp, GroveOp, KeyInfoPath, TreeCache},
+    batch::{key_info::KeyInfo, QualifiedGroveDbOp, GroveOp, KeyInfoPath, TreeCache},
     Element, ElementFlags, Error,
 };
 
 #[cfg(feature = "full")]
-pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, MergeQualifiedGroveOp>>;
+pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>>;
 /// Level, path, key, op
 #[cfg(feature = "full")]
 pub type OpsByLevelPath = IntMap<u32, OpsByPath>;
@@ -33,7 +32,7 @@ pub(super) struct BatchStructure<C, F, SR> {
     /// Operations by level path
     pub(super) ops_by_level_paths: OpsByLevelPath,
     /// This is for references
-    pub(super) ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
+    pub(super) ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp>,
     /// Merk trees
     /// Very important: the type of run mode we are in is contained in this
     /// cache
@@ -85,7 +84,7 @@ where
 {
     /// Create batch structure from a list of ops. Returns CostResult.
     pub(super) fn from_ops(
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
         merk_tree_cache: C,
@@ -102,7 +101,7 @@ where
     /// Create batch structure from a list of ops. Returns CostResult.
     pub(super) fn continue_from_ops(
         previous_ops: Option<OpsByLevelPath>,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         update_element_flags_function: F,
         split_remove_bytes_function: SR,
         mut merk_tree_cache: C,
@@ -113,43 +112,15 @@ where
         let mut current_last_level: u32 = 0;
 
         // qualified paths meaning path + key
-        let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp> =
-            BTreeMap::new();
+        let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> = BTreeMap::new();
 
         for op in ops.into_iter() {
             let mut path = op.path.clone();
             path.push(op.key.clone());
+            ops_by_qualified_paths.insert(path.to_path_consume(), op.op.clone());
             let op_cost = OperationCost::default();
             let op_result = match &op.op {
-                GroveOp::InsertOrReplace { element }
-                | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. } => {
-                    match element {
-                        Element::Item(..) | Element::SumItem(..) => {
-                            // let path = path.to_path_consume();
-                            // let previous_element = Element::get_from_storage()
-                            // todo: path merges here
-                            ops_by_qualified_paths
-                                .insert(path.to_path_consume(), op.op.clone().into());
-                        }
-                        Element::Reference(..) => {
-                            ops_by_qualified_paths
-                                .insert(path.to_path_consume(), op.op.clone().into());
-                        }
-                        Element::Tree(..) => {
-                            cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false));
-                            ops_by_qualified_paths
-                                .insert(path.to_path_consume(), op.op.clone().into());
-                        }
-                        Element::SumTree(..) => {
-                            cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, true));
-                            ops_by_qualified_paths
-                                .insert(path.to_path_consume(), op.op.clone().into());
-                        }
-                    }
-                    Ok(())
-                }
-                GroveOp::InsertOnly { element } => {
+                GroveOp::InsertOnly { element } | GroveOp::InsertOrReplace { element } |  GroveOp::Replace { element } | GroveOp::Patch { element, .. } => {
                     if let Element::Tree(..) = element {
                         cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false));
                     } else if let Element::SumTree(..) = element {
@@ -157,11 +128,7 @@ where
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. }
-                | GroveOp::Delete
-                | GroveOp::DeleteTree
-                | GroveOp::DeleteSumTree => {
-                    ops_by_qualified_paths.insert(path.to_path_consume(), op.op.clone().into());
+                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => {
                     Ok(())
                 }
                 GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
@@ -177,19 +144,17 @@ where
             let level = op.path.len();
             if let Some(ops_on_level) = ops_by_level_paths.get_mut(&level) {
                 if let Some(ops_on_path) = ops_on_level.get_mut(&op.path) {
-                    ops_on_path.insert(op.key, op.op.into());
+                    ops_on_path.insert(op.key, op.op);
                 } else {
-                    let mut ops_on_path: BTreeMap<KeyInfo, MergeQualifiedGroveOp> = BTreeMap::new();
-                    ops_on_path.insert(op.key, op.op.into());
+                    let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
+                    ops_on_path.insert(op.key, op.op);
                     ops_on_level.insert(op.path.clone(), ops_on_path);
                 }
             } else {
-                let mut ops_on_path: BTreeMap<KeyInfo, MergeQualifiedGroveOp> = BTreeMap::new();
-                ops_on_path.insert(op.key, op.op.into());
-                let mut ops_on_level: BTreeMap<
-                    KeyInfoPath,
-                    BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
-                > = BTreeMap::new();
+                let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
+                ops_on_path.insert(op.key, op.op);
+                let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>> =
+                    BTreeMap::new();
                 ops_on_level.insert(op.path, ops_on_path);
                 ops_by_level_paths.insert(level, ops_on_level);
                 if current_last_level < level {
@@ -206,6 +171,6 @@ where
             split_removal_bytes: split_remove_bytes_function,
             last_level: current_last_level,
         })
-        .wrap_with_cost(cost)
+            .wrap_with_cost(cost)
     }
 }

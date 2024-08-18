@@ -17,7 +17,7 @@ mod tests {
     use integer_encoding::VarInt;
 
     use crate::{
-        batch::GroveDbOp,
+        batch::QualifiedGroveDbOp,
         reference_path::{
             ReferencePathType, ReferencePathType::UpstreamFromElementHeightReference,
         },
@@ -52,17 +52,17 @@ mod tests {
         .cost_as_result()
         .expect("expected to insert successfully");
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"documents".to_vec()],
                 b"key2".to_vec(),
                 Element::new_item_with_flags(b"pizza".to_vec(), Some([0, 1].to_vec())),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"documents".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"documents".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 Element::new_reference(UpstreamFromElementHeightReference(
@@ -186,17 +186,17 @@ mod tests {
         .cost_as_result()
         .expect("expected to insert successfully");
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"documents".to_vec()],
                 b"key2".to_vec(),
                 Element::new_item_with_flags(b"pizza".to_vec(), Some([0, 1].to_vec())),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"documents".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"documents".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 Element::new_reference(UpstreamFromElementHeightReference(
@@ -258,7 +258,7 @@ mod tests {
                         .get(&0)
                         .expect("expected to have root path");
                     assert_eq!(ops_by_root_path.len(), 1);
-                    let new_ops = vec![GroveDbOp::insert_or_replace_op(
+                    let new_ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
                         vec![b"balances".to_vec()],
                         b"person".to_vec(),
                         Element::new_sum_item_with_flags(1000, Some([0, 1].to_vec())),
@@ -363,12 +363,12 @@ mod tests {
 
         // We are adding 2 bytes
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"tree".to_vec()],
                 b"key1".to_vec(),
                 Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
             ),
-            GroveDbOp::insert_only_op(
+            QualifiedGroveDbOp::insert_only_op(
                 vec![b"refs".to_vec()],
                 b"ref_key".to_vec(),
                 Element::new_reference_with_hops(

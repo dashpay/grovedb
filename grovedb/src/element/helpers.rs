@@ -251,7 +251,6 @@ impl Element {
         );
         // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value, grove_version)?;
-        println!("element is {}", element);
         let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {

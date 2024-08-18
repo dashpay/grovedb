@@ -33,7 +33,7 @@ use grovedb_version::{
 
 #[cfg(feature = "full")]
 use crate::{
-    batch::{GroveDbOp, GroveOp},
+    batch::{QualifiedGroveDbOp, GroveOp},
     util::storage_context_with_parent_optional_tx,
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
@@ -512,10 +512,10 @@ impl GroveDb {
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
-        current_batch_operations: &[GroveDbOp],
+        current_batch_operations: &[QualifiedGroveDbOp],
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<GroveDbOp>, Error> {
+    ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
             "delete_operation_for_delete_internal",
             grove_version
@@ -610,7 +610,7 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
-                    Ok(Some(GroveDbOp::delete_tree_op(
+                    Ok(Some(QualifiedGroveDbOp::delete_tree_op(
                         path.to_vec(),
                         key.to_vec(),
                         is_subtree_with_sum,
@@ -622,7 +622,7 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(GroveDbOp::delete_op(path.to_vec(), key.to_vec()))).wrap_with_cost(cost)
+                Ok(Some(QualifiedGroveDbOp::delete_op(path.to_vec(), key.to_vec()))).wrap_with_cost(cost)
             }
         }
     }

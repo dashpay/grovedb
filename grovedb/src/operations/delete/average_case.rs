@@ -17,7 +17,7 @@ use grovedb_version::{
 use intmap::IntMap;
 
 use crate::{
-    batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath},
+    batch::{key_info::KeyInfo, QualifiedGroveDbOp, KeyInfoPath},
     Error, GroveDb,
 };
 
@@ -34,7 +34,7 @@ impl GroveDb {
         validate: bool,
         estimated_layer_info: IntMap<EstimatedLayerInformation>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<GroveDbOp>, Error> {
+    ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
             "average_case_delete_operations_for_delete_up_tree_while_empty",
             grove_version
@@ -145,7 +145,7 @@ impl GroveDb {
         except_keys_count: u16,
         estimated_key_element_size: EstimatedKeyAndElementSize,
         grove_version: &GroveVersion,
-    ) -> CostResult<GroveDbOp, Error> {
+    ) -> CostResult<QualifiedGroveDbOp, Error> {
         check_grovedb_v0_with_cost!(
             "average_case_delete_operation_for_delete",
             grove_version
@@ -188,6 +188,6 @@ impl GroveDb {
             estimated_key_element_size.0 + HASH_LENGTH_U32,
         );
 
-        Ok(GroveDbOp::delete_estimated_op(path.clone(), key.clone())).wrap_with_cost(cost)
+        Ok(QualifiedGroveDbOp::delete_estimated_op(path.clone(), key.clone())).wrap_with_cost(cost)
     }
 }

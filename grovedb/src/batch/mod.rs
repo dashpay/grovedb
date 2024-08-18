@@ -65,6 +65,8 @@ use grovedb_version::{
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
+use grovedb_merk::tree::kv::KV;
+use grovedb_merk::tree::TreeNode;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 pub use options::BatchApplyOptions;
 
@@ -80,58 +82,7 @@ use crate::{
     },
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
-
-/// An operation with extra information about merge status
-/// Merging happens for some operations that will could change the element
-/// with just in time element flag updates.
-///
-/// If already merged is true and merged_op doesn't exist that means that there
-/// is no point to try to merge again.
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct MergeQualifiedGroveOp {
-    unmerged_op: GroveOp,
-    merged_op: Option<GroveOp>,
-    already_merged: bool,
-}
-
-impl MergeQualifiedGroveOp {
-    #[inline]
-    pub fn op(&self) -> &GroveOp {
-        if let Some(op) = &self.merged_op {
-            op
-        } else {
-            &self.unmerged_op
-        }
-    }
-
-    #[inline]
-    pub fn op_mut(&mut self) -> &mut GroveOp {
-        if let Some(op) = &mut self.merged_op {
-            op
-        } else {
-            &mut self.unmerged_op
-        }
-    }
-
-    #[inline]
-    pub fn take_op(self) -> GroveOp {
-        if let Some(op) = self.merged_op {
-            op
-        } else {
-            self.unmerged_op
-        }
-    }
-}
-
-impl From<GroveOp> for MergeQualifiedGroveOp {
-    fn from(value: GroveOp) -> Self {
-        MergeQualifiedGroveOp {
-            unmerged_op: value,
-            merged_op: None,
-            already_merged: false,
-        }
-    }
-}
+use crate::operations::proof::util::hex_to_ascii;
 
 /// Operations
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -394,7 +345,7 @@ impl KeyInfoPath {
 
 /// Batch operation
 #[derive(Clone, PartialEq, Eq)]
-pub struct GroveDbOp {
+pub struct QualifiedGroveDbOp {
     /// Path to a subtree - subject to an operation
     pub path: KeyInfoPath,
     /// Key of an element in the subtree
@@ -403,7 +354,7 @@ pub struct GroveDbOp {
     pub op: GroveOp,
 }
 
-impl fmt::Debug for GroveDbOp {
+impl fmt::Debug for QualifiedGroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut path_out = Vec::new();
         let path_drawer = Drawer::new(&mut path_out);
@@ -443,7 +394,7 @@ impl fmt::Debug for GroveDbOp {
     }
 }
 
-impl GroveDbOp {
+impl QualifiedGroveDbOp {
     /// An insert op using a known owned path and known key
     pub fn insert_only_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
@@ -596,7 +547,7 @@ impl GroveDbOp {
     }
 
     /// Verify consistency of operations
-    pub fn verify_consistency_of_operations(ops: &[GroveDbOp]) -> GroveDbOpConsistencyResults {
+    pub fn verify_consistency_of_operations(ops: &[QualifiedGroveDbOp]) -> GroveDbOpConsistencyResults {
         let ops_len = ops.len();
         // operations should not have any duplicates
         let mut repeated_ops = vec![];
@@ -648,7 +599,7 @@ impl GroveDbOp {
                 }
                 _ => None,
             })
-            .collect::<Vec<GroveDbOp>>();
+            .collect::<Vec<QualifiedGroveDbOp>>();
 
         let deletes = ops
             .iter()
@@ -659,7 +610,7 @@ impl GroveDbOp {
                     None
                 }
             })
-            .collect::<Vec<GroveDbOp>>();
+            .collect::<Vec<QualifiedGroveDbOp>>();
 
         let mut insert_ops_below_deleted_ops = vec![];
 
@@ -681,7 +632,7 @@ impl GroveDbOp {
                         None
                     }
                 })
-                .collect::<Vec<GroveDbOp>>();
+                .collect::<Vec<QualifiedGroveDbOp>>();
             if !inserts_with_deleted_ops_above.is_empty() {
                 insert_ops_below_deleted_ops
                     .push((deleted_op.clone(), inserts_with_deleted_ops_above));
@@ -699,9 +650,9 @@ impl GroveDbOp {
 /// Results of a consistency check on an operation batch
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
-    repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
+    repeated_ops: Vec<(QualifiedGroveDbOp, u16)>, // the u16 is count
     same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<GroveOp>)>,
-    insert_ops_below_deleted_ops: Vec<(GroveDbOp, Vec<GroveDbOp>)>, /* the deleted op first,
+    insert_ops_below_deleted_ops: Vec<(QualifiedGroveDbOp, Vec<QualifiedGroveDbOp>)>, /* the deleted op first,
                                                                      * then inserts under */
 }
 
@@ -727,7 +678,7 @@ impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
 }
 
 trait TreeCache<G, SR> {
-    fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error>;
+    fn insert(&mut self, op: &QualifiedGroveDbOp, is_sum_tree: bool) -> CostResult<(), Error>;
 
     fn get_batch_run_mode(&self) -> BatchRunMode;
 
@@ -735,8 +686,8 @@ trait TreeCache<G, SR> {
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
-        ops_at_path_by_key: BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
-        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
+        ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
+        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
@@ -799,7 +750,7 @@ where
     fn process_reference<'a, G, SR>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
-        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
+        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, GroveOp>,
         recursions_allowed: u8,
         intermediate_reference_info: Option<&'a ReferencePathType>,
         flags_update: &mut G,
@@ -891,37 +842,42 @@ where
 
     /// Retrieves and deserializes the referenced element from the Merk tree.
     ///
-    /// This function is responsible for fetching the referenced element using the
-    /// provided key and reference path, deserializing it into an `Element`. It handles
-    /// potential errors that can occur during these operations, such as missing references
-    /// or corrupted data.
+    /// This function is responsible for fetching the referenced element using
+    /// the provided key and reference path, deserializing it into an
+    /// `Element`. It handles potential errors that can occur during these
+    /// operations, such as missing references or corrupted data.
     ///
     /// # Arguments
     ///
-    /// * `key` - The key associated with the referenced element within the Merk tree.
-    /// * `reference_path` - The path to the referenced element, used to locate it in the Merk tree.
-    /// * `grove_version` - The current version of the GroveDB being used for serialization
-    ///   and deserialization operations.
+    /// * `key` - The key associated with the referenced element within the Merk
+    ///   tree.
+    /// * `reference_path` - The path to the referenced element, used to locate
+    ///   it in the Merk tree.
+    /// * `grove_version` - The current version of the GroveDB being used for
+    ///   serialization and deserialization operations.
     ///
     /// # Returns
     ///
-    /// * `Ok(Element)` - Returns the deserialized `Element` if the retrieval and deserialization
-    ///   are successful, wrapped in the associated cost.
-    /// * `Err(Error)` - Returns an error if any issue occurs during the retrieval or deserialization
-    ///   of the referenced element.
+    /// * `Ok((Element, Vec<u8>, bool))` - Returns the deserialized `Element` and the serialized counterpart
+    ///   if the retrieval and deserialization are successful, wrapped in the associated cost.
+    ///   Also returns if the merk of the element is a sum tree as a bool.
+    /// * `Err(Error)` - Returns an error if any issue occurs during the
+    ///   retrieval or deserialization of the referenced element.
     ///
     /// # Errors
     ///
     /// This function may return the following errors:
     ///
-    /// * `Error::MissingReference` - If the referenced element is missing from the Merk tree.
-    /// * `Error::CorruptedData` - If the referenced element cannot be deserialized due to corrupted data.
+    /// * `Error::MissingReference` - If the referenced element is missing from
+    ///   the Merk tree.
+    /// * `Error::CorruptedData` - If the referenced element cannot be
+    ///   deserialized due to corrupted data.
     fn get_and_deserialize_referenced_element<'a>(
         &'a mut self,
         key: &[u8],
         reference_path: &[Vec<u8>],
         grove_version: &GroveVersion,
-    ) -> CostResult<Element, Error> {
+    ) -> CostResult<Option<(Element, Vec<u8>, bool)>, Error> {
         let mut cost = OperationCost::default();
 
         let reference_merk_wrapped = self
@@ -933,40 +889,28 @@ where
         let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
         let referenced_element = cost_return_on_error!(
-        &mut cost,
-        merk.get(
-            key.as_ref(),
-            true,
-            Some(Element::value_defined_cost_for_serialized_value),
-            grove_version
-        )
-        .map_err(|e| Error::CorruptedData(e.to_string()))
-    );
+            &mut cost,
+            merk.get(
+                key.as_ref(),
+                true,
+                Some(Element::value_defined_cost_for_serialized_value),
+                grove_version
+            )
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
 
-        let referenced_element = cost_return_on_error_no_add!(
-        &cost,
-        referenced_element.ok_or({
-            let reference_string = reference_path
-                .iter()
-                .map(hex::encode)
-                .collect::<Vec<String>>()
-                .join("/");
-            Error::MissingReference(format!(
-                "reference to path:`{}` key:`{}` in batch is missing",
-                reference_string,
-                hex::encode(key)
-            ))
-        })
-    );
+        if let Some(referenced_element) = referenced_element {
+            let element = cost_return_on_error_no_add!(
+            &cost,
+            Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|_| {
+                Error::CorruptedData(String::from("unable to deserialize element"))
+            })
+        );
 
-        let element = cost_return_on_error_no_add!(
-        &cost,
-        Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|_| {
-            Error::CorruptedData(String::from("unable to deserialize element"))
-        })
-    );
-
-        Ok(element).wrap_with_cost(cost)
+            Ok(Some((element, referenced_element, merk.is_sum_tree))).wrap_with_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
     }
 
     /// Processes a reference with a hop count greater than one, handling the
@@ -1021,7 +965,7 @@ where
         key: &[u8],
         reference_path: &[Vec<u8>],
         qualified_path: &[Vec<u8>],
-        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
+        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, GroveOp>,
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
@@ -1037,10 +981,21 @@ where
     {
         let mut cost = OperationCost::default();
 
-        let element = cost_return_on_error!(
-        &mut cost,
-        self.get_and_deserialize_referenced_element(key, reference_path, grove_version)
-    );
+        let Some((element, _, _)) = cost_return_on_error!(
+            &mut cost,
+            self.get_and_deserialize_referenced_element(key, reference_path, grove_version)
+        ) else {
+            let reference_string = reference_path
+                .iter()
+                .map(hex::encode)
+                .collect::<Vec<String>>()
+                .join("/");
+            return Err(Error::MissingReference(format!(
+                "reference to path:`{}` key:`{}` in batch is missing",
+                reference_string,
+                hex::encode(key)
+            ))).wrap_with_cost(cost);
+        };
 
         match element {
             Element::Item(..) | Element::SumItem(..) => {
@@ -1083,7 +1038,7 @@ where
     fn follow_reference_get_value_hash<'a, G, SR>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
-        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
+        ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, GroveOp>,
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
@@ -1106,9 +1061,9 @@ where
 
         // However the operation might either be merged or unmerged, if it is unmerged
         // we need to merge it with the state first
-        if let Some(qualified_op) = ops_by_qualified_paths.get(qualified_path) {
+        if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
-            match qualified_op.op() {
+            match op {
                 GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => Err(
                     Error::InvalidBatchOperation("references can not point to trees being updated"),
                 )
@@ -1118,56 +1073,72 @@ where
                 | GroveOp::Patch { element, .. } => {
                     match element {
                         Element::Item(..) | Element::SumItem(..) => {
-
-
-                            if  element.get_flags().is_none() {
-                                    // There are no storage flags, we can just hash new element
-                                    let serialized = cost_return_on_error_no_add!(
-                                            &cost,
-                                            element.serialize(grove_version)
-                                        );
-                                    let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
-                                    Ok(val_hash).wrap_with_cost(cost)
-                                } else {
+                            let serialized = cost_return_on_error_no_add!(
+                                        &cost,
+                                        element.serialize(grove_version)
+                                    );
+                            if element.get_flags().is_none() {
+                                // There are no storage flags, we can just hash new element
+                                let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                Ok(val_hash).wrap_with_cost(cost)
+                            } else {
                                 let mut new_element = element.clone();
                                 let mut new_flags = new_element.get_flags_mut().as_mut().unwrap();
-                                    // There are storage flags
-                                    let storage_costs = StorageCost {added_bytes: 2, replaced_bytes: 4, removed_bytes: StorageRemovedBytes::NoStorageRemoval};
-                                    // it can be unmerged, let's get the value on disk
-                                    let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
-                                    let old_element = cost_return_on_error!(
-                                &mut cost,
-                                self.get_and_deserialize_referenced_element(key, reference_path, grove_version));
 
+                                // it can be unmerged, let's get the value on disk
+                                let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
+                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) = cost_return_on_error!(
+                                    &mut cost,
+                                    self.get_and_deserialize_referenced_element(
+                                        key,
+                                        reference_path,
+                                        grove_version
+                                    )
+                                ) {
                                     let maybe_old_flags = old_element.get_flags_owned();
+
+                                    let old_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(key.len() as u32, old_serialized_element.len() as u32, is_in_sum_tree);
+                                    let new_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(key.len() as u32, serialized.len() as u32, is_in_sum_tree);
+
+                                    // There are storage flags
+                                    let storage_costs = TreeNode::storage_cost_for_update(new_storage_cost, old_storage_cost);
+
                                     let changed = cost_return_on_error_no_add!(
-                                            &cost,(flags_update)(&storage_costs, maybe_old_flags, new_flags)
+                                    &cost,
+                                    (flags_update)(&storage_costs, maybe_old_flags, new_flags)
                                         .map_err(|e| match e {
                                             Error::JustInTimeElementFlagsClientError(_) => {
-                                                MerkError::ClientCorruptionError(e.to_string()).into()
+                                                MerkError::ClientCorruptionError(e.to_string())
+                                                    .into()
                                             }
                                             _ => MerkError::ClientCorruptionError(
                                                 "non client error".to_string(),
-                                            ).into(),
-                                        }));
+                                            )
+                                            .into(),
+                                        })
+                                );
                                     if changed {
                                         // There are no storage flags, we can just hash new element
                                         let serialized = cost_return_on_error_no_add!(
                                             &cost,
                                             new_element.serialize(grove_version)
                                         );
-                                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                        let val_hash =
+                                            value_hash(&serialized).unwrap_add_cost(&mut cost);
                                         Ok(val_hash).wrap_with_cost(cost)
                                     } else {
                                         // There are no storage flags, we can just hash new element
-                                        let serialized = cost_return_on_error_no_add!(
-                                            &cost,
-                                            element.serialize(grove_version)
-                                        );
-                                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+
+                                        let val_hash =
+                                            value_hash(&serialized).unwrap_add_cost(&mut cost);
                                         Ok(val_hash).wrap_with_cost(cost)
                                     }
+                                } else {
+                                    let val_hash =
+                                        value_hash(&serialized).unwrap_add_cost(&mut cost);
+                                    Ok(val_hash).wrap_with_cost(cost)
                                 }
+                            }
                         }
                         Element::Reference(path, ..) => {
                             let path = cost_return_on_error_no_add!(
@@ -1273,7 +1244,7 @@ where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
-    fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &QualifiedGroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let mut inserted_path = op.path.to_path();
@@ -1309,8 +1280,8 @@ where
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
-        ops_at_path_by_key: BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
-        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, MergeQualifiedGroveOp>,
+        ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
+        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
@@ -1331,7 +1302,7 @@ where
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
-            match op.take_op() {
+            match op {
                 GroveOp::InsertOnly { element }
                 | GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
@@ -1830,7 +1801,7 @@ impl GroveDb {
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
-                                            match mutable_occupied_entry.op_mut() {
+                                            match mutable_occupied_entry {
                                                 GroveOp::ReplaceTreeRootKey {
                                                     hash,
                                                     root_key,
@@ -1899,7 +1870,7 @@ impl GroveDb {
                                         }
                                     }
                                 } else {
-                                    let mut ops_on_path: BTreeMap<KeyInfo, MergeQualifiedGroveOp> =
+                                    let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> =
                                         BTreeMap::new();
                                     ops_on_path.insert(
                                         key.clone(),
@@ -1907,13 +1878,12 @@ impl GroveDb {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
                                             sum: sum_value,
-                                        }
-                                        .into(),
+                                        },
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
-                                let mut ops_on_path: BTreeMap<KeyInfo, MergeQualifiedGroveOp> =
+                                let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> =
                                     BTreeMap::new();
                                 ops_on_path.insert(
                                     key.clone(),
@@ -1926,7 +1896,7 @@ impl GroveDb {
                                 );
                                 let mut ops_on_level: BTreeMap<
                                     KeyInfoPath,
-                                    BTreeMap<KeyInfo, MergeQualifiedGroveOp>,
+                                    BTreeMap<KeyInfo, GroveOp>,
                                 > = BTreeMap::new();
                                 ops_on_level.insert(KeyInfoPath(parent_path.to_vec()), ops_on_path);
                                 ops_by_level_paths.insert(current_level - 1, ops_on_level);
@@ -1949,7 +1919,7 @@ impl GroveDb {
     /// Then return the list of leftover operations
     fn apply_body<'db, S: StorageContext<'db>>(
         &self,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
             &StorageCost,
@@ -1994,7 +1964,7 @@ impl GroveDb {
     fn continue_partial_apply_body<'db, S: StorageContext<'db>>(
         &self,
         previous_leftover_operations: Option<OpsByLevelPath>,
-        additional_ops: Vec<GroveDbOp>,
+        additional_ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
             &StorageCost,
@@ -2040,7 +2010,7 @@ impl GroveDb {
     /// Applies operations on GroveDB without batching
     pub fn apply_operations_without_batching(
         &self,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         options: Option<BatchApplyOptions>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -2094,7 +2064,7 @@ impl GroveDb {
     /// Applies batch on GroveDB
     pub fn apply_batch(
         &self,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -2121,12 +2091,12 @@ impl GroveDb {
     /// Applies batch on GroveDB
     pub fn apply_partial_batch(
         &self,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         cost_based_add_on_operations: impl FnMut(
             &OperationCost,
             &Option<OpsByLevelPath>,
-        ) -> Result<Vec<GroveDbOp>, Error>,
+        ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -2190,8 +2160,8 @@ impl GroveDb {
                     Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(
                         |_| {
                             Error::InvalidPath(format!(
-                                "could not get key for parent of subtree for batch at path {}",
-                                parent_path.to_vec().into_iter().map(hex::encode).join("/")
+                                "could not get key for parent of subtree for batch at path [{}] for key {}",
+                                parent_path.to_vec().into_iter().map(|v| hex_to_ascii(&v)).join("/"), hex_to_ascii(parent_key)
                             ))
                         }
                     )
@@ -2301,7 +2271,7 @@ impl GroveDb {
     /// Applies batch of operations on GroveDB
     pub fn apply_batch_with_element_flags_update(
         &self,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
             &StorageCost,
@@ -2341,7 +2311,7 @@ impl GroveDb {
             .unwrap_or(true);
 
         if check_batch_operation_consistency {
-            let consistency_result = GroveDbOp::verify_consistency_of_operations(&ops);
+            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -2457,7 +2427,7 @@ impl GroveDb {
     /// If it is not set we default to pausing at the root tree
     pub fn apply_partial_batch_with_element_flags_update(
         &self,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         mut update_element_flags_function: impl FnMut(
             &StorageCost,
@@ -2475,7 +2445,7 @@ impl GroveDb {
         mut add_on_operations: impl FnMut(
             &OperationCost,
             &Option<OpsByLevelPath>,
-        ) -> Result<Vec<GroveDbOp>, Error>,
+        ) -> Result<Vec<QualifiedGroveDbOp>, Error>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -2505,7 +2475,7 @@ impl GroveDb {
             !batch_apply_options.disable_operation_consistency_check;
 
         if check_batch_operation_consistency {
-            let consistency_result = GroveDbOp::verify_consistency_of_operations(&ops);
+            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -2706,7 +2676,7 @@ impl GroveDb {
     /// ops
     pub fn estimated_case_operations_for_batch(
         estimated_costs_type: EstimatedCostsType,
-        ops: Vec<GroveDbOp>,
+        ops: Vec<QualifiedGroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         update_element_flags_function: impl FnMut(
             &StorageCost,
@@ -2807,28 +2777,28 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
                 b"key2".to_vec(),
                 element2.clone(),
@@ -2888,12 +2858,12 @@ mod tests {
 
         // No two operations should be the same
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"a".to_vec()],
                 b"b".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"a".to_vec()],
                 b"b".to_vec(),
                 Element::empty_tree(),
@@ -2908,12 +2878,12 @@ mod tests {
 
         // Can't perform 2 or more operations on the same node
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"a".to_vec()],
                 b"b".to_vec(),
                 Element::new_item(vec![1]),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"a".to_vec()],
                 b"b".to_vec(),
                 Element::empty_tree(),
@@ -2928,12 +2898,12 @@ mod tests {
 
         // Can't insert under a deleted path
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"b".to_vec(),
                 Element::new_item(vec![1]),
             ),
-            GroveDbOp::delete_op(vec![], TEST_LEAF.to_vec()),
+            QualifiedGroveDbOp::delete_op(vec![], TEST_LEAF.to_vec()),
         ];
         assert!(matches!(
             db.apply_batch(ops, None, None, grove_version).unwrap(),
@@ -2944,12 +2914,12 @@ mod tests {
 
         // Should allow invalid operations pass when disable option is set to true
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"b".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"b".to_vec(),
                 Element::empty_tree(),
@@ -2994,28 +2964,28 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
                 b"key2".to_vec(),
                 element2.clone(),
@@ -3093,28 +3063,28 @@ mod tests {
         let tx = db.start_transaction();
         // let's start by inserting a tree structure
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(vec![], b"1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"1".to_vec()],
                 b"my_contract".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"1".to_vec(), b"my_contract".to_vec()],
                 b"0".to_vec(),
                 Element::new_item(b"this is the contract".to_vec()),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"1".to_vec(), b"my_contract".to_vec()],
                 b"1".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"1".to_vec(), b"my_contract".to_vec(), b"1".to_vec()],
                 b"person".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3124,7 +3094,7 @@ mod tests {
                 b"0".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3153,7 +3123,7 @@ mod tests {
 
         // now let's add an item
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3167,7 +3137,7 @@ mod tests {
                     some_element_flags.clone(),
                 ),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3178,7 +3148,7 @@ mod tests {
                 b"my apples are safe".to_vec(),
                 Element::empty_tree_with_flags(some_element_flags.clone()),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3190,7 +3160,7 @@ mod tests {
                 b"0".to_vec(),
                 Element::empty_tree_with_flags(some_element_flags.clone()),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3227,7 +3197,7 @@ mod tests {
 
         // now let's add an item
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3238,7 +3208,7 @@ mod tests {
                 b"wisdom".to_vec(),
                 Element::new_item_with_flags(b"Wisdom Ogwu".to_vec(), some_element_flags.clone()),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3249,7 +3219,7 @@ mod tests {
                 b"canteloupe!".to_vec(),
                 Element::empty_tree_with_flags(some_element_flags.clone()),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3261,7 +3231,7 @@ mod tests {
                 b"0".to_vec(),
                 Element::empty_tree_with_flags(some_element_flags.clone()),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     b"1".to_vec(),
                     b"my_contract".to_vec(),
@@ -3302,60 +3272,60 @@ mod tests {
         .expect("successful batch apply");
     }
 
-    fn grove_db_ops_for_contract_insert() -> Vec<GroveDbOp> {
+    fn grove_db_ops_for_contract_insert() -> Vec<QualifiedGroveDbOp> {
         let mut grove_db_ops = vec![];
 
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"contract".to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec()],
             [0u8].to_vec(),
             Element::new_item(b"serialized_contract".to_vec()),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec()],
             [1u8].to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec()],
             b"domain".to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
             [0u8].to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
             b"normalized_domain_label".to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
             b"unique_records".to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec(), b"domain".to_vec()],
             b"alias_records".to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec()],
             b"preorder".to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec(), b"preorder".to_vec()],
             [0u8].to_vec(),
             Element::empty_tree(),
         ));
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec(), [1u8].to_vec(), b"preorder".to_vec()],
             b"salted_domain".to_vec(),
             Element::empty_tree(),
@@ -3364,10 +3334,10 @@ mod tests {
         grove_db_ops
     }
 
-    fn grove_db_ops_for_contract_document_insert() -> Vec<GroveDbOp> {
+    fn grove_db_ops_for_contract_document_insert() -> Vec<QualifiedGroveDbOp> {
         let mut grove_db_ops = vec![];
 
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 b"contract".to_vec(),
                 [1u8].to_vec(),
@@ -3378,7 +3348,7 @@ mod tests {
             Element::new_item(b"serialized_domain".to_vec()),
         ));
 
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 b"contract".to_vec(),
                 [1u8].to_vec(),
@@ -3389,7 +3359,7 @@ mod tests {
             Element::empty_tree(),
         ));
 
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 b"contract".to_vec(),
                 [1u8].to_vec(),
@@ -3401,7 +3371,7 @@ mod tests {
             Element::empty_tree(),
         ));
 
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 b"contract".to_vec(),
                 [1u8].to_vec(),
@@ -3414,7 +3384,7 @@ mod tests {
             Element::empty_tree(),
         ));
 
-        grove_db_ops.push(GroveDbOp::insert_or_replace_op(
+        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 b"contract".to_vec(),
                 [1u8].to_vec(),
@@ -3537,13 +3507,13 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element,
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
@@ -3565,23 +3535,23 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
                 b"key2".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element,
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
@@ -3629,17 +3599,17 @@ mod tests {
         .expect("cannot insert a subtree");
 
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element,
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::delete_op(vec![b"key1".to_vec()], b"key2".to_vec()),
+            QualifiedGroveDbOp::delete_op(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
         assert!(db
             .apply_batch(ops, None, None, grove_version)
@@ -3653,23 +3623,23 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element,
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::delete_op(vec![b"key1".to_vec()], b"key2".to_vec()),
+            QualifiedGroveDbOp::delete_op(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
@@ -3712,7 +3682,7 @@ mod tests {
         .expect("cannot insert value");
 
         // Insertion into scalar is invalid
-        let ops = vec![GroveDbOp::insert_or_replace_op(
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"invalid".to_vec()],
             b"key1".to_vec(),
             element.clone(),
@@ -3723,7 +3693,7 @@ mod tests {
             .is_err());
 
         // Insertion into a tree is correct
-        let ops = vec![GroveDbOp::insert_or_replace_op(
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"valid".to_vec()],
             b"key1".to_vec(),
             element.clone(),
@@ -3768,8 +3738,8 @@ mod tests {
 
         // TEST_LEAF can not be overwritten
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(vec![], TEST_LEAF.to_vec(), element2),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(vec![], TEST_LEAF.to_vec(), element2),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec(), b"key_subtree".to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -3795,8 +3765,8 @@ mod tests {
 
         // TEST_LEAF will be deleted so you can not insert underneath it
         let ops = vec![
-            GroveDbOp::delete_op(vec![], TEST_LEAF.to_vec()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::delete_op(vec![], TEST_LEAF.to_vec()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -3811,8 +3781,8 @@ mod tests {
         // We are testing with the batch apply option
         // validate_tree_insertion_does_not_override set to true
         let ops = vec![
-            GroveDbOp::delete_op(vec![], TEST_LEAF.to_vec()),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::delete_op(vec![], TEST_LEAF.to_vec()),
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -3842,12 +3812,12 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![],
                 TEST_LEAF.to_vec(),
                 Element::new_item(b"ayy".to_vec()),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -3898,7 +3868,7 @@ mod tests {
         )
         .unwrap()
         .expect("cannot insert an item");
-        let ops = vec![GroveDbOp::insert_or_replace_op(
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
             Element::new_item(b"ayy2".to_vec()),
@@ -3962,27 +3932,27 @@ mod tests {
         let element2 = Element::new_item(b"ayy2".to_vec());
 
         let ops = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key".to_vec(),
                 element2.clone(),
             ),
-            GroveDbOp::delete_op(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
+            QualifiedGroveDbOp::delete_op(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
         ];
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
@@ -4068,7 +4038,7 @@ mod tests {
         }
 
         let element = Element::new_item(b"ayy".to_vec());
-        let batch = vec![GroveDbOp::insert_or_replace_op(
+        let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
             acc_path.clone(),
             b"key".to_vec(),
             element.clone(),
@@ -4077,7 +4047,7 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
 
-        let batch = vec![GroveDbOp::insert_or_replace_op(
+        let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
             acc_path,
             b"key".to_vec(),
             element,
@@ -4110,7 +4080,7 @@ mod tests {
         let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
 
         let element = Element::new_item(b"ayy".to_vec());
-        let batch = vec![GroveDbOp::insert_or_replace_op(
+        let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
             acc_path.clone(),
             b"key".to_vec(),
             element,
@@ -4130,7 +4100,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         // insert reference that points to non-existent item
         let db = make_test_grovedb(grove_version);
-        let batch = vec![GroveDbOp::insert_or_replace_op(
+        let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
             Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
@@ -4147,7 +4117,7 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let elem = Element::new_item(b"ayy".to_vec());
         let batch = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
@@ -4155,7 +4125,7 @@ mod tests {
                     b"invalid_path".to_vec(),
                 ])),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"invalid_path".to_vec(),
                 elem.clone(),
@@ -4188,7 +4158,7 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let elem = Element::new_item(b"ayy".to_vec());
         let batch = vec![
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key2".to_vec(),
                 Element::new_reference_with_hops(
@@ -4199,7 +4169,7 @@ mod tests {
                     Some(1),
                 ),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference_with_hops(
@@ -4210,7 +4180,7 @@ mod tests {
                     Some(1),
                 ),
             ),
-            GroveDbOp::insert_or_replace_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![TEST_LEAF.to_vec()],
                 b"invalid_path".to_vec(),
                 elem,
