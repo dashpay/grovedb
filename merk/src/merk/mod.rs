@@ -41,6 +41,7 @@ pub mod open;
 pub mod prove;
 pub mod restore;
 pub mod source;
+pub mod cow_like;
 
 use std::{
     cell::Cell,

@@ -65,6 +65,7 @@ use grovedb_version::{
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
+use grovedb_merk::merk::cow_like::CowLikeMerk;
 use grovedb_merk::tree::kv::KV;
 use grovedb_merk::tree::TreeNode;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
@@ -790,6 +791,9 @@ where
                 .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
+            self
+                .merks.insert(reference_path.to_vec(), merk);
+
             let referenced_element_value_hash = cost_return_on_error!(
                 &mut cost,
                 referenced_element_value_hash_opt
@@ -899,6 +903,10 @@ where
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
 
+        let is_sum_tree = merk.is_sum_tree;
+
+        self.merks.insert(reference_path.to_vec(), merk);
+
         if let Some(referenced_element) = referenced_element {
             let element = cost_return_on_error_no_add!(
             &cost,
@@ -907,7 +915,7 @@ where
             })
         );
 
-            Ok(Some((element, referenced_element, merk.is_sum_tree))).wrap_with_cost(cost)
+            Ok(Some((element, referenced_element, is_sum_tree))).wrap_with_cost(cost)
         } else {
             Ok(None).wrap_with_cost(cost)
         }
@@ -1588,17 +1596,11 @@ where
                 &[],
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
-                    println!(
-                        "getting specialized cost key: {}, value {}",
-                        key.len(),
-                        value.len()
-                    );
                     Element::specialized_costs_for_key_value(key, value, is_sum_tree, grove_version)
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
                 Some(&Element::value_defined_cost_for_serialized_value),
                 &mut |storage_costs, old_value, new_value| {
-                    println!("updating to new value");
                     // todo: change the flags without full deserialization
                     let old_element = Element::deserialize(old_value.as_slice(), grove_version)
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
