@@ -590,6 +590,8 @@ mod tests {
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
     };
+    use crate::batch::GroveDbOp;
+    use crate::tests::{make_empty_grovedb, TempGroveDb};
 
     #[test]
     fn test_same_path_different_query_merge() {
