@@ -158,8 +158,7 @@ impl TreeNode {
         self.inner.kv.feature_type.is_sum_feature()
     }
 
-    pub fn storage_cost_for_update(        current_value_byte_cost: u32,
-                                           old_cost: u32) -> StorageCost {
+    pub fn storage_cost_for_update(current_value_byte_cost: u32, old_cost: u32) -> StorageCost {
         let mut value_storage_cost = StorageCost {
             ..Default::default()
         };

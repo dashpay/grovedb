@@ -16,7 +16,7 @@ use nohash_hasher::IntMap;
 
 #[cfg(feature = "full")]
 use crate::{
-    batch::{key_info::KeyInfo, QualifiedGroveDbOp, GroveOp, KeyInfoPath, TreeCache},
+    batch::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache},
     Element, ElementFlags, Error,
 };
 
@@ -120,7 +120,10 @@ where
             ops_by_qualified_paths.insert(path.to_path_consume(), op.op.clone());
             let op_cost = OperationCost::default();
             let op_result = match &op.op {
-                GroveOp::InsertOnly { element } | GroveOp::InsertOrReplace { element } |  GroveOp::Replace { element } | GroveOp::Patch { element, .. } => {
+                GroveOp::InsertOnly { element }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => {
                     if let Element::Tree(..) = element {
                         cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false));
                     } else if let Element::SumTree(..) = element {
@@ -128,9 +131,10 @@ where
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => {
-                    Ok(())
-                }
+                GroveOp::RefreshReference { .. }
+                | GroveOp::Delete
+                | GroveOp::DeleteTree
+                | GroveOp::DeleteSumTree => Ok(()),
                 GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
                     Err(Error::InvalidBatchOperation(
                         "replace and insert tree hash are internal operations only",
@@ -171,6 +175,6 @@ where
             split_removal_bytes: split_remove_bytes_function,
             last_level: current_last_level,
         })
-            .wrap_with_cost(cost)
+        .wrap_with_cost(cost)
     }
 }

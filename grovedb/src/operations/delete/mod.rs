@@ -33,7 +33,7 @@ use grovedb_version::{
 
 #[cfg(feature = "full")]
 use crate::{
-    batch::{QualifiedGroveDbOp, GroveOp},
+    batch::{GroveOp, QualifiedGroveDbOp},
     util::storage_context_with_parent_optional_tx,
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
@@ -622,7 +622,11 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(QualifiedGroveDbOp::delete_op(path.to_vec(), key.to_vec()))).wrap_with_cost(cost)
+                Ok(Some(QualifiedGroveDbOp::delete_op(
+                    path.to_vec(),
+                    key.to_vec(),
+                )))
+                .wrap_with_cost(cost)
             }
         }
     }

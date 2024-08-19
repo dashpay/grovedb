@@ -17,7 +17,7 @@ use grovedb_version::{
 use intmap::IntMap;
 
 use crate::{
-    batch::{key_info::KeyInfo, QualifiedGroveDbOp, KeyInfoPath},
+    batch::{key_info::KeyInfo, KeyInfoPath, QualifiedGroveDbOp},
     Error, GroveDb,
 };
 
@@ -188,6 +188,10 @@ impl GroveDb {
             estimated_key_element_size.0 + HASH_LENGTH_U32,
         );
 
-        Ok(QualifiedGroveDbOp::delete_estimated_op(path.clone(), key.clone())).wrap_with_cost(cost)
+        Ok(QualifiedGroveDbOp::delete_estimated_op(
+            path.clone(),
+            key.clone(),
+        ))
+        .wrap_with_cost(cost)
     }
 }

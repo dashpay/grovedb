@@ -25,8 +25,8 @@ use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, QualifiedGroveDbOp, GroveOp, KeyInfoPath,
-        TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
+        QualifiedGroveDbOp, TreeCache,
     },
     Error, GroveDb,
 };
@@ -67,13 +67,15 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => GroveDb::worst_case_merk_insert_element(
-                key,
-                element,
-                is_in_parent_sum_tree,
-                propagate_if_input(),
-                grove_version,
-            ),
+            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
+                GroveDb::worst_case_merk_insert_element(
+                    key,
+                    element,
+                    is_in_parent_sum_tree,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
             GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
@@ -275,8 +277,8 @@ mod tests {
 
     use crate::{
         batch::{
-            estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo, QualifiedGroveDbOp,
-            KeyInfoPath,
+            estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo,
+            KeyInfoPath, QualifiedGroveDbOp,
         },
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,

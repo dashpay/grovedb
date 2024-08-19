@@ -21,10 +21,10 @@ mod tests {
 
     use crate::{
         batch::QualifiedGroveDbOp,
+        reference_path::ReferencePathType::SiblingReference,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
     };
-    use crate::reference_path::ReferencePathType::SiblingReference;
 
     #[test]
     fn test_batch_one_insert_costs_match_non_batch() {
@@ -872,8 +872,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert tree");
+        .unwrap()
+        .expect("expected to insert tree");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -883,8 +883,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert item");
+        .unwrap()
+        .expect("expected to insert item");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -894,19 +894,25 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert item");
+        .unwrap()
+        .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
-            vec![b"tree".to_vec()],
-            b"key1".to_vec(),
-            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
-        ), QualifiedGroveDbOp::replace_op(
-            vec![b"tree".to_vec()],
-            b"keyref".to_vec(),
-            Element::new_reference_with_flags(SiblingReference(b"key1".to_vec()), Some(vec![0, 1])),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::replace_op(
+                vec![b"tree".to_vec()],
+                b"keyref".to_vec(),
+                Element::new_reference_with_flags(
+                    SiblingReference(b"key1".to_vec()),
+                    Some(vec![0, 1]),
+                ),
+            ),
+        ];
 
         let cost = db
             .apply_batch_with_element_flags_update(
@@ -990,8 +996,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert tree");
+        .unwrap()
+        .expect("expected to insert tree");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -1001,19 +1007,25 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert item");
+        .unwrap()
+        .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
-            vec![b"tree".to_vec()],
-            b"key1".to_vec(),
-            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
-        ), QualifiedGroveDbOp::insert_only_op(
-            vec![b"tree".to_vec()],
-            b"keyref".to_vec(),
-            Element::new_reference_with_flags(SiblingReference(b"key1".to_vec()), Some(vec![0, 1])),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"tree".to_vec()],
+                b"keyref".to_vec(),
+                Element::new_reference_with_flags(
+                    SiblingReference(b"key1".to_vec()),
+                    Some(vec![0, 1]),
+                ),
+            ),
+        ];
 
         let cost = db
             .apply_batch_with_element_flags_update(
@@ -1252,8 +1264,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert tree");
+        .unwrap()
+        .expect("expected to insert tree");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -1263,8 +1275,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert item");
+        .unwrap()
+        .expect("expected to insert item");
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -1274,20 +1286,25 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert item");
-
+        .unwrap()
+        .expect("expected to insert item");
 
         // We are adding 2 bytes
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
-            vec![b"tree".to_vec()],
-            b"key1".to_vec(),
-            Element::new_item_with_flags(b"value".to_vec(), Some(vec![0, 1])),
-        ), QualifiedGroveDbOp::replace_op(
-            vec![b"tree".to_vec()],
-            b"keyref".to_vec(),
-            Element::new_reference_with_flags(SiblingReference(b"key1".to_vec()), Some(vec![0, 1])),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value".to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::replace_op(
+                vec![b"tree".to_vec()],
+                b"keyref".to_vec(),
+                Element::new_reference_with_flags(
+                    SiblingReference(b"key1".to_vec()),
+                    Some(vec![0, 1]),
+                ),
+            ),
+        ];
 
         let cost = db
             .apply_batch_with_element_flags_update(
@@ -1443,33 +1460,40 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_cost_right_above_value_required_cost_of_2_with_refresh_reference() {
+    fn test_batch_root_one_update_cost_right_above_value_required_cost_of_2_with_refresh_reference()
+    {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::new_item_with_flags([0u8; 56].to_vec(), Some(vec![0, 0])),
-        ), QualifiedGroveDbOp::insert_or_replace_op(
-            vec![],
-            b"keyref".to_vec(),
-            Element::new_reference(SiblingReference(b"key1".to_vec())),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::new_item_with_flags([0u8; 56].to_vec(), Some(vec![0, 0])),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"keyref".to_vec(),
+                Element::new_reference(SiblingReference(b"key1".to_vec())),
+            ),
+        ];
 
         let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         // We are adding 2 bytes
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::new_item_with_flags([0u8; 57].to_vec(), Some(vec![0, 1])),
-        ), QualifiedGroveDbOp::replace_op(
-            vec![],
-            b"keyref".to_vec(),
-            Element::new_reference(SiblingReference(b"key1".to_vec())),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::new_item_with_flags([0u8; 57].to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::replace_op(
+                vec![],
+                b"keyref".to_vec(),
+                Element::new_reference(SiblingReference(b"key1".to_vec())),
+            ),
+        ];
 
         let cost = db
             .apply_batch_with_element_flags_update(
@@ -1537,7 +1561,8 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_cost_right_above_value_required_cost_of_2_with_insert_new_reference() {
+    fn test_batch_root_one_update_cost_right_above_value_required_cost_of_2_with_insert_new_reference(
+    ) {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -1551,15 +1576,18 @@ mod tests {
         let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
         // We are adding 2 bytes
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::new_item_with_flags([0u8; 57].to_vec(), Some(vec![0, 1])),
-        ), QualifiedGroveDbOp::insert_only_op(
-            vec![],
-            b"keyref".to_vec(),
-            Element::new_reference(SiblingReference(b"key1".to_vec())),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::new_item_with_flags([0u8; 57].to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![],
+                b"keyref".to_vec(),
+                Element::new_reference(SiblingReference(b"key1".to_vec())),
+            ),
+        ];
 
         let cost = db
             .apply_batch_with_element_flags_update(

@@ -26,8 +26,8 @@ use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, QualifiedGroveDbOp, GroveOp, KeyInfoPath,
-        TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
+        QualifiedGroveDbOp, TreeCache,
     },
     Error, GroveDb,
 };
@@ -70,13 +70,15 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => GroveDb::average_case_merk_insert_element(
-                key,
-                element,
-                in_tree_using_sums,
-                propagate_if_input(),
-                grove_version,
-            ),
+            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
+                GroveDb::average_case_merk_insert_element(
+                    key,
+                    element,
+                    in_tree_using_sums,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
             GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
@@ -247,8 +249,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op
-                    .average_case_cost(&key, layer_element_estimates, false, grove_version)
+                op.average_case_cost(&key, layer_element_estimates, false, grove_version)
             );
         }
 
@@ -310,7 +311,7 @@ mod tests {
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo,
-            QualifiedGroveDbOp, KeyInfoPath,
+            KeyInfoPath, QualifiedGroveDbOp,
         },
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,

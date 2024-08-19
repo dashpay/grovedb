@@ -38,8 +38,8 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
-use rand::prelude::*;
 use grovedb_version::version::GroveVersion;
+use rand::prelude::*;
 
 /// 1 million gets in 2k batches
 pub fn get(c: &mut Criterion) {

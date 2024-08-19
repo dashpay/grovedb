@@ -3,14 +3,17 @@
 #[cfg(feature = "full")]
 mod tests {
     use std::{ops::Add, option::Option::None};
-    use integer_encoding::VarInt;
+
     use grovedb_costs::{
-        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+        storage_cost::{
+            removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
+            transition::OperationStorageTransitionType,
+            StorageCost,
+        },
         OperationCost,
     };
-    use grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-    use grovedb_costs::storage_cost::transition::OperationStorageTransitionType;
     use grovedb_version::version::GroveVersion;
+    use integer_encoding::VarInt;
 
     use crate::{
         batch::QualifiedGroveDbOp,
@@ -48,8 +51,16 @@ mod tests {
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2);
         tx.rollback().expect("expected to rollback");
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key2".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
         ];
         let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
         assert_eq!(
@@ -99,7 +110,11 @@ mod tests {
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2).add(non_batch_cost_3);
         tx.rollback().expect("expected to rollback");
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![],
                 b"key2".to_vec(),
@@ -175,7 +190,11 @@ mod tests {
             .add(non_batch_cost_4);
         tx.rollback().expect("expected to rollback");
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
@@ -214,8 +233,16 @@ mod tests {
         let tx = db.start_transaction();
 
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key2".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
         ];
         let cost_result = db.apply_batch(ops, None, Some(&tx), grove_version);
         cost_result.value.expect("expected to execute batch");
@@ -270,7 +297,11 @@ mod tests {
         let tx = db.start_transaction();
 
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
@@ -338,23 +369,30 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("expected to insert tree");
+        .unwrap()
+        .expect("expected to insert tree");
 
         // We are adding 2 bytes
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
-            vec![b"tree".to_vec()],
-            b"tree2".to_vec(),
-            Element::empty_tree(),
-        ), QualifiedGroveDbOp::insert_or_replace_op(
-            vec![b"tree".to_vec(), b"tree2".to_vec()],
-            b"key1".to_vec(),
-            Element::new_item_with_flags(b"value".to_vec(), Some(vec![0, 1])),
-        ), QualifiedGroveDbOp::insert_only_op(
-            vec![b"tree".to_vec(), b"tree2".to_vec()],
-            b"keyref".to_vec(),
-            Element::new_reference_with_flags(SiblingReference(b"key1".to_vec()), Some(vec![0, 1])),
-        )];
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"tree2".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec(), b"tree2".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value".to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"tree".to_vec(), b"tree2".to_vec()],
+                b"keyref".to_vec(),
+                Element::new_reference_with_flags(
+                    SiblingReference(b"key1".to_vec()),
+                    Some(vec![0, 1]),
+                ),
+            ),
+        ];
 
         let cost = db
             .apply_batch_with_element_flags_update(
@@ -389,7 +427,9 @@ mod tests {
                 },
                 Some(&tx),
                 grove_version,
-            ).cost_as_result().expect("expect no error");
+            )
+            .cost_as_result()
+            .expect("expect no error");
 
         // Hash node calls
 

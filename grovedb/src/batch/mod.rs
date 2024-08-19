@@ -48,8 +48,11 @@ use grovedb_costs::{
 };
 use grovedb_merk::{
     tree::{
-        kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-        value_hash, NULL_HASH,
+        kv::{
+            ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+            KV,
+        },
+        value_hash, TreeNode, NULL_HASH,
     },
     CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndSum,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
@@ -65,9 +68,6 @@ use grovedb_version::{
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
-use grovedb_merk::merk::cow_like::CowLikeMerk;
-use grovedb_merk::tree::kv::KV;
-use grovedb_merk::tree::TreeNode;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 pub use options::BatchApplyOptions;
 
@@ -77,13 +77,12 @@ use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
     element::{MaxReferenceHop, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
-    operations::get::MAX_REFERENCE_HOPS,
+    operations::{get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
-use crate::operations::proof::util::hex_to_ascii;
 
 /// Operations
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -548,7 +547,9 @@ impl QualifiedGroveDbOp {
     }
 
     /// Verify consistency of operations
-    pub fn verify_consistency_of_operations(ops: &[QualifiedGroveDbOp]) -> GroveDbOpConsistencyResults {
+    pub fn verify_consistency_of_operations(
+        ops: &[QualifiedGroveDbOp],
+    ) -> GroveDbOpConsistencyResults {
         let ops_len = ops.len();
         // operations should not have any duplicates
         let mut repeated_ops = vec![];
@@ -654,7 +655,7 @@ pub struct GroveDbOpConsistencyResults {
     repeated_ops: Vec<(QualifiedGroveDbOp, u16)>, // the u16 is count
     same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<GroveOp>)>,
     insert_ops_below_deleted_ops: Vec<(QualifiedGroveDbOp, Vec<QualifiedGroveDbOp>)>, /* the deleted op first,
-                                                                     * then inserts under */
+                                                                                       * then inserts under */
 }
 
 impl GroveDbOpConsistencyResults {
@@ -750,7 +751,6 @@ where
     ///   tree being updated.
     fn process_reference<'a, G, SR>(
         &'a mut self,
-        temp_merks: BTreeMap<&Vec<Vec<u8>>, &Merk<S>>,
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, GroveOp>,
         recursions_allowed: u8,
@@ -769,16 +769,14 @@ where
     {
         let mut cost = OperationCost::default();
         let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
-        let held_merk = None;
-        if let Some(merk) = temp_merks {
 
-        }
-        let reference_merk_wrapped = self
-            .merks
-            .remove(reference_path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
-            .unwrap_or_else(|| (self.get_merk_fn)(reference_path, false));
-        let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
+        let merk = match self.merks.entry(reference_path.to_vec()) {
+            HashMapEntry::Occupied(o) => o.into_mut(),
+            HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                &mut cost,
+                (self.get_merk_fn)(reference_path, false)
+            )),
+        };
 
         // Here the element being referenced doesn't change in the same batch
         // and the max hop count is 1, meaning it should point directly to the base
@@ -795,9 +793,6 @@ where
                 )
                 .map_err(|e| Error::CorruptedData(e.to_string()))
             );
-
-            self
-                .merks.insert(reference_path.to_vec(), merk);
 
             let referenced_element_value_hash = cost_return_on_error!(
                 &mut cost,
@@ -824,7 +819,6 @@ where
                 path_from_reference_qualified_path_type(referenced_path.clone(), qualified_path)
             );
             self.follow_reference_get_value_hash(
-                temp_merks,
                 path.as_slice(),
                 ops_by_qualified_paths,
                 recursions_allowed - 1,
@@ -838,7 +832,6 @@ where
             // the referenced element as an element further down in the chain might still
             // change in the batch.
             self.process_reference_with_hop_count_greater_than_one(
-                temp_merks,
                 key,
                 reference_path,
                 qualified_path,
@@ -869,9 +862,10 @@ where
     ///
     /// # Returns
     ///
-    /// * `Ok((Element, Vec<u8>, bool))` - Returns the deserialized `Element` and the serialized counterpart
-    ///   if the retrieval and deserialization are successful, wrapped in the associated cost.
-    ///   Also returns if the merk of the element is a sum tree as a bool.
+    /// * `Ok((Element, Vec<u8>, bool))` - Returns the deserialized `Element`
+    ///   and the serialized counterpart if the retrieval and deserialization
+    ///   are successful, wrapped in the associated cost. Also returns if the
+    ///   merk of the element is a sum tree as a bool.
     /// * `Err(Error)` - Returns an error if any issue occurs during the
     ///   retrieval or deserialization of the referenced element.
     ///
@@ -891,13 +885,13 @@ where
     ) -> CostResult<Option<(Element, Vec<u8>, bool)>, Error> {
         let mut cost = OperationCost::default();
 
-        let reference_merk_wrapped = self
-            .merks
-            .remove(reference_path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
-            .unwrap_or_else(|| (self.get_merk_fn)(reference_path, false));
-
-        let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
+        let merk = match self.merks.entry(reference_path.to_vec()) {
+            HashMapEntry::Occupied(o) => o.into_mut(),
+            HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                &mut cost,
+                (self.get_merk_fn)(reference_path, false)
+            )),
+        };
 
         let referenced_element = cost_return_on_error!(
             &mut cost,
@@ -912,15 +906,13 @@ where
 
         let is_sum_tree = merk.is_sum_tree;
 
-        self.merks.insert(reference_path.to_vec(), merk);
-
         if let Some(referenced_element) = referenced_element {
             let element = cost_return_on_error_no_add!(
-            &cost,
-            Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|_| {
-                Error::CorruptedData(String::from("unable to deserialize element"))
-            })
-        );
+                &cost,
+                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize element"))
+                })
+            );
 
             Ok(Some((element, referenced_element, is_sum_tree))).wrap_with_cost(cost)
         } else {
@@ -977,7 +969,6 @@ where
     ///   tree being updated, which is not allowed.
     fn process_reference_with_hop_count_greater_than_one<'a, G, SR>(
         &'a mut self,
-        parent_tree: &Merk<S>,
         key: &[u8],
         reference_path: &[Vec<u8>],
         qualified_path: &[Vec<u8>],
@@ -997,7 +988,7 @@ where
     {
         let mut cost = OperationCost::default();
 
-        let Some((element, _, _)) = cost_return_on_error!(
+        let Some((element, ..)) = cost_return_on_error!(
             &mut cost,
             self.get_and_deserialize_referenced_element(key, reference_path, grove_version)
         ) else {
@@ -1010,7 +1001,8 @@ where
                 "reference to path:`{}` key:`{}` in batch is missing",
                 reference_string,
                 hex::encode(key)
-            ))).wrap_with_cost(cost);
+            )))
+            .wrap_with_cost(cost);
         };
 
         match element {
@@ -1026,7 +1018,6 @@ where
                     path_from_reference_qualified_path_type(path, qualified_path)
                 );
                 self.follow_reference_get_value_hash(
-                    &parent_tree,
                     path.as_slice(),
                     ops_by_qualified_paths,
                     recursions_allowed - 1,
@@ -1054,7 +1045,6 @@ where
     /// All these has to be taken into account.
     fn follow_reference_get_value_hash<'a, G, SR>(
         &'a mut self,
-        temp_merks: BTreeMap<&Vec<Vec<u8>>, &Merk<S>>,
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, GroveOp>,
         recursions_allowed: u8,
@@ -1069,7 +1059,6 @@ where
             u32,
             u32,
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
-        S: StorageContext<'db>,
     {
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
@@ -1093,9 +1082,9 @@ where
                     match element {
                         Element::Item(..) | Element::SumItem(..) => {
                             let serialized = cost_return_on_error_no_add!(
-                                        &cost,
-                                        element.serialize(grove_version)
-                                    );
+                                &cost,
+                                element.serialize(grove_version)
+                            );
                             if element.get_flags().is_none() {
                                 // There are no storage flags, we can just hash new element
                                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
@@ -1116,26 +1105,39 @@ where
                                 ) {
                                     let maybe_old_flags = old_element.get_flags_owned();
 
-                                    let old_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(key.len() as u32, old_serialized_element.len() as u32, is_in_sum_tree);
-                                    let new_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(key.len() as u32, serialized.len() as u32, is_in_sum_tree);
+                                    let old_storage_cost =
+                                        KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                                            key.len() as u32,
+                                            old_serialized_element.len() as u32,
+                                            is_in_sum_tree,
+                                        );
+                                    let new_storage_cost =
+                                        KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                                            key.len() as u32,
+                                            serialized.len() as u32,
+                                            is_in_sum_tree,
+                                        );
 
                                     // There are storage flags
-                                    let storage_costs = TreeNode::storage_cost_for_update(new_storage_cost, old_storage_cost);
+                                    let storage_costs = TreeNode::storage_cost_for_update(
+                                        new_storage_cost,
+                                        old_storage_cost,
+                                    );
 
                                     let changed = cost_return_on_error_no_add!(
-                                    &cost,
-                                    (flags_update)(&storage_costs, maybe_old_flags, new_flags)
-                                        .map_err(|e| match e {
-                                            Error::JustInTimeElementFlagsClientError(_) => {
-                                                MerkError::ClientCorruptionError(e.to_string())
-                                                    .into()
-                                            }
-                                            _ => MerkError::ClientCorruptionError(
-                                                "non client error".to_string(),
-                                            )
-                                            .into(),
-                                        })
-                                );
+                                        &cost,
+                                        (flags_update)(&storage_costs, maybe_old_flags, new_flags)
+                                            .map_err(|e| match e {
+                                                Error::JustInTimeElementFlagsClientError(_) => {
+                                                    MerkError::ClientCorruptionError(e.to_string())
+                                                        .into()
+                                                }
+                                                _ => MerkError::ClientCorruptionError(
+                                                    "non client error".to_string(),
+                                                )
+                                                .into(),
+                                            })
+                                    );
                                     if changed {
                                         // There are no storage flags, we can just hash new element
                                         let serialized = cost_return_on_error_no_add!(
@@ -1168,7 +1170,6 @@ where
                                 )
                             );
                             self.follow_reference_get_value_hash(
-                                parent_tree_at_path,
                                 path.as_slice(),
                                 ops_by_qualified_paths,
                                 recursions_allowed - 1,
@@ -1198,7 +1199,6 @@ where
                             path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
                         self.follow_reference_get_value_hash(
-                            parent_tree_at_path,
                             path.as_slice(),
                             ops_by_qualified_paths,
                             recursions_allowed - 1,
@@ -1224,7 +1224,6 @@ where
                         None
                     };
                     self.process_reference(
-                        &parent_tree_at_path,
                         qualified_path,
                         ops_by_qualified_paths,
                         recursions_allowed,
@@ -1243,7 +1242,6 @@ where
             }
         } else {
             self.process_reference(
-                parent_tree_at_path,
                 qualified_path,
                 ops_by_qualified_paths,
                 recursions_allowed,
@@ -1289,12 +1287,15 @@ where
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let base_path = vec![];
-        let merk_wrapped = self
-            .merks
-            .remove(&base_path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
-            .unwrap_or_else(|| (self.get_merk_fn)(&[], false));
-        let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
+
+        let merk = match self.merks.entry(base_path.clone()) {
+            HashMapEntry::Occupied(o) => o.into_mut(),
+            HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                &mut cost,
+                (self.get_merk_fn)(&base_path, false)
+            )),
+        };
+
         merk.set_base_root_key(root_key)
             .add_cost(cost)
             .map_err(|_| Error::InternalError("unable to set base root key".to_string()))
@@ -1315,13 +1316,17 @@ where
         let p = path.to_path();
         let path = &p;
 
-        let merk_wrapped = self
-            .merks
-            .remove(path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
-            .unwrap_or_else(|| (self.get_merk_fn)(path, false));
-        let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
-        let is_sum_tree = merk.is_sum_tree;
+        // This also populates Merk trees cache
+        let is_sum_tree = {
+            let merk = match self.merks.entry(path.to_vec()) {
+                HashMapEntry::Occupied(o) => o.into_mut(),
+                HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                    &mut cost,
+                    (self.get_merk_fn)(path, false)
+                )),
+            };
+            merk.is_sum_tree
+        };
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
@@ -1356,7 +1361,6 @@ where
                         let referenced_element_value_hash = cost_return_on_error!(
                             &mut cost,
                             self.follow_reference_get_value_hash(
-                                &merk,
                                 path_reference.as_slice(),
                                 ops_by_qualified_paths,
                                 element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
@@ -1404,10 +1408,12 @@ where
                                 .wrap_with_cost(OperationCost::default())
                         );
                         if batch_apply_options.validate_insertion_does_not_override {
+                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
+
                             let inserted = cost_return_on_error!(
                                 &mut cost,
                                 element.insert_if_not_exists_into_batch_operations(
-                                    &mut merk,
+                                    merk,
                                     key_info.get_key(),
                                     &mut batch_operations,
                                     merk_feature_type,
@@ -1445,6 +1451,7 @@ where
                     let element = if trust_refresh_reference {
                         Element::Reference(reference_path_type, max_reference_hop, flags)
                     } else {
+                        let merk = self.merks.get_mut(path).expect("the Merk is cached");
                         let value = cost_return_on_error!(
                             &mut cost,
                             merk.get(
@@ -1501,7 +1508,6 @@ where
                     let referenced_element_value_hash = cost_return_on_error!(
                         &mut cost,
                         self.follow_reference_get_value_hash(
-                            &merk,
                             path_reference.as_slice(),
                             ops_by_qualified_paths,
                             max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
@@ -1564,6 +1570,7 @@ where
                     root_key,
                     sum,
                 } => {
+                    let merk = self.merks.get_mut(path).expect("the Merk is cached");
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
@@ -1606,6 +1613,9 @@ where
                 }
             }
         }
+
+        let merk = self.merks.get_mut(path).expect("the Merk is cached");
+
         cost_return_on_error!(
             &mut cost,
             merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
@@ -1699,8 +1709,7 @@ where
             .root_hash_key_and_sum()
             .add_cost(cost)
             .map_err(Error::MerkError);
-        // We need to reinsert the merk
-        self.merks.insert(path.clone(), merk);
+
         r
     }
 
@@ -1902,8 +1911,7 @@ impl GroveDb {
                                     ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
-                                let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> =
-                                    BTreeMap::new();
+                                let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
                                 ops_on_path.insert(
                                     key.clone(),
                                     GroveOp::ReplaceTreeRootKey {
@@ -2179,8 +2187,14 @@ impl GroveDb {
                     Element::get_from_storage(&parent_storage, parent_key, grove_version).map_err(
                         |_| {
                             Error::InvalidPath(format!(
-                                "could not get key for parent of subtree for batch at path [{}] for key {}",
-                                parent_path.to_vec().into_iter().map(|v| hex_to_ascii(&v)).join("/"), hex_to_ascii(parent_key)
+                                "could not get key for parent of subtree for batch at path [{}] \
+                                 for key {}",
+                                parent_path
+                                    .to_vec()
+                                    .into_iter()
+                                    .map(|v| hex_to_ascii(&v))
+                                    .join("/"),
+                                hex_to_ascii(parent_key)
                             ))
                         }
                     )
@@ -2796,7 +2810,11 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
@@ -2983,7 +3001,11 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
@@ -3526,7 +3548,11 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
@@ -3564,7 +3590,11 @@ mod tests {
                 b"key2".to_vec(),
                 element.clone(),
             ),
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
@@ -3642,7 +3672,11 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),

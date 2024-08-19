@@ -43,7 +43,11 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![QualifiedGroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            b"key1".to_vec(),
+            false,
+        )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()
@@ -146,7 +150,11 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![QualifiedGroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            b"key1".to_vec(),
+            false,
+        )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()
