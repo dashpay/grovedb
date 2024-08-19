@@ -101,6 +101,9 @@ impl Element {
         );
         Self::get_optional_from_storage(storage, key.as_ref(), grove_version).map(|result| {
             let value = result?;
+            if value.is_none() {
+                panic!("here");
+            }
             value.ok_or_else(|| {
                 Error::PathKeyNotFound(format!(
                     "key not found in Merk for get from storage: {}",
