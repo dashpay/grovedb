@@ -750,6 +750,7 @@ where
     ///   tree being updated.
     fn process_reference<'a, G, SR>(
         &'a mut self,
+        temp_merks: BTreeMap<&Vec<Vec<u8>>, &Merk<S>>,
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, GroveOp>,
         recursions_allowed: u8,
@@ -768,6 +769,10 @@ where
     {
         let mut cost = OperationCost::default();
         let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
+        let held_merk = None;
+        if let Some(merk) = temp_merks {
+
+        }
         let reference_merk_wrapped = self
             .merks
             .remove(reference_path)
@@ -819,6 +824,7 @@ where
                 path_from_reference_qualified_path_type(referenced_path.clone(), qualified_path)
             );
             self.follow_reference_get_value_hash(
+                temp_merks,
                 path.as_slice(),
                 ops_by_qualified_paths,
                 recursions_allowed - 1,
@@ -832,6 +838,7 @@ where
             // the referenced element as an element further down in the chain might still
             // change in the batch.
             self.process_reference_with_hop_count_greater_than_one(
+                temp_merks,
                 key,
                 reference_path,
                 qualified_path,
@@ -970,6 +977,7 @@ where
     ///   tree being updated, which is not allowed.
     fn process_reference_with_hop_count_greater_than_one<'a, G, SR>(
         &'a mut self,
+        parent_tree: &Merk<S>,
         key: &[u8],
         reference_path: &[Vec<u8>],
         qualified_path: &[Vec<u8>],
@@ -1018,6 +1026,7 @@ where
                     path_from_reference_qualified_path_type(path, qualified_path)
                 );
                 self.follow_reference_get_value_hash(
+                    &parent_tree,
                     path.as_slice(),
                     ops_by_qualified_paths,
                     recursions_allowed - 1,
@@ -1045,6 +1054,7 @@ where
     /// All these has to be taken into account.
     fn follow_reference_get_value_hash<'a, G, SR>(
         &'a mut self,
+        temp_merks: BTreeMap<&Vec<Vec<u8>>, &Merk<S>>,
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a BTreeMap<Vec<Vec<u8>>, GroveOp>,
         recursions_allowed: u8,
@@ -1059,6 +1069,7 @@ where
             u32,
             u32,
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        S: StorageContext<'db>,
     {
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
@@ -1157,6 +1168,7 @@ where
                                 )
                             );
                             self.follow_reference_get_value_hash(
+                                parent_tree_at_path,
                                 path.as_slice(),
                                 ops_by_qualified_paths,
                                 recursions_allowed - 1,
@@ -1186,6 +1198,7 @@ where
                             path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
                         self.follow_reference_get_value_hash(
+                            parent_tree_at_path,
                             path.as_slice(),
                             ops_by_qualified_paths,
                             recursions_allowed - 1,
@@ -1211,6 +1224,7 @@ where
                         None
                     };
                     self.process_reference(
+                        &parent_tree_at_path,
                         qualified_path,
                         ops_by_qualified_paths,
                         recursions_allowed,
@@ -1229,6 +1243,7 @@ where
             }
         } else {
             self.process_reference(
+                parent_tree_at_path,
                 qualified_path,
                 ops_by_qualified_paths,
                 recursions_allowed,
@@ -1341,6 +1356,7 @@ where
                         let referenced_element_value_hash = cost_return_on_error!(
                             &mut cost,
                             self.follow_reference_get_value_hash(
+                                &merk,
                                 path_reference.as_slice(),
                                 ops_by_qualified_paths,
                                 element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
@@ -1485,6 +1501,7 @@ where
                     let referenced_element_value_hash = cost_return_on_error!(
                         &mut cost,
                         self.follow_reference_get_value_hash(
+                            &merk,
                             path_reference.as_slice(),
                             ops_by_qualified_paths,
                             max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
