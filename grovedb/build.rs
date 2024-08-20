@@ -12,9 +12,11 @@ fn main() {
     let out_dir = PathBuf::from(&env::var_os("OUT_DIR").unwrap());
     let grovedbg_zip_path = out_dir.join("grovedbg.zip");
 
-    #[rustfmt::skip]
     if !grovedbg_zip_path.exists() {
-        let response = reqwest::blocking::get(format!("https://github.com/dashpay/grovedbg/releases/download/{GROVEDBG_VERSION}/grovedbg-{GROVEDBG_VERSION}.zip"))
+        let response = reqwest::blocking::get(format!(
+            "https://github.com/dashpay/grovedbg/releases/download/\
+        {GROVEDBG_VERSION}/grovedbg-{GROVEDBG_VERSION}.zip"
+        ))
         .expect("can't download GroveDBG artifact");
 
         let mut grovedbg_zip = File::create(&grovedbg_zip_path).unwrap();
