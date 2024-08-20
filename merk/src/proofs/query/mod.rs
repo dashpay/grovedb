@@ -74,13 +74,28 @@ impl SubqueryBranch {
     /// Returns the depth of the subquery branch
     /// This depth is how many GroveDB layers down we could query at maximum
     #[inline]
-    pub fn max_depth(&self) -> u32 {
-        let subquery_path_depth = self
-            .subquery_path
-            .as_ref()
-            .map_or(0, |path| path.len() as u32);
-        let subquery_depth = self.subquery.as_ref().map_or(0, |query| query.max_depth());
-        subquery_path_depth + subquery_depth
+    pub fn max_depth(&self) -> Option<u16> {
+        self.max_depth_internal(u8::MAX)
+    }
+
+    /// Returns the depth of the subquery branch
+    /// This depth is how many GroveDB layers down we could query at maximum
+    #[inline]
+    fn max_depth_internal(&self, recursion_limit: u8) -> Option<u16> {
+        if recursion_limit == 0 {
+            return None;
+        }
+        let subquery_path_depth = self.subquery_path.as_ref().map_or(Some(0), |path| {
+            if path.len() > 255 {
+                None
+            } else {
+                Some(path.len() as u16)
+            }
+        })?;
+        let subquery_depth = self.subquery.as_ref().map_or(Some(0), |query| {
+            query.max_depth_internal(recursion_limit - 1)
+        })?;
+        subquery_path_depth.checked_add(subquery_depth)
     }
 }
 
@@ -493,19 +508,29 @@ impl Query {
 
     /// Returns the depth of the subquery branch
     /// This depth is how many GroveDB layers down we could query at maximum
-    pub fn max_depth(&self) -> u32 {
-        let default_subquery_branch_depth = self.default_subquery_branch.max_depth();
+    pub fn max_depth(&self) -> Option<u16> {
+        self.max_depth_internal(u8::MAX)
+    }
+
+    /// Returns the depth of the subquery branch
+    /// This depth is how many GroveDB layers down we could query at maximum
+    pub(crate) fn max_depth_internal(&self, recursion_limit: u8) -> Option<u16> {
+        let default_subquery_branch_depth = self
+            .default_subquery_branch
+            .max_depth_internal(recursion_limit)?;
         let conditional_subquery_branches_max_depth = self
             .conditional_subquery_branches
             .as_ref()
-            .map_or(0, |condition_subqueries| {
-                condition_subqueries
-                    .values()
-                    .map(|conditional_subquery_branch| conditional_subquery_branch.max_depth())
-                    .max()
-                    .unwrap_or_default()
-            });
-        1 + default_subquery_branch_depth.max(conditional_subquery_branches_max_depth)
+            .map_or(Some(0), |condition_subqueries| {
+            condition_subqueries
+                .values()
+                .try_fold(0, |max_depth, conditional_subquery_branch| {
+                    conditional_subquery_branch
+                        .max_depth_internal(recursion_limit)
+                        .map(|depth| max_depth.max(depth))
+                })
+        })?;
+        1u16.checked_add(default_subquery_branch_depth.max(conditional_subquery_branches_max_depth))
     }
 }
 
