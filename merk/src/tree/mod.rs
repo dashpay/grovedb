@@ -158,16 +158,7 @@ impl TreeNode {
         self.inner.kv.feature_type.is_sum_feature()
     }
 
-    /// Compare current value byte cost with old cost and return
-    /// current value byte cost with updated `KeyValueStorageCost`
-    pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(
-        &self,
-        current_value_byte_cost: u32,
-        old_cost: u32,
-    ) -> Result<(u32, KeyValueStorageCost), Error> {
-        let key_storage_cost = StorageCost {
-            ..Default::default()
-        };
+    pub fn storage_cost_for_update(current_value_byte_cost: u32, old_cost: u32) -> StorageCost {
         let mut value_storage_cost = StorageCost {
             ..Default::default()
         };
@@ -190,6 +181,20 @@ impl TreeNode {
                 value_storage_cost.added_bytes += current_value_byte_cost - old_cost;
             }
         }
+        value_storage_cost
+    }
+
+    /// Compare current value byte cost with old cost and return
+    /// current value byte cost with updated `KeyValueStorageCost`
+    pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(
+        &self,
+        current_value_byte_cost: u32,
+        old_cost: u32,
+    ) -> Result<(u32, KeyValueStorageCost), Error> {
+        let key_storage_cost = StorageCost {
+            ..Default::default()
+        };
+        let value_storage_cost = Self::storage_cost_for_update(current_value_byte_cost, old_cost);
 
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost, // the key storage cost is added later

@@ -212,6 +212,7 @@ use tokio::net::ToSocketAddrs;
 use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 #[cfg(feature = "full")]
@@ -899,11 +900,13 @@ impl GroveDb {
     /// Method to visualize hash mismatch after verification
     pub fn visualize_verify_grovedb(
         &self,
+        transaction: TransactionArg,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<String, (String, String, String)>, Error> {
         Ok(self
-            .verify_grovedb(None, verify_references, grove_version)?
+            .verify_grovedb(transaction, verify_references, allow_cache, grove_version)?
             .iter()
             .map(|(path, (root_hash, expected, actual))| {
                 (
@@ -927,6 +930,7 @@ impl GroveDb {
         &self,
         transaction: TransactionArg,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         if let Some(transaction) = transaction {
@@ -944,6 +948,7 @@ impl GroveDb {
                 None,
                 transaction,
                 verify_references,
+                allow_cache,
                 grove_version,
             )
         } else {
@@ -955,6 +960,7 @@ impl GroveDb {
                 &SubtreePath::empty(),
                 None,
                 verify_references,
+                allow_cache,
                 grove_version,
             )
         }
@@ -968,12 +974,12 @@ impl GroveDb {
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
-        let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
@@ -984,15 +990,17 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            allow_cache,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let new_path = path.derive_owned_with_child(key);
                     let new_path_ref = SubtreePath::from(&new_path);
 
@@ -1019,6 +1027,7 @@ impl GroveDb {
                         &new_path_ref,
                         batch,
                         verify_references,
+                        true,
                         grove_version,
                     )?);
                 }
@@ -1026,15 +1035,17 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            allow_cache,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let actual_value_hash = value_hash(&kv_value).unwrap();
                     if actual_value_hash != element_value_hash {
                         issues.insert(
@@ -1053,18 +1064,19 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            allow_cache,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for reference",
+                            hex_to_ascii(&key)
+                        )))?;
 
                     let referenced_value_hash = {
-                        let mut full_path = path_from_reference_path_type(
+                        let full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
@@ -1072,7 +1084,7 @@ impl GroveDb {
                         let item = self
                             .follow_reference(
                                 (full_path.as_slice()).into(),
-                                true,
+                                allow_cache,
                                 None,
                                 grove_version,
                             )
@@ -1106,12 +1118,12 @@ impl GroveDb {
         batch: Option<&'db StorageBatch>,
         transaction: &Transaction,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
-        let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
@@ -1122,15 +1134,17 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            allow_cache,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let new_path = path.derive_owned_with_child(key);
                     let new_path_ref = SubtreePath::from(&new_path);
 
@@ -1159,6 +1173,7 @@ impl GroveDb {
                         batch,
                         transaction,
                         verify_references,
+                        true,
                         grove_version,
                     )?);
                 }
@@ -1166,15 +1181,17 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            allow_cache,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let actual_value_hash = value_hash(&kv_value).unwrap();
                     if actual_value_hash != element_value_hash {
                         issues.insert(
@@ -1193,18 +1210,19 @@ impl GroveDb {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
-                            true,
+                            allow_cache,
                             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                             grove_version,
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            "expected merk to contain value at key".to_string(),
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for reference",
+                            hex_to_ascii(&key)
+                        )))?;
 
                     let referenced_value_hash = {
-                        let mut full_path = path_from_reference_path_type(
+                        let full_path = path_from_reference_path_type(
                             reference_path.clone(),
                             &path.to_vec(),
                             Some(&key),
@@ -1212,7 +1230,7 @@ impl GroveDb {
                         let item = self
                             .follow_reference(
                                 (full_path.as_slice()).into(),
-                                true,
+                                allow_cache,
                                 Some(transaction),
                                 grove_version,
                             )

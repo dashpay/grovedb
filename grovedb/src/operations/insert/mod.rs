@@ -7,7 +7,6 @@ use std::{collections::HashMap, option::Option::None};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::tree::value_hash;
 #[cfg(feature = "full")]
 use grovedb_merk::{tree::NULL_HASH, Merk, MerkOptions};
 use grovedb_path::SubtreePath;

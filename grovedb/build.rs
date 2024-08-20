@@ -14,8 +14,8 @@ fn main() {
 
     if !grovedbg_zip_path.exists() {
         let response = reqwest::blocking::get(format!(
-            "https://github.com/dashpay/grovedbg/releases/download/{GROVEDBG_VERSION}/\
-grovedbg-{GROVEDBG_VERSION}.zip"
+            "https://github.com/dashpay/grovedbg/releases/download/\
+{GROVEDBG_VERSION}/grovedbg-{GROVEDBG_VERSION}.zip"
         ))
         .expect("can't download GroveDBG artifact");
 
