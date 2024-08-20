@@ -212,11 +212,11 @@ use tokio::net::ToSocketAddrs;
 use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 #[cfg(feature = "full")]
 use crate::Error::MerkError;
-use crate::operations::proof::util::hex_to_ascii;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -993,9 +993,11 @@ impl GroveDb {
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            format!("expected merk to contain value at key {} for {}", hex_to_ascii(&key), element.type_str())
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let new_path = path.derive_owned_with_child(key);
                     let new_path_ref = SubtreePath::from(&new_path);
 
@@ -1035,9 +1037,11 @@ impl GroveDb {
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            format!("expected merk to contain value at key {} for {}", hex_to_ascii(&key), element.type_str())
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let actual_value_hash = value_hash(&kv_value).unwrap();
                     if actual_value_hash != element_value_hash {
                         issues.insert(
@@ -1062,9 +1066,10 @@ impl GroveDb {
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            format!("expected merk to contain value at key {} for reference", hex_to_ascii(&key))
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for reference",
+                            hex_to_ascii(&key)
+                        )))?;
 
                     let referenced_value_hash = {
                         let full_path = path_from_reference_path_type(
@@ -1132,9 +1137,11 @@ impl GroveDb {
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            format!("expected merk to contain value at key {} for {}", hex_to_ascii(&key), element.type_str())
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let new_path = path.derive_owned_with_child(key);
                     let new_path_ref = SubtreePath::from(&new_path);
 
@@ -1176,9 +1183,11 @@ impl GroveDb {
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            format!("expected merk to contain value at key {} for {}", hex_to_ascii(&key), element.type_str())
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
                     let actual_value_hash = value_hash(&kv_value).unwrap();
                     if actual_value_hash != element_value_hash {
                         issues.insert(
@@ -1203,9 +1212,10 @@ impl GroveDb {
                         )
                         .unwrap()
                         .map_err(MerkError)?
-                        .ok_or(Error::CorruptedData(
-                            format!("expected merk to contain value at key {} for reference", hex_to_ascii(&key))
-                        ))?;
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for reference",
+                            hex_to_ascii(&key)
+                        )))?;
 
                     let referenced_value_hash = {
                         let full_path = path_from_reference_path_type(
