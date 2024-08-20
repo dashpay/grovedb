@@ -134,7 +134,7 @@ impl PathQuery {
         Self { path, query }
     }
 
-    /// The max depth od the query, this is the maximum layers we could get back
+    /// The max depth of the query, this is the maximum layers we could get back
     /// from grovedb
     pub fn max_depth(&self) -> u32 {
         self.query.query.max_depth()
