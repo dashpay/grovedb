@@ -134,6 +134,14 @@ impl PathQuery {
         Self { path, query }
     }
 
+    /// The max depth of the query, this is the maximum layers we could get back
+    /// from grovedb
+    /// If the max depth can not be calculated we get None
+    /// This would occur if the recursion level was too high
+    pub fn max_depth(&self) -> Option<u16> {
+        self.query.query.max_depth()
+    }
+
     /// Gets the path of all terminal keys
     pub fn terminal_keys(
         &self,
@@ -1634,6 +1642,8 @@ mod tests {
             },
         };
 
+        assert_eq!(path_query.max_depth(), Some(4));
+
         {
             let path = vec![];
             let first = path_query
@@ -1709,5 +1719,38 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn test_max_depth_limit() {
+        /// Creates a `Query` with nested `SubqueryBranch` up to the specified
+        /// depth non-recursively.
+        fn create_non_recursive_query(subquery_depth: usize) -> Query {
+            let mut root_query = Query::new_range_full();
+            let mut current_query = &mut root_query;
+
+            for _ in 0..subquery_depth {
+                let new_query = Query::new_range_full();
+                current_query.default_subquery_branch = SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(Box::new(new_query)),
+                };
+                current_query = current_query
+                    .default_subquery_branch
+                    .subquery
+                    .as_mut()
+                    .unwrap();
+            }
+
+            root_query
+        }
+
+        let query = create_non_recursive_query(100);
+
+        assert_eq!(query.max_depth(), Some(101));
+
+        let query = create_non_recursive_query(500);
+
+        assert_eq!(query.max_depth(), None);
     }
 }
