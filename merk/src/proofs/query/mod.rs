@@ -86,10 +86,11 @@ impl SubqueryBranch {
             return None;
         }
         let subquery_path_depth = self.subquery_path.as_ref().map_or(Some(0), |path| {
-            if path.len() > u16::MAX as usize {
+            let path_len = path.len();
+            if path_len > u16::MAX as usize {
                 None
             } else {
-                Some(path.len() as u16)
+                Some(path_len as u16)
             }
         })?;
         let subquery_depth = self.subquery.as_ref().map_or(Some(0), |query| {
