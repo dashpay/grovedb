@@ -70,6 +70,20 @@ pub struct SubqueryBranch {
     pub subquery: Option<Box<Query>>,
 }
 
+impl SubqueryBranch {
+    /// Returns the depth of the subquery branch
+    /// This depth is how many GroveDB layers down we could query at maximum
+    #[inline]
+    pub fn max_depth(&self) -> u32 {
+        let subquery_path_depth = self
+            .subquery_path
+            .as_ref()
+            .map_or(0, |path| path.len() as u32);
+        let subquery_depth = self.subquery.as_ref().map_or(0, |query| query.max_depth());
+        subquery_path_depth + subquery_depth
+    }
+}
+
 #[cfg(any(feature = "full", feature = "verify"))]
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
@@ -475,6 +489,23 @@ impl Query {
     pub fn has_only_keys(&self) -> bool {
         // checks if all searched for items are keys
         self.items.iter().all(|a| a.is_key())
+    }
+
+    /// Returns the depth of the subquery branch
+    /// This depth is how many GroveDB layers down we could query at maximum
+    pub fn max_depth(&self) -> u32 {
+        let default_subquery_branch_depth = self.default_subquery_branch.max_depth();
+        let conditional_subquery_branches_max_depth = self
+            .conditional_subquery_branches
+            .as_ref()
+            .map_or(0, |condition_subqueries| {
+                condition_subqueries
+                    .values()
+                    .map(|conditional_subquery_branch| conditional_subquery_branch.max_depth())
+                    .max()
+                    .unwrap_or_default()
+            });
+        1 + default_subquery_branch_depth.max(conditional_subquery_branches_max_depth)
     }
 }
 

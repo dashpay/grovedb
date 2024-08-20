@@ -134,6 +134,12 @@ impl PathQuery {
         Self { path, query }
     }
 
+    /// The max depth od the query, this is the maximum layers we could get back
+    /// from grovedb
+    pub fn max_depth(&self) -> u32 {
+        self.query.query.max_depth()
+    }
+
     /// Gets the path of all terminal keys
     pub fn terminal_keys(
         &self,
@@ -1633,6 +1639,8 @@ mod tests {
                 offset: None,
             },
         };
+
+        assert_eq!(path_query.max_depth(), 4);
 
         {
             let path = vec![];
