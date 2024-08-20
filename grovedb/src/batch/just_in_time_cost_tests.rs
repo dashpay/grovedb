@@ -5,13 +5,9 @@
 mod tests {
     use std::option::Option::None;
 
-    use grovedb_costs::{
-        storage_cost::{
-            removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
-            transition::OperationStorageTransitionType,
-            StorageCost,
-        },
-        OperationCost,
+    use grovedb_costs::storage_cost::{
+        removal::StorageRemovedBytes::BasicStorageRemoval,
+        transition::OperationStorageTransitionType,
     };
     use grovedb_version::version::GroveVersion;
     use integer_encoding::VarInt;
@@ -381,7 +377,7 @@ mod tests {
             ),
         ];
 
-        let cost = db
+        let _ = db
             .apply_batch_with_element_flags_update(
                 ops,
                 None,

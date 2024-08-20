@@ -63,7 +63,7 @@ use grovedb_storage::{
     Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion, TryIntoVersioned,
+    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
@@ -652,10 +652,13 @@ impl QualifiedGroveDbOp {
 /// Results of a consistency check on an operation batch
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
-    repeated_ops: Vec<(QualifiedGroveDbOp, u16)>, // the u16 is count
+    /// Repeated Ops, the second u16 element represents the count
+    repeated_ops: Vec<(QualifiedGroveDbOp, u16)>,
+    /// The same path key ops
     same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<GroveOp>)>,
-    insert_ops_below_deleted_ops: Vec<(QualifiedGroveDbOp, Vec<QualifiedGroveDbOp>)>, /* the deleted op first,
-                                                                                       * then inserts under */
+    /// This shows issues when we delete a tree but insert under the deleted
+    /// tree Deleted ops are first, with inserts under them in a tree
+    insert_ops_below_deleted_ops: Vec<(QualifiedGroveDbOp, Vec<QualifiedGroveDbOp>)>,
 }
 
 impl GroveDbOpConsistencyResults {
@@ -1091,18 +1094,21 @@ where
                                 Ok(val_hash).wrap_with_cost(cost)
                             } else {
                                 let mut new_element = element.clone();
-                                let mut new_flags = new_element.get_flags_mut().as_mut().unwrap();
+                                let new_flags = new_element.get_flags_mut().as_mut().unwrap();
 
                                 // it can be unmerged, let's get the value on disk
-                                let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
-                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) = cost_return_on_error!(
+                                let (key, reference_path) = qualified_path.split_last().unwrap();
+                                let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
                                     self.get_and_deserialize_referenced_element(
                                         key,
                                         reference_path,
                                         grove_version
                                     )
-                                ) {
+                                );
+                                if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
+                                    serialized_element_result
+                                {
                                     let maybe_old_flags = old_element.get_flags_owned();
 
                                     let old_storage_cost =
@@ -1451,7 +1457,7 @@ where
                     let element = if trust_refresh_reference {
                         Element::Reference(reference_path_type, max_reference_hop, flags)
                     } else {
-                        let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                        let merk = self.merks.get(path).expect("the Merk is cached");
                         let value = cost_return_on_error!(
                             &mut cost,
                             merk.get(
@@ -1570,7 +1576,7 @@ where
                     root_key,
                     sum,
                 } => {
-                    let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                    let merk = self.merks.get(path).expect("the Merk is cached");
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(

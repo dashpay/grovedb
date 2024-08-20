@@ -372,7 +372,6 @@ mod tests {
         .unwrap()
         .expect("expected to insert tree");
 
-        // We are adding 2 bytes
         let ops = vec![
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"tree".to_vec()],
@@ -438,14 +437,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 10, // todo: verify this
+                seek_count: 8, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 163,
-                    replaced_bytes: 196, // todo: verify this
+                    added_bytes: 430,
+                    replaced_bytes: 78, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 393, // todo: verify this
-                hash_node_calls: 17,       // todo: verify this
+                storage_loaded_bytes: 152, // todo: verify this
+                hash_node_calls: 22,       // todo: verify this
             }
         );
 
