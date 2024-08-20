@@ -134,7 +134,7 @@ impl PathQuery {
         Self { path, query }
     }
 
-    /// The max depth od the query, this is the maximum layers we could get back
+    /// The max depth of the query, this is the maximum layers we could get back
     /// from grovedb
     /// If the max depth can not be calculated we get None
     /// This would occur if the recursion level was too high
