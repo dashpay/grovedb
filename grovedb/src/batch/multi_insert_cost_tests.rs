@@ -449,7 +449,7 @@ mod tests {
         );
 
         let issues = db
-            .visualize_verify_grovedb(Some(&tx), true, &Default::default())
+            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
             .unwrap();
         assert_eq!(
             issues.len(),

@@ -3990,7 +3990,12 @@ mod tests {
         ));
 
         // `verify_grovedb` must identify issues
-        assert!(db.verify_grovedb(None, true, grove_version).unwrap().len() > 0);
+        assert!(
+            db.verify_grovedb(None, true, false, grove_version)
+                .unwrap()
+                .len()
+                > 0
+        );
     }
 
     #[test]
@@ -4043,7 +4048,7 @@ mod tests {
         .unwrap();
 
         assert!(db
-            .verify_grovedb(None, true, grove_version)
+            .verify_grovedb(None, true, false, grove_version)
             .unwrap()
             .is_empty());
 
@@ -4060,7 +4065,7 @@ mod tests {
         .unwrap();
 
         assert!(!db
-            .verify_grovedb(None, true, grove_version)
+            .verify_grovedb(None, true, false, grove_version)
             .unwrap()
             .is_empty());
     }
@@ -4098,7 +4103,7 @@ mod tests {
             .unwrap();
 
         assert!(db
-            .verify_grovedb(None, true, grove_version)
+            .verify_grovedb(None, true, false, grove_version)
             .unwrap()
             .is_empty());
 
@@ -4115,7 +4120,7 @@ mod tests {
         .unwrap();
 
         assert!(!db
-            .verify_grovedb(None, true, grove_version)
+            .verify_grovedb(None, true, false, grove_version)
             .unwrap()
             .is_empty());
     }

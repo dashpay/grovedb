@@ -902,10 +902,11 @@ impl GroveDb {
         &self,
         transaction: TransactionArg,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<String, (String, String, String)>, Error> {
         Ok(self
-            .verify_grovedb(transaction, verify_references, grove_version)?
+            .verify_grovedb(transaction, verify_references, allow_cache, grove_version)?
             .iter()
             .map(|(path, (root_hash, expected, actual))| {
                 (
@@ -929,6 +930,7 @@ impl GroveDb {
         &self,
         transaction: TransactionArg,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         if let Some(transaction) = transaction {
@@ -946,6 +948,7 @@ impl GroveDb {
                 None,
                 transaction,
                 verify_references,
+                allow_cache,
                 grove_version,
             )
         } else {
@@ -957,6 +960,7 @@ impl GroveDb {
                 &SubtreePath::empty(),
                 None,
                 verify_references,
+                allow_cache,
                 grove_version,
             )
         }
@@ -970,12 +974,11 @@ impl GroveDb {
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
-
-        let allow_cache = true;
 
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
@@ -1024,6 +1027,7 @@ impl GroveDb {
                         &new_path_ref,
                         batch,
                         verify_references,
+                        true,
                         grove_version,
                     )?);
                 }
@@ -1114,12 +1118,11 @@ impl GroveDb {
         batch: Option<&'db StorageBatch>,
         transaction: &Transaction,
         verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
-
-        let allow_cache = true;
 
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
@@ -1170,6 +1173,7 @@ impl GroveDb {
                         batch,
                         transaction,
                         verify_references,
+                        true,
                         grove_version,
                     )?);
                 }
