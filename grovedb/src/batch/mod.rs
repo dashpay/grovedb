@@ -2402,19 +2402,20 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
-            let issues = self
-                .visualize_verify_grovedb(Some(tx), true, &Default::default())
-                .unwrap();
-            if issues.len() > 0 {
-                println!(
-                    "tx_issues: {}",
-                    issues
-                        .iter()
-                        .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
-                        .collect::<Vec<_>>()
-                        .join(" | ")
-                );
-            }
+            // Keep this commented for easy debugging in the future.
+            // let issues = self
+            //     .visualize_verify_grovedb(Some(tx), true,
+            // &Default::default())     .unwrap();
+            // if issues.len() > 0 {
+            //     println!(
+            //         "tx_issues: {}",
+            //         issues
+            //             .iter()
+            //             .map(|(hash, (a, b, c))| format!("{}: {} {} {}",
+            // hash, a, b, c))             .collect::<Vec<_>>()
+            //             .join(" | ")
+            //     );
+            // }
         } else {
             cost_return_on_error!(
                 &mut cost,
@@ -2443,19 +2444,20 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
-            let issues = self
-                .visualize_verify_grovedb(None, true, &Default::default())
-                .unwrap();
-            if issues.len() > 0 {
-                println!(
-                    "non_tx_issues: {}",
-                    issues
-                        .iter()
-                        .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
-                        .collect::<Vec<_>>()
-                        .join(" | ")
-                );
-            }
+            // Keep this commented for easy debugging in the future.
+            // let issues = self
+            //     .visualize_verify_grovedb(None, true, &Default::default())
+            //     .unwrap();
+            // if issues.len() > 0 {
+            //     println!(
+            //         "non_tx_issues: {}",
+            //         issues
+            //             .iter()
+            //             .map(|(hash, (a, b, c))| format!("{}: {} {} {}",
+            // hash, a, b, c))             .collect::<Vec<_>>()
+            //             .join(" | ")
+            //     );
+            // }
         }
         Ok(()).wrap_with_cost(cost)
     }
