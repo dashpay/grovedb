@@ -36,9 +36,10 @@ where
 {
     std::thread::spawn(move || {
         // let grovedbg_tmp =
-        //     tempfile::tempdir().expect("cannot create tempdir for grovedbg contents");
-        // let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
-        // let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
+        //     tempfile::tempdir().expect("cannot create tempdir for grovedbg
+        // contents"); let grovedbg_zip =
+        // grovedbg_tmp.path().join("grovedbg.zip"); let grovedbg_www =
+        // grovedbg_tmp.path().join("grovedbg_www");
 
         // fs::write(&grovedbg_zip, &GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
         // zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
@@ -397,19 +398,21 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ReferencePathType::AbsolutePathReference(path),
             _,
             element_flags,
-        ) => grovedbg_types::Element::AbsolutePathReference {
+        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::AbsolutePathReference {
             path,
             element_flags,
-        },
+        }),
         crate::Element::Reference(
             ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
             _,
             element_flags,
-        ) => grovedbg_types::Element::UpstreamRootHeightReference {
-            n_keep: n_keep.into(),
-            path_append,
-            element_flags,
-        },
+        ) => grovedbg_types::Element::Reference(
+            grovedbg_types::Reference::UpstreamRootHeightReference {
+                n_keep: n_keep.into(),
+                path_append,
+                element_flags,
+            },
+        ),
         crate::Element::Reference(
             ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
                 n_keep,
@@ -417,44 +420,50 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ),
             _,
             element_flags,
-        ) => grovedbg_types::Element::UpstreamRootHeightWithParentPathAdditionReference {
-            n_keep: n_keep.into(),
-            path_append,
-            element_flags,
-        },
+        ) => grovedbg_types::Element::Reference(
+            grovedbg_types::Reference::UpstreamRootHeightWithParentPathAdditionReference {
+                n_keep: n_keep.into(),
+                path_append,
+                element_flags,
+            },
+        ),
         crate::Element::Reference(
             ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
             _,
             element_flags,
-        ) => grovedbg_types::Element::UpstreamFromElementHeightReference {
-            n_remove: n_remove.into(),
-            path_append,
-            element_flags,
-        },
+        ) => grovedbg_types::Element::Reference(
+            grovedbg_types::Reference::UpstreamFromElementHeightReference {
+                n_remove: n_remove.into(),
+                path_append,
+                element_flags,
+            },
+        ),
         crate::Element::Reference(
             ReferencePathType::CousinReference(swap_parent),
             _,
             element_flags,
-        ) => grovedbg_types::Element::CousinReference {
+        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::CousinReference {
             swap_parent,
             element_flags,
-        },
+        }),
         crate::Element::Reference(
             ReferencePathType::RemovedCousinReference(swap_parent),
             _,
             element_flags,
-        ) => grovedbg_types::Element::RemovedCousinReference {
-            swap_parent,
-            element_flags,
-        },
+        ) => {
+            grovedbg_types::Element::Reference(grovedbg_types::Reference::RemovedCousinReference {
+                swap_parent,
+                element_flags,
+            })
+        }
         crate::Element::Reference(
             ReferencePathType::SiblingReference(sibling_key),
             _,
             element_flags,
-        ) => grovedbg_types::Element::SiblingReference {
+        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::SiblingReference {
             sibling_key,
             element_flags,
-        },
+        }),
         crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
             value,
             element_flags,
