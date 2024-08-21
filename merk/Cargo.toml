@@ -12,6 +12,7 @@ documentation = "https://docs.rs/grovedb-merk"
 
 [dependencies]
 thiserror = "1.0.58"
+bincode = { version = "2.0.0-rc.3" }
 grovedb-storage = { version = "1.0.0", path = "../storage", optional = true }
 failure = "0.1.8"
 integer-encoding = "4.0.0"
