@@ -44,31 +44,7 @@ pub struct NodeUpdate {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Element {
-    Subtree {
-        #[serde_as(as = "Option<Base64>")]
-        root_key: Option<Key>,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
-    },
-    Sumtree {
-        #[serde_as(as = "Option<Base64>")]
-        root_key: Option<Key>,
-        sum: i64,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
-    },
-    Item {
-        #[serde_as(as = "Base64")]
-        value: Vec<u8>,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
-    },
-    SumItem {
-        value: i64,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
-    },
+pub enum Reference {
     AbsolutePathReference {
         #[serde_as(as = "Vec<Base64>")]
         path: Path,
@@ -114,6 +90,36 @@ pub enum Element {
         #[serde_as(as = "Option<Base64>")]
         element_flags: Option<Vec<u8>>,
     },
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Element {
+    Subtree {
+        #[serde_as(as = "Option<Base64>")]
+        root_key: Option<Key>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    Sumtree {
+        #[serde_as(as = "Option<Base64>")]
+        root_key: Option<Key>,
+        sum: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    Item {
+        #[serde_as(as = "Base64")]
+        value: Vec<u8>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    SumItem {
+        value: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    Reference(Reference),
 }
 
 #[serde_as]
