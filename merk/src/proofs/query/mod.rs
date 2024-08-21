@@ -18,8 +18,9 @@ mod verify;
 use std::cmp::Ordering;
 use std::{collections::HashSet, fmt, ops::RangeFull};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use bincode::{
-    enc::{write::Writer, Encoder},
+    enc::write::Writer,
     error::{DecodeError, EncodeError},
     BorrowDecode, Decode, Encode,
 };
