@@ -1,26 +1,31 @@
 mod tests {
     //! Query tests
-    
+
     use std::ops::RangeFull;
-    use grovedb_merk::proofs::{query::QueryItem, Query};
+
+    use grovedb_merk::proofs::{
+        query::{QueryItem, SubqueryBranch},
+        Query,
+    };
     use grovedb_version::version::GroveVersion;
+    use indexmap::IndexMap;
     use rand::random;
     use tempfile::TempDir;
-    use grovedb_merk::proofs::query::SubqueryBranch;
+
     use crate::{
         batch::QualifiedGroveDbOp,
+        operations::proof::GroveDBProof,
         query_result_type::{
             PathKeyOptionalElementTrio, QueryResultElement::PathKeyElementTrioResultItem,
             QueryResultElements, QueryResultType,
         },
         reference_path::ReferencePathType,
         tests::{
-            common::compare_result_sets, make_deep_tree, make_test_grovedb, TempGroveDb,
-            ANOTHER_TEST_LEAF, TEST_LEAF,
+            common::compare_result_sets, make_deep_tree, make_empty_grovedb, make_test_grovedb,
+            TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
         Element, GroveDb, PathQuery, SizedQuery,
     };
-    use crate::tests::make_empty_grovedb;
 
     fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb, grove_version: &GroveVersion) {
         // Insert a couple of subtrees first
@@ -441,15 +446,19 @@ mod tests {
             let child2 = vec![c, b'2'];
 
             // Insert the parent node as a tree
-            ops.push(GroveDbOp::insert_op(vec![], node.clone(), Element::new_tree(None)));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                node.clone(),
+                Element::new_tree(None),
+            ));
 
             // Insert two children as items with their corresponding values
-            ops.push(GroveDbOp::insert_op(
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
                 vec![node.clone()],
                 child1.clone(),
                 Element::new_item(vec![1]), // A1, B1, etc. has a value of 1
             ));
-            ops.push(GroveDbOp::insert_op(
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
                 vec![node.clone()],
                 child2.clone(),
                 Element::new_item(vec![2]), // A2, B2, etc. has a value of 2
@@ -457,9 +466,11 @@ mod tests {
         }
 
         // Apply the batch of operations to the database
-        let _ = db.apply_batch(ops, None, None, grove_version).cost_as_result().expect("expected to create test data");
+        let _ = db
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to create test data");
     }
-
 
     fn populate_tree_create_two_by_two_hierarchy_with_intermediate_value(db: &TempGroveDb) {
         // The structure is the following
@@ -481,17 +492,25 @@ mod tests {
             let child2 = vec![c, b'2'];
 
             // Insert the parent node as a tree
-            ops.push(GroveDbOp::insert_op(vec![], node.clone(), Element::new_tree(None)));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                node.clone(),
+                Element::new_tree(None),
+            ));
 
-            ops.push(GroveDbOp::insert_op(vec![node.clone()], intermediate.clone(), Element::new_tree(None)));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![node.clone()],
+                intermediate.clone(),
+                Element::new_tree(None),
+            ));
 
             // Insert two children as items with their corresponding values
-            ops.push(GroveDbOp::insert_op(
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
                 vec![node.clone(), intermediate.clone()],
                 child1.clone(),
                 Element::new_item(vec![1]), // A1, B1, etc. has a value of 1
             ));
-            ops.push(GroveDbOp::insert_op(
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
                 vec![node.clone(), intermediate.clone()],
                 child2.clone(),
                 Element::new_item(vec![2]), // A2, B2, etc. has a value of 2
@@ -499,7 +518,197 @@ mod tests {
         }
 
         // Apply the batch of operations to the database
-        let _ = db.apply_batch(ops, None, None, grove_version).cost_as_result().expect("expected to create test data");
+        let _ = db
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to create test data");
+    }
+
+    fn populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(
+        db: &TempGroveDb,
+    ) {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+        let grove_version = GroveVersion::latest();
+
+        let mut ops = Vec::new();
+
+        // Loop from A to M
+        for c in b'a'..=b'm' {
+            let node = vec![c];
+            let intermediate = vec![0];
+            let intermediate_ref_1 = vec![1];
+            let intermediate_ref_2 = vec![2];
+            let child1 = vec![c.to_ascii_uppercase(), b'1'];
+            let child2 = vec![c.to_ascii_uppercase(), b'2'];
+            let child1ref = vec![b'r', b'e', b'f', c.to_ascii_uppercase(), b'1'];
+            let child2ref = vec![b'r', b'e', b'f', c.to_ascii_uppercase(), b'2'];
+
+            // Insert the parent node as a tree
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                node.clone(),
+                Element::new_tree(None),
+            ));
+
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![node.clone()],
+                intermediate.clone(),
+                Element::new_tree(None),
+            ));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![node.clone()],
+                intermediate_ref_1.clone(),
+                Element::new_tree(None),
+            ));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![node.clone(), intermediate_ref_1.clone()],
+                intermediate_ref_2.clone(),
+                Element::new_tree(None),
+            ));
+
+            // Insert two children as items with their corresponding values
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![node.clone(), intermediate.clone()],
+                child1.clone(),
+                Element::new_item(vec![1]), // A1, B1, etc. has a value of 1
+            ));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![node.clone(), intermediate.clone()],
+                child2.clone(),
+                Element::new_item(vec![2]), // A2, B2, etc. has a value of 2
+            ));
+
+            // Insert the references
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![
+                    node.clone(),
+                    intermediate_ref_1.clone(),
+                    intermediate_ref_2.clone(),
+                ],
+                child1ref.clone(),
+                Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+                    1,
+                    vec![intermediate.clone(), child1.clone()],
+                )), // refA1
+            ));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![
+                    node.clone(),
+                    intermediate_ref_1.clone(),
+                    intermediate_ref_2.clone(),
+                ],
+                child2ref.clone(),
+                Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+                    1,
+                    vec![intermediate.clone(), child2.clone()],
+                )), // refA2
+            ));
+        }
+
+        // Apply the batch of operations to the database
+        let _ = db
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to create test data");
+    }
+
+    fn populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(
+        db: &TempGroveDb,
+    ) {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+
+        let mut ops = Vec::new();
+
+        let top_holder = vec![0];
+        let top_ref = vec![1];
+
+        ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            top_holder.clone(),
+            Element::empty_tree(),
+        ));
+        ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            top_ref.clone(),
+            Element::empty_tree(),
+        ));
+
+        // Loop from A to M
+        for c in b'a'..=b'm' {
+            let node = vec![c];
+            let intermediate = vec![0];
+            let child1 = vec![c.to_ascii_uppercase(), b'1'];
+            let child2 = vec![c.to_ascii_uppercase(), b'2'];
+            let child1ref = vec![b'r', b'e', b'f', c.to_ascii_uppercase(), b'1'];
+            let child2ref = vec![b'r', b'e', b'f', c.to_ascii_uppercase(), b'2'];
+
+            // Insert the parent node as a tree
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![top_ref.clone()],
+                node.clone(),
+                Element::new_tree(None),
+            ));
+
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![top_ref.clone(), node.clone()],
+                intermediate.clone(),
+                Element::new_tree(None),
+            ));
+
+            // Insert two children as items with their corresponding values
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![top_holder.clone()],
+                child1.clone(),
+                Element::new_item(vec![1]), // A1, B1, etc. has a value of 1
+            ));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![top_holder.clone()],
+                child2.clone(),
+                Element::new_item(vec![2]), // A2, B2, etc. has a value of 2
+            ));
+
+            // Insert the references
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![top_ref.clone(), node.clone(), intermediate.clone()],
+                child1ref.clone(),
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    top_holder.clone(),
+                    child1.clone(),
+                ])), // refA1
+            ));
+            ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![top_ref.clone(), node.clone(), intermediate.clone()],
+                child2ref.clone(),
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    top_holder.clone(),
+                    child2.clone(),
+                ])), // refA2
+            ));
+        }
+
+        // Apply the batch of operations to the database
+        let _ = db
+            .apply_batch(ops, None, None, grove_version)
+            .cost_as_result()
+            .expect("expected to create test data");
     }
 
     #[test]
@@ -3203,7 +3412,6 @@ mod tests {
 
     #[test]
     fn test_path_query_items_with_subquery_and_limit_2_asc_from_start() {
-        // This test is made for an issue we had been seeing in drive
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3238,17 +3446,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
     fn test_path_query_items_with_subquery_and_limit_2_desc_from_start() {
-        // This test is made for an issue we had been seeing in drive
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3283,17 +3492,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
     fn test_path_query_items_with_subquery_and_limit_2_asc_in_middle() {
-        // This test is made for an issue we had been seeing in drive
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3328,17 +3538,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
     fn test_path_query_items_with_subquery_and_limit_2_desc_in_middle() {
-        // This test is made for an issue we had been seeing in drive
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3373,17 +3584,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
     fn test_path_query_items_with_subquery_and_limit_2_asc_at_end() {
-        // This test is made for an issue we had been seeing in drive
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3418,17 +3630,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
     fn test_path_query_items_with_subquery_and_limit_2_desc_at_end() {
-        // This test is made for an issue we had been seeing in drive
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3463,17 +3676,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_asc_from_start() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_asc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3510,17 +3724,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_desc_from_start() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_desc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3557,17 +3772,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_asc_in_middle() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_asc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3604,17 +3820,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_desc_in_middle() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_desc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3651,17 +3868,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_asc_not_included_in_middle() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_asc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3698,17 +3916,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_desc_not_included_in_middle() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_desc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3745,17 +3964,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_asc_at_end() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_asc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3792,17 +4012,18 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 
     #[test]
-    fn test_path_query_items_with_intermediate_path_and_subquery_and_limit_2_desc_at_end() {
-        // This test is made for an issue we had been seeing in drive
+    fn test_path_query_items_with_intermediate_path_limit_2_desc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
         //          A ---------------- B ---------------------C
@@ -3839,11 +4060,845 @@ mod tests {
 
         assert_eq!(elements.len(), 2);
 
-        let proof = db.prove_query(&path_query, None, grove_version).value.expect("expected successful get_path_query");
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
 
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
-                .expect("should verify proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_asc_from_start() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_desc_from_start() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeToInclusive(..=b"a".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_asc_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFrom(b"b".to_vec()..)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_desc_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeToInclusive(..=b"b".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_asc_not_included_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeTo(..b"f".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_desc_not_included_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeTo(..b"f".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_asc_at_end() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFrom(b"m".to_vec()..)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_with_reference_limit_2_desc_at_end() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //        a ------------------------b------------------------c
+        //     /      \                 /      \                 /      \
+        //   0          1             0          1             0          1
+        // /  \        /            /  \        /            /  \        /
+        // A1  A2      2            B1  B2      2           C1  C2      2
+        //           /  \                     /  \                     /  \
+        //        refA1  refA2            refB1  refB2            refC1  refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeToInclusive(..=b"m".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![1], vec![2]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_from_start() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_from_start() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeToInclusive(..=b"a".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFrom(b"b".to_vec()..)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeToInclusive(..=b"b".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_not_included_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeTo(..b"f".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_not_included_in_middle() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeTo(..b"f".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: Some(IndexMap::from([(
+                        QueryItem::Key(vec![]),
+                        SubqueryBranch {
+                            subquery_path: Some(vec![vec![0]]),
+                            subquery: Some(Query::new_range_full().into()),
+                        },
+                    )])),
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+
+        let gproof: GroveDBProof = bincode::decode_from_slice(&proof, config)
+            .expect("expected no error")
+            .0;
+
+        println!("{}", gproof);
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_at_end() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFrom(b"m".to_vec()..)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(result_set.len(), 2);
+    }
+
+    #[test]
+    fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_at_end() {
+        // The structure is the following
+        // ---------------------------------------------------------->
+        //   0  -------------------------------- 1
+        //  /  \                       /         |       \
+        // A1 .. C2    a ------------------------b------------------------c
+        //             |                         |                        |
+        //             0                         0                        0
+        //            / \                       /  \                    /    \
+        //        refA1  refA2              refB1  refB2             refC1   refC2
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        populate_tree_create_two_by_two_reference_higher_up_hierarchy_with_intermediate_value(&db);
+
+        // Constructing the PathQuery
+        let path_query = PathQuery {
+            path: vec![vec![1]],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeToInclusive(..=b"m".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![vec![0]]),
+                        subquery: Some(Query::new_range_full().into()),
+                    },
+                    left_to_right: false,
+                    conditional_subquery_branches: None,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let (elements, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(elements.len(), 2);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .value
+            .expect("expected successful get_path_query");
+
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)
+            .expect("should verify proof");
         assert_eq!(result_set.len(), 2);
     }
 }

@@ -9,9 +9,20 @@ use std::{collections::BTreeMap, fmt};
 
 use bincode::{Decode, Encode};
 use derive_more::From;
-use grovedb_merk::proofs::{query::Key, Decoder, Node, Op};
+use grovedb_merk::{
+    proofs::{
+        query::{Key, VerifyOptions},
+        Decoder, Node, Op,
+    },
+    CryptoHash,
+};
+use grovedb_version::version::GroveVersion;
 
-use crate::operations::proof::util::{element_hex_to_ascii, hex_to_ascii};
+use crate::{
+    operations::proof::util::{element_hex_to_ascii, hex_to_ascii, ProvedPathKeyValues},
+    query_result_type::PathKeyOptionalElementTrio,
+    Error, GroveDb, PathQuery,
+};
 
 #[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct ProveOptions {
@@ -56,6 +67,114 @@ pub struct LayerProof {
 #[derive(Encode, Decode, From)]
 pub enum GroveDBProof {
     V0(GroveDBProofV0),
+}
+
+impl GroveDBProof {
+    /// Verifies a query with options using the proof and returns the root hash
+    /// and the query result.
+    pub fn verify_with_options(
+        &self,
+        query: &PathQuery,
+        options: VerifyOptions,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+        GroveDb::verify_proof_internal(self, query, options, grove_version)
+    }
+
+    /// Verifies a raw query using the proof and returns the root hash and the
+    /// query result.
+    pub fn verify_raw(
+        &self,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
+        GroveDb::verify_proof_raw_internal(
+            self,
+            query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+    }
+
+    /// Verifies a query using the proof and returns the root hash and the query
+    /// result.
+    pub fn verify(
+        &self,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+        GroveDb::verify_proof_internal(
+            self,
+            query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: true,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+    }
+
+    /// Verifies a query with an absence proof and returns the root hash and the
+    /// query result.
+    pub fn verify_with_absence_proof(
+        &self,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+        GroveDb::verify_proof_internal(
+            self,
+            query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: true,
+                verify_proof_succinctness: true,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+    }
+
+    /// Verifies a subset query using the proof and returns the root hash and
+    /// the query result.
+    pub fn verify_subset(
+        &self,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+        GroveDb::verify_proof_internal(
+            self,
+            query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+    }
+
+    /// Verifies a subset query with an absence proof using the proof and
+    /// returns the root hash and the query result.
+    pub fn verify_subset_with_absence_proof(
+        &self,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+        GroveDb::verify_proof_internal(
+            self,
+            query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: true,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+    }
 }
 
 #[derive(Encode, Decode)]
