@@ -18,6 +18,12 @@ mod verify;
 use std::cmp::Ordering;
 use std::{collections::HashSet, fmt, ops::RangeFull};
 
+#[cfg(any(feature = "full", feature = "verify"))]
+use bincode::{
+    enc::write::Writer,
+    error::{DecodeError, EncodeError},
+    BorrowDecode, Decode, Encode,
+};
 #[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
@@ -61,7 +67,7 @@ pub type Key = Vec<u8>;
 pub type PathKey = (Path, Key);
 
 #[cfg(any(feature = "full", feature = "verify"))]
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Encode, Decode)]
 /// Subquery branch
 pub struct SubqueryBranch {
     /// Subquery path
@@ -113,6 +119,112 @@ pub struct Query {
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     /// Left to right?
     pub left_to_right: bool,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl Encode for Query {
+    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
+        // Encode the items vector
+        self.items.encode(encoder)?;
+
+        // Encode the default subquery branch
+        self.default_subquery_branch.encode(encoder)?;
+
+        // Encode the conditional subquery branches
+        match &self.conditional_subquery_branches {
+            Some(conditional_subquery_branches) => {
+                encoder.writer().write(&[1])?; // Write a flag indicating presence of data
+                                               // Encode the length of the map
+                (conditional_subquery_branches.len() as u64).encode(encoder)?;
+                // Encode each key-value pair in the IndexMap
+                for (key, value) in conditional_subquery_branches {
+                    key.encode(encoder)?;
+                    value.encode(encoder)?;
+                }
+            }
+            None => {
+                encoder.writer().write(&[0])?; // Write a flag indicating
+                                               // absence of data
+            }
+        }
+
+        // Encode the left_to_right boolean
+        self.left_to_right.encode(encoder)?;
+
+        Ok(())
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl Decode for Query {
+    fn decode<D: bincode::de::Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+        // Decode the items vector
+        let items = Vec::<QueryItem>::decode(decoder)?;
+
+        // Decode the default subquery branch
+        let default_subquery_branch = SubqueryBranch::decode(decoder)?;
+
+        // Decode the conditional subquery branches
+        let conditional_subquery_branches = if u8::decode(decoder)? == 1 {
+            let len = u64::decode(decoder)? as usize;
+            let mut map = IndexMap::with_capacity(len);
+            for _ in 0..len {
+                let key = QueryItem::decode(decoder)?;
+                let value = SubqueryBranch::decode(decoder)?;
+                map.insert(key, value);
+            }
+            Some(map)
+        } else {
+            None
+        };
+
+        // Decode the left_to_right boolean
+        let left_to_right = bool::decode(decoder)?;
+
+        Ok(Query {
+            items,
+            default_subquery_branch,
+            conditional_subquery_branches,
+            left_to_right,
+        })
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl<'de> BorrowDecode<'de> for Query {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        // Borrow-decode the items vector
+        let items = Vec::<QueryItem>::borrow_decode(decoder)?;
+
+        // Borrow-decode the default subquery branch
+        let default_subquery_branch = SubqueryBranch::borrow_decode(decoder)?;
+
+        // Borrow-decode the conditional subquery branches
+        let conditional_subquery_branches = if u8::borrow_decode(decoder)? == 1 {
+            let len = u64::borrow_decode(decoder)? as usize;
+            let mut map = IndexMap::with_capacity(len);
+            for _ in 0..len {
+                let key = QueryItem::borrow_decode(decoder)?;
+                let value = SubqueryBranch::borrow_decode(decoder)?;
+                map.insert(key, value);
+            }
+            Some(map)
+        } else {
+            None
+        };
+
+        // Borrow-decode the left_to_right boolean
+        let left_to_right = bool::borrow_decode(decoder)?;
+
+        Ok(Query {
+            items,
+            default_subquery_branch,
+            conditional_subquery_branches,
+            left_to_right,
+        })
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]

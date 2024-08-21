@@ -10,6 +10,7 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
+use bincode::{enc::write::Writer, error::DecodeError, BorrowDecode, Decode, Encode};
 #[cfg(feature = "full")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "full")]
@@ -33,6 +34,175 @@ pub enum QueryItem {
     RangeAfter(RangeFrom<Vec<u8>>),
     RangeAfterTo(Range<Vec<u8>>),
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl Encode for QueryItem {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        match self {
+            QueryItem::Key(key) => {
+                encoder.writer().write(&[0])?;
+                key.encode(encoder)
+            }
+            QueryItem::Range(range) => {
+                encoder.writer().write(&[1])?;
+                range.start.encode(encoder)?;
+                range.end.encode(encoder)
+            }
+            QueryItem::RangeInclusive(range) => {
+                encoder.writer().write(&[2])?;
+                range.start().encode(encoder)?;
+                range.end().encode(encoder)
+            }
+            QueryItem::RangeFull(_) => {
+                encoder.writer().write(&[3])?;
+                Ok(())
+            }
+            QueryItem::RangeFrom(range) => {
+                encoder.writer().write(&[4])?;
+                range.start.encode(encoder)
+            }
+            QueryItem::RangeTo(range) => {
+                encoder.writer().write(&[5])?;
+                range.end.encode(encoder)
+            }
+            QueryItem::RangeToInclusive(range) => {
+                encoder.writer().write(&[6])?;
+                range.end.encode(encoder)
+            }
+            QueryItem::RangeAfter(range) => {
+                encoder.writer().write(&[7])?;
+                range.start.encode(encoder)
+            }
+            QueryItem::RangeAfterTo(range) => {
+                encoder.writer().write(&[8])?;
+                range.start.encode(encoder)?;
+                range.end.encode(encoder)
+            }
+            QueryItem::RangeAfterToInclusive(range) => {
+                encoder.writer().write(&[9])?;
+                range.start().encode(encoder)?;
+                range.end().encode(encoder)
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl Decode for QueryItem {
+    fn decode<D: bincode::de::Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+        let variant_id = u8::decode(decoder)?;
+
+        match variant_id {
+            0 => {
+                let key = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::Key(key))
+            }
+            1 => {
+                let start = Vec::<u8>::decode(decoder)?;
+                let end = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::Range(start..end))
+            }
+            2 => {
+                let start = Vec::<u8>::decode(decoder)?;
+                let end = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::RangeInclusive(start..=end))
+            }
+            3 => Ok(QueryItem::RangeFull(RangeFull)),
+            4 => {
+                let start = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::RangeFrom(start..))
+            }
+            5 => {
+                let end = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::RangeTo(..end))
+            }
+            6 => {
+                let end = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::RangeToInclusive(..=end))
+            }
+            7 => {
+                let start = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::RangeAfter(start..))
+            }
+            8 => {
+                let start = Vec::<u8>::decode(decoder)?;
+                let end = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::RangeAfterTo(start..end))
+            }
+            9 => {
+                let start = Vec::<u8>::decode(decoder)?;
+                let end = Vec::<u8>::decode(decoder)?;
+                Ok(QueryItem::RangeAfterToInclusive(start..=end))
+            }
+            _ => Err(DecodeError::UnexpectedVariant {
+                type_name: "QueryItem",
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 9 },
+                found: variant_id as u32,
+            }),
+        }
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+impl<'de> BorrowDecode<'de> for QueryItem {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        let variant_id = u8::decode(decoder)?;
+
+        match variant_id {
+            0 => {
+                let key = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::Key(key))
+            }
+            1 => {
+                let start = Vec::<u8>::borrow_decode(decoder)?;
+                let end = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::Range(start..end))
+            }
+            2 => {
+                let start = Vec::<u8>::borrow_decode(decoder)?;
+                let end = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::RangeInclusive(start..=end))
+            }
+            3 => Ok(QueryItem::RangeFull(RangeFull)),
+            4 => {
+                let start = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::RangeFrom(start..))
+            }
+            5 => {
+                let end = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::RangeTo(..end))
+            }
+            6 => {
+                let end = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::RangeToInclusive(..=end))
+            }
+            7 => {
+                let start = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::RangeAfter(start..))
+            }
+            8 => {
+                let start = Vec::<u8>::borrow_decode(decoder)?;
+                let end = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::RangeAfterTo(start..end))
+            }
+            9 => {
+                let start = Vec::<u8>::borrow_decode(decoder)?;
+                let end = Vec::<u8>::borrow_decode(decoder)?;
+                Ok(QueryItem::RangeAfterToInclusive(start..=end))
+            }
+            _ => Err(DecodeError::UnexpectedVariant {
+                type_name: "QueryItem",
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 9 },
+                found: variant_id as u32,
+            }),
+        }
+    }
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
