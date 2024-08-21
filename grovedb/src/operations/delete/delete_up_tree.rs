@@ -11,7 +11,7 @@ use grovedb_version::{
 };
 
 use crate::{
-    batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
+    batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
     TransactionArg,
 };
 
@@ -122,7 +122,7 @@ impl GroveDb {
                 .delete_up_tree_while_empty_with_sectional_storage
         );
         let mut cost = OperationCost::default();
-        let mut batch_operations: Vec<GroveDbOp> = Vec::new();
+        let mut batch_operations: Vec<QualifiedGroveDbOp> = Vec::new();
 
         let maybe_ops = cost_return_on_error!(
             &mut cost,
@@ -170,10 +170,10 @@ impl GroveDb {
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
-        mut current_batch_operations: Vec<GroveDbOp>,
+        mut current_batch_operations: Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<GroveDbOp>, Error> {
+    ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
             "delete",
             grove_version
@@ -202,10 +202,10 @@ impl GroveDb {
         key: &[u8],
         options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
-        current_batch_operations: &mut Vec<GroveDbOp>,
+        current_batch_operations: &mut Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<Vec<GroveDbOp>>, Error> {
+    ) -> CostResult<Option<Vec<QualifiedGroveDbOp>>, Error> {
         check_grovedb_v0_with_cost!(
             "delete",
             grove_version

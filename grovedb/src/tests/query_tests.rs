@@ -8,7 +8,7 @@ mod tests {
     use tempfile::TempDir;
     use grovedb_merk::proofs::query::SubqueryBranch;
     use crate::{
-        batch::GroveDbOp,
+        batch::QualifiedGroveDbOp,
         query_result_type::{
             PathKeyOptionalElementTrio, QueryResultElement::PathKeyElementTrioResultItem,
             QueryResultElements, QueryResultType,
@@ -1675,33 +1675,37 @@ mod tests {
             77, 252, 86, 99, 107, 197, 226, 188, 54, 239, 64, 17, 37,
         ];
 
-        let batch = vec![GroveDbOp::insert_op(vec![], vec![1], Element::empty_tree())];
+        let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            vec![1],
+            Element::empty_tree(),
+        )];
         db.apply_batch(batch, None, None, grove_version)
             .unwrap()
             .expect("should apply batch");
 
         let batch = vec![
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![vec![1]],
                 tree_name_slice.to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![vec![1], tree_name_slice.to_vec()],
                 b"\0".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![vec![1], tree_name_slice.to_vec()],
                 vec![1],
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![vec![1], tree_name_slice.to_vec(), vec![1]],
                 b"person".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     vec![1],
                     tree_name_slice.to_vec(),
@@ -1711,7 +1715,7 @@ mod tests {
                 b"\0".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     vec![1],
                     tree_name_slice.to_vec(),
@@ -1727,7 +1731,7 @@ mod tests {
             .expect("should apply batch");
 
         let batch = vec![
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     vec![1],
                     tree_name_slice.to_vec(),
@@ -1738,7 +1742,7 @@ mod tests {
                 b"person_id_1".to_vec(),
                 Element::new_item(vec![50]),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     vec![1],
                     tree_name_slice.to_vec(),
@@ -1749,7 +1753,7 @@ mod tests {
                 b"cammi".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     vec![1],
                     tree_name_slice.to_vec(),
@@ -1761,7 +1765,7 @@ mod tests {
                 b"\0".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_op(
+            QualifiedGroveDbOp::insert_or_replace_op(
                 vec![
                     vec![1],
                     tree_name_slice.to_vec(),
