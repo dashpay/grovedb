@@ -389,7 +389,6 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -411,7 +410,8 @@ mod tests {
                 Some(&tx),
                 grove_version,
             )
-            .cost;
+            .cost_as_result()
+            .expect("expected to not error");
 
         let issues = db
             .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())

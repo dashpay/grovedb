@@ -816,7 +816,12 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -926,7 +931,12 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -1039,7 +1049,12 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -1207,7 +1222,12 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -1318,7 +1338,12 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -1423,7 +1448,10 @@ mod tests {
                             new_flags[1] = old_flags[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 1, 1]);
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 1, 1]
+                                    || new_flags == &vec![1u8, 0, 1, 1, 3]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -1507,7 +1535,12 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -1601,7 +1634,12 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            // first pass will be vec![1u8, 0, 1, 2], second pass will be vec![1u8,
+                            // 0, 1, 4]
+                            assert!(
+                                new_flags == &vec![1u8, 0, 1, 2]
+                                    || new_flags == &vec![1u8, 0, 1, 4]
+                            );
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);

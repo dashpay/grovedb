@@ -13,6 +13,7 @@ mod multi_insert_cost_tests;
 
 #[cfg(test)]
 mod just_in_time_cost_tests;
+pub mod just_in_time_reference_update;
 mod options;
 #[cfg(test)]
 mod single_deletion_cost_tests;
@@ -1094,7 +1095,6 @@ where
                                 Ok(val_hash).wrap_with_cost(cost)
                             } else {
                                 let mut new_element = element.clone();
-                                let new_flags = new_element.get_flags_mut().as_mut().unwrap();
 
                                 // it can be unmerged, let's get the value on disk
                                 let (key, reference_path) = qualified_path.split_last().unwrap();
@@ -1109,61 +1109,24 @@ where
                                 if let Some((old_element, old_serialized_element, is_in_sum_tree)) =
                                     serialized_element_result
                                 {
-                                    let maybe_old_flags = old_element.get_flags_owned();
-
-                                    let old_storage_cost =
-                                        KV::node_byte_cost_size_for_key_and_raw_value_lengths(
-                                            key.len() as u32,
-                                            old_serialized_element.len() as u32,
+                                    let value_hash = cost_return_on_error!(
+                                        &mut cost,
+                                        Self::process_old_element_flags(
+                                            key,
+                                            &serialized,
+                                            &mut new_element,
+                                            old_element,
+                                            &old_serialized_element,
                                             is_in_sum_tree,
-                                        );
-                                    let new_storage_cost =
-                                        KV::node_byte_cost_size_for_key_and_raw_value_lengths(
-                                            key.len() as u32,
-                                            serialized.len() as u32,
-                                            is_in_sum_tree,
-                                        );
-
-                                    // There are storage flags
-                                    let storage_costs = TreeNode::storage_cost_for_update(
-                                        new_storage_cost,
-                                        old_storage_cost,
+                                            flags_update,
+                                            grove_version,
+                                        )
                                     );
-
-                                    let changed = cost_return_on_error_no_add!(
-                                        &cost,
-                                        (flags_update)(&storage_costs, maybe_old_flags, new_flags)
-                                            .map_err(|e| match e {
-                                                Error::JustInTimeElementFlagsClientError(_) => {
-                                                    MerkError::ClientCorruptionError(e.to_string())
-                                                        .into()
-                                                }
-                                                _ => MerkError::ClientCorruptionError(
-                                                    "non client error".to_string(),
-                                                )
-                                                .into(),
-                                            })
-                                    );
-                                    if changed {
-                                        // There are no storage flags, we can just hash new element
-                                        let serialized = cost_return_on_error_no_add!(
-                                            &cost,
-                                            new_element.serialize(grove_version)
-                                        );
-                                        let val_hash =
-                                            value_hash(&serialized).unwrap_add_cost(&mut cost);
-                                        Ok(val_hash).wrap_with_cost(cost)
-                                    } else {
-                                        // There are no storage flags, we can just hash new element
-
-                                        let val_hash =
-                                            value_hash(&serialized).unwrap_add_cost(&mut cost);
-                                        Ok(val_hash).wrap_with_cost(cost)
-                                    }
+                                    Ok(value_hash).wrap_with_cost(cost)
                                 } else {
-                                    let val_hash =
+                                    let value_hash =
                                         value_hash(&serialized).unwrap_add_cost(&mut cost);
-                                    Ok(val_hash).wrap_with_cost(cost)
+                                    Ok(value_hash).wrap_with_cost(cost)
                                 }
                             }
                         }
