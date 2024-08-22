@@ -40,11 +40,10 @@ impl TreeNode {
             // todo: clean up clones
             let original_new_value = self.value_ref().clone();
             loop {
-                let mut to_update_value = original_new_value.clone();
                 let (flags_changed, value_defined_cost) = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,
-                    &mut to_update_value,
+                    self.value_mut_ref(),
                 )?;
                 if !flags_changed {
                     break;
@@ -53,13 +52,13 @@ impl TreeNode {
                     let after_update_tree_plus_hook_size =
                         self.value_encoding_length_with_parent_to_child_reference();
                     if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
-                        self.set_value(to_update_value);
                         break;
                     }
                     let new_size_and_storage_costs =
                         self.kv_with_parent_hook_size_and_storage_cost(old_specialized_cost)?;
                     current_tree_plus_hook_size = new_size_and_storage_costs.0;
                     storage_costs = new_size_and_storage_costs.1;
+                    self.set_value(original_new_value.clone())
                 }
                 if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
                     return Err(Error::CyclicError(
