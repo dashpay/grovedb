@@ -37,11 +37,13 @@ impl TreeNode {
         if let Some(old_value) = self.old_value.clone() {
             // At this point the tree value can be updated based on client requirements
             // For example to store the costs
+            let original_new_value = self.value_ref();
             loop {
+                let mut to_update_value = original_new_value.clone();
                 let (flags_changed, value_defined_cost) = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,
-                    self.value_mut_ref(),
+                    &mut to_update_value,
                 )?;
                 if !flags_changed {
                     break;
@@ -50,6 +52,7 @@ impl TreeNode {
                     let after_update_tree_plus_hook_size =
                         self.value_encoding_length_with_parent_to_child_reference();
                     if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
+                        self.set_value(to_update_value);
                         break;
                     }
                     let new_size_and_storage_costs =

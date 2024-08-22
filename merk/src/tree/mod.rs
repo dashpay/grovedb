@@ -335,6 +335,11 @@ impl TreeNode {
         self.inner.kv.key = key;
     }
 
+    /// Set value of Tree
+    pub fn set_value(&mut self, value: Vec<u8>) {
+        self.inner.kv.value = value;
+    }
+
     /// Consumes the tree and returns its root node's key, without having to
     /// clone or allocate.
     #[inline]
