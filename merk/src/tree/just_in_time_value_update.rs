@@ -37,7 +37,8 @@ impl TreeNode {
         if let Some(old_value) = self.old_value.clone() {
             // At this point the tree value can be updated based on client requirements
             // For example to store the costs
-            let original_new_value = self.value_ref();
+            // todo: clean up clones
+            let original_new_value = self.value_ref().clone();
             loop {
                 let mut to_update_value = original_new_value.clone();
                 let (flags_changed, value_defined_cost) = update_tree_value_based_on_costs(
