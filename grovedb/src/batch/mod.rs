@@ -1588,7 +1588,7 @@ where
 
         cost_return_on_error!(
             &mut cost,
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _, _>(
                 &batch_operations,
                 &[],
                 Some(batch_apply_options.as_merk_options()),
@@ -1597,6 +1597,18 @@ where
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
                 Some(&Element::value_defined_cost_for_serialized_value),
+                &|old_value, new_value| {
+                    let old_element = Element::deserialize(old_value.as_slice(), grove_version)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                    let maybe_old_flags = old_element.get_flags_owned();
+                    let mut new_element = Element::deserialize(new_value.as_slice(), grove_version)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                    new_element.set_flags(maybe_old_flags);
+                    new_element
+                        .serialize(grove_version)
+                        .map(Some)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                },
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization
                     let old_element = Element::deserialize(old_value.as_slice(), grove_version)

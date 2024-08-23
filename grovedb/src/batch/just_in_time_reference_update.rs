@@ -58,9 +58,19 @@ where
 
         let mut serialization_to_use = Cow::Borrowed(serialized);
 
+        // we need to get the new storage_cost as if it had the same storage flags as
+        // before
+        let mut updated_new_element_with_old_flags = original_new_element.clone();
+        updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
+
+        let serialized_with_old_flags = cost_return_on_error_no_add!(
+            &cost,
+            updated_new_element_with_old_flags.serialize(grove_version)
+        );
+
         let mut new_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
             key.len() as u32,
-            serialized.len() as u32,
+            serialized_with_old_flags.len() as u32,
             is_in_sum_tree,
         );
 

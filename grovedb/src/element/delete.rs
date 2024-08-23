@@ -95,6 +95,7 @@ impl Element {
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
+            &|_, _| Ok(None),
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
             grove_version,

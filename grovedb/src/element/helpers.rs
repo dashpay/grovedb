@@ -190,6 +190,18 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Sets the optional flag stored in an element
+    pub fn set_flags(&mut self, new_flags: Option<ElementFlags>) {
+        match self {
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => *flags = new_flags,
+        }
+    }
+
+    #[cfg(feature = "full")]
     /// Get the required item space
     pub fn required_item_space(
         len: u32,

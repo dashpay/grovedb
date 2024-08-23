@@ -6,7 +6,12 @@ mod tests {
     use std::{collections::BTreeMap, option::Option::None};
 
     use drive_storage_flags::StorageFlags;
+    use grovedb_costs::{
+        storage_cost::removal::{StorageRemovalPerEpochByIdentifier, StorageRemovedBytes},
+        OperationCost,
+    };
     use grovedb_version::version::GroveVersion;
+    use intmap::IntMap;
 
     use crate::{
         batch::QualifiedGroveDbOp,
@@ -17,12 +22,24 @@ mod tests {
         Element, Error, Transaction,
     };
 
+    fn single_epoch_removed_bytes_map(
+        owner_id: [u8; 32],
+        epoch_index: u64,
+        bytes_removed: u32,
+    ) -> StorageRemovalPerEpochByIdentifier {
+        let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+        let mut removed_bytes_for_identity = IntMap::new();
+        removed_bytes_for_identity.insert(epoch_index, bytes_removed);
+        removed_bytes.insert(owner_id, removed_bytes_for_identity);
+        removed_bytes
+    }
+
     fn apply_batch(
         grove_db: &TempGroveDb,
         ops: Vec<QualifiedGroveDbOp>,
         tx: &Transaction,
         grove_version: &GroveVersion,
-    ) {
+    ) -> OperationCost {
         grove_db
             .apply_batch_with_element_flags_update(
                 ops,
@@ -39,7 +56,7 @@ mod tests {
                 grove_version,
             )
             .cost_as_result()
-            .expect("expected to not error");
+            .expect("expected to not error")
     }
 
     fn expect_storage_flags(
@@ -542,7 +559,7 @@ mod tests {
                             b"tree".to_vec(),
                             b"key1".to_vec(),
                         ]),
-                        Some(1),
+                        None,
                     ),
                 ),
             ];
@@ -576,7 +593,6 @@ mod tests {
     ) {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
-        let tx = db.start_transaction();
 
         let owner_id = [1; 32];
 
@@ -643,7 +659,7 @@ mod tests {
                             b"tree".to_vec(),
                             b"key1".to_vec(),
                         ]),
-                        Some(1),
+                        None,
                     ),
                 ),
             ];
@@ -677,7 +693,6 @@ mod tests {
     ) {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
-        let tx = db.start_transaction();
 
         let owner_id = [1; 32];
 
@@ -744,7 +759,7 @@ mod tests {
                             b"tree".to_vec(),
                             b"key1".to_vec(),
                         ]),
-                        Some(1),
+                        None,
                     ),
                 ),
             ];
@@ -777,7 +792,6 @@ mod tests {
     fn test_batch_root_one_update_smaller_item_same_base_epoch_with_reference() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
-        let tx = db.start_transaction();
 
         let owner_id = [1; 32];
 
@@ -803,10 +817,17 @@ mod tests {
         .unwrap()
         .expect("expected to insert tree");
 
+        let base_item = b"value1".to_vec();
+        let mut original_item = base_item.clone();
+        original_item.extend(std::iter::repeat(0).take(150));
+
         db.insert(
             [b"tree".as_slice()].as_ref(),
             b"key1",
-            Element::new_item_with_flags(b"value15".to_vec(), Some(vec![0])),
+            Element::new_item_with_flags(
+                original_item,
+                Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
+            ),
             None,
             None,
             grove_version,
@@ -814,45 +835,153 @@ mod tests {
         .unwrap()
         .expect("expected to insert item");
 
-        // We are removing 2 bytes
-        let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"tree".to_vec()],
-                b"key1".to_vec(),
-                Element::new_item_with_flags(b"value".to_vec(), Some(vec![0])),
-            ),
-            QualifiedGroveDbOp::insert_only_op(
-                vec![b"refs".to_vec()],
-                b"ref_key".to_vec(),
-                Element::new_reference_with_hops(
-                    ReferencePathType::AbsolutePathReference(vec![
-                        b"tree".to_vec(),
-                        b"key1".to_vec(),
-                    ]),
-                    Some(1),
+        let to = 150usize;
+
+        for n in (0..to).rev() {
+            let tx = db.start_transaction();
+            let mut item = base_item.clone();
+            item.extend(std::iter::repeat(0).take(n));
+            // We are adding n bytes
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"tree".to_vec()],
+                    b"key1".to_vec(),
+                    Element::new_item_with_flags(
+                        item, // value1 if n was 1
+                        Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
+                    ),
                 ),
-            ),
-        ];
+                QualifiedGroveDbOp::insert_only_op(
+                    vec![b"refs".to_vec()],
+                    b"ref_key".to_vec(),
+                    Element::new_reference_with_hops(
+                        ReferencePathType::AbsolutePathReference(vec![
+                            b"tree".to_vec(),
+                            b"key1".to_vec(),
+                        ]),
+                        None,
+                    ),
+                ),
+            ];
 
-        apply_batch(&db, ops, &tx, grove_version);
+            let removed_bytes = if n > 17 {
+                to as u32 - n as u32
+            } else {
+                to as u32 - n as u32 + 1 // we remove an extra byte
+            };
 
-        let issues = db
-            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
-            .unwrap();
-        assert_eq!(
-            issues.len(),
-            0,
-            "reference issue: {}",
-            issues
-                .iter()
-                .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        );
+            let storage_removed_bytes = apply_batch(&db, ops, &tx, grove_version)
+                .storage_cost
+                .removed_bytes;
+
+            let expected_storage_removed_bytes =
+                single_epoch_removed_bytes_map(owner_id, 0, removed_bytes);
+
+            assert_eq!(
+                storage_removed_bytes,
+                StorageRemovedBytes::SectionedStorageRemoval(expected_storage_removed_bytes)
+            );
+
+            expect_storage_flags(
+                &db,
+                &tx,
+                StorageFlags::SingleEpochOwned(0, owner_id),
+                grove_version,
+            );
+
+            verify_references(&db, &tx);
+        }
     }
 
     #[test]
     fn test_batch_root_one_update_smaller_item_different_base_epoch_with_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let owner_id = [1; 32];
+
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        let base_item = b"value1".to_vec();
+        let mut original_item = base_item.clone();
+        original_item.extend(std::iter::repeat(0).take(150));
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(
+                original_item,
+                Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        for n in 0..150 {
+            let tx = db.start_transaction();
+            let mut item = base_item.clone();
+            item.extend(std::iter::repeat(0).take(n));
+            // We are adding n bytes
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"tree".to_vec()],
+                    b"key1".to_vec(),
+                    Element::new_item_with_flags(
+                        item, // value1 if n was 1
+                        Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
+                    ),
+                ),
+                QualifiedGroveDbOp::insert_only_op(
+                    vec![b"refs".to_vec()],
+                    b"ref_key".to_vec(),
+                    Element::new_reference_with_hops(
+                        ReferencePathType::AbsolutePathReference(vec![
+                            b"tree".to_vec(),
+                            b"key1".to_vec(),
+                        ]),
+                        None,
+                    ),
+                ),
+            ];
+
+            apply_batch(&db, ops, &tx, grove_version);
+
+            expect_storage_flags(
+                &db,
+                &tx,
+                StorageFlags::SingleEpochOwned(0, owner_id),
+                grove_version,
+            );
+
+            verify_references(&db, &tx);
+        }
+    }
+
+    #[test]
+    fn test_batch_root_one_update_smaller_item_different_base_epoch_with_previous_flags() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -884,7 +1013,13 @@ mod tests {
         db.insert(
             [b"tree".as_slice()].as_ref(),
             b"key1",
-            Element::new_item_with_flags(b"value15".to_vec(), Some(vec![0])),
+            Element::new_item_with_flags(
+                b"value1500".to_vec(), // the 1500 is 4 bytes
+                Some(
+                    StorageFlags::MultiEpochOwned(0, create_epoch_map(1, 7), owner_id)
+                        .to_element_flags(),
+                ),
+            ),
             None,
             None,
             grove_version,
@@ -897,7 +1032,10 @@ mod tests {
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"tree".to_vec()],
                 b"key1".to_vec(),
-                Element::new_item_with_flags(b"value".to_vec(), Some(vec![1])),
+                Element::new_item_with_flags(
+                    b"value15".to_vec(),
+                    Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
+                ),
             ),
             QualifiedGroveDbOp::insert_only_op(
                 vec![b"refs".to_vec()],
@@ -907,25 +1045,103 @@ mod tests {
                         b"tree".to_vec(),
                         b"key1".to_vec(),
                     ]),
-                    Some(1),
+                    None,
                 ),
             ),
         ];
 
         apply_batch(&db, ops, &tx, grove_version);
 
-        let issues = db
-            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
-            .unwrap();
-        assert_eq!(
-            issues.len(),
-            0,
-            "reference issue: {}",
-            issues
-                .iter()
-                .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
-                .collect::<Vec<_>>()
-                .join(" | ")
+        expect_storage_flags(
+            &db,
+            &tx,
+            StorageFlags::MultiEpochOwned(0, create_epoch_map(1, 5), owner_id),
+            grove_version,
         );
+
+        verify_references(&db, &tx);
+    }
+
+    #[test]
+    fn test_batch_root_one_update_smaller_item_different_base_epoch_with_previous_flags_all_multi_epoch_removal(
+    ) {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let owner_id = [1; 32];
+
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(
+                b"value1500".to_vec(), // the 1500 is 4 bytes
+                Some(
+                    StorageFlags::MultiEpochOwned(0, create_epoch_map(1, 7), owner_id)
+                        .to_element_flags(),
+                ),
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are removing 2 bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(
+                    b"value".to_vec(),
+                    Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
+                ),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"refs".to_vec()],
+                b"ref_key".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"tree".to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    None,
+                ),
+            ),
+        ];
+
+        apply_batch(&db, ops, &tx, grove_version);
+
+        expect_storage_flags(
+            &db,
+            &tx,
+            StorageFlags::SingleEpochOwned(0, owner_id),
+            grove_version,
+        );
+
+        verify_references(&db, &tx);
     }
 }

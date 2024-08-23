@@ -77,6 +77,7 @@ where
                 ))
             },
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_old_value, _value| Ok(None),
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -140,6 +141,7 @@ where
             options,
             old_specialized_cost,
             value_defined_cost_fn,
+            &|_, _| Ok(None),
             &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -169,6 +171,7 @@ where
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+    ///     &|k, v| Ok(None),
     ///     &mut |s, v, o| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
@@ -193,6 +196,7 @@ where
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+    ///     &|k, v| Ok(None),
     ///     &mut |s, v, o| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
@@ -207,6 +211,10 @@ where
         value_defined_cost_fn: Option<
             &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -254,6 +262,7 @@ where
             options,
             old_specialized_cost,
             value_defined_cost_fn,
+            get_temp_new_value_with_old_flags,
             update_tree_value_based_on_costs,
             section_removal_bytes,
             grove_version,
@@ -278,6 +287,7 @@ where
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+    ///     &|k, v| Ok(None),
     ///     &mut |s, o, v| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
@@ -295,25 +305,27 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    /// unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _>(    /// /// ///     /// /// //////
+    /// unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _, _>(    /// /// ///     /// /// //////
     /// batch,
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+    ///     &|o, v| Ok(v.clone()),
     ///     &mut |s, o, v| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
     /// ).unwrap().expect("");
     /// }
     /// ```
-    pub fn apply_unchecked<KB, KA, C, V, U, R>(
+    pub fn apply_unchecked<KB, KA, C, V, T, U, R>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
         old_specialized_cost: &C,
         value_defined_cost_fn: Option<&V>,
+        get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
         grove_version: &GroveVersion,
@@ -323,6 +335,7 @@ where
         KA: AsRef<[u8]>,
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
         U: FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -342,6 +355,7 @@ where
             self.source(),
             old_specialized_cost,
             value_defined_cost_fn,
+            get_temp_new_value_with_old_flags,
             update_tree_value_based_on_costs,
             section_removal_bytes,
             grove_version,
