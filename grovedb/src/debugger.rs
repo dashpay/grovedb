@@ -28,7 +28,7 @@ use crate::{
     GroveDb,
 };
 
-const GROVEDBG_ZIP: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
+const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
 
 pub(super) fn start_visualizer<A>(grovedb: Weak<GroveDb>, addr: A)
 where
@@ -40,7 +40,7 @@ where
         let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
         let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
 
-        fs::write(&grovedbg_zip, &GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
+        fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
         zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
             .expect("cannot extract grovedbg contents");
 
