@@ -17,7 +17,7 @@ grovedb-storage = { version = "1.0.0", path = "../storage", optional = true }
 failure = "0.1.8"
 integer-encoding = "4.0.0"
 indexmap = "2.2.6"
-grovedb-costs = { version = "1.0.0", path = "../costs" }
+grovedb-costs = {  version = "1.0.0", git = "https://github.com/dashpay/grovedb", branch = "fix/JITfix" }
 grovedb-visualize = { version = "1.0.0", path = "../visualize" }
 grovedb-path = { version = "1.0.0", path = "../path" }
 hex = "0.4.3"
