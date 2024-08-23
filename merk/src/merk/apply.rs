@@ -305,13 +305,13 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    /// unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _, _>(    /// /// ///     /// /// //////
+    /// unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _, _>(
     /// batch,
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-    ///     &|o, v| Ok(v.clone()),
+    ///     &|o, v| Ok(None),
     ///     &mut |s, o, v| Ok((false, None)),
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,

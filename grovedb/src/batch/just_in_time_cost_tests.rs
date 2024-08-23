@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_bigger_item_same_epoch_with_reference() {
+    fn test_one_update_bigger_item_same_epoch_with_reference() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_bigger_item_different_epoch_with_reference() {
+    fn test_one_update_bigger_item_different_epoch_with_reference() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -589,8 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_bigger_item_different_base_epoch_with_bytes_in_last_epoch_with_reference(
-    ) {
+    fn test_one_update_bigger_item_different_base_epoch_with_bytes_in_last_epoch_with_reference() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -689,8 +688,8 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_bigger_item_different_base_epoch_with_bytes_in_future_epoch_with_reference(
-    ) {
+    fn test_one_update_bigger_item_different_base_epoch_with_bytes_in_future_epoch_with_reference()
+    {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -789,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_smaller_item_same_base_epoch_with_reference() {
+    fn test_one_update_smaller_item_same_base_epoch_with_reference() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -894,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_smaller_item_different_base_epoch_with_reference() {
+    fn test_one_update_smaller_item_different_base_epoch_with_reference() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -981,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_smaller_item_different_base_epoch_with_previous_flags() {
+    fn test_one_update_smaller_item_different_base_epoch_with_previous_flags() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -1063,8 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_smaller_item_different_base_epoch_with_previous_flags_all_multi_epoch_removal(
-    ) {
+    fn test_one_update_smaller_item_different_base_epoch_with_previous_flags_all_multi_epoch() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
