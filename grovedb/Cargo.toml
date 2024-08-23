@@ -40,6 +40,7 @@ rand = "0.8.5"
 criterion = "0.5.1"
 hex = "0.4.3"
 pretty_assertions = "1.4.0"
+drive-storage-flags = { git = "https://github.com/dashpay/platform", branch = "fix/just_in_time_fee_update_fixes"}
 
 [[bench]]
 name = "insertion_benchmark"
@@ -58,7 +59,7 @@ full = [
     "integer-encoding",
     "grovedb-costs",
     "nohash-hasher",
-    "intmap"
+    "intmap",
 ]
 visualize = [
     "grovedb-visualize",

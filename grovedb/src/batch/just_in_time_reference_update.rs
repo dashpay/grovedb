@@ -1,7 +1,12 @@
 use std::borrow::Cow;
 
 use grovedb_costs::{
-    cost_return_on_error_no_add, storage_cost::StorageCost, CostResult, CostsExt, OperationCost,
+    cost_return_on_error_no_add,
+    storage_cost::{
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        StorageCost,
+    },
+    CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
     tree::{kv::KV, value_hash, TreeNode},
@@ -20,7 +25,7 @@ where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
-    pub(crate) fn process_old_element_flags<G>(
+    pub(crate) fn process_old_element_flags<G, SR>(
         key: &[u8],
         serialized: &[u8],
         new_element: &mut Element,
@@ -28,12 +33,18 @@ where
         old_serialized_element: &[u8],
         is_in_sum_tree: bool,
         flags_update: &mut G,
+        split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
         G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        SR: FnMut(
+            &mut ElementFlags,
+            u32,
+            u32,
+        ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
-        let maybe_old_flags = old_element.get_flags_owned();
+        let mut maybe_old_flags = old_element.get_flags_owned();
 
         let mut cost = OperationCost::default();
 
@@ -57,8 +68,18 @@ where
 
         loop {
             // Calculate storage costs
-            let storage_costs =
+            let mut storage_costs =
                 TreeNode::storage_cost_for_update(new_storage_cost, old_storage_cost);
+
+            if let Some(old_element_flags) = maybe_old_flags.as_mut() {
+                if let BasicStorageRemoval(removed_bytes) = storage_costs.removed_bytes {
+                    let (_, value_removed_bytes) = cost_return_on_error_no_add!(
+                        &cost,
+                        split_removal_bytes(old_element_flags, 0, removed_bytes)
+                    );
+                    storage_costs.removed_bytes = value_removed_bytes;
+                }
+            }
 
             let mut new_element_cloned = original_new_element.clone();
 

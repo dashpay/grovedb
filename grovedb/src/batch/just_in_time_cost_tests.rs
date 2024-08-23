@@ -5,8 +5,9 @@
 mod tests {
     use std::option::Option::None;
 
+    use drive_storage_flags::StorageFlags;
     use grovedb_costs::storage_cost::{
-        removal::StorageRemovedBytes::BasicStorageRemoval,
+        removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
         transition::OperationStorageTransitionType,
     };
     use grovedb_version::version::GroveVersion;
@@ -320,7 +321,104 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_tree_bigger_flags_with_reference() {
+    fn test_batch_root_one_update_bigger_item_same_epoch_with_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 0])),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"refs".to_vec()],
+                b"ref_key".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"tree".to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    Some(1),
+                ),
+            ),
+        ];
+
+        let _ = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| match cost.transition_type() {
+                    OperationStorageTransitionType::OperationUpdateBiggerSize => Ok(false),
+                    OperationStorageTransitionType::OperationUpdateSmallerSize => {
+                        new_flags.extend(vec![1, 2]);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                },
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to not error");
+
+        let issues = db
+            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
+            .unwrap();
+        assert_eq!(
+            issues.len(),
+            0,
+            "reference issue: {}",
+            issues
+                .iter()
+                .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_bigger_item_different_epoch_with_reference() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -406,6 +504,285 @@ mod tests {
                         BasicStorageRemoval(removed_key_bytes),
                         BasicStorageRemoval(removed_value_bytes),
                     ))
+                },
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to not error");
+
+        let issues = db
+            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
+            .unwrap();
+        assert_eq!(
+            issues.len(),
+            0,
+            "reference issue: {}",
+            issues
+                .iter()
+                .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_bigger_item_different_base_epoch_with_bytes_in_epoch_with_reference(
+    ) {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![1, 0, 1, 4])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"refs".to_vec()],
+                b"ref_key".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"tree".to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    Some(1),
+                ),
+            ),
+        ];
+
+        let _ = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| {
+                    StorageFlags::update_element_flags(cost, old_flags, new_flags)
+                },
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to not error");
+
+        let issues = db
+            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
+            .unwrap();
+        assert_eq!(
+            issues.len(),
+            0,
+            "reference issue: {}",
+            issues
+                .iter()
+                .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_smaller_item_same_base_epoch_with_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(b"value15".to_vec(), Some(vec![0])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are removing 2 bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value".to_vec(), Some(vec![0])),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"refs".to_vec()],
+                b"ref_key".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"tree".to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    Some(1),
+                ),
+            ),
+        ];
+
+        let _ = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| match cost.transition_type() {
+                    OperationStorageTransitionType::OperationUpdateBiggerSize => {
+                        unreachable!();
+                    }
+                    OperationStorageTransitionType::OperationUpdateSmallerSize => Ok(false),
+                    _ => unreachable!(),
+                },
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((NoStorageRemoval, BasicStorageRemoval(removed_value_bytes)))
+                },
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to not error");
+
+        let issues = db
+            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
+            .unwrap();
+        assert_eq!(
+            issues.len(),
+            0,
+            "reference issue: {}",
+            issues
+                .iter()
+                .map(|(hash, (a, b, c))| format!("{}: {} {} {}", hash, a, b, c))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_smaller_item_different_base_epoch_with_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(b"value15".to_vec(), Some(vec![0])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are removing 2 bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_item_with_flags(b"value".to_vec(), Some(vec![1])),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"refs".to_vec()],
+                b"ref_key".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"tree".to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    Some(1),
+                ),
+            ),
+        ];
+
+        let _ = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| match cost.transition_type() {
+                    OperationStorageTransitionType::OperationUpdateBiggerSize => {
+                        unreachable!();
+                    }
+                    OperationStorageTransitionType::OperationUpdateSmallerSize => Ok(false),
+                    _ => unreachable!(),
+                },
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((NoStorageRemoval, BasicStorageRemoval(removed_value_bytes)))
                 },
                 Some(&tx),
                 grove_version,

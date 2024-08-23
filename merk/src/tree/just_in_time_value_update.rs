@@ -40,6 +40,14 @@ impl TreeNode {
             // todo: clean up clones
             let original_new_value = self.value_ref().clone();
             loop {
+                if let BasicStorageRemoval(removed_bytes) =
+                    storage_costs.value_storage_cost.removed_bytes
+                {
+                    let (_, value_removed_bytes) =
+                        section_removal_bytes(&old_value, 0, removed_bytes)?;
+                    storage_costs.value_storage_cost.removed_bytes = value_removed_bytes;
+                }
+
                 let (flags_changed, value_defined_cost) = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,

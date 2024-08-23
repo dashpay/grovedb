@@ -1119,6 +1119,7 @@ where
                                             &old_serialized_element,
                                             is_in_sum_tree,
                                             flags_update,
+                                            split_removal_bytes,
                                             grove_version,
                                         )
                                     );
