@@ -1,7 +1,9 @@
 use grovedb::{Element, GroveDb};
+use grovedb_version::version::GroveVersion;
 
 fn main() {
     let root_path: &[&[u8]] = &[];
+    let grove_version = GroveVersion::latest();
 
     // Specify a path and open GroveDB at the path as db
     let path = String::from("../tutorial-storage");

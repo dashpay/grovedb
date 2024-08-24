@@ -6,6 +6,7 @@ use rand::{distributions::Alphanumeric, Rng, };
 use grovedb::element::SumValue;
 use grovedb::replication::CURRENT_STATE_SYNC_VERSION;
 use grovedb::replication::MultiStateSyncInfo;
+use grovedb_version::version::GroveVersion;
 
 const MAIN_ΚΕΥ: &[u8] = b"key_main";
 const MAIN_ΚΕΥ_EMPTY: &[u8] = b"key_main_empty";
@@ -25,47 +26,47 @@ const INSERT_OPTIONS: Option<InsertOptions> = Some(InsertOptions {
     base_root_storage_is_free: true,
 });
 
-fn populate_db(grovedb_path: String) -> GroveDb {
+fn populate_db(grovedb_path: String, grove_version: &GroveVersion) -> GroveDb {
     let db = GroveDb::open(grovedb_path).unwrap();
 
-    insert_empty_tree_db(&db, ROOT_PATH, MAIN_ΚΕΥ);
-    insert_empty_tree_db(&db, ROOT_PATH, MAIN_ΚΕΥ_EMPTY);
-    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_0);
-    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_1);
-    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_2);
+    insert_empty_tree_db(&db, ROOT_PATH, MAIN_ΚΕΥ, &grove_version);
+    insert_empty_tree_db(&db, ROOT_PATH, MAIN_ΚΕΥ_EMPTY, &grove_version);
+    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_0, &grove_version);
+    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_1, &grove_version);
+    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_2, &grove_version);
 
     let tx = db.start_transaction();
     let batch_size = 50;
     for i in 0..=5 {
-        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_0], i * batch_size, i * batch_size + batch_size - 1, &tx);
+        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_0], i * batch_size, i * batch_size + batch_size - 1, &tx, &grove_version);
     }
     let _ = db.commit_transaction(tx);
 
     let tx = db.start_transaction();
     let batch_size = 50;
     for i in 0..=5 {
-        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_1], i * batch_size, i * batch_size + batch_size - 1, &tx);
+        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_1], i * batch_size, i * batch_size + batch_size - 1, &tx, &grove_version);
     }
     let _ = db.commit_transaction(tx);
 
     let tx = db.start_transaction();
     let batch_size = 50;
     for i in 0..=5 {
-        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_2], i * batch_size, i * batch_size + batch_size - 1, &tx);
+        insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_2], i * batch_size, i * batch_size + batch_size - 1, &tx, &grove_version);
     }
     let _ = db.commit_transaction(tx);
 
-    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_REF_0);
+    insert_empty_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_REF_0, &grove_version);
 
     let tx_2 = db.start_transaction();
-    insert_range_ref_double_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_REF_0], KEY_INT_0, 1, 50, &tx_2);
+    insert_range_ref_double_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_REF_0], KEY_INT_0, 1, 50, &tx_2, &grove_version);
     let _ = db.commit_transaction(tx_2);
 
-    insert_empty_sum_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_A);
+    insert_empty_sum_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_A, &grove_version);
 
     let tx_3 = db.start_transaction();
-    insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 1, 500, &tx_3);
-    insert_sum_element_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 501, 550, &tx_3);
+    insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 1, 500, &tx_3, &grove_version);
+    insert_sum_element_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 501, 550, &tx_3, &grove_version);
     let _ = db.commit_transaction(tx_3);
     db
 }
@@ -76,8 +77,9 @@ fn create_empty_db(grovedb_path: String) -> GroveDb   {
 }
 
 fn main() {
+    let grove_version = GroveVersion::latest();
     let path_source = generate_random_path("../tutorial-storage/", "/db_0", 24);
-    let db_source = populate_db(path_source.clone());
+    let db_source = populate_db(path_source.clone(), &grove_version);
 
     let checkpoint_dir = path_source + "/checkpoint";
     let path_checkpoint = Path::new(checkpoint_dir.as_str());
@@ -103,11 +105,11 @@ fn main() {
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
     let state_info = MultiStateSyncInfo::default();
     let tx = db_destination.start_transaction();
-    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &tx).unwrap();
+    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &tx, &grove_version).unwrap();
     db_destination.commit_transaction(tx).unwrap().expect("expected to commit transaction");
 
     println!("\n######### verify db_destination");
-    let incorrect_hashes = db_destination.verify_grovedb(None, grove_version).unwrap();
+    let incorrect_hashes = db_destination.verify_grovedb(None, true, false, grove_version).unwrap();
     if incorrect_hashes.len() > 0 {
         println!("DB verification failed!");
     }
@@ -126,21 +128,21 @@ fn main() {
     let query_path = &[MAIN_ΚΕΥ, KEY_INT_0];
     let query_key = (20487u32).to_be_bytes().to_vec();
     println!("\n######## Query on db_checkpoint_0:");
-    query_db(&db_checkpoint_0, query_path, query_key.clone());
+    query_db(&db_checkpoint_0, query_path, query_key.clone(), &grove_version);
     println!("\n######## Query on db_destination:");
-    query_db(&db_destination, query_path, query_key.clone());
+    query_db(&db_destination, query_path, query_key.clone(), &grove_version);
 
     return;
 
 }
 
-fn insert_empty_tree_db(db: &GroveDb, path: &[&[u8]], key: &[u8])
+fn insert_empty_tree_db(db: &GroveDb, path: &[&[u8]], key: &[u8], grove_version: &GroveVersion)
 {
     db.insert(path, key, Element::empty_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successfully inserted tree");
 }
-fn insert_range_values_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, transaction: &Transaction)
+fn insert_range_values_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, transaction: &Transaction, grove_version: &GroveVersion)
 {
     for i in min_i..=max_i {
         let i_vec = i.to_be_bytes().to_vec();
@@ -157,7 +159,7 @@ fn insert_range_values_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, 
     }
 }
 
-fn insert_range_ref_double_values_db(db: &GroveDb, path: &[&[u8]], ref_key: &[u8], min_i: u32, max_i: u32, transaction: &Transaction)
+fn insert_range_ref_double_values_db(db: &GroveDb, path: &[&[u8]], ref_key: &[u8], min_i: u32, max_i: u32, transaction: &Transaction, grove_version: &GroveVersion)
 {
     for i in min_i..=max_i {
         let i_vec = i.to_be_bytes().to_vec();
@@ -180,13 +182,13 @@ fn insert_range_ref_double_values_db(db: &GroveDb, path: &[&[u8]], ref_key: &[u8
     }
 }
 
-fn insert_empty_sum_tree_db(db: &GroveDb, path: &[&[u8]], key: &[u8])
+fn insert_empty_sum_tree_db(db: &GroveDb, path: &[&[u8]], key: &[u8], grove_version: &GroveVersion)
 {
     db.insert(path, key, Element::empty_sum_tree(), INSERT_OPTIONS, None, grove_version)
         .unwrap()
         .expect("successfully inserted tree");
 }
-fn insert_sum_element_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, transaction: &Transaction)
+fn insert_sum_element_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, transaction: &Transaction, grove_version: &GroveVersion)
 {
     for i in min_i..=max_i {
         //let value : u32 = i;
@@ -214,7 +216,7 @@ fn generate_random_path(prefix: &str, suffix: &str, len: usize) -> String {
     format!("{}{}{}", prefix, random_string, suffix)
 }
 
-fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
+fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>, grove_version: &GroveVersion) {
     let path_vec: Vec<Vec<u8>> = path.iter()
         .map(|&slice| slice.to_vec())
         .collect();
@@ -225,7 +227,7 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>) {
    let path_query = PathQuery::new_unsized(path_vec, query.clone());
 
     let (elements, _) = db
-        .query_item_value(&path_query, true, false, true, None)
+        .query_item_value(&path_query, true, false, true, None, grove_version)
         .unwrap()
         .expect("expected successful get_path_query");
     for e in elements.into_iter() {
@@ -246,6 +248,7 @@ fn sync_db_demo(
     target_db: &GroveDb,
     state_sync_info: MultiStateSyncInfo,
     target_tx: &Transaction,
+    grove_version: &GroveVersion,
 ) -> Result<(), grovedb::Error> {
     let app_hash = source_db.root_hash(None, grove_version).value.unwrap();
     let mut state_sync_info = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx, CURRENT_STATE_SYNC_VERSION, grove_version)?;

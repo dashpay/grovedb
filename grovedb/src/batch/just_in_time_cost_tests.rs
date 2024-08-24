@@ -5,11 +5,11 @@
 mod tests {
     use std::{collections::BTreeMap, option::Option::None};
 
-    use drive_storage_flags::StorageFlags;
     use grovedb_costs::{
         storage_cost::removal::{StorageRemovalPerEpochByIdentifier, StorageRemovedBytes},
         OperationCost,
     };
+    use grovedb_epoch_based_storage_flags::StorageFlags;
     use grovedb_version::version::GroveVersion;
     use intmap::IntMap;
 
@@ -1464,8 +1464,6 @@ mod tests {
             let storage_removed_bytes = apply_batch(&db, ops, &tx, grove_version)
                 .storage_cost
                 .removed_bytes;
-
-            println!("{} {:?}", n, storage_removed_bytes);
 
             if n > 113 {
                 assert_eq!(storage_removed_bytes, StorageRemovedBytes::NoStorageRemoval);

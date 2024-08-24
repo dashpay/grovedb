@@ -21,7 +21,7 @@ hex = "0.4.3"
 itertools = { version = "0.12.1", optional = true }
 derive_more = "0.99.18"
 integer-encoding = { version = "4.0.0", optional = true }
-grovedb-costs = { version = "1.0.0", git = "https://github.com/dashpay/grovedb", branch = "fix/JITfix", optional = true }
+grovedb-costs = { version = "1.0.0", path = "../costs" , optional = true }
 nohash-hasher = { version = "0.2.0", optional = true }
 indexmap = "2.2.6"
 intmap = { version = "2.0.0", optional = true }
@@ -40,7 +40,7 @@ rand = "0.8.5"
 criterion = "0.5.1"
 hex = "0.4.3"
 pretty_assertions = "1.4.0"
-drive-storage-flags = { git = "https://github.com/dashpay/platform", branch = "fix/just_in_time_fee_update_fixes"}
+grovedb-epoch-based-storage-flags = { version = "1.0.0", path = "../grovedb-epoch-based-storage-flags" }
 
 [[bench]]
 name = "insertion_benchmark"
