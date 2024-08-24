@@ -199,11 +199,13 @@ use grovedb_storage::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::{Storage, StorageContext};
+#[cfg(feature = "full")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
+#[cfg(feature = "full")]
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
@@ -212,6 +214,7 @@ use tokio::net::ToSocketAddrs;
 use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
+#[cfg(feature = "full")]
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};

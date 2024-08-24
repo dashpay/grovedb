@@ -152,6 +152,10 @@ pub enum Error {
     #[error(transparent)]
     /// Version error
     VersionError(grovedb_version::error::GroveVersionError),
+
+    #[error("cyclic error")]
+    /// Cyclic reference
+    CyclicError(&'static str),
 }
 
 impl From<Infallible> for Error {

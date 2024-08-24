@@ -12,6 +12,7 @@ grovedb = { path = "../grovedb" }
 grovedb-merk = { path = "../merk" }
 grovedb-storage = { path = "../storage" }
 grovedb-visualize = { path = "../visualize" }
+grovedb-version = { path = "../grovedb-version" }
 grovedb-path = { path = "../path" }
 rand = "0.8.5"
 hex = "0.4"

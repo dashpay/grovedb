@@ -26,6 +26,7 @@ use bincode::{
 };
 #[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+#[cfg(feature = "full")]
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 use indexmap::IndexMap;
