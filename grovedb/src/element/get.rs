@@ -173,11 +173,7 @@ impl Element {
                 });
                 let value_len = cost_size + flags_len;
                 cost.storage_loaded_bytes =
-                    KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
-                        key_ref.len() as u32,
-                        value_len,
-                        false,
-                    )
+                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, false)
             }
             Some(Element::Tree(_, flags)) | Some(Element::SumTree(_, _, flags)) => {
                 let tree_cost_size = if element.as_ref().unwrap().is_sum_tree() {

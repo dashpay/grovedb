@@ -12,18 +12,21 @@ use grovedb_costs::{
 use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(feature = "full")]
 use grovedb_merk::proofs::query::SubqueryBranch;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "full")]
 use grovedb_merk::proofs::Query;
 #[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+#[cfg(feature = "full")]
 use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 
 #[cfg(feature = "full")]
 use crate::operations::proof::util::hex_to_ascii;
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
     element::helpers::raw_decode,
@@ -37,8 +40,8 @@ use crate::{
     util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
-#[cfg(any(feature = "full", feature = "verify"))]
-use crate::{query_result_type::Path, Element, SizedQuery};
+#[cfg(feature = "full")]
+use crate::{query_result_type::Path, SizedQuery};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, Debug)]
@@ -681,7 +684,7 @@ impl Element {
         Ok(()).wrap_with_cost(cost)
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(feature = "full")]
     /// Takes a sized query and a key and returns subquery key and subquery as
     /// tuple
     fn subquery_paths_and_value_for_sized_query(

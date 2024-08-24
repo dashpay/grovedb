@@ -2,9 +2,10 @@
 name = "grovedb-version"
 authors = ["Samuel Westrich <sam@dash.org>"]
 description = "Versioning library for Platform"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
 thiserror = "1.0.59"

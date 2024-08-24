@@ -6,6 +6,7 @@ use std::{
     fmt,
 };
 
+use bincode::{Decode, Encode};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
@@ -21,14 +22,13 @@ use crate::query_result_type::PathKey;
 use crate::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 /// Path query
 ///
 /// Represents a path to a specific GroveDB tree and a corresponding query to
 /// apply to the given tree.
 pub struct PathQuery {
     /// Path
-    // TODO: Make generic over path type
     pub path: Vec<Vec<u8>>,
     /// Query
     pub query: SizedQuery,
@@ -49,7 +49,7 @@ impl fmt::Display for PathQuery {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 /// Holds a query to apply to a tree and an optional limit/offset value.
 /// Limit and offset values affect the size of the result set.
 pub struct SizedQuery {
@@ -132,6 +132,14 @@ impl PathQuery {
     pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
         Self { path, query }
+    }
+
+    /// The max depth of the query, this is the maximum layers we could get back
+    /// from grovedb
+    /// If the max depth can not be calculated we get None
+    /// This would occur if the recursion level was too high
+    pub fn max_depth(&self) -> Option<u16> {
+        self.query.query.max_depth()
     }
 
     /// Gets the path of all terminal keys
@@ -577,6 +585,7 @@ impl<'a> SinglePathSubquery<'a> {
 mod tests {
     use std::{borrow::Cow, ops::RangeFull};
 
+    use bincode::{config::standard, decode_from_slice, encode_to_vec};
     use grovedb_merk::proofs::{
         query::{query_item::QueryItem, SubqueryBranch},
         Query,
@@ -1634,6 +1643,8 @@ mod tests {
             },
         };
 
+        assert_eq!(path_query.max_depth(), Some(4));
+
         {
             let path = vec![];
             let first = path_query
@@ -1709,5 +1720,300 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn test_max_depth_limit() {
+        /// Creates a `Query` with nested `SubqueryBranch` up to the specified
+        /// depth non-recursively.
+        fn create_non_recursive_query(subquery_depth: usize) -> Query {
+            let mut root_query = Query::new_range_full();
+            let mut current_query = &mut root_query;
+
+            for _ in 0..subquery_depth {
+                let new_query = Query::new_range_full();
+                current_query.default_subquery_branch = SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(Box::new(new_query)),
+                };
+                current_query = current_query
+                    .default_subquery_branch
+                    .subquery
+                    .as_mut()
+                    .unwrap();
+            }
+
+            root_query
+        }
+
+        let query = create_non_recursive_query(100);
+
+        assert_eq!(query.max_depth(), Some(101));
+
+        let query = create_non_recursive_query(500);
+
+        assert_eq!(query.max_depth(), None);
+    }
+
+    #[test]
+    fn test_simple_path_query_serialization() {
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec(), b"subtree".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(b"key1".to_vec())],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: true,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_range_query_serialization() {
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Range(b"a".to_vec()..b"z".to_vec())],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: false,
+                },
+                limit: Some(10),
+                offset: Some(2),
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_range_inclusive_query_serialization() {
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeInclusive(b"a".to_vec()..=b"z".to_vec())],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: true,
+                },
+                limit: Some(5),
+                offset: None,
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_conditional_subquery_serialization() {
+        let mut conditional_branches = IndexMap::new();
+        conditional_branches.insert(
+            QueryItem::Key(b"key1".to_vec()),
+            SubqueryBranch {
+                subquery_path: Some(vec![b"conditional_path".to_vec()]),
+                subquery: Some(Box::new(Query::default())),
+            },
+        );
+
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(b"key1".to_vec())],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: Some(conditional_branches),
+                    left_to_right: true,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_empty_path_query_serialization() {
+        let path_query = PathQuery {
+            path: vec![],
+            query: SizedQuery {
+                query: Query::default(),
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_path_query_with_multiple_keys() {
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![
+                        QueryItem::Key(b"key1".to_vec()),
+                        QueryItem::Key(b"key2".to_vec()),
+                        QueryItem::Key(b"key3".to_vec()),
+                    ],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: true,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_path_query_with_full_range() {
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::RangeFull(RangeFull)],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: false,
+                },
+                limit: Some(100),
+                offset: Some(10),
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_path_query_with_complex_conditions() {
+        let mut conditional_branches = IndexMap::new();
+        conditional_branches.insert(
+            QueryItem::Key(b"key1".to_vec()),
+            SubqueryBranch {
+                subquery_path: Some(vec![b"conditional_path1".to_vec()]),
+                subquery: Some(Box::new(Query {
+                    items: vec![QueryItem::Range(b"a".to_vec()..b"m".to_vec())],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: true,
+                })),
+            },
+        );
+        conditional_branches.insert(
+            QueryItem::Range(b"n".to_vec()..b"z".to_vec()),
+            SubqueryBranch {
+                subquery_path: Some(vec![b"conditional_path2".to_vec()]),
+                subquery: Some(Box::new(Query {
+                    items: vec![QueryItem::Key(b"key2".to_vec())],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: false,
+                })),
+            },
+        );
+
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(b"key3".to_vec())],
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: Some(conditional_branches),
+                    left_to_right: true,
+                },
+                limit: Some(50),
+                offset: Some(5),
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_path_query_with_subquery_path() {
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![QueryItem::Key(b"key1".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: Some(vec![b"subtree_path".to_vec()]),
+                        subquery: Some(Box::new(Query {
+                            items: vec![QueryItem::Key(b"key2".to_vec())],
+                            default_subquery_branch: SubqueryBranch::default(),
+                            conditional_subquery_branches: None,
+                            left_to_right: true,
+                        })),
+                    },
+                    conditional_subquery_branches: None,
+                    left_to_right: true,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_path_query_with_empty_query_items() {
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: Query {
+                    items: vec![], // No items in the query
+                    default_subquery_branch: SubqueryBranch::default(),
+                    conditional_subquery_branches: None,
+                    left_to_right: true,
+                },
+                limit: Some(20),
+                offset: None,
+            },
+        };
+
+        let encoded = encode_to_vec(&path_query, standard()).unwrap();
+        let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
+
+        assert_eq!(path_query, decoded);
     }
 }

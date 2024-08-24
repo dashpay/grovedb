@@ -23,12 +23,12 @@ use tower_http::services::ServeDir;
 
 use crate::{
     operations::proof::{GroveDBProof, LayerProof, ProveOptions},
+    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     GroveDb,
 };
 
-const GROVEDBG_ZIP: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip")).len()] =
-    *include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
+const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
 
 pub(super) fn start_visualizer<A>(grovedb: Weak<GroveDb>, addr: A)
 where
@@ -40,7 +40,7 @@ where
         let grovedbg_zip = grovedbg_tmp.path().join("grovedbg.zip");
         let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
 
-        fs::write(&grovedbg_zip, &GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
+        fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
         zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
             .expect("cannot extract grovedbg contents");
 
@@ -48,7 +48,8 @@ where
         let app = Router::new()
             .route("/fetch_node", post(fetch_node))
             .route("/fetch_root_node", post(fetch_root_node))
-            .route("/execute_path_query", post(execute_path_query))
+            .route("/prove_path_query", post(prove_path_query))
+            .route("/fetch_with_path_query", post(fetch_with_path_query))
             .fallback_service(ServeDir::new(grovedbg_www))
             .with_state((shutdown_send, grovedb));
 
@@ -136,7 +137,7 @@ async fn fetch_root_node(
     }
 }
 
-async fn execute_path_query(
+async fn prove_path_query(
     State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
     Json(json_path_query): Json<PathQuery>,
 ) -> Result<Json<grovedbg_types::Proof>, AppError> {
@@ -151,6 +152,66 @@ async fn execute_path_query(
         .prove_internal(&path_query, None, GroveVersion::latest())
         .unwrap()?;
     Ok(Json(proof_to_grovedbg(grovedb_proof)?))
+}
+
+async fn fetch_with_path_query(
+    State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
+    Json(json_path_query): Json<PathQuery>,
+) -> Result<Json<Vec<grovedbg_types::NodeUpdate>>, AppError> {
+    let Some(db) = grovedb.upgrade() else {
+        shutdown.send(()).await.ok();
+        return Err(AppError::Closed);
+    };
+
+    let path_query = path_query_to_grovedb(json_path_query);
+
+    let grovedb_query_result = db
+        .query_raw(
+            &path_query,
+            false,
+            true,
+            false,
+            QueryResultType::QueryPathKeyElementTrioResultType,
+            None,
+            GroveVersion::latest(),
+        )
+        .unwrap()?
+        .0;
+    Ok(Json(query_result_to_grovedbg(&db, grovedb_query_result)?))
+}
+
+fn query_result_to_grovedbg(
+    db: &GroveDb,
+    query_result: QueryResultElements,
+) -> Result<Vec<NodeUpdate>, crate::Error> {
+    let mut result = Vec::new();
+
+    let mut last_merk: Option<(Vec<Vec<u8>>, grovedb_merk::Merk<_>)> = None;
+
+    for qr in query_result.elements.into_iter() {
+        if let QueryResultElement::PathKeyElementTrioResultItem((path, key, _)) = qr {
+            let merk: &grovedb_merk::Merk<_> = match &mut last_merk {
+                Some((last_merk_path, last_merk)) if last_merk_path == &path => last_merk,
+                _ => {
+                    last_merk = Some((
+                        path.clone(),
+                        db.open_non_transactional_merk_at_path(
+                            path.as_slice().into(),
+                            None,
+                            GroveVersion::latest(),
+                        )
+                        .unwrap()?,
+                    ));
+                    &last_merk.as_ref().unwrap().1
+                }
+            };
+
+            if let Some(node) = merk.get_node_dbg(&key)? {
+                result.push(node_to_update(path, node)?);
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, crate::Error> {
@@ -334,19 +395,21 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ReferencePathType::AbsolutePathReference(path),
             _,
             element_flags,
-        ) => grovedbg_types::Element::AbsolutePathReference {
+        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::AbsolutePathReference {
             path,
             element_flags,
-        },
+        }),
         crate::Element::Reference(
             ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
             _,
             element_flags,
-        ) => grovedbg_types::Element::UpstreamRootHeightReference {
-            n_keep: n_keep.into(),
-            path_append,
-            element_flags,
-        },
+        ) => grovedbg_types::Element::Reference(
+            grovedbg_types::Reference::UpstreamRootHeightReference {
+                n_keep: n_keep.into(),
+                path_append,
+                element_flags,
+            },
+        ),
         crate::Element::Reference(
             ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
                 n_keep,
@@ -354,44 +417,50 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ),
             _,
             element_flags,
-        ) => grovedbg_types::Element::UpstreamRootHeightWithParentPathAdditionReference {
-            n_keep: n_keep.into(),
-            path_append,
-            element_flags,
-        },
+        ) => grovedbg_types::Element::Reference(
+            grovedbg_types::Reference::UpstreamRootHeightWithParentPathAdditionReference {
+                n_keep: n_keep.into(),
+                path_append,
+                element_flags,
+            },
+        ),
         crate::Element::Reference(
             ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
             _,
             element_flags,
-        ) => grovedbg_types::Element::UpstreamFromElementHeightReference {
-            n_remove: n_remove.into(),
-            path_append,
-            element_flags,
-        },
+        ) => grovedbg_types::Element::Reference(
+            grovedbg_types::Reference::UpstreamFromElementHeightReference {
+                n_remove: n_remove.into(),
+                path_append,
+                element_flags,
+            },
+        ),
         crate::Element::Reference(
             ReferencePathType::CousinReference(swap_parent),
             _,
             element_flags,
-        ) => grovedbg_types::Element::CousinReference {
+        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::CousinReference {
             swap_parent,
             element_flags,
-        },
+        }),
         crate::Element::Reference(
             ReferencePathType::RemovedCousinReference(swap_parent),
             _,
             element_flags,
-        ) => grovedbg_types::Element::RemovedCousinReference {
-            swap_parent,
-            element_flags,
-        },
+        ) => {
+            grovedbg_types::Element::Reference(grovedbg_types::Reference::RemovedCousinReference {
+                swap_parent,
+                element_flags,
+            })
+        }
         crate::Element::Reference(
             ReferencePathType::SiblingReference(sibling_key),
             _,
             element_flags,
-        ) => grovedbg_types::Element::SiblingReference {
+        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::SiblingReference {
             sibling_key,
             element_flags,
-        },
+        }),
         crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
             value,
             element_flags,
@@ -410,7 +479,9 @@ fn node_to_update(
         key,
         value,
         left_child,
+        left_merk_hash,
         right_child,
+        right_merk_hash,
         value_hash,
         kv_digest_hash,
         feature_type,
@@ -426,7 +497,9 @@ fn node_to_update(
         key,
         element,
         left_child,
+        left_merk_hash,
         right_child,
+        right_merk_hash,
         feature_type: match feature_type {
             TreeFeatureType::BasicMerkNode => grovedbg_types::TreeFeatureType::BasicMerkNode,
             TreeFeatureType::SummedMerkNode(x) => {

@@ -102,7 +102,7 @@ impl GroveDb {
         Ok((root_hash, result))
     }
 
-    fn verify_proof_internal(
+    pub(crate) fn verify_proof_internal(
         proof: &GroveDBProof,
         query: &PathQuery,
         options: VerifyOptions,
@@ -192,7 +192,7 @@ impl GroveDb {
         Ok((root_hash, result))
     }
 
-    fn verify_proof_raw_internal(
+    pub(crate) fn verify_proof_raw_internal(
         proof: &GroveDBProof,
         query: &PathQuery,
         options: VerifyOptions,
@@ -511,23 +511,49 @@ impl GroveDb {
             Self::verify_subset_query(proof, first_query, grove_version)?;
         results.push(elements);
 
-        // we should iterate over each chained path queries
+        // Process the chained path queries
+        Self::process_chained_path_queries(
+            proof,
+            last_root_hash,
+            chained_path_queries,
+            grove_version,
+            &mut results,
+        )?;
+
+        Ok((last_root_hash, results))
+    }
+
+    /// Processes each chained path query and verifies it.
+    pub(in crate::operations::proof) fn process_chained_path_queries<C>(
+        proof: &[u8],
+        last_root_hash: CryptoHash,
+        chained_path_queries: Vec<C>,
+        grove_version: &GroveVersion,
+        results: &mut Vec<Vec<PathKeyOptionalElementTrio>>,
+    ) -> Result<(), Error>
+    where
+        C: Fn(Vec<PathKeyOptionalElementTrio>) -> Option<PathQuery>,
+    {
         for path_query_generator in chained_path_queries {
             let new_path_query = path_query_generator(results[results.len() - 1].clone()).ok_or(
                 Error::InvalidInput("one of the path query generators returns no path query"),
             )?;
+
             let (new_root_hash, new_elements) =
                 Self::verify_subset_query(proof, &new_path_query, grove_version)?;
+
             if new_root_hash != last_root_hash {
                 return Err(Error::InvalidProof(format!(
-                    "root hash for different path queries do no match, first is {}, this one is {}",
+                    "root hash for different path queries do not match, first is {}, this one is \
+                     {}",
                     hex::encode(last_root_hash),
                     hex::encode(new_root_hash)
                 )));
             }
+
             results.push(new_elements);
         }
 
-        Ok((last_root_hash, results))
+        Ok(())
     }
 }

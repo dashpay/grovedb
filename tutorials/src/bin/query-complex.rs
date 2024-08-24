@@ -2,6 +2,7 @@ use grovedb::{
     operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, QueryItem, SizedQuery,
 };
 use rand::Rng;
+use grovedb_version::version::GroveVersion;
 
 const KEY1: &[u8] = b"key1";
 const KEY2: &[u8] = b"key2";
@@ -18,6 +19,8 @@ const INSERT_OPTIONS: Option<InsertOptions> = Some(InsertOptions {
 fn main() {
     // Specify the path where the GroveDB instance exists.
     let path = String::from("../tutorial-storage");
+
+    let grove_version = GroveVersion::latest();
 
     // Open GroveDB at the path.
     let db = GroveDb::open(path).unwrap();
@@ -66,7 +69,7 @@ fn main() {
 
     // Execute the path query and collect the result items in "elements".
     let (elements, _) = db
-        .query_item_value(&path_query, true, false, true, None)
+        .query_item_value(&path_query, true, false, true, None, grove_version)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -76,6 +79,9 @@ fn main() {
 
 fn populate(db: &GroveDb) {
     let root_path: &[&[u8]] = &[];
+
+    let grove_version = GroveVersion::latest();
+
     // Put an empty subtree into the root tree nodes at KEY1.
     // Call this SUBTREE1.
     db.insert(root_path, KEY1, Element::empty_tree(), INSERT_OPTIONS, None, grove_version)

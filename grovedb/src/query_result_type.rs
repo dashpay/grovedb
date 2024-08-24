@@ -283,7 +283,7 @@ impl QueryResultElements {
                 result_item
             {
                 if let Some(last) = path.pop() {
-                    map.entry(last).or_insert_with(Vec::new).push(key);
+                    map.entry(last).or_default().push(key);
                 }
             }
         }
@@ -333,7 +333,7 @@ impl QueryResultElements {
                 result_item
             {
                 if let Some(last) = path.pop() {
-                    map.entry(last).or_insert_with(Vec::new).push(element);
+                    map.entry(last).or_default().push(element);
                 }
             }
         }

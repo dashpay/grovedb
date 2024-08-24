@@ -10,5 +10,6 @@ members = [
     "visualize",
     "path",
     "grovedbg-types",
-    "grovedb-version"
+    "grovedb-version",
+    "grovedb-epoch-based-storage-flags"
 ]

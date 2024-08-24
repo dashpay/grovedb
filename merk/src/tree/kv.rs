@@ -356,25 +356,6 @@ impl KV {
         node_value_size + parent_to_child_cost
     }
 
-    /// Get the costs for the node, this has the parent to child hooks
-    #[inline]
-    pub fn specialized_value_byte_cost_size_for_key_and_value_lengths(
-        not_prefixed_key_len: u32,
-        inner_value_len: u32,
-        is_sum_node: bool,
-    ) -> u32 {
-        // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
-        // costs can not take advantage of the varint aspect of the feature.
-        let feature_len = if is_sum_node { 9 } else { 1 };
-        // Each node stores the key and value, and the node hash and the value hash
-        let node_value_size = inner_value_len + feature_len + HASH_LENGTH_U32_X2;
-        let node_value_size = node_value_size + node_value_size.required_space() as u32;
-        // The node will be a child of another node which stores it's key and hash
-        // That will be added during propagation
-        let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len, is_sum_node);
-        node_value_size + parent_to_child_cost
-    }
-
     /// Get the costs for the value with known value_len and non prefixed key
     /// len sizes, this has the parent to child hooks
     #[inline]
@@ -452,11 +433,7 @@ impl KV {
         let key_len = self.key.len() as u32;
         let is_sum_node = self.feature_type.is_sum_feature();
 
-        Self::specialized_value_byte_cost_size_for_key_and_value_lengths(
-            key_len,
-            value_cost,
-            is_sum_node,
-        )
+        Self::node_value_byte_cost_size(key_len, value_cost, is_sum_node)
     }
 
     /// Costs based on predefined types (Trees, SumTrees, SumItems) that behave
