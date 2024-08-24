@@ -1601,13 +1601,18 @@ where
                     let old_element = Element::deserialize(old_value.as_slice(), grove_version)
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
                     let maybe_old_flags = old_element.get_flags_owned();
-                    let mut new_element = Element::deserialize(new_value.as_slice(), grove_version)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
-                    new_element.set_flags(maybe_old_flags);
-                    new_element
-                        .serialize(grove_version)
-                        .map(Some)
-                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                    if maybe_old_flags.is_some() {
+                        let mut new_element =
+                            Element::deserialize(new_value.as_slice(), grove_version)
+                                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                        new_element.set_flags(maybe_old_flags);
+                        new_element
+                            .serialize(grove_version)
+                            .map(Some)
+                            .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                    } else {
+                        Ok(None)
+                    }
                 },
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization

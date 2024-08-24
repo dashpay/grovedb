@@ -297,17 +297,9 @@ impl Element {
                 });
                 let value_len = SUM_ITEM_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len,
-                    value_len,
-                    is_sum_node,
-                )
+                KV::node_value_byte_cost_size(key_len, value_len, is_sum_node)
             }
-            _ => KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
-                key.len() as u32,
-                value.len() as u32,
-                is_sum_node,
-            ),
+            _ => KV::node_value_byte_cost_size(key.len() as u32, value.len() as u32, is_sum_node),
         };
         Ok(cost)
     }

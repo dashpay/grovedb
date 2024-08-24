@@ -1142,4 +1142,355 @@ mod tests {
 
         verify_references(&db, &tx);
     }
+
+    #[test]
+    fn test_one_update_bigger_sum_item_same_epoch_with_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let owner_id = [1; 32];
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_sum_item_with_flags(
+                1,
+                Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_sum_item_with_flags(
+                    100000000000,
+                    Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
+                ),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"refs".to_vec()],
+                b"ref_key".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"tree".to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    Some(1),
+                ),
+            ),
+        ];
+
+        apply_batch(&db, ops, &tx, grove_version);
+
+        expect_storage_flags(
+            &db,
+            &tx,
+            StorageFlags::new_single_epoch(0, Some(owner_id)),
+            grove_version,
+        );
+
+        verify_references(&db, &tx);
+    }
+
+    #[test]
+    fn test_one_update_bigger_sum_item_different_epoch_with_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let owner_id = [1; 32];
+
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_sum_item_with_flags(
+                1,
+                Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        let tx = db.start_transaction();
+        // We are adding n bytes
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"tree".to_vec()],
+                b"key1".to_vec(),
+                Element::new_sum_item_with_flags(
+                    10000000000,
+                    Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
+                ),
+            ),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"refs".to_vec()],
+                b"ref_key".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        b"tree".to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    None,
+                ),
+            ),
+        ];
+
+        apply_batch(&db, ops, &tx, grove_version);
+
+        expect_storage_flags(
+            &db,
+            &tx,
+            StorageFlags::SingleEpochOwned(0, owner_id), // no change
+            grove_version,
+        );
+
+        verify_references(&db, &tx);
+    }
+
+    #[test]
+    fn test_one_update_bigger_item_add_flags() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let owner_id = [1; 32];
+
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        let base_item = b"value1".to_vec();
+
+        for n in 1..150 {
+            let tx = db.start_transaction();
+            let mut item = base_item.clone();
+            item.extend(std::iter::repeat(0).take(n));
+            // We are adding n bytes
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"tree".to_vec()],
+                    b"key1".to_vec(),
+                    Element::new_item_with_flags(
+                        item, // value100 if n was 2
+                        Some(StorageFlags::new_single_epoch(1, Some(owner_id)).to_element_flags()),
+                    ),
+                ),
+                QualifiedGroveDbOp::insert_only_op(
+                    vec![b"refs".to_vec()],
+                    b"ref_key".to_vec(),
+                    Element::new_reference_with_hops(
+                        ReferencePathType::AbsolutePathReference(vec![
+                            b"tree".to_vec(),
+                            b"key1".to_vec(),
+                        ]),
+                        None,
+                    ),
+                ),
+            ];
+
+            apply_batch(&db, ops, &tx, grove_version);
+
+            let expected_added_bytes = if n < 15 {
+                n as u32 + 3
+            } else if n < 124 {
+                n as u32 + 4 // the varint requires an extra byte
+            } else {
+                n as u32 + 5 // the varint requires an extra byte
+            };
+            expect_storage_flags(
+                &db,
+                &tx,
+                StorageFlags::SingleEpochOwned(1, owner_id),
+                grove_version,
+            );
+
+            verify_references(&db, &tx);
+        }
+    }
+    #[test]
+    fn test_one_update_smaller_item_add_flags() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let owner_id = [1; 32];
+
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        db.insert(
+            EMPTY_PATH,
+            b"refs",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert tree");
+
+        let base_item = b"value1".to_vec();
+        let mut original_item = base_item.clone();
+        original_item.extend(std::iter::repeat(0).take(150));
+
+        db.insert(
+            [b"tree".as_slice()].as_ref(),
+            b"key1",
+            Element::new_item_with_flags(original_item, None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        let to = 150usize;
+
+        for n in (0..to).rev() {
+            let tx = db.start_transaction();
+            let mut item = base_item.clone();
+            item.extend(std::iter::repeat(0).take(n));
+            // We are adding n bytes
+            let ops = vec![
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![b"tree".to_vec()],
+                    b"key1".to_vec(),
+                    Element::new_item_with_flags(
+                        item, // value1 if n was 1
+                        Some(StorageFlags::new_single_epoch(0, Some(owner_id)).to_element_flags()),
+                    ),
+                ),
+                QualifiedGroveDbOp::insert_only_op(
+                    vec![b"refs".to_vec()],
+                    b"ref_key".to_vec(),
+                    Element::new_reference_with_hops(
+                        ReferencePathType::AbsolutePathReference(vec![
+                            b"tree".to_vec(),
+                            b"key1".to_vec(),
+                        ]),
+                        None,
+                    ),
+                ),
+            ];
+
+            let storage_removed_bytes = apply_batch(&db, ops, &tx, grove_version)
+                .storage_cost
+                .removed_bytes;
+
+            println!("{} {:?}", n, storage_removed_bytes);
+
+            if n > 113 {
+                assert_eq!(storage_removed_bytes, StorageRemovedBytes::NoStorageRemoval);
+            } else if n > 17 {
+                let removed_bytes = 114 - n as u32;
+                assert_eq!(
+                    storage_removed_bytes,
+                    StorageRemovedBytes::BasicStorageRemoval(removed_bytes)
+                );
+            } else {
+                let removed_bytes = 114 - n as u32 + 1; // because of varint
+                assert_eq!(
+                    storage_removed_bytes,
+                    StorageRemovedBytes::BasicStorageRemoval(removed_bytes)
+                );
+            };
+
+            expect_storage_flags(
+                &db,
+                &tx,
+                StorageFlags::SingleEpochOwned(0, owner_id),
+                grove_version,
+            );
+
+            verify_references(&db, &tx);
+        }
+    }
 }

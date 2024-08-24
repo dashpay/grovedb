@@ -45,8 +45,13 @@ impl TreeNode {
             // todo: clean up clones
             let original_new_value = self.value_ref().clone();
 
-            let new_value_with_old_flags =
-                get_temp_new_value_with_old_flags(&old_value, &original_new_value)?;
+            let new_value_with_old_flags = if self.inner.kv.value_defined_cost.is_none() {
+                // for items
+                get_temp_new_value_with_old_flags(&old_value, &original_new_value)?
+            } else {
+                // don't do this for sum items or trees
+                None
+            };
 
             let (mut current_tree_plus_hook_size, mut storage_costs) = self
                 .kv_with_parent_hook_size_and_storage_cost_change_for_value(

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use grovedb_costs::{
-    cost_return_on_error_no_add,
+    cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
@@ -14,9 +14,11 @@ use grovedb_merk::{
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
+use integer_encoding::VarInt;
 
 use crate::{
     batch::{MerkError, TreeCacheMerkByPath},
+    element::SUM_ITEM_COST_SIZE,
     Element, ElementFlags, Error,
 };
 
@@ -44,11 +46,39 @@ where
             u32,
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
+        let mut cost = OperationCost::default();
+        if old_element.is_sum_item() {
+            return if new_element.is_sum_item() {
+                let mut maybe_old_flags = old_element.get_flags_owned();
+                if maybe_old_flags.is_some() {
+                    let mut updated_new_element_with_old_flags = new_element.clone();
+                    updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
+                    // There are no storage flags, we can just hash new element
+                    let new_serialized_bytes = cost_return_on_error_no_add!(
+                        &cost,
+                        updated_new_element_with_old_flags.serialize(grove_version)
+                    );
+                    let val_hash = value_hash(&new_serialized_bytes).unwrap_add_cost(&mut cost);
+                    Ok(val_hash).wrap_with_cost(cost)
+                } else {
+                    let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                    Ok(val_hash).wrap_with_cost(cost)
+                }
+            } else {
+                Err(Error::NotSupported(
+                    "going from a sum item to a not sum item is not supported".to_string(),
+                ))
+                .wrap_with_cost(cost)
+            };
+        } else if new_element.is_sum_item() {
+            return Err(Error::NotSupported(
+                "going from an item to a sum item is not supported".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
         let mut maybe_old_flags = old_element.get_flags_owned();
 
-        let mut cost = OperationCost::default();
-
-        let old_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+        let old_storage_cost = KV::node_value_byte_cost_size(
             key.len() as u32,
             old_serialized_element.len() as u32,
             is_in_sum_tree,
@@ -58,21 +88,24 @@ where
 
         let mut serialization_to_use = Cow::Borrowed(serialized);
 
-        // we need to get the new storage_cost as if it had the same storage flags as
-        // before
-        let mut updated_new_element_with_old_flags = original_new_element.clone();
-        updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
+        let mut new_storage_cost = if maybe_old_flags.is_some() {
+            // we need to get the new storage_cost as if it had the same storage flags as
+            // before
+            let mut updated_new_element_with_old_flags = original_new_element.clone();
+            updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
 
-        let serialized_with_old_flags = cost_return_on_error_no_add!(
-            &cost,
-            updated_new_element_with_old_flags.serialize(grove_version)
-        );
-
-        let mut new_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
-            key.len() as u32,
-            serialized_with_old_flags.len() as u32,
-            is_in_sum_tree,
-        );
+            let serialized_with_old_flags = cost_return_on_error_no_add!(
+                &cost,
+                updated_new_element_with_old_flags.serialize(grove_version)
+            );
+            KV::node_value_byte_cost_size(
+                key.len() as u32,
+                serialized_with_old_flags.len() as u32,
+                is_in_sum_tree,
+            )
+        } else {
+            KV::node_value_byte_cost_size(key.len() as u32, serialized.len() as u32, is_in_sum_tree)
+        };
 
         let mut i = 0;
 
@@ -119,7 +152,7 @@ where
                     new_element_cloned.serialize(grove_version)
                 );
 
-                new_storage_cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                new_storage_cost = KV::node_value_byte_cost_size(
                     key.len() as u32,
                     new_serialized_bytes.len() as u32,
                     is_in_sum_tree,
