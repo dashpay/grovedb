@@ -2,7 +2,7 @@
 name = "grovedb-version"
 authors = ["Samuel Westrich <sam@dash.org>"]
 description = "Versioning library for Platform"
-version = "1.1.0"
+version = "2.0.0"
 edition = "2021"
 license = "MIT"
 

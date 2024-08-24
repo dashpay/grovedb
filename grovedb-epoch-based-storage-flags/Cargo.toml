@@ -2,12 +2,12 @@
 name = "grovedb-epoch-based-storage-flags"
 authors = ["Samuel Westrich <sam@dash.org>"]
 description = "Epoch based storage flags for GroveDB"
-version = "1.1.0"
+version = "2.0.0"
 edition = "2021"
 
 [dependencies]
 thiserror = { version = "1.0.63" }
-grovedb-costs = { version = "1.1.0", path = "../costs" }
+grovedb-costs = { version = "2.0.0", path = "../costs" }
 intmap = { version = "2.0.0", features = ["serde"]}
 integer-encoding = { version = "4.0.0" }
 hex = { version = "0.4.3" }
