@@ -42,6 +42,7 @@ use grovedb_costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use hash::{
@@ -63,6 +64,7 @@ pub use tree_feature_type::TreeFeatureType;
 #[cfg(feature = "full")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+#[cfg(feature = "full")]
 use crate::tree::hash::HASH_LENGTH_X2;
 #[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;

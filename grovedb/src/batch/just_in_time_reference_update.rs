@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use grovedb_costs::{
-    cost_return_on_error_default, cost_return_on_error_no_add,
+    cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
@@ -14,11 +14,9 @@ use grovedb_merk::{
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
-use integer_encoding::VarInt;
 
 use crate::{
     batch::{MerkError, TreeCacheMerkByPath},
-    element::SUM_ITEM_COST_SIZE,
     Element, ElementFlags, Error,
 };
 
@@ -49,7 +47,7 @@ where
         let mut cost = OperationCost::default();
         if old_element.is_sum_item() {
             return if new_element.is_sum_item() {
-                let mut maybe_old_flags = old_element.get_flags_owned();
+                let maybe_old_flags = old_element.get_flags_owned();
                 if maybe_old_flags.is_some() {
                     let mut updated_new_element_with_old_flags = new_element.clone();
                     updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());

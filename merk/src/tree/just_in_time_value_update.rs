@@ -5,10 +5,7 @@ use grovedb_costs::storage_cost::{
 
 use crate::{
     merk::defaults::MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES,
-    tree::{
-        kv::{ValueDefinedCostType, KV},
-        TreeNode,
-    },
+    tree::{kv::ValueDefinedCostType, TreeNode},
     Error,
 };
 

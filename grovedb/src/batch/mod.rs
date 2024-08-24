@@ -49,11 +49,8 @@ use grovedb_costs::{
 };
 use grovedb_merk::{
     tree::{
-        kv::{
-            ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-            KV,
-        },
-        value_hash, TreeNode, NULL_HASH,
+        kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+        value_hash, NULL_HASH,
     },
     CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndSum,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},

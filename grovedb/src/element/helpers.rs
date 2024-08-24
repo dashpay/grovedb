@@ -12,6 +12,7 @@ use grovedb_merk::{
     TreeFeatureType,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
+#[cfg(feature = "full")]
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
