@@ -57,7 +57,7 @@ impl GroveDb {
                     key.max_length() as u32,
                     HASH_LENGTH as u32,
                     is_sum_tree,
-                );
+                ) as u64;
             }
         }
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -434,7 +434,7 @@ impl GroveDb {
             in_parent_tree_using_sums,
         );
         cost.seek_count += 1;
-        cost.storage_loaded_bytes += value_size;
+        cost.storage_loaded_bytes += value_size as u64;
         *cost += S::get_storage_context_cost(path.as_vec());
         Ok(())
     }
@@ -561,8 +561,12 @@ impl GroveDb {
             estimated_element_size,
             in_parent_tree_using_sums,
         );
-        cost.seek_count += 1 + estimated_references_sizes.len() as u16;
-        cost.storage_loaded_bytes += value_size + estimated_references_sizes.iter().sum::<u32>();
+        cost.seek_count += 1 + estimated_references_sizes.len() as u32;
+        cost.storage_loaded_bytes += value_size as u64
+            + estimated_references_sizes
+                .iter()
+                .map(|x| *x as u64)
+                .sum::<u64>();
         *cost += S::get_storage_context_cost(path.as_vec());
         Ok(())
     }

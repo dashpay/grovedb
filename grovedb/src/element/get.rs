@@ -163,7 +163,7 @@ impl Element {
                     key_ref.len() as u32,
                     value.as_ref().unwrap().len() as u32,
                     false,
-                )
+                ) as u64
             }
             Some(Element::SumItem(_, flags)) => {
                 let cost_size = SUM_ITEM_COST_SIZE;
@@ -173,7 +173,7 @@ impl Element {
                 });
                 let value_len = cost_size + flags_len;
                 cost.storage_loaded_bytes =
-                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, false)
+                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, false) as u64
             }
             Some(Element::Tree(_, flags)) | Some(Element::SumTree(_, _, flags)) => {
                 let tree_cost_size = if element.as_ref().unwrap().is_sum_tree() {
@@ -191,7 +191,7 @@ impl Element {
                         key_ref.len() as u32,
                         value_len,
                         false,
-                    )
+                    ) as u64
             }
             None => {}
         }

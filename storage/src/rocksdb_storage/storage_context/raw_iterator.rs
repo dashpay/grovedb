@@ -38,7 +38,7 @@ use crate::{
 };
 
 /// 256 bytes for the key and 32 bytes for the prefix
-const MAX_PREFIXED_KEY_LENGTH: u32 = 256 + 32;
+const MAX_PREFIXED_KEY_LENGTH: u64 = 256 + 32;
 
 /// Raw iterator over prefixed storage_cost.
 pub struct PrefixedRocksDbRawIterator<I> {
@@ -91,7 +91,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
 
         let value = if self.valid().unwrap_add_cost(&mut cost) {
             self.raw_iterator.value().map(|v| {
-                cost.storage_loaded_bytes += v.len() as u32;
+                cost.storage_loaded_bytes += v.len() as u64;
                 v
             })
         } else {
@@ -109,7 +109,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                 // Even if we truncate prefix, loaded cost should be maximum for the whole
                 // function
                 if k.starts_with(&self.prefix) {
-                    cost.storage_loaded_bytes += k.len() as u32;
+                    cost.storage_loaded_bytes += k.len() as u64;
                     Some(k.split_at(self.prefix.len()).1)
                 } else {
                     // we can think of the underlying storage layer as stacked blocks
@@ -142,7 +142,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
             .key()
             .map(|k| {
                 if k.starts_with(&self.prefix) {
-                    cost.storage_loaded_bytes += k.len() as u32;
+                    cost.storage_loaded_bytes += k.len() as u64;
                     true
                 } else {
                     // we can think of the underlying storage layer as stacked blocks
@@ -212,7 +212,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
 
         let value = if self.valid().unwrap_add_cost(&mut cost) {
             self.raw_iterator.value().map(|v| {
-                cost.storage_loaded_bytes += v.len() as u32;
+                cost.storage_loaded_bytes += v.len() as u64;
                 v
             })
         } else {
@@ -230,7 +230,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                 // Even if we truncate prefix, loaded cost should be maximum for the whole
                 // function
                 if k.starts_with(&self.prefix) {
-                    cost.storage_loaded_bytes += k.len() as u32;
+                    cost.storage_loaded_bytes += k.len() as u64;
                     Some(k.split_at(self.prefix.len()).1)
                 } else {
                     // we can think of the underlying storage layer as stacked blocks
@@ -263,7 +263,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
             .key()
             .map(|k| {
                 if k.starts_with(&self.prefix) {
-                    cost.storage_loaded_bytes += k.len() as u32;
+                    cost.storage_loaded_bytes += k.len() as u64;
                     true
                 } else {
                     // we can think of the underlying storage layer as stacked blocks
