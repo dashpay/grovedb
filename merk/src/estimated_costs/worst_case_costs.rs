@@ -210,7 +210,7 @@ pub fn add_worst_case_merk_propagate(
     // todo: verify these numbers
     cost.storage_cost.replaced_bytes += nodes_updated * MERK_BIGGEST_VALUE_SIZE;
     cost.storage_loaded_bytes +=
-        (nodes_updated * (MERK_BIGGEST_VALUE_SIZE + MERK_BIGGEST_KEY_SIZE)) as u64;
+        nodes_updated as u64 * (MERK_BIGGEST_VALUE_SIZE + MERK_BIGGEST_KEY_SIZE) as u64;
     cost.seek_count += nodes_updated as u32;
     cost.hash_node_calls += nodes_updated * 2;
     Ok(())
