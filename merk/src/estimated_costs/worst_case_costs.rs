@@ -82,7 +82,8 @@ pub fn add_worst_case_get_merk_node(
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
     cost.storage_loaded_bytes +=
-        TreeNode::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node);
+        TreeNode::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node)
+            as u64;
     Ok(())
 }
 
@@ -94,7 +95,7 @@ pub fn add_worst_case_merk_has_value(
     max_element_size: u32,
 ) {
     cost.seek_count += 1;
-    cost.storage_loaded_bytes += not_prefixed_key_len + max_element_size;
+    cost.storage_loaded_bytes += not_prefixed_key_len as u64 + max_element_size as u64;
 }
 
 #[cfg(feature = "full")]
@@ -208,8 +209,9 @@ pub fn add_worst_case_merk_propagate(
 
     // todo: verify these numbers
     cost.storage_cost.replaced_bytes += nodes_updated * MERK_BIGGEST_VALUE_SIZE;
-    cost.storage_loaded_bytes += nodes_updated * (MERK_BIGGEST_VALUE_SIZE + MERK_BIGGEST_KEY_SIZE);
-    cost.seek_count += nodes_updated as u16;
+    cost.storage_loaded_bytes +=
+        (nodes_updated * (MERK_BIGGEST_VALUE_SIZE + MERK_BIGGEST_KEY_SIZE)) as u64;
+    cost.seek_count += nodes_updated as u32;
     cost.hash_node_calls += nodes_updated * 2;
     Ok(())
 }
@@ -220,8 +222,8 @@ pub fn add_worst_case_cost_for_is_empty_tree_except(
     cost: &mut OperationCost,
     except_keys_count: u16,
 ) {
-    cost.seek_count += except_keys_count + 1;
-    cost.storage_loaded_bytes += MAX_PREFIXED_KEY_SIZE * (except_keys_count as u32 + 1);
+    cost.seek_count += except_keys_count as u32 + 1;
+    cost.storage_loaded_bytes += MAX_PREFIXED_KEY_SIZE * (except_keys_count as u64 + 1);
 }
 
 /// Add average case cost for is_empty_tree_except
@@ -231,6 +233,7 @@ pub fn add_average_case_cost_for_is_empty_tree_except(
     except_keys_count: u16,
     estimated_prefixed_key_size: u32,
 ) {
-    cost.seek_count += except_keys_count + 1;
-    cost.storage_loaded_bytes += estimated_prefixed_key_size * (except_keys_count as u32 + 1);
+    cost.seek_count += except_keys_count as u32 + 1;
+    cost.storage_loaded_bytes +=
+        estimated_prefixed_key_size as u64 * (except_keys_count as u64 + 1);
 }

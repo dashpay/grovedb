@@ -83,11 +83,11 @@ pub type ChildrenSizesWithIsSumTree = Option<(
 #[derive(Debug, Default, Eq, PartialEq, Clone)]
 pub struct OperationCost {
     /// How many storage_cost seeks were done.
-    pub seek_count: u16,
+    pub seek_count: u32,
     /// Storage cost of the operation.
     pub storage_cost: StorageCost,
     /// How many bytes were loaded from hard drive.
-    pub storage_loaded_bytes: u32,
+    pub storage_loaded_bytes: u64,
     /// How many times node hashing was done (for merkelized tree).
     pub hash_node_calls: u32,
 }
@@ -100,7 +100,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `seek_count`.
-    pub fn with_seek_count(seek_count: u16) -> Self {
+    pub fn with_seek_count(seek_count: u32) -> Self {
         OperationCost {
             seek_count,
             ..Default::default()
@@ -121,7 +121,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `storage_loaded_bytes`.
-    pub fn with_storage_loaded_bytes(storage_loaded_bytes: u32) -> Self {
+    pub fn with_storage_loaded_bytes(storage_loaded_bytes: u64) -> Self {
         OperationCost {
             storage_loaded_bytes,
             ..Default::default()
@@ -527,7 +527,7 @@ mod tests {
         let loaded_value = b"ayylmao";
         let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,
-            storage_loaded_bytes: x.len() as u32,
+            storage_loaded_bytes: x.len() as u64,
             ..Default::default()
         });
         assert_eq!(
