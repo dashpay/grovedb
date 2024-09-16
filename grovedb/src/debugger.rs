@@ -1,6 +1,11 @@
 //! GroveDB debugging support module.
 
-use std::{collections::BTreeMap, fs, sync::Weak};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    sync::{Arc, Weak},
+    time::{Instant, SystemTime},
+};
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use grovedb_merk::{
@@ -11,13 +16,18 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 use grovedbg_types::{
-    MerkProofNode, MerkProofOp, NodeFetchRequest, NodeUpdate, Path, PathQuery, Query, QueryItem,
-    SizedQuery, SubqueryBranch,
+    DropSessionRequest, MerkProofNode, MerkProofOp, NewSessionResponse, NodeFetchRequest,
+    NodeUpdate, Path, PathQuery, Query, QueryItem, SessionId, SizedQuery, SubqueryBranch,
+    WithSession,
 };
 use indexmap::IndexMap;
+use tempfile::tempdir;
 use tokio::{
     net::ToSocketAddrs,
-    sync::mpsc::{self, Sender},
+    sync::{
+        mpsc::{self, Sender},
+        RwLock, RwLockReadGuard,
+    },
 };
 use tower_http::services::ServeDir;
 
@@ -45,13 +55,22 @@ where
             .expect("cannot extract grovedbg contents");
 
         let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
+
+        let state: AppState = AppState {
+            shutdown: shutdown_send,
+            grovedb,
+            sessions: Default::default(),
+        };
+
         let app = Router::new()
+            .route("/new_session", post(new_session))
+            .route("/drop_session", post(drop_session))
             .route("/fetch_node", post(fetch_node))
             .route("/fetch_root_node", post(fetch_root_node))
             .route("/prove_path_query", post(prove_path_query))
             .route("/fetch_with_path_query", post(fetch_with_path_query))
             .fallback_service(ServeDir::new(grovedbg_www))
-            .with_state((shutdown_send, grovedb));
+            .with_state(state);
 
         tokio::runtime::Runtime::new()
             .unwrap()
@@ -69,8 +88,79 @@ where
     });
 }
 
+#[derive(Clone)]
+struct AppState {
+    shutdown: Sender<()>,
+    grovedb: Weak<GroveDb>,
+    sessions: Arc<RwLock<HashMap<SessionId, Session>>>,
+}
+
+impl AppState {
+    async fn verify_running(&self) -> Result<(), AppError> {
+        if self.grovedb.strong_count() == 0 {
+            self.shutdown.send(()).await.ok();
+            Err(AppError::Closed)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn new_session(&self) -> Result<SessionId, AppError> {
+        let grovedb = self.grovedb.upgrade().ok_or(AppError::Closed)?;
+        let id = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_secs();
+        self.sessions
+            .write()
+            .await
+            .insert(id, Session::new(&grovedb)?);
+
+        Ok(id)
+    }
+
+    async fn drop_session(&self, id: SessionId) {
+        self.sessions.write().await.remove(&id);
+    }
+
+    async fn get_snapshot(&self, id: SessionId) -> Result<RwLockReadGuard<GroveDb>, AppError> {
+        self.verify_running().await?;
+        let mut lock = self.sessions.write().await;
+        if let Some(session) = lock.get_mut(&id) {
+            session.last_access = Instant::now();
+            Ok(RwLockReadGuard::map(lock.downgrade(), |l| {
+                &l.get(&id).as_ref().expect("checked above").snapshot
+            }))
+        } else {
+            Err(AppError::NoSession)
+        }
+    }
+}
+
+struct Session {
+    last_access: Instant,
+    _tempdir: tempfile::TempDir,
+    snapshot: GroveDb,
+}
+
+impl Session {
+    fn new(grovedb: &GroveDb) -> Result<Self, AppError> {
+        let tempdir = tempdir().map_err(|e| AppError::Any(e.to_string()))?;
+        grovedb
+            .create_checkpoint(tempdir.path())
+            .map_err(|e| AppError::Any(e.to_string()))?;
+        let snapshot = GroveDb::open(tempdir.path()).map_err(|e| AppError::Any(e.to_string()))?;
+        Ok(Session {
+            last_access: Instant::now(),
+            _tempdir: tempdir,
+            snapshot,
+        })
+    }
+}
+
 enum AppError {
     Closed,
+    NoSession,
     Any(String),
 }
 
@@ -79,6 +169,9 @@ impl IntoResponse for AppError {
         match self {
             AppError::Closed => {
                 (StatusCode::SERVICE_UNAVAILABLE, "GroveDB is closed").into_response()
+            }
+            AppError::NoSession => {
+                (StatusCode::UNAUTHORIZED, "No session with this id").into_response()
             }
             AppError::Any(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         }
@@ -91,16 +184,28 @@ impl<E: std::error::Error> From<E> for AppError {
     }
 }
 
-async fn fetch_node(
-    State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
-    Json(NodeFetchRequest { path, key }): Json<NodeFetchRequest>,
-) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let Some(db) = grovedb.upgrade() else {
-        shutdown.send(()).await.ok();
-        return Err(AppError::Closed);
-    };
+async fn new_session(State(state): State<AppState>) -> Result<Json<NewSessionResponse>, AppError> {
+    Ok(Json(NewSessionResponse {
+        session_id: state.new_session().await?,
+    }))
+}
 
-    // todo: GroveVersion::latest() to actual version
+async fn drop_session(
+    State(state): State<AppState>,
+    Json(DropSessionRequest { session_id }): Json<DropSessionRequest>,
+) {
+    state.drop_session(session_id).await;
+}
+
+async fn fetch_node(
+    State(state): State<AppState>,
+    Json(WithSession {
+        session_id,
+        request: NodeFetchRequest { path, key },
+    }): Json<WithSession<NodeFetchRequest>>,
+) -> Result<Json<Option<NodeUpdate>>, AppError> {
+    let db = state.get_snapshot(session_id).await?;
+
     let merk = db
         .open_non_transactional_merk_at_path(path.as_slice().into(), None, GroveVersion::latest())
         .unwrap()?;
@@ -115,14 +220,14 @@ async fn fetch_node(
 }
 
 async fn fetch_root_node(
-    State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
+    State(state): State<AppState>,
+    Json(WithSession {
+        session_id,
+        request: (),
+    }): Json<WithSession<()>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let Some(db) = grovedb.upgrade() else {
-        shutdown.send(()).await.ok();
-        return Err(AppError::Closed);
-    };
+    let db = state.get_snapshot(session_id).await?;
 
-    // todo: GroveVersion::latest() to actual version
     let merk = db
         .open_non_transactional_merk_at_path(SubtreePath::empty(), None, GroveVersion::latest())
         .unwrap()?;
@@ -138,13 +243,13 @@ async fn fetch_root_node(
 }
 
 async fn prove_path_query(
-    State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
-    Json(json_path_query): Json<PathQuery>,
+    State(state): State<AppState>,
+    Json(WithSession {
+        session_id,
+        request: json_path_query,
+    }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<grovedbg_types::Proof>, AppError> {
-    let Some(db) = grovedb.upgrade() else {
-        shutdown.send(()).await.ok();
-        return Err(AppError::Closed);
-    };
+    let db = state.get_snapshot(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 
@@ -155,13 +260,13 @@ async fn prove_path_query(
 }
 
 async fn fetch_with_path_query(
-    State((shutdown, grovedb)): State<(Sender<()>, Weak<GroveDb>)>,
-    Json(json_path_query): Json<PathQuery>,
+    State(state): State<AppState>,
+    Json(WithSession {
+        session_id,
+        request: json_path_query,
+    }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<Vec<grovedbg_types::NodeUpdate>>, AppError> {
-    let Some(db) = grovedb.upgrade() else {
-        shutdown.send(()).await.ok();
-        return Err(AppError::Closed);
-    };
+    let db = state.get_snapshot(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 
@@ -487,7 +592,6 @@ fn node_to_update(
         feature_type,
     }: NodeDbg,
 ) -> Result<NodeUpdate, crate::Error> {
-    // todo: GroveVersion::latest() to actual version
     let grovedb_element = crate::Element::deserialize(&value, GroveVersion::latest())?;
 
     let element = element_to_grovedbg(grovedb_element);
