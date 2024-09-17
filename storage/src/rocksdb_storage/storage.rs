@@ -280,7 +280,7 @@ impl RocksDbStorage {
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len;
+                        cost.storage_loaded_bytes += value_len as u64;
                         let key_len = key.len() as u32;
                         // todo: improve deletion
                         pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
@@ -307,7 +307,7 @@ impl RocksDbStorage {
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len;
+                        cost.storage_loaded_bytes += value_len as u64;
 
                         let key_len = key.len() as u32;
                         // todo: improve deletion
@@ -337,7 +337,7 @@ impl RocksDbStorage {
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len;
+                        cost.storage_loaded_bytes += value_len as u64;
 
                         let key_len = key.len() as u32;
                         // todo: improve deletion
@@ -367,7 +367,7 @@ impl RocksDbStorage {
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len;
+                        cost.storage_loaded_bytes += value_len as u64;
 
                         let key_len = key.len() as u32;
                         // todo: improve deletion
