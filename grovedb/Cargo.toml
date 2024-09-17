@@ -27,13 +27,14 @@ indexmap = "2.2.6"
 intmap = { version = "2.0.0", optional = true }
 grovedb-path = { version = "2.0.3", path = "../path" }
 grovedbg-types = { version = "2.0.3", path = "../grovedbg-types", optional = true }
-tokio = { version = "1.37.0", features = ["rt-multi-thread", "net"], optional = true }
-axum = { version = "0.7.5", features = ["macros"], optional = true }
-tower-http = { version = "0.5.2", features = ["fs"], optional = true }
+tokio = { version = "1.37", features = ["rt-multi-thread", "net"], optional = true }
+axum = { version = "0.7", features = ["macros"], optional = true }
+tower-http = { version = "0.5", features = ["fs"], optional = true }
 blake3 = "1.4.0"
 bitvec = "1"
 zip-extensions = { version ="0.6.2", optional = true }
 grovedb-version = { path = "../grovedb-version", version = "2.0.3" }
+tokio-util = { version = "0.7", optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
@@ -74,6 +75,7 @@ estimated_costs = ["full"]
 grovedbg = [
     "grovedbg-types",
     "tokio",
+    "tokio-util",
     "full",
     "grovedb-merk/grovedbg",
     "axum",

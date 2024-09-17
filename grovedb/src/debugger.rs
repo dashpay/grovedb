@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     sync::{Arc, Weak},
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
@@ -24,11 +24,11 @@ use indexmap::IndexMap;
 use tempfile::tempdir;
 use tokio::{
     net::ToSocketAddrs,
-    sync::{
-        mpsc::{self, Sender},
-        RwLock, RwLockReadGuard,
-    },
+    select,
+    sync::{RwLock, RwLockReadGuard},
+    time::sleep,
 };
+use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
 
 use crate::{
@@ -39,6 +39,8 @@ use crate::{
 };
 
 const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
+
+const SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 10);
 
 pub(super) fn start_visualizer<A>(grovedb: Weak<GroveDb>, addr: A)
 where
@@ -54,10 +56,10 @@ where
         zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
             .expect("cannot extract grovedbg contents");
 
-        let (shutdown_send, mut shutdown_receive) = mpsc::channel::<()>(1);
+        let cancellation_token = CancellationToken::new();
 
         let state: AppState = AppState {
-            shutdown: shutdown_send,
+            cancellation_token: cancellation_token.clone(),
             grovedb,
             sessions: Default::default(),
         };
@@ -70,35 +72,53 @@ where
             .route("/prove_path_query", post(prove_path_query))
             .route("/fetch_with_path_query", post(fetch_with_path_query))
             .fallback_service(ServeDir::new(grovedbg_www))
-            .with_state(state);
+            .with_state(state.clone());
 
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async move {
-                let listener = tokio::net::TcpListener::bind(addr)
-                    .await
-                    .expect("can't bind visualizer port");
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(async move {
-                        shutdown_receive.recv().await;
-                    })
-                    .await
-                    .unwrap()
-            });
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let cloned_cancellation_token = cancellation_token.clone();
+        rt.spawn(async move {
+            loop {
+                select! {
+                    _ = cloned_cancellation_token.cancelled() => break,
+                    _ = sleep(Duration::from_secs(10)) => {
+                        let now = Instant::now();
+                        let mut lock = state.sessions.write().await;
+                        let to_delete: Vec<SessionId> = lock.iter().filter_map(
+                            |(id, session)| (session.last_access < now - SESSION_TIMEOUT).then_some(*id)
+                        ).collect();
+
+                        to_delete.into_iter().for_each(|id| { lock.remove(&id); });
+                    }
+                }
+            }
+        });
+
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .expect("can't bind visualizer port");
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    cancellation_token.cancelled().await;
+                })
+                .await
+                .unwrap()
+        });
     });
 }
 
 #[derive(Clone)]
 struct AppState {
-    shutdown: Sender<()>,
+    cancellation_token: CancellationToken,
     grovedb: Weak<GroveDb>,
     sessions: Arc<RwLock<HashMap<SessionId, Session>>>,
 }
 
 impl AppState {
-    async fn verify_running(&self) -> Result<(), AppError> {
+    fn verify_running(&self) -> Result<(), AppError> {
         if self.grovedb.strong_count() == 0 {
-            self.shutdown.send(()).await.ok();
+            self.cancellation_token.cancel();
             Err(AppError::Closed)
         } else {
             Ok(())
@@ -124,7 +144,7 @@ impl AppState {
     }
 
     async fn get_snapshot(&self, id: SessionId) -> Result<RwLockReadGuard<GroveDb>, AppError> {
-        self.verify_running().await?;
+        self.verify_running()?;
         let mut lock = self.sessions.write().await;
         if let Some(session) = lock.get_mut(&id) {
             session.last_access = Instant::now();
@@ -146,10 +166,11 @@ struct Session {
 impl Session {
     fn new(grovedb: &GroveDb) -> Result<Self, AppError> {
         let tempdir = tempdir().map_err(|e| AppError::Any(e.to_string()))?;
+        let path = tempdir.path().join("grovedbg_session");
         grovedb
-            .create_checkpoint(tempdir.path())
+            .create_checkpoint(&path)
             .map_err(|e| AppError::Any(e.to_string()))?;
-        let snapshot = GroveDb::open(tempdir.path()).map_err(|e| AppError::Any(e.to_string()))?;
+        let snapshot = GroveDb::open(path).map_err(|e| AppError::Any(e.to_string()))?;
         Ok(Session {
             last_access: Instant::now(),
             _tempdir: tempdir,
