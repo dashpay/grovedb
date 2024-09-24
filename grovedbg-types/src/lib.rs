@@ -6,6 +6,23 @@ use serde_with::{base64::Base64, serde_as};
 pub type Key = Vec<u8>;
 pub type Path = Vec<PathSegment>;
 pub type PathSegment = Vec<u8>;
+pub type SessionId = u64;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WithSession<R> {
+    pub session_id: SessionId,
+    pub request: R,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewSessionResponse {
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DropSessionRequest {
+    pub session_id: SessionId,
+}
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

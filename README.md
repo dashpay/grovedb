@@ -242,7 +242,7 @@ let's say 10000, the following snippet should do:
 
 ```rust
     let db = Arc::new(GroveDb::open("db").unwrap());
-    db.start_visualzier(10000);
+    db.start_visualizer(10000);
 ```
 
 Just remember to use Arc because the HTTP server might outlast the GroveDB instance.
