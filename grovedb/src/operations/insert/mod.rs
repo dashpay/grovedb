@@ -553,12 +553,13 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         check_grovedb_v0_with_cost!(
-            "insert_if_not_exists",
+            "insert_if_not_exists_return_existing_element",
             grove_version
                 .grovedb_versions
                 .operations
                 .insert
                 .insert_if_not_exists_return_existing_element
+        );
         );
 
         let mut cost = OperationCost::default();
