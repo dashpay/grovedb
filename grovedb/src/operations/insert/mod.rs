@@ -543,7 +543,7 @@ impl GroveDb {
                 .grovedb_versions
                 .operations
                 .insert
-                .insert_if_not_exists
+                .insert_if_not_exists_return_existing_element
         );
 
         let mut cost = OperationCost::default();
