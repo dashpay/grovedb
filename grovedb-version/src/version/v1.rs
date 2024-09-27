@@ -94,6 +94,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 add_element_on_transaction: 0,
                 add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
+                insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
             },
             delete: GroveDBOperationsDeleteVersions {
