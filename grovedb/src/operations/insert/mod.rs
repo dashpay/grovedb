@@ -486,7 +486,21 @@ impl GroveDb {
     }
 
     /// Insert if not exists
-    /// The bool return is whether we were able to insert
+    /// Insert if not exists
+    ///
+    /// Inserts an element at the specified path and key if it does not already exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path where the element should be inserted.
+    /// * `key` - The key under which the element should be inserted.
+    /// * `element` - The element to insert.
+    /// * `transaction` - The transaction argument, if any.
+    /// * `grove_version` - The GroveDB version.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `CostResult<bool, Error>` indicating whether the element was inserted (`true`) or already existed (`false`).
     pub fn insert_if_not_exists<'b, B, P>(
         &self,
         path: P,
