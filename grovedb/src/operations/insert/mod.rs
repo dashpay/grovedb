@@ -486,6 +486,7 @@ impl GroveDb {
     }
 
     /// Insert if not exists
+    /// The bool return is whether we were able to insert
     pub fn insert_if_not_exists<'b, B, P>(
         &self,
         path: P,
@@ -518,6 +519,45 @@ impl GroveDb {
         } else {
             self.insert(subtree_path, key, element, None, transaction, grove_version)
                 .map_ok(|_| true)
+                .add_cost(cost)
+        }
+    }
+
+    /// Insert if not exists
+    /// If the item does exist return it
+    pub fn insert_if_not_exists_return_existing_element<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        element: Element,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Element>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        check_grovedb_v0_with_cost!(
+            "insert_if_not_exists",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_if_not_exists
+        );
+
+        let mut cost = OperationCost::default();
+        let subtree_path: SubtreePath<_> = path.into();
+
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_optional(subtree_path.clone(), key, transaction, grove_version)
+        );
+        if previous_element.is_some() {
+            Ok(previous_element).wrap_with_cost(cost)
+        } else {
+            self.insert(subtree_path, key, element, None, transaction, grove_version)
+                .map_ok(|_| None)
                 .add_cost(cost)
         }
     }
