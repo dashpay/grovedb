@@ -56,6 +56,7 @@ pub struct QueryOptions {
     /// hence we would continue on the increasingly expensive query.
     pub decrease_limit_on_range_with_no_sub_elements: bool,
     pub error_if_intermediate_path_tree_not_present: bool,
+    pub error_if_query_item_as_key_not_present: bool,
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -74,6 +75,11 @@ impl fmt::Display for QueryOptions {
             "  error_if_intermediate_path_tree_not_present: {}",
             self.error_if_intermediate_path_tree_not_present
         )?;
+        writeln!(
+            f,
+            "  error_if_query_item_as_key_not_present: {}",
+            self.error_if_query_item_as_key_not_present
+        )?;
         write!(f, "}}")
     }
 }
@@ -86,6 +92,7 @@ impl Default for QueryOptions {
             allow_cache: true,
             decrease_limit_on_range_with_no_sub_elements: true,
             error_if_intermediate_path_tree_not_present: true,
+            error_if_query_item_as_key_not_present: true,
         }
     }
 }
@@ -808,10 +815,26 @@ impl Element {
                         if !query_options.error_if_intermediate_path_tree_not_present {
                             match e {
                                 Error::PathParentLayerNotFound(_) => Ok(()),
-                                _ => Err(e),
+                                _ => {
+                                    if !query_options.error_if_query_item_as_key_not_present {
+                                        match e {
+                                            Error::PathKeyNotFound(_) => Ok(()),
+                                            _ => Err(e),
+                                        }
+                                    } else {
+                                        Err(e)
+                                    }
+                                }
                             }
                         } else {
-                            Err(e)
+                            if !query_options.error_if_query_item_as_key_not_present {
+                                match e {
+                                    Error::PathKeyNotFound(_) => Ok(()),
+                                    _ => Err(e),
+                                }
+                            } else {
+                                Err(e)
+                            }
                         }
                     }
                 }

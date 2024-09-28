@@ -561,6 +561,7 @@ where {
                 allow_cache,
                 decrease_limit_on_range_with_no_sub_elements,
                 error_if_intermediate_path_tree_not_present,
+                error_if_query_item_as_key_not_present: true,
             },
             result_type,
             transaction,
@@ -664,14 +665,19 @@ where {
 
         let (elements, _) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
+            Element::get_path_query(
+                &self.db,
                 path_query,
-                allow_cache,
-                decrease_limit_on_range_with_no_sub_elements,
-                error_if_intermediate_path_tree_not_present,
+                QueryOptions {
+                    allow_get_raw: true,
+                    allow_cache,
+                    decrease_limit_on_range_with_no_sub_elements,
+                    error_if_intermediate_path_tree_not_present,
+                    error_if_query_item_as_key_not_present: false,
+                },
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 transaction,
-                grove_version
+                grove_version,
             )
         );
 
