@@ -4,16 +4,14 @@ version = "0.1.0"
 edition = "2021"
 default-run = "tutorials"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-#grovedb = { git = "https://github.com/dashpay/grovedb.git" }
-grovedb = { path = "../grovedb" }
 grovedb-merk = { path = "../merk" }
-grovedb-storage = { path = "../storage" }
-grovedb-visualize = { path = "../visualize" }
-grovedb-version = { path = "../grovedb-version" }
+grovedb = { path = "../grovedb" }
 grovedb-path = { path = "../path" }
+grovedb-storage = { path = "../storage" }
+grovedb-version = { path = "../grovedb-version" }
+grovedb-visualize = { path = "../visualize" }
+
 rand = "0.8.5"
 hex = "0.4"
 
