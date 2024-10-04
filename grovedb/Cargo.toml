@@ -51,9 +51,9 @@ name = "insertion_benchmark"
 harness = false
 
 [features]
-default = ["full", "serde-support"]
+default = ["full"]
 proof_debug = ["grovedb-merk/proof_debug"]
-serde-support = ["serde", "grovedb-merk/serde-support", "indexmap/serde"]
+serde = ["dep:serde", "grovedb-merk/serde", "indexmap/serde"]
 full = [
     "grovedb-merk/full",
     "thiserror",

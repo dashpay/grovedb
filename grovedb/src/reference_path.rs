@@ -14,10 +14,7 @@ use crate::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
-#[cfg_attr(
-    feature = "serde-support",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Reference path variants
 #[derive(Hash, Eq, PartialEq, Encode, Decode, Clone)]
 pub enum ReferencePathType {

@@ -57,7 +57,7 @@ optional = true
 [features]
 default = ["full"]
 proof_debug = []
-serde-support = ["serde", "indexmap/serde"]
+serde = ["dep:serde", "indexmap/serde"]
 full = ["rand",
         "time",
         "colored",

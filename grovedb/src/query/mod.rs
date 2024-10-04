@@ -14,8 +14,6 @@ use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 use grovedb_merk::proofs::Query;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 use indexmap::IndexMap;
-#[cfg(feature = "serde-support")]
-use serde::{Deserialize, Serialize};
 
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -25,10 +23,7 @@ use crate::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
-#[cfg_attr(
-    feature = "serde-support",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Path query
 ///
 /// Represents a path to a specific GroveDB tree and a corresponding query to
@@ -56,10 +51,7 @@ impl fmt::Display for PathQuery {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
-#[cfg_attr(
-    feature = "serde-support",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Holds a query to apply to a tree and an optional limit/offset value.
 /// Limit and offset values affect the size of the result set.
 pub struct SizedQuery {

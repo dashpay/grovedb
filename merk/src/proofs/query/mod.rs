@@ -69,10 +69,7 @@ pub type PathKey = (Path, Key);
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq, Encode, Decode)]
-#[cfg_attr(
-    feature = "serde-support",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Subquery branch
 pub struct SubqueryBranch {
     /// Subquery path
@@ -115,10 +112,7 @@ impl SubqueryBranch {
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
-#[cfg_attr(
-    feature = "serde-support",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Query {
     /// Items
     pub items: Vec<QueryItem>,

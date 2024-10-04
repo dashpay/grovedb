@@ -30,8 +30,6 @@ use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
 #[cfg(feature = "full")]
 use grovedb_visualize::visualize_to_vec;
-#[cfg(feature = "serde-support")]
-use serde::{Deserialize, Serialize};
 
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -73,10 +71,7 @@ pub type SumValue = i64;
 /// of how serialization works.
 #[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
 #[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
-#[cfg_attr(
-    feature = "serde-support",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, Option<ElementFlags>),
