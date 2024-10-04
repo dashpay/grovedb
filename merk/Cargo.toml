@@ -23,6 +23,7 @@ hex = "0.4.3"
 indexmap = "2.2.6"
 integer-encoding = "4.0.0"
 thiserror = "1.0.58"
+serde = { version = "1.0.210", features = ["derive"], optional = true }
 
 [dependencies.time]
 version = "0.3.34"
@@ -56,6 +57,7 @@ optional = true
 [features]
 default = ["full"]
 proof_debug = []
+serde = ["dep:serde", "indexmap/serde"]
 full = ["rand",
         "time",
         "colored",

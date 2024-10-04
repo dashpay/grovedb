@@ -71,6 +71,7 @@ pub type SumValue = i64;
 /// of how serialization works.
 #[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
 #[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, Option<ElementFlags>),
