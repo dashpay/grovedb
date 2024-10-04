@@ -36,6 +36,7 @@ tokio-util = { version = "0.7.12", optional = true }
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "net"], optional = true }
 tower-http = { version = "0.5.2", features = ["fs"], optional = true }
 zip-extensions = { version ="0.6.2", optional = true }
+serde = { version = "1.0.210", features = ["derive"], optional = true }
 
 [dev-dependencies]
 grovedb-epoch-based-storage-flags = { version = "2.1.0", path = "../grovedb-epoch-based-storage-flags" }
@@ -50,8 +51,9 @@ name = "insertion_benchmark"
 harness = false
 
 [features]
-default = ["full"]
+default = ["full", "serde-support"]
 proof_debug = ["grovedb-merk/proof_debug"]
+serde-support = ["serde", "grovedb-merk/serde-support", "indexmap/serde"]
 full = [
     "grovedb-merk/full",
     "thiserror",

@@ -85,7 +85,8 @@ where
                         let now = Instant::now();
                         let mut lock = state.sessions.write().await;
                         let to_delete: Vec<SessionId> = lock.iter().filter_map(
-                            |(id, session)| (session.last_access < now - SESSION_TIMEOUT).then_some(*id)
+                            |(id, session)|
+                                (session.last_access < now - SESSION_TIMEOUT).then_some(*id)
                         ).collect();
 
                         to_delete.into_iter().for_each(|id| { lock.remove(&id); });
