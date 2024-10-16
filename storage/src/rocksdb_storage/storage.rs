@@ -28,7 +28,7 @@
 
 //! Implementation for a storage abstraction over RocksDB.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use error::Error;
 use grovedb_costs::{
@@ -40,8 +40,8 @@ use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
-    Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
+    checkpoint::Checkpoint, BoundColumnFamily, ColumnFamily, ColumnFamilyDescriptor, MultiThreaded,
+    OptimisticTransactionDB, Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{
@@ -89,14 +89,14 @@ lazy_static! {
 }
 
 /// Type alias for a database
-pub(crate) type Db = OptimisticTransactionDB;
+pub(crate) type Db = OptimisticTransactionDB<MultiThreaded>;
 
 /// Type alias for a transaction
 pub(crate) type Tx<'db> = Transaction<'db, Db>;
 
 /// Storage which uses RocksDB as its backend.
 pub struct RocksDbStorage {
-    db: OptimisticTransactionDB,
+    db: Db,
 }
 
 impl RocksDbStorage {
@@ -207,7 +207,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_aux(&self.db), &key, &value);
+                    db_batch.put_cf(&self.cf_aux(), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -226,7 +226,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_roots(&self.db), &key, &value);
+                    db_batch.put_cf(&self.cf_roots(), &key, &value);
                     cost.seek_count += 1;
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
@@ -248,7 +248,7 @@ impl RocksDbStorage {
                     value,
                     cost_info,
                 } => {
-                    db_batch.put_cf(cf_meta(&self.db), &key, &value);
+                    db_batch.put_cf(&self.cf_meta(), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
@@ -292,7 +292,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteAux { key, cost_info } => {
-                    db_batch.delete_cf(cf_aux(&self.db), &key);
+                    db_batch.delete_cf(&self.cf_aux(), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -303,7 +303,7 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
+                            self.db.get_cf(&self.cf_aux(), &key).map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -320,7 +320,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteRoot { key, cost_info } => {
-                    db_batch.delete_cf(cf_roots(&self.db), &key);
+                    db_batch.delete_cf(&self.cf_roots(), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -331,9 +331,7 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db
-                                .get_cf(cf_roots(&self.db), &key)
-                                .map_err(RocksDBError)
+                            self.db.get_cf(&self.cf_roots(), &key).map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -350,7 +348,7 @@ impl RocksDbStorage {
                     }
                 }
                 AbstractBatchOperation::DeleteMeta { key, cost_info } => {
-                    db_batch.delete_cf(cf_meta(&self.db), &key);
+                    db_batch.delete_cf(&self.cf_meta(), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
@@ -361,9 +359,7 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
                             &cost,
-                            self.db
-                                .get_cf(cf_meta(&self.db), &key)
-                                .map_err(RocksDBError)
+                            self.db.get_cf(&self.cf_meta(), &key).map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
@@ -431,6 +427,27 @@ impl RocksDbStorage {
             iter.next()
         }
         Ok(())
+    }
+
+    /// Get auxiliary data column family
+    fn cf_aux(&self) -> Arc<BoundColumnFamily> {
+        self.db
+            .cf_handle(AUX_CF_NAME)
+            .expect("aux column family must exist")
+    }
+
+    /// Get trees roots data column family
+    fn cf_roots(&self) -> Arc<BoundColumnFamily> {
+        self.db
+            .cf_handle(ROOTS_CF_NAME)
+            .expect("roots column family must exist")
+    }
+
+    /// Get metadata column family
+    fn cf_meta(&self) -> Arc<BoundColumnFamily> {
+        self.db
+            .cf_handle(META_CF_NAME)
+            .expect("meta column family must exist")
     }
 }
 
@@ -528,27 +545,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
             .and_then(|x| x.create_checkpoint(path))
             .map_err(RocksDBError)
     }
-}
-
-/// Get auxiliary data column family
-fn cf_aux(storage: &Db) -> &ColumnFamily {
-    storage
-        .cf_handle(AUX_CF_NAME)
-        .expect("aux column family must exist")
-}
-
-/// Get trees roots data column family
-fn cf_roots(storage: &Db) -> &ColumnFamily {
-    storage
-        .cf_handle(ROOTS_CF_NAME)
-        .expect("roots column family must exist")
-}
-
-/// Get metadata column family
-fn cf_meta(storage: &Db) -> &ColumnFamily {
-    storage
-        .cf_handle(META_CF_NAME)
-        .expect("meta column family must exist")
 }
 
 #[cfg(test)]
