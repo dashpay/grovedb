@@ -135,6 +135,7 @@ pub struct GroveDBOperationsInsertVersions {
     pub add_element_on_transaction: FeatureVersion,
     pub add_element_without_transaction: FeatureVersion,
     pub insert_if_not_exists: FeatureVersion,
+    pub insert_if_not_exists_return_existing_element: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
 }
 

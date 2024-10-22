@@ -164,7 +164,7 @@ impl Query {
                                 Some(Node::KVValueHash(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
-                                // tree so we cannot tell what the preceding key was
+                                // tree, so we cannot tell what the preceding key was
                                 Some(_) => {
                                     return Err(Error::InvalidProofError(
                                         "Cannot verify lower bound of queried range".to_string(),

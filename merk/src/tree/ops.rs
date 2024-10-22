@@ -145,12 +145,13 @@ where
     /// not require a non-empty tree.
     ///
     /// Keys in batch must be sorted and unique.
-    pub fn apply_to<K: AsRef<[u8]>, C, V, U, R>(
+    pub fn apply_to<K: AsRef<[u8]>, C, V, T, U, R>(
         maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
         old_tree_cost: &C,
         value_defined_cost_fn: Option<&V>,
+        get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
         grove_version: &GroveVersion,
@@ -158,6 +159,7 @@ where
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
         U: FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -185,6 +187,7 @@ where
                         source,
                         old_tree_cost,
                         value_defined_cost_fn,
+                        get_temp_new_value_with_old_flags,
                         update_tree_value_based_on_costs,
                         section_removal_bytes,
                         grove_version,
@@ -212,6 +215,7 @@ where
                             batch,
                             old_tree_cost,
                             value_defined_cost_fn,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                             grove_version
@@ -228,11 +232,12 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>, C, V, U, R>(
+    fn build<K: AsRef<[u8]>, C, V, T, U, R>(
         batch: &MerkBatch<K>,
         source: S,
         old_tree_cost: &C,
         value_defined_cost_fn: Option<&V>,
+        get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
         grove_version: &GroveVersion,
@@ -240,6 +245,7 @@ where
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
         U: FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -267,6 +273,7 @@ where
                         source.clone(),
                         old_tree_cost,
                         value_defined_cost_fn,
+                        get_temp_new_value_with_old_flags,
                         update_tree_value_based_on_costs,
                         section_removal_bytes,
                         grove_version
@@ -281,6 +288,7 @@ where
                                 right_batch,
                                 old_tree_cost,
                                 value_defined_cost_fn,
+                                get_temp_new_value_with_old_flags,
                                 update_tree_value_based_on_costs,
                                 section_removal_bytes,
                                 grove_version
@@ -295,6 +303,7 @@ where
                             source.clone(),
                             old_tree_cost,
                             value_defined_cost_fn,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                             grove_version
@@ -367,6 +376,7 @@ where
                 ),
                 old_tree_cost,
                 value_defined_cost_fn,
+                get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
                 grove_version,
@@ -377,8 +387,7 @@ where
         .wrap_with_cost(cost)
     }
 
-    #[allow(dead_code)]
-    fn apply_sorted_without_costs<K: AsRef<[u8]>>(
+    pub(crate) fn apply_sorted_without_costs<K: AsRef<[u8]>>(
         self,
         batch: &MerkBatch<K>,
         grove_version: &GroveVersion,
@@ -387,6 +396,7 @@ where
             batch,
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
             &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -402,11 +412,12 @@ where
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply_sorted<K: AsRef<[u8]>, C, V, U, R>(
+    fn apply_sorted<K: AsRef<[u8]>, C, V, T, U, R>(
         self,
         batch: &MerkBatch<K>,
         old_specialized_cost: &C,
         value_defined_cost_fn: Option<&V>,
+        get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
         grove_version: &GroveVersion,
@@ -414,6 +425,7 @@ where
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
         U: FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -441,6 +453,7 @@ where
                             value.to_vec(),
                             feature_type.to_owned(),
                             old_specialized_cost,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                         )
@@ -455,6 +468,7 @@ where
                             *value_cost,
                             feature_type.to_owned(),
                             old_specialized_cost,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes
                         )
@@ -468,6 +482,7 @@ where
                             referenced_value.to_owned(),
                             feature_type.to_owned(),
                             old_specialized_cost,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                         )
@@ -483,6 +498,7 @@ where
                             *value_cost,
                             feature_type.to_owned(),
                             old_specialized_cost,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                         )
@@ -565,6 +581,7 @@ where
                                         source.clone(),
                                         old_specialized_cost,
                                         value_defined_cost_fn,
+                                        get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
                                         grove_version,
@@ -591,6 +608,7 @@ where
                                         &batch[..index],
                                         old_specialized_cost,
                                         value_defined_cost_fn,
+                                        get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
                                         grove_version
@@ -623,6 +641,7 @@ where
                                         source.clone(),
                                         old_specialized_cost,
                                         value_defined_cost_fn,
+                                        get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
                                         grove_version,
@@ -649,6 +668,7 @@ where
                                         &batch[index + 1..],
                                         old_specialized_cost,
                                         value_defined_cost_fn,
+                                        get_temp_new_value_with_old_flags,
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
                                         grove_version
@@ -697,6 +717,7 @@ where
             KeyUpdates::new(new_keys, updated_keys, LinkedList::default(), None),
             old_specialized_cost,
             value_defined_cost_fn,
+            get_temp_new_value_with_old_flags,
             update_tree_value_based_on_costs,
             section_removal_bytes,
             grove_version,
@@ -709,7 +730,7 @@ where
     ///
     /// This recursion executes serially in the same thread, but in the future
     /// will be dispatched to workers in other threads.
-    fn recurse<K: AsRef<[u8]>, C, V, U, R>(
+    fn recurse<K: AsRef<[u8]>, C, V, T, U, R>(
         self,
         batch: &MerkBatch<K>,
         mid: usize,
@@ -717,12 +738,14 @@ where
         mut key_updates: KeyUpdates,
         old_tree_cost: &C,
         value_defined_cost_fn: Option<&V>,
+        get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
         U: FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -755,6 +778,7 @@ where
                             source,
                             old_tree_cost,
                             value_defined_cost_fn,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                             grove_version,
@@ -791,6 +815,7 @@ where
                             source,
                             old_tree_cost,
                             value_defined_cost_fn,
+                            get_temp_new_value_with_old_flags,
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                             grove_version,
@@ -1189,12 +1214,13 @@ mod test {
     #[test]
     fn apply_empty_none() {
         let grove_version = GroveVersion::latest();
-        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to::<Vec<u8>, _, _, _, _>(
+        let (maybe_tree, key_updates) = Walker::<PanicSource>::apply_to::<Vec<u8>, _, _, _, _, _>(
             None,
             &[],
             PanicSource {},
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
             &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -1221,6 +1247,7 @@ mod test {
             PanicSource {},
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
             &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -1250,6 +1277,7 @@ mod test {
             PanicSource {},
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
             &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -1275,6 +1303,7 @@ mod test {
             PanicSource {},
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
             &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -1307,6 +1336,7 @@ mod test {
             PanicSource {},
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
             &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
@@ -1333,6 +1363,7 @@ mod test {
             PanicSource {},
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            &|_, _| Ok(None),
             &mut |_, _, _| Ok((false, None)),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((

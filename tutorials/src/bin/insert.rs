@@ -1,9 +1,12 @@
 use grovedb::{Element, GroveDb};
+use grovedb_version::version::GroveVersion;
 
 fn main() {
     // Specify a path and open GroveDB at the path as db
     let path = String::from("../tutorial-storage");
     let db = GroveDb::open(path).unwrap();
+
+    let grove_version = GroveVersion::latest();
 
     // Define key-values for insertion
     let key1 = b"hello";

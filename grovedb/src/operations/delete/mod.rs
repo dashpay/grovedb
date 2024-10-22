@@ -33,7 +33,7 @@ use grovedb_version::{
 
 #[cfg(feature = "full")]
 use crate::{
-    batch::{GroveDbOp, Op},
+    batch::{GroveOp, QualifiedGroveDbOp},
     util::storage_context_with_parent_optional_tx,
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
@@ -512,10 +512,10 @@ impl GroveDb {
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
-        current_batch_operations: &[GroveDbOp],
+        current_batch_operations: &[QualifiedGroveDbOp],
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<GroveDbOp>, Error> {
+    ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
             "delete_operation_for_delete_internal",
             grove_version
@@ -565,7 +565,7 @@ impl GroveDb {
                 let batch_deleted_keys = current_batch_operations
                     .iter()
                     .filter_map(|op| match op.op {
-                        Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
+                        GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => {
                             // todo: to_path clones (best to figure out how to compare without
                             // cloning)
                             if op.path.to_path() == subtree_merk_path_vec {
@@ -595,7 +595,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    Op::Delete | Op::DeleteTree | Op::DeleteSumTree => false,
+                    GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => false,
                     // todo: fix for to_path (it clones)
                     _ => op.path.to_path() == subtree_merk_path_vec,
                 });
@@ -610,7 +610,7 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
-                    Ok(Some(GroveDbOp::delete_tree_op(
+                    Ok(Some(QualifiedGroveDbOp::delete_tree_op(
                         path.to_vec(),
                         key.to_vec(),
                         is_subtree_with_sum,
@@ -622,7 +622,11 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(GroveDbOp::delete_op(path.to_vec(), key.to_vec()))).wrap_with_cost(cost)
+                Ok(Some(QualifiedGroveDbOp::delete_op(
+                    path.to_vec(),
+                    key.to_vec(),
+                )))
+                .wrap_with_cost(cost)
             }
         }
     }

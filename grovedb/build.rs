@@ -6,14 +6,17 @@ fn main() {
     use sha2::{digest::FixedOutput, Digest, Sha256};
 
     const GROVEDBG_SHA256: [u8; 32] =
-        hex!("206d865949e7f12b843c342cea3b172d4c78d4eb754b80d272164d59f62a2276");
-    const GROVEDBG_VERSION: &str = "v1.0.0-rc.3";
+        hex!("da31eb2c93d553abb730455b53761a6e3913d876d0371b4a4a7e08a7398322ed");
+    const GROVEDBG_VERSION: &str = "v1.2.0";
 
     let out_dir = PathBuf::from(&env::var_os("OUT_DIR").unwrap());
     let grovedbg_zip_path = out_dir.join("grovedbg.zip");
 
     if !grovedbg_zip_path.exists() {
-        let response = reqwest::blocking::get(format!("https://github.com/dashpay/grovedbg/releases/download/{GROVEDBG_VERSION}/grovedbg-{GROVEDBG_VERSION}.zip"))
+        let response = reqwest::blocking::get(format!(
+            "https://github.com/dashpay/grovedbg/releases/download/\
+{GROVEDBG_VERSION}/grovedbg-{GROVEDBG_VERSION}.zip"
+        ))
         .expect("can't download GroveDBG artifact");
 
         let mut grovedbg_zip = File::create(&grovedbg_zip_path).unwrap();

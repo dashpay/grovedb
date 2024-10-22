@@ -293,44 +293,18 @@ impl GroveDb {
                         .wrap_with_cost(OperationCost::default())
                 );
 
-                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let subtree_for_reference = cost_return_on_error!(
+                let referenced_item = cost_return_on_error!(
                     &mut cost,
-                    self.open_transactional_merk_at_path(
-                        referenced_path.into(),
-                        transaction,
-                        Some(batch),
-                        grove_version,
-                    )
-                );
-
-                let referenced_element_value_hash_opt = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_value_hash(
-                        &subtree_for_reference,
-                        referenced_key,
-                        true,
+                    self.follow_reference(
+                        reference_path.as_slice().into(),
+                        false,
+                        Some(transaction),
                         grove_version
                     )
                 );
 
-                let referenced_element_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_element_value_hash_opt
-                        .ok_or({
-                            let reference_string = reference_path
-                                .iter()
-                                .map(hex::encode)
-                                .collect::<Vec<String>>()
-                                .join("/");
-                            Error::MissingReference(format!(
-                                "reference {}/{} can not be found",
-                                reference_string,
-                                hex::encode(key)
-                            ))
-                        })
-                        .wrap_with_cost(OperationCost::default())
-                );
+                let referenced_element_value_hash =
+                    cost_return_on_error!(&mut cost, referenced_item.value_hash(grove_version));
 
                 cost_return_on_error!(
                     &mut cost,
@@ -452,46 +426,18 @@ impl GroveDb {
                     path_from_reference_path_type(reference_path.clone(), path, Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
-
-                // TODO unwrap?
-                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let subtree_for_reference = cost_return_on_error!(
+                let referenced_item = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(
-                        referenced_path.into(),
-                        Some(batch),
-                        grove_version
-                    )
-                );
-
-                // when there is no transaction, we don't want to use caching
-                let referenced_element_value_hash_opt = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_value_hash(
-                        &subtree_for_reference,
-                        referenced_key,
+                    self.follow_reference(
+                        reference_path.as_slice().into(),
                         false,
+                        None,
                         grove_version
                     )
                 );
 
-                let referenced_element_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_element_value_hash_opt
-                        .ok_or({
-                            let reference_string = reference_path
-                                .iter()
-                                .map(hex::encode)
-                                .collect::<Vec<String>>()
-                                .join("/");
-                            Error::MissingReference(format!(
-                                "reference {}/{} can not be found",
-                                reference_string,
-                                hex::encode(key)
-                            ))
-                        })
-                        .wrap_with_cost(OperationCost::default())
-                );
+                let referenced_element_value_hash =
+                    cost_return_on_error!(&mut cost, referenced_item.value_hash(grove_version));
 
                 cost_return_on_error!(
                     &mut cost,
@@ -540,6 +486,23 @@ impl GroveDb {
     }
 
     /// Insert if not exists
+    /// Insert if not exists
+    ///
+    /// Inserts an element at the specified path and key if it does not already
+    /// exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path where the element should be inserted.
+    /// * `key` - The key under which the element should be inserted.
+    /// * `element` - The element to insert.
+    /// * `transaction` - The transaction argument, if any.
+    /// * `grove_version` - The GroveDB version.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `CostResult<bool, Error>` indicating whether the element was
+    /// inserted (`true`) or already existed (`false`).
     pub fn insert_if_not_exists<'b, B, P>(
         &self,
         path: P,
@@ -572,6 +535,62 @@ impl GroveDb {
         } else {
             self.insert(subtree_path, key, element, None, transaction, grove_version)
                 .map_ok(|_| true)
+                .add_cost(cost)
+        }
+    }
+
+    /// Insert if not exists
+    /// If the item does exist return it
+    ///
+    /// Inserts an element at the given `path` and `key` if it does not exist.
+    /// If the element already exists, returns the existing element.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path where the element should be inserted.
+    /// * `key` - The key under which the element should be inserted.
+    /// * `element` - The element to insert.
+    /// * `transaction` - The transaction argument, if any.
+    /// * `grove_version` - The GroveDB version.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `CostResult<Option<Element>, Error>`, where
+    /// `Ok(Some(element))` is the existing element if it was found, or
+    /// `Ok(None)` if the new element was inserted.
+    pub fn insert_if_not_exists_return_existing_element<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        element: Element,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Element>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        check_grovedb_v0_with_cost!(
+            "insert_if_not_exists_return_existing_element",
+            grove_version
+                .grovedb_versions
+                .operations
+                .insert
+                .insert_if_not_exists_return_existing_element
+        );
+
+        let mut cost = OperationCost::default();
+        let subtree_path: SubtreePath<_> = path.into();
+
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_optional(subtree_path.clone(), key, transaction, grove_version)
+        );
+        if previous_element.is_some() {
+            Ok(previous_element).wrap_with_cost(cost)
+        } else {
+            self.insert(subtree_path, key, element, None, transaction, grove_version)
+                .map_ok(|_| None)
                 .add_cost(cost)
         }
     }
@@ -840,6 +859,122 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(result, Err(Error::InvalidParentLayerPath(_))));
+    }
+
+    #[test]
+    fn test_insert_if_not_exists_return_existing_element() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let element_key = b"key1";
+        let new_element = Element::new_item(b"new_value".to_vec());
+
+        // Insert a new element and check if it returns None
+        let result = db
+            .insert_if_not_exists_return_existing_element(
+                [TEST_LEAF].as_ref(),
+                element_key,
+                new_element.clone(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("Expected insertion of new element");
+
+        assert_eq!(result, None);
+
+        // Try inserting the same element again and expect it to return the existing
+        // element
+        let result = db
+            .insert_if_not_exists_return_existing_element(
+                [TEST_LEAF].as_ref(),
+                element_key,
+                Element::new_item(b"another_value".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("Expected to return existing element");
+
+        assert_eq!(result, Some(new_element.clone()));
+
+        // Check if the existing element is still the original one and not replaced
+        let fetched_element = db
+            .get([TEST_LEAF].as_ref(), element_key, None, grove_version)
+            .unwrap()
+            .expect("Expected to retrieve the existing element");
+
+        assert_eq!(fetched_element, new_element);
+    }
+
+    #[test]
+    fn test_insert_if_not_exists_return_existing_element_with_transaction() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let element_key = b"key2";
+        let new_element = Element::new_item(b"transaction_value".to_vec());
+        let transaction = db.start_transaction();
+
+        // Insert a new element within a transaction and check if it returns None
+        let result = db
+            .insert_if_not_exists_return_existing_element(
+                [TEST_LEAF].as_ref(),
+                element_key,
+                new_element.clone(),
+                Some(&transaction),
+                grove_version,
+            )
+            .unwrap()
+            .expect("Expected insertion of new element in transaction");
+
+        assert_eq!(result, None);
+
+        // Try inserting the same element again within the transaction
+        // and expect it to return the existing element
+        let result = db
+            .insert_if_not_exists_return_existing_element(
+                [TEST_LEAF].as_ref(),
+                element_key,
+                Element::new_item(b"another_transaction_value".to_vec()),
+                Some(&transaction),
+                grove_version,
+            )
+            .unwrap()
+            .expect("Expected to return existing element in transaction");
+
+        assert_eq!(result, Some(new_element.clone()));
+
+        // Commit the transaction
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        // Check if the element is still the original one and not replaced
+        let fetched_element = db
+            .get([TEST_LEAF].as_ref(), element_key, None, grove_version)
+            .unwrap()
+            .expect("Expected to retrieve the existing element after transaction commit");
+
+        assert_eq!(fetched_element, new_element);
+    }
+
+    #[test]
+    fn test_insert_if_not_exists_return_existing_element_invalid_path() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Try inserting to an invalid path and expect an error
+        let result = db.insert_if_not_exists_return_existing_element(
+            [b"invalid_path"].as_ref(),
+            b"key",
+            Element::new_item(b"value".to_vec()),
+            None,
+            grove_version,
+        );
+
+        assert!(matches!(
+            result.unwrap(),
+            Err(Error::InvalidParentLayerPath(_))
+        ));
     }
 
     #[test]

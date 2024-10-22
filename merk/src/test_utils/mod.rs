@@ -94,6 +94,7 @@ pub fn apply_memonly_unchecked(
             ))
         },
         None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        &|_, _| Ok(None),
         &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((
@@ -153,6 +154,7 @@ pub fn apply_to_memonly(
             ))
         },
         None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+        &|_, _| Ok(None),
         &mut |_, _, _| Ok((false, None)),
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
             Ok((

@@ -5,7 +5,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        batch::GroveDbOp,
+        batch::QualifiedGroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
     };
@@ -43,7 +43,11 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            b"key1".to_vec(),
+            false,
+        )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()
@@ -101,7 +105,7 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_op(
+        let ops = vec![QualifiedGroveDbOp::delete_op(
             vec![b"sum_tree".to_vec()],
             b"key1".to_vec(),
         )];
@@ -146,7 +150,11 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            b"key1".to_vec(),
+            false,
+        )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
             .cost_as_result()

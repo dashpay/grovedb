@@ -209,7 +209,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
                     .as_ref()
                     .ok()
                     .and_then(Option::as_ref)
-                    .map(|x| x.len() as u32)
+                    .map(|x| x.len() as u64)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -225,7 +225,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
                     .as_ref()
                     .ok()
                     .and_then(Option::as_ref)
-                    .map(|x| x.len() as u32)
+                    .map(|x| x.len() as u64)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -241,7 +241,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
                     .as_ref()
                     .ok()
                     .and_then(Option::as_ref)
-                    .map(|x| x.len() as u32)
+                    .map(|x| x.len() as u64)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -257,7 +257,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
                     .as_ref()
                     .ok()
                     .and_then(Option::as_ref)
-                    .map(|x| x.len() as u32)
+                    .map(|x| x.len() as u64)
                     .unwrap_or(0),
                 ..Default::default()
             })

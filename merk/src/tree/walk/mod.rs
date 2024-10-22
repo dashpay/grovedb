@@ -207,6 +207,10 @@ where
         value: Vec<u8>,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -232,6 +236,7 @@ where
                     value,
                     feature_type,
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )
@@ -247,6 +252,10 @@ where
         value_fixed_cost: u32,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -273,6 +282,7 @@ where
                     value_fixed_cost,
                     feature_type,
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )
@@ -288,6 +298,10 @@ where
         value_hash: CryptoHash,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -314,6 +328,7 @@ where
                     value_hash,
                     feature_type,
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )
@@ -330,6 +345,10 @@ where
         value_fixed_cost: u32,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -357,6 +376,7 @@ where
                     value_fixed_cost,
                     feature_type,
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )

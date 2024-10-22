@@ -319,7 +319,7 @@ pub fn add_average_case_get_merk_node(
         not_prefixed_key_len,
         approximate_element_size,
         is_sum_tree,
-    );
+    ) as u64;
     Ok(())
 }
 
@@ -331,7 +331,7 @@ pub fn add_average_case_merk_has_value(
     estimated_element_size: u32,
 ) {
     cost.seek_count += 1;
-    cost.storage_loaded_bytes += not_prefixed_key_len + estimated_element_size;
+    cost.storage_loaded_bytes += (not_prefixed_key_len + estimated_element_size) as u64;
 }
 
 #[cfg(feature = "full")]
@@ -420,7 +420,7 @@ pub fn add_average_case_merk_propagate(
         // we can get about 1 rotation, if there are more than 2 levels
         nodes_updated += 1;
     }
-    cost.seek_count += nodes_updated as u16;
+    cost.seek_count += nodes_updated as u32;
 
     cost.hash_node_calls += nodes_updated * 2;
 
@@ -664,6 +664,6 @@ pub fn add_average_case_merk_propagate(
                 total_loaded_bytes as u32
             }
         }
-    };
+    } as u64;
     Ok(())
 }

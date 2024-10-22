@@ -1,4 +1,5 @@
 use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query};
+use grovedb_version::version::GroveVersion;
 
 const KEY1: &[u8] = b"key1";
 const KEY2: &[u8] = b"key2";
@@ -16,6 +17,9 @@ fn main() {
     let path = String::from("../tutorial-storage");
     // Open GroveDB as db
     let db = GroveDb::open(path).unwrap();
+
+    let grove_version = GroveVersion::latest();
+
     // Populate GroveDB with values. This function is defined below.
     populate(&db);
     // Define the path to the subtree we want to query.
@@ -28,7 +32,7 @@ fn main() {
     let path_query = PathQuery::new_unsized(path, query.clone());
     // Execute the query and collect the result items in "elements".
     let (_elements, _) = db
-        .query_item_value(&path_query, true, false, true, None)
+        .query_item_value(&path_query, true, false, true, None, grove_version)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -49,6 +53,8 @@ fn main() {
 
 fn populate(db: &GroveDb) {
     let root_path: &[&[u8]] = &[];
+
+    let grove_version = GroveVersion::latest();
 
     // Put an empty subtree into the root tree nodes at KEY1.
     // Call this SUBTREE1.

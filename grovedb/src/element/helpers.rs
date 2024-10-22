@@ -12,6 +12,7 @@ use grovedb_merk::{
     TreeFeatureType,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
+#[cfg(feature = "full")]
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
@@ -196,6 +197,18 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Sets the optional flag stored in an element
+    pub fn set_flags(&mut self, new_flags: Option<ElementFlags>) {
+        match self {
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => *flags = new_flags,
+        }
+    }
+
+    #[cfg(feature = "full")]
     /// Get the required item space
     pub fn required_item_space(
         len: u32,
@@ -291,17 +304,9 @@ impl Element {
                 });
                 let value_len = SUM_ITEM_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len,
-                    value_len,
-                    is_sum_node,
-                )
+                KV::node_value_byte_cost_size(key_len, value_len, is_sum_node)
             }
-            _ => KV::specialized_value_byte_cost_size_for_key_and_value_lengths(
-                key.len() as u32,
-                value.len() as u32,
-                is_sum_node,
-            ),
+            _ => KV::node_value_byte_cost_size(key.len() as u32, value.len() as u32, is_sum_node),
         };
         Ok(cost)
     }

@@ -42,6 +42,7 @@ use grovedb_costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use hash::{
@@ -64,12 +65,13 @@ pub use tree_feature_type::TreeFeatureType;
 pub use walk::{Fetch, RefWalker, Walker};
 
 #[cfg(feature = "full")]
+use crate::tree::hash::HASH_LENGTH_X2;
+#[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "full")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
-
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
@@ -158,16 +160,7 @@ impl TreeNode {
         self.inner.kv.feature_type.is_sum_feature()
     }
 
-    /// Compare current value byte cost with old cost and return
-    /// current value byte cost with updated `KeyValueStorageCost`
-    pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(
-        &self,
-        current_value_byte_cost: u32,
-        old_cost: u32,
-    ) -> Result<(u32, KeyValueStorageCost), Error> {
-        let key_storage_cost = StorageCost {
-            ..Default::default()
-        };
+    pub fn storage_cost_for_update(current_value_byte_cost: u32, old_cost: u32) -> StorageCost {
         let mut value_storage_cost = StorageCost {
             ..Default::default()
         };
@@ -190,6 +183,20 @@ impl TreeNode {
                 value_storage_cost.added_bytes += current_value_byte_cost - old_cost;
             }
         }
+        value_storage_cost
+    }
+
+    /// Compare current value byte cost with old cost and return
+    /// current value byte cost with updated `KeyValueStorageCost`
+    pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(
+        &self,
+        current_value_byte_cost: u32,
+        old_cost: u32,
+    ) -> Result<(u32, KeyValueStorageCost), Error> {
+        let key_storage_cost = StorageCost {
+            ..Default::default()
+        };
+        let value_storage_cost = Self::storage_cost_for_update(current_value_byte_cost, old_cost);
 
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost, // the key storage cost is added later
@@ -209,6 +216,45 @@ impl TreeNode {
         old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
     ) -> Result<(u32, KeyValueStorageCost), Error> {
         let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference();
+
+        let old_cost = if let Some(old_value) = self.old_value.as_ref() {
+            old_tree_cost(self.key_as_ref(), old_value)
+        } else {
+            Ok(0) // there was no old value, hence old cost would be 0
+        }?;
+
+        self.kv_with_parent_hook_size_and_storage_cost_from_old_cost(
+            current_value_byte_cost,
+            old_cost,
+        )
+    }
+
+    /// The point of this function is to get the cost change when we create a
+    /// temp value that's a partial merger between the old value and the new
+    /// value. Basically it is the new value with the old values flags
+    /// For example if we had an old value "Sam" with 40 bytes of flags
+    /// and a new value "Samuel" with 2 bytes of flags, the cost is probably
+    /// going to go up, As when we merge we will have Samuel with at least
+    /// 40 bytes of flags/
+    pub fn kv_with_parent_hook_size_and_storage_cost_change_for_value(
+        &self,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        value: Option<Vec<u8>>,
+    ) -> Result<(u32, KeyValueStorageCost), Error> {
+        let current_value_byte_cost = if let Some(value_cost) = &self.inner.kv.value_defined_cost {
+            self.inner.kv.predefined_value_byte_cost_size(value_cost)
+        } else if let Some(value) = value {
+            let key_len = self.inner.kv.key.len() as u32;
+            let value_len =
+                HASH_LENGTH_X2 + value.len() + self.inner.kv.feature_type.encoding_cost();
+            KV::value_byte_cost_size_for_key_and_value_lengths(
+                key_len,
+                value_len as u32,
+                self.inner.kv.feature_type.is_sum_feature(),
+            )
+        } else {
+            self.inner.kv.value_byte_cost_size()
+        };
 
         let old_cost = if let Some(old_value) = self.old_value.as_ref() {
             old_tree_cost(self.key_as_ref(), old_value)
@@ -328,6 +374,11 @@ impl TreeNode {
     /// Set key of Tree
     pub fn set_key(&mut self, key: Vec<u8>) {
         self.inner.kv.key = key;
+    }
+
+    /// Set value of Tree
+    pub fn set_value(&mut self, value: Vec<u8>) {
+        self.inner.kv.value = value;
     }
 
     /// Consumes the tree and returns its root node's key, without having to
@@ -634,6 +685,10 @@ impl TreeNode {
         value: Vec<u8>,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -664,6 +719,7 @@ impl TreeNode {
                 &cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )
@@ -683,6 +739,10 @@ impl TreeNode {
         value_fixed_cost: u32,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -715,6 +775,7 @@ impl TreeNode {
                 &cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )
@@ -734,6 +795,10 @@ impl TreeNode {
         value_hash: CryptoHash,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -764,6 +829,7 @@ impl TreeNode {
                 &cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )
@@ -788,6 +854,10 @@ impl TreeNode {
         value_cost: u32,
         feature_type: TreeFeatureType,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -821,6 +891,7 @@ impl TreeNode {
                 &cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
                     update_tree_value_based_on_costs,
                     section_removal_bytes
                 )

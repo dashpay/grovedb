@@ -9,7 +9,7 @@ use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    batch::GroveDbOp,
+    batch::QualifiedGroveDbOp,
     reference_path::ReferencePathType,
     tests::{make_test_grovedb, TEST_LEAF},
     Element, Error, GroveDb, PathQuery,
@@ -779,17 +779,17 @@ fn test_sum_tree_with_batches() {
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
     let ops = vec![
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
             Element::empty_sum_tree(),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
             b"a".to_vec(),
             Element::new_item(vec![214]),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
             b"b".to_vec(),
             Element::new_sum_item(10),
@@ -835,7 +835,7 @@ fn test_sum_tree_with_batches() {
     ));
 
     // Create new batch to use existing tree
-    let ops = vec![GroveDbOp::insert_op(
+    let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
         vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
         b"c".to_vec(),
         Element::new_sum_item(10),
@@ -871,42 +871,42 @@ fn test_sum_tree_with_batches() {
     // Add a new sum tree with its own sum items, should affect sum of original
     // tree
     let ops = vec![
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
             b"d".to_vec(),
             Element::empty_sum_tree(),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"d".to_vec()],
             b"first".to_vec(),
             Element::new_sum_item(4),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"d".to_vec()],
             b"second".to_vec(),
             Element::new_item(vec![4]),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
             b"e".to_vec(),
             Element::empty_sum_tree(),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"e".to_vec()],
             b"first".to_vec(),
             Element::new_sum_item(12),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"e".to_vec()],
             b"second".to_vec(),
             Element::new_item(vec![4]),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"e".to_vec()],
             b"third".to_vec(),
             Element::empty_sum_tree(),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 TEST_LEAF.to_vec(),
                 b"key1".to_vec(),
@@ -916,7 +916,7 @@ fn test_sum_tree_with_batches() {
             b"a".to_vec(),
             Element::new_sum_item(5),
         ),
-        GroveDbOp::insert_op(
+        QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 TEST_LEAF.to_vec(),
                 b"key1".to_vec(),

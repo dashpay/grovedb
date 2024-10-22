@@ -199,11 +199,14 @@ use grovedb_storage::{
 };
 #[cfg(feature = "full")]
 use grovedb_storage::{Storage, StorageContext};
+#[cfg(feature = "full")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
+#[cfg(feature = "full")]
+use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
 
@@ -211,6 +214,8 @@ use tokio::net::ToSocketAddrs;
 use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
+#[cfg(feature = "full")]
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 #[cfg(feature = "full")]
@@ -898,10 +903,13 @@ impl GroveDb {
     /// Method to visualize hash mismatch after verification
     pub fn visualize_verify_grovedb(
         &self,
+        transaction: TransactionArg,
+        verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<String, (String, String, String)>, Error> {
         Ok(self
-            .verify_grovedb(None, grove_version)?
+            .verify_grovedb(transaction, verify_references, allow_cache, grove_version)?
             .iter()
             .map(|(path, (root_hash, expected, actual))| {
                 (
@@ -924,6 +932,8 @@ impl GroveDb {
     pub fn verify_grovedb(
         &self,
         transaction: TransactionArg,
+        verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         if let Some(transaction) = transaction {
@@ -940,13 +950,22 @@ impl GroveDb {
                 &SubtreePath::empty(),
                 None,
                 transaction,
+                verify_references,
+                allow_cache,
                 grove_version,
             )
         } else {
             let root_merk = self
                 .open_non_transactional_merk_at_path(SubtreePath::empty(), None, grove_version)
                 .unwrap()?;
-            self.verify_merk_and_submerks(root_merk, &SubtreePath::empty(), None, grove_version)
+            self.verify_merk_and_submerks(
+                root_merk,
+                &SubtreePath::empty(),
+                None,
+                verify_references,
+                allow_cache,
+                grove_version,
+            )
         }
     }
 
@@ -957,72 +976,138 @@ impl GroveDb {
         merk: Merk<S>,
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
+        verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
-        let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
-            if element.is_any_tree() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(
-                        &key,
+            match element {
+                Element::SumTree(..) | Element::Tree(..) => {
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let new_path = path.derive_owned_with_child(key);
+                    let new_path_ref = SubtreePath::from(&new_path);
+
+                    let inner_merk = self
+                        .open_non_transactional_merk_at_path(
+                            new_path_ref.clone(),
+                            batch,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                    let root_hash = inner_merk.root_hash().unwrap();
+
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(
+                            new_path.to_vec(),
+                            (root_hash, combined_value_hash, element_value_hash),
+                        );
+                    }
+                    issues.extend(self.verify_merk_and_submerks(
+                        inner_merk,
+                        &new_path_ref,
+                        batch,
+                        verify_references,
                         true,
-                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                         grove_version,
-                    )
-                    .unwrap()
-                    .map_err(MerkError)?
-                    .ok_or(Error::CorruptedData(
-                        "expected merk to contain value at key".to_string(),
-                    ))?;
-                let new_path = path.derive_owned_with_child(key);
-                let new_path_ref = SubtreePath::from(&new_path);
-
-                let inner_merk = self
-                    .open_non_transactional_merk_at_path(new_path_ref.clone(), batch, grove_version)
-                    .unwrap()?;
-                let root_hash = inner_merk.root_hash().unwrap();
-
-                let actual_value_hash = value_hash(&kv_value).unwrap();
-                let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
-
-                if combined_value_hash != element_value_hash {
-                    issues.insert(
-                        new_path.to_vec(),
-                        (root_hash, combined_value_hash, element_value_hash),
-                    );
+                    )?);
                 }
-                issues.extend(self.verify_merk_and_submerks(
-                    inner_merk,
-                    &new_path_ref,
-                    batch,
-                    grove_version,
-                )?);
-            } else if element.is_any_item() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(
-                        &key,
-                        true,
-                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                        grove_version,
-                    )
-                    .unwrap()
-                    .map_err(MerkError)?
-                    .ok_or(Error::CorruptedData(
-                        "expected merk to contain value at key".to_string(),
-                    ))?;
-                let actual_value_hash = value_hash(&kv_value).unwrap();
-                if actual_value_hash != element_value_hash {
-                    issues.insert(
-                        path.derive_owned_with_child(key).to_vec(),
-                        (actual_value_hash, element_value_hash, actual_value_hash),
-                    );
+                Element::Item(..) | Element::SumItem(..) => {
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    if actual_value_hash != element_value_hash {
+                        issues.insert(
+                            path.derive_owned_with_child(key).to_vec(),
+                            (actual_value_hash, element_value_hash, actual_value_hash),
+                        );
+                    }
+                }
+                Element::Reference(ref reference_path, ..) => {
+                    // Skip this whole check if we don't `verify_references`
+                    if !verify_references {
+                        continue;
+                    }
+
+                    // Merk we're checking:
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for reference",
+                            hex_to_ascii(&key)
+                        )))?;
+
+                    let referenced_value_hash = {
+                        let full_path = path_from_reference_path_type(
+                            reference_path.clone(),
+                            &path.to_vec(),
+                            Some(&key),
+                        )?;
+                        let item = self
+                            .follow_reference(
+                                (full_path.as_slice()).into(),
+                                allow_cache,
+                                None,
+                                grove_version,
+                            )
+                            .unwrap()?;
+                        item.value_hash(grove_version).unwrap()?
+                    };
+
+                    // Take the current item (reference) hash and combine it with referenced value's
+                    // hash
+
+                    let self_actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash =
+                        combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(
+                            path.derive_owned_with_child(key).to_vec(),
+                            (combined_value_hash, element_value_hash, combined_value_hash),
+                        );
+                    }
                 }
             }
         }
@@ -1035,78 +1120,139 @@ impl GroveDb {
         path: &SubtreePath<B>,
         batch: Option<&'db StorageBatch>,
         transaction: &Transaction,
+        verify_references: bool,
+        allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
-        let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
-            if element.is_any_tree() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(
-                        &key,
-                        true,
-                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                        grove_version,
-                    )
-                    .unwrap()
-                    .map_err(MerkError)?
-                    .ok_or(Error::CorruptedData(
-                        "expected merk to contain value at key".to_string(),
-                    ))?;
-                let new_path = path.derive_owned_with_child(key);
-                let new_path_ref = SubtreePath::from(&new_path);
+            match element {
+                Element::SumTree(..) | Element::Tree(..) => {
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let new_path = path.derive_owned_with_child(key);
+                    let new_path_ref = SubtreePath::from(&new_path);
 
-                let inner_merk = self
-                    .open_transactional_merk_at_path(
-                        new_path_ref.clone(),
-                        transaction,
+                    let inner_merk = self
+                        .open_transactional_merk_at_path(
+                            new_path_ref.clone(),
+                            transaction,
+                            batch,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                    let root_hash = inner_merk.root_hash().unwrap();
+
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(
+                            new_path.to_vec(),
+                            (root_hash, combined_value_hash, element_value_hash),
+                        );
+                    }
+                    issues.extend(self.verify_merk_and_submerks_in_transaction(
+                        inner_merk,
+                        &new_path_ref,
                         batch,
-                        grove_version,
-                    )
-                    .unwrap()?;
-                let root_hash = inner_merk.root_hash().unwrap();
-
-                let actual_value_hash = value_hash(&kv_value).unwrap();
-                let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
-
-                if combined_value_hash != element_value_hash {
-                    issues.insert(
-                        new_path.to_vec(),
-                        (root_hash, combined_value_hash, element_value_hash),
-                    );
-                }
-                issues.extend(self.verify_merk_and_submerks_in_transaction(
-                    inner_merk,
-                    &new_path_ref,
-                    batch,
-                    transaction,
-                    grove_version,
-                )?);
-            } else if element.is_any_item() {
-                let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(
-                        &key,
+                        transaction,
+                        verify_references,
                         true,
-                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                         grove_version,
-                    )
-                    .unwrap()
-                    .map_err(MerkError)?
-                    .ok_or(Error::CorruptedData(
-                        "expected merk to contain value at key".to_string(),
-                    ))?;
-                let actual_value_hash = value_hash(&kv_value).unwrap();
-                if actual_value_hash != element_value_hash {
-                    issues.insert(
-                        path.derive_owned_with_child(key).to_vec(),
-                        (actual_value_hash, element_value_hash, actual_value_hash),
-                    );
+                    )?);
+                }
+                Element::Item(..) | Element::SumItem(..) => {
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    if actual_value_hash != element_value_hash {
+                        issues.insert(
+                            path.derive_owned_with_child(key).to_vec(),
+                            (actual_value_hash, element_value_hash, actual_value_hash),
+                        );
+                    }
+                }
+                Element::Reference(ref reference_path, ..) => {
+                    // Skip this whole check if we don't `verify_references`
+                    if !verify_references {
+                        continue;
+                    }
+
+                    // Merk we're checking:
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for reference",
+                            hex_to_ascii(&key)
+                        )))?;
+
+                    let referenced_value_hash = {
+                        let full_path = path_from_reference_path_type(
+                            reference_path.clone(),
+                            &path.to_vec(),
+                            Some(&key),
+                        )?;
+                        let item = self
+                            .follow_reference(
+                                (full_path.as_slice()).into(),
+                                allow_cache,
+                                Some(transaction),
+                                grove_version,
+                            )
+                            .unwrap()?;
+                        item.value_hash(grove_version).unwrap()?
+                    };
+
+                    // Take the current item (reference) hash and combine it with referenced value's
+                    // hash
+                    let self_actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash =
+                        combine_hash(&self_actual_value_hash, &referenced_value_hash).unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(
+                            path.derive_owned_with_child(key).to_vec(),
+                            (combined_value_hash, element_value_hash, combined_value_hash),
+                        );
+                    }
                 }
             }
         }

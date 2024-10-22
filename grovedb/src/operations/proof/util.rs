@@ -306,7 +306,7 @@ pub fn path_hex_to_ascii(path: &Path) -> String {
 }
 
 pub fn path_as_slices_hex_to_ascii(path: &[&[u8]]) -> String {
-    path.into_iter()
+    path.iter()
         .map(|e| hex_to_ascii(e))
         .collect::<Vec<_>>()
         .join("/")
