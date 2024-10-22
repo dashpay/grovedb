@@ -164,7 +164,8 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::ItemWithBackwardsReferences(_, _, flags)
-            | Element::SumItemWithBackwardsReferences(_, _, flags) => flags,
+            | Element::SumItemWithBackwardsReferences(_, _, flags)
+            | Element::BidirectionalReference(_, _, flags) => flags,
         }
     }
 
@@ -178,7 +179,8 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::ItemWithBackwardsReferences(_, _, flags)
-            | Element::SumItemWithBackwardsReferences(_, _, flags) => flags,
+            | Element::SumItemWithBackwardsReferences(_, _, flags)
+            | Element::BidirectionalReference(_, _, flags) => flags,
         }
     }
 
@@ -192,7 +194,8 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::ItemWithBackwardsReferences(_, _, flags)
-            | Element::SumItemWithBackwardsReferences(_, _, flags) => flags,
+            | Element::SumItemWithBackwardsReferences(_, _, flags)
+            | Element::BidirectionalReference(_, _, flags) => flags,
         }
     }
 
@@ -204,7 +207,10 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
-            | Element::SumItem(_, flags) => *flags = new_flags,
+            | Element::SumItem(_, flags)
+            | Element::ItemWithBackwardsReferences(_, _, flags)
+            | Element::SumItemWithBackwardsReferences(_, _, flags)
+            | Element::BidirectionalReference(_, _, flags) => *flags = new_flags,
         }
     }
 

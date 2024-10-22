@@ -1034,7 +1034,10 @@ impl GroveDb {
                         grove_version,
                     )?);
                 }
-                Element::Item(..) | Element::SumItem(..) => {
+                Element::Item(..)
+                | Element::SumItem(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1057,7 +1060,8 @@ impl GroveDb {
                         );
                     }
                 }
-                Element::Reference(ref reference_path, ..) => {
+                Element::Reference(ref reference_path, ..)
+                | Element::BidirectionalReference(ref reference_path, ..) => {
                     // Skip this whole check if we don't `verify_references`
                     if !verify_references {
                         continue;
@@ -1180,7 +1184,10 @@ impl GroveDb {
                         grove_version,
                     )?);
                 }
-                Element::Item(..) | Element::SumItem(..) => {
+                Element::Item(..)
+                | Element::SumItem(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1203,7 +1210,8 @@ impl GroveDb {
                         );
                     }
                 }
-                Element::Reference(ref reference_path, ..) => {
+                Element::Reference(ref reference_path, ..)
+                | Element::BidirectionalReference(ref reference_path, ..) => {
                     // Skip this whole check if we don't `verify_references`
                     if !verify_references {
                         continue;

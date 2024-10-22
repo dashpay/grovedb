@@ -92,9 +92,18 @@ pub enum Element {
     /// A reference to an object by its path
     BidirectionalReference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
     /// An ordinary value that has a backwards reference
-    ItemWithBackwardsReferences(Vec<u8>, Vec<(ReferencePathType, CascadeOnUpdate)>, Option<ElementFlags>),
-    /// Signed integer value that can be totaled in a sum tree that has a backwards reference
-    SumItemWithBackwardsReferences(SumValue, Vec<(ReferencePathType, CascadeOnUpdate)>, Option<ElementFlags>),
+    ItemWithBackwardsReferences(
+        Vec<u8>,
+        Vec<(ReferencePathType, CascadeOnUpdate)>,
+        Option<ElementFlags>,
+    ),
+    /// Signed integer value that can be totaled in a sum tree that has a
+    /// backwards reference
+    SumItemWithBackwardsReferences(
+        SumValue,
+        Vec<(ReferencePathType, CascadeOnUpdate)>,
+        Option<ElementFlags>,
+    ),
 }
 
 impl fmt::Display for Element {
@@ -166,10 +175,42 @@ impl fmt::Display for Element {
             Element::ItemWithBackwardsReferences(data, backwards_references, flags) => {
                 let backwards_references_count = backwards_references.len();
                 let backwards_references_info = if backwards_references_count < 4 {
-                    backwards_references.iter().map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|")
+                    backwards_references
+                        .iter()
+                        .map(|(backwards_reference, cascade_on_update)| {
+                            format!(
+                                "{}:{}",
+                                backwards_reference,
+                                if *cascade_on_update {
+                                    "cascade"
+                                } else {
+                                    "no cascade"
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|")
                 } else {
-                    let first_backwards_references = backwards_references.iter().take(3).map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|");
-                    format!("{}...{} total backwards references", first_backwards_references, backwards_references_count)
+                    let first_backwards_references = backwards_references
+                        .iter()
+                        .take(3)
+                        .map(|(backwards_reference, cascade_on_update)| {
+                            format!(
+                                "{}:{}",
+                                backwards_reference,
+                                if *cascade_on_update {
+                                    "cascade"
+                                } else {
+                                    "no cascade"
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    format!(
+                        "{}...{} total backwards references",
+                        first_backwards_references, backwards_references_count
+                    )
                 };
                 write!(
                     f,
@@ -184,10 +225,42 @@ impl fmt::Display for Element {
             Element::SumItemWithBackwardsReferences(sum_value, backwards_references, flags) => {
                 let backwards_references_count = backwards_references.len();
                 let backwards_references_info = if backwards_references_count < 4 {
-                    backwards_references.iter().map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|")
+                    backwards_references
+                        .iter()
+                        .map(|(backwards_reference, cascade_on_update)| {
+                            format!(
+                                "{}:{}",
+                                backwards_reference,
+                                if *cascade_on_update {
+                                    "cascade"
+                                } else {
+                                    "no cascade"
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|")
                 } else {
-                    let first_backwards_references = backwards_references.iter().take(3).map(|(backwards_reference, cascade_on_update)| format!("{}:{}", backwards_reference, if *cascade_on_update {"cascade"} else {"no cascade"})).collect::<Vec<_>>().join("|");
-                    format!("{}...{} total backwards references", first_backwards_references, backwards_references_count)
+                    let first_backwards_references = backwards_references
+                        .iter()
+                        .take(3)
+                        .map(|(backwards_reference, cascade_on_update)| {
+                            format!(
+                                "{}:{}",
+                                backwards_reference,
+                                if *cascade_on_update {
+                                    "cascade"
+                                } else {
+                                    "no cascade"
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    format!(
+                        "{}...{} total backwards references",
+                        first_backwards_references, backwards_references_count
+                    )
                 };
                 write!(
                     f,

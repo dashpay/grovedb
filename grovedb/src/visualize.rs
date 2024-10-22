@@ -59,7 +59,13 @@ impl Visualize for Element {
                 }
             }
             Element::ItemWithBackwardsReferences(value, backwards_references, flags) => {
-                drawer.write(format!("item_with_backwards_references {}:", backwards_references.len()).as_bytes())?;
+                drawer.write(
+                    format!(
+                        "item_with_backwards_references {}:",
+                        backwards_references.len()
+                    )
+                    .as_bytes(),
+                )?;
                 drawer = value.visualize(drawer)?;
 
                 if let Some(f) = flags {
@@ -78,7 +84,13 @@ impl Visualize for Element {
                 }
             }
             Element::SumItemWithBackwardsReferences(value, backwards_references, flags) => {
-                drawer.write(format!("sum_item_with_backwards_references: {value} | {}", backwards_references.len()).as_bytes())?;
+                drawer.write(
+                    format!(
+                        "sum_item_with_backwards_references: {value} | {}",
+                        backwards_references.len()
+                    )
+                    .as_bytes(),
+                )?;
 
                 if let Some(f) = flags {
                     if !f.is_empty() {
@@ -119,6 +131,9 @@ impl Visualize for Element {
                         drawer = f.visualize(drawer)?;
                     }
                 }
+            }
+            Element::BidirectionalReference(..) => {
+                drawer.write(b"bidi ref")?;
             }
         }
         Ok(drawer)

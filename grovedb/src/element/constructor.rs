@@ -41,7 +41,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Set element to an item without flags that allows for a backwards reference
+    /// Set element to an item without flags that allows for a backwards
+    /// reference
     pub fn new_item_allowing_bidirectional_references(item_value: Vec<u8>) -> Self {
         Element::ItemWithBackwardsReferences(item_value, vec![], None)
     }
@@ -53,8 +54,12 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Set element to an item with flags and that allows for a backwards reference
-    pub fn new_item_allowing_bidirectional_references_with_flags(item_value: Vec<u8>, flags: Option<ElementFlags>) -> Self {
+    /// Set element to an item with flags and that allows for a backwards
+    /// reference
+    pub fn new_item_allowing_bidirectional_references_with_flags(
+        item_value: Vec<u8>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
         Element::ItemWithBackwardsReferences(item_value, vec![], flags)
     }
 
@@ -65,7 +70,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Set element to a sum item hat allows for backwards references without flags
+    /// Set element to a sum item hat allows for backwards references without
+    /// flags
     pub fn new_sum_item_allowing_bidirectional_references(value: i64) -> Self {
         Element::SumItemWithBackwardsReferences(value, vec![], None)
     }
@@ -78,10 +84,12 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Set element to a sum item hat allows for backwards references with flags
-    pub fn new_sum_item_allowing_bidirectional_references_with_flags(value: i64,  flags: Option<ElementFlags>) -> Self {
+    pub fn new_sum_item_allowing_bidirectional_references_with_flags(
+        value: i64,
+        flags: Option<ElementFlags>,
+    ) -> Self {
         Element::SumItemWithBackwardsReferences(value, vec![], flags)
     }
-
 
     #[cfg(feature = "full")]
     /// Set element to a reference without flags
