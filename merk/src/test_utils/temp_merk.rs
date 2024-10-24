@@ -32,11 +32,11 @@
 use std::ops::{Deref, DerefMut};
 
 use grovedb_path::SubtreePath;
-use grovedb_storage::StorageBatch;
 #[cfg(feature = "full")]
+use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
 use grovedb_storage::{
-    rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
-    Storage,
+    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
+    StorageBatch,
 };
 use grovedb_version::version::GroveVersion;
 
@@ -49,7 +49,8 @@ use crate::Merk;
 pub struct TempMerk {
     storage: &'static TempStorage,
     batch: &'static StorageBatch,
-    merk: Merk<PrefixedRocksDbStorageContext<'static>>,
+    merk: Merk<PrefixedRocksDbTransactionContext<'static>>,
+    tx: &'static <RocksDbStorage as Storage<'static>>::Transaction,
 }
 
 #[cfg(feature = "full")]
@@ -59,9 +60,10 @@ impl TempMerk {
     pub fn new(grove_version: &GroveVersion) -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let batch = Box::leak(Box::new(StorageBatch::new()));
+        let tx = Box::leak(Box::new(storage.start_transaction()));
 
         let context = storage
-            .get_storage_context(SubtreePath::empty(), Some(batch))
+            .get_transactional_storage_context(SubtreePath::empty(), Some(batch), tx)
             .unwrap();
 
         let merk = Merk::open_base(
@@ -76,20 +78,32 @@ impl TempMerk {
             storage,
             merk,
             batch,
+            tx,
         }
     }
 
     /// Commits pending batch operations.
     pub fn commit(&mut self, grove_version: &GroveVersion) {
-        let batch = unsafe { Box::from_raw(self.batch as *const _ as *mut StorageBatch) };
+        let batch: Box<StorageBatch> =
+            unsafe { Box::from_raw(self.batch as *const _ as *mut StorageBatch) };
+        let tx: Box<<RocksDbStorage as Storage<'static>>::Transaction> = unsafe {
+            Box::from_raw(
+                self.tx as *const _ as *mut <RocksDbStorage as Storage<'static>>::Transaction,
+            )
+        };
         self.storage
-            .commit_multi_context_batch(*batch, None)
+            .commit_multi_context_batch(*batch, Some(self.tx))
             .unwrap()
             .expect("unable to commit batch");
+        self.storage
+            .commit_transaction(*tx)
+            .unwrap()
+            .expect("unable to commit transaction");
         self.batch = Box::leak(Box::new(StorageBatch::new()));
+        self.tx = Box::leak(Box::new(self.storage.start_transaction()));
         let context = self
             .storage
-            .get_storage_context(SubtreePath::empty(), Some(self.batch))
+            .get_transactional_storage_context(SubtreePath::empty(), Some(self.batch), self.tx)
             .unwrap();
         self.merk = Merk::open_base(
             context,
@@ -107,7 +121,13 @@ impl Drop for TempMerk {
     fn drop(&mut self) {
         unsafe {
             let batch = Box::from_raw(self.batch as *const _ as *mut StorageBatch);
-            let _ = self.storage.commit_multi_context_batch(*batch, None);
+
+            let tx: Box<<RocksDbStorage as Storage<'static>>::Transaction> = Box::from_raw(
+                self.tx as *const _ as *mut <RocksDbStorage as Storage<'static>>::Transaction,
+            );
+
+            let _ = self.storage.commit_multi_context_batch(*batch, Some(&tx));
+            let _ = self.storage.commit_transaction(*tx).unwrap();
             drop(Box::from_raw(self.storage as *const _ as *mut TempStorage));
         }
     }
@@ -122,16 +142,16 @@ impl Default for TempMerk {
 
 #[cfg(feature = "full")]
 impl Deref for TempMerk {
-    type Target = Merk<PrefixedRocksDbStorageContext<'static>>;
+    type Target = Merk<PrefixedRocksDbTransactionContext<'static>>;
 
-    fn deref(&self) -> &Merk<PrefixedRocksDbStorageContext<'static>> {
+    fn deref(&self) -> &Merk<PrefixedRocksDbTransactionContext<'static>> {
         &self.merk
     }
 }
 
 #[cfg(feature = "full")]
 impl DerefMut for TempMerk {
-    fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbStorageContext<'static>> {
+    fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbTransactionContext<'static>> {
         &mut self.merk
     }
 }
