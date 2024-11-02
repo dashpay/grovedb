@@ -33,7 +33,7 @@ pub mod test_utils;
 #[cfg(test)]
 mod tests;
 
-pub use rocksdb::{Error, WriteBatchWithTransaction};
+pub use rocksdb::{Error, ErrorKind, WriteBatchWithTransaction};
 pub use storage_context::{
     PrefixedRocksDbBatch, PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbRawIterator,
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,

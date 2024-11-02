@@ -79,13 +79,12 @@ pub enum Error {
     #[error("invalid parameter: {0}")]
     /// Invalid parameter
     InvalidParameter(&'static str),
-
     #[cfg(feature = "full")]
-    // Irrecoverable errors
-    #[error("storage_cost error: {0}")]
+    #[error("storage error: {0}")]
     /// Storage error
     StorageError(#[from] grovedb_storage::error::Error),
 
+    // Irrecoverable errors
     #[error("data corruption error: {0}")]
     /// Corrupted data
     CorruptedData(String),
