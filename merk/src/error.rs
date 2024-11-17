@@ -69,7 +69,7 @@ pub enum Error {
     InvalidProofError(String),
 
     /// Invalid proof error
-    #[error("invalid proof error {0}")]
+    #[error("invalid proof error {1}")]
     InvalidProofForQueryError(Query, String),
 
     /// Proof creation error
