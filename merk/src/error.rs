@@ -1,6 +1,7 @@
 //! Errors
 #[cfg(feature = "full")]
 use crate::proofs::chunk::error::ChunkError;
+use crate::proofs::Query;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +67,10 @@ pub enum Error {
     /// Invalid proof error
     #[error("invalid proof error {0}")]
     InvalidProofError(String),
+
+    /// Invalid proof error
+    #[error("invalid proof error {0}")]
+    InvalidProofForQueryError(Query, String),
 
     /// Proof creation error
     #[error("proof creation error {0}")]

@@ -166,7 +166,8 @@ impl Query {
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
                                 Some(_) => {
-                                    return Err(Error::InvalidProofError(
+                                    return Err(Error::InvalidProofForQueryError(
+                                        self.clone(),
                                         "Cannot verify lower bound of queried range".to_string(),
                                     ));
                                 }
@@ -194,7 +195,8 @@ impl Query {
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
                                 Some(_) => {
-                                    return Err(Error::InvalidProofError(
+                                    return Err(Error::InvalidProofForQueryError(
+                                        self.clone(),
                                         "Cannot verify upper bound of queried range".to_string(),
                                     ));
                                 }
@@ -237,10 +239,13 @@ impl Query {
                         if let Some(val) = value {
                             if let Some(limit) = current_limit {
                                 if limit == 0 {
-                                    return Err(Error::InvalidProofError(format!(
-                                        "Proof returns more data than limit {:?}",
-                                        original_limit
-                                    )));
+                                    return Err(Error::InvalidProofForQueryError(
+                                        self.clone(),
+                                        format!(
+                                            "Proof returns more data than limit {:?}",
+                                            original_limit
+                                        ),
+                                    ));
                                 } else {
                                     current_limit = Some(limit - 1);
                                     if current_limit == Some(0) {
@@ -269,7 +274,8 @@ impl Query {
                             // continue to next push
                             break;
                         } else {
-                            return Err(Error::InvalidProofError(
+                            return Err(Error::InvalidProofForQueryError(
+                                self.clone(),
                                 "Proof is missing data for query".to_string(),
                             ));
                         }
@@ -311,11 +317,14 @@ impl Query {
                 }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVValueHashFeatureType(..) => {
                     if in_range {
-                        return Err(Error::InvalidProofError(format!(
-                            "Proof is missing data for query range. Encountered unexpected node \
-                             type: {}",
-                            node
-                        )));
+                        return Err(Error::InvalidProofForQueryError(
+                            self.clone(),
+                            format!(
+                                "Proof is missing data for query range. Encountered unexpected \
+                                 node type: {}",
+                                node
+                            ),
+                        ));
                     }
                 }
             }
@@ -342,7 +351,8 @@ impl Query {
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items
                     _ => {
-                        return Err(Error::InvalidProofError(
+                        return Err(Error::InvalidProofForQueryError(
+                            self.clone(),
                             "Proof is missing data for query".to_string(),
                         ))
                         .wrap_with_cost(cost)
@@ -375,10 +385,13 @@ impl Query {
                 if root_hash == expected_hash {
                     Ok(verification_result)
                 } else {
-                    Err(Error::InvalidProofError(format!(
-                        "Proof did not match expected hash\n\tExpected: \
-                         {expected_hash:?}\n\tActual: {root_hash:?}"
-                    )))
+                    Err(Error::InvalidProofForQueryError(
+                        self.clone(),
+                        format!(
+                            "Proof did not match expected hash\n\tExpected: \
+                             {expected_hash:?}\n\tActual: {root_hash:?}"
+                        ),
+                    ))
                 }
             })
             .flatten()
