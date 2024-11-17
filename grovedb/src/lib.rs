@@ -167,6 +167,8 @@ pub use element::ElementFlags;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use grovedb_merk::error::Error as MerkError;
 #[cfg(feature = "estimated_costs")]
 pub use grovedb_merk::estimated_costs::{
     average_case_costs::{
@@ -218,8 +220,6 @@ pub use crate::error::Error;
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(feature = "full")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
-#[cfg(feature = "full")]
-use crate::Error::MerkError;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -998,7 +998,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()
-                        .map_err(MerkError)?
+                        .map_err(Error::MerkError)?
                         .ok_or(Error::CorruptedData(format!(
                             "expected merk to contain value at key {} for {}",
                             hex_to_ascii(&key),
@@ -1043,7 +1043,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()
-                        .map_err(MerkError)?
+                        .map_err(Error::MerkError)?
                         .ok_or(Error::CorruptedData(format!(
                             "expected merk to contain value at key {} for {}",
                             hex_to_ascii(&key),
@@ -1072,7 +1072,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()
-                        .map_err(MerkError)?
+                        .map_err(Error::MerkError)?
                         .ok_or(Error::CorruptedData(format!(
                             "expected merk to contain value at key {} for reference",
                             hex_to_ascii(&key)
@@ -1142,7 +1142,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()
-                        .map_err(MerkError)?
+                        .map_err(Error::MerkError)?
                         .ok_or(Error::CorruptedData(format!(
                             "expected merk to contain value at key {} for {}",
                             hex_to_ascii(&key),
@@ -1189,7 +1189,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()
-                        .map_err(MerkError)?
+                        .map_err(Error::MerkError)?
                         .ok_or(Error::CorruptedData(format!(
                             "expected merk to contain value at key {} for {}",
                             hex_to_ascii(&key),
@@ -1218,7 +1218,7 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()
-                        .map_err(MerkError)?
+                        .map_err(Error::MerkError)?
                         .ok_or(Error::CorruptedData(format!(
                             "expected merk to contain value at key {} for reference",
                             hex_to_ascii(&key)
