@@ -15,6 +15,7 @@ grovedb-visualize = { path = "../visualize" }
 grovedb-path = { path = "../path" }
 rand = "0.8.5"
 hex = "0.4"
+blake3 = "1.5.1"
 
 [workspace]
 

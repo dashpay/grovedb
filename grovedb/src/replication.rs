@@ -26,144 +26,6 @@ impl GroveDb {
         let _ = self.commit_transaction(session.into_transaction());
     }
 
-    pub fn get_subtree_metadata_by_prefix(
-        &self,
-        transaction: TransactionArg,
-        path: Vec<Vec<u8>>,
-    ) -> Result<Vec<SubtreeMetadata>, Error> {
-        let mut res = vec![];
-
-        if let Some(tx) = transaction {
-            let current_path = SubtreePath::from(path.as_slice());
-            let storage = self.db.get_transactional_storage_context(current_path, None, tx)
-                .value;
-            let mut raw_iter = Element::iterator(storage.raw_iter()).value;
-            while let Ok(Some((key, value))) = raw_iter.next_element().value
-            {
-                match value {
-                    Element::Tree(ref root_key, _) => {}
-                    Element::SumTree(ref root_key, _, _) => {}
-                    _ => {}
-                }
-                if value.is_tree() {
-
-                }
-            }
-        }
-        /*
-        if let Some(tx) = transaction {
-            let storage = self.db.get_transactional_storage_context_by_subtree_prefix(prefix, None, tx)
-                .unwrap_add_cost(&mut cost);
-            let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
-            while let Some((key, value)) =
-                cost_return_on_error!(&mut cost, raw_iter.next_element())
-            {
-                match value {
-
-                }
-                if value.is_tree() {
-
-                }
-            }
-        }
-*/
-        //let storage = self.get_transactional_storage_context_by_subtree_prefix()
-        /*
-                while let Some(q) = queue.pop() {
-                    let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
-                    // Get the correct subtree with q_ref as path
-                    storage_context_optional_tx!(self.db, subtree_path, None, transaction, storage, {
-                        let storage = storage.unwrap_add_cost(&mut cost);
-                        let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
-                        while let Some((key, value)) =
-                            cost_return_on_error!(&mut cost, raw_iter.next_element())
-                        {
-                            if value.is_tree() {
-                                let mut sub_path = q.clone();
-                                sub_path.push(key.to_vec());
-                                queue.push(sub_path.clone());
-                                result.push(sub_path);
-                            }
-                        }
-                    })
-                }
-                Ok(result).wrap_with_cost(cost)
-        */
-        Ok(res)
-    }
-
-    // Returns the discovered subtrees found recursively along with their associated
-    // metadata Params:
-    // tx: Transaction. Function returns the data by opening merks at given tx.
-    // TODO: Add a SubTreePath as param and start searching from that path instead
-    // of root (as it is now)
-    pub fn get_subtrees_metadata(&self, tx: TransactionArg) -> Result<SubtreesMetadata, Error> {
-        let mut subtrees_metadata = SubtreesMetadata::new();
-
-        let subtrees_root = self.find_subtrees(&SubtreePath::empty(), tx).value?;
-        for subtree in subtrees_root.into_iter() {
-            let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
-            let path: &[&[u8]] = &subtree_path;
-            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
-
-            let current_path = SubtreePath::from(path);
-
-            match (current_path.derive_parent(), subtree.last()) {
-                (Some((parent_path, _)), Some(parent_key)) => match tx {
-                    None => {
-                        let parent_merk = self
-                            .open_non_transactional_merk_at_path(parent_path, None)
-                            .value?;
-                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
-                            .get_value_and_value_hash(
-                                parent_key,
-                                true,
-                                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
-                            )
-                            .value
-                        {
-                            let actual_value_hash = value_hash(&elem_value).unwrap();
-                            subtrees_metadata.data.insert(
-                                prefix,
-                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
-                            );
-                        }
-                    }
-                    Some(t) => {
-                        let parent_merk = self
-                            .open_transactional_merk_at_path(parent_path, t, None)
-                            .value?;
-                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
-                            .get_value_and_value_hash(
-                                parent_key,
-                                true,
-                                None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
-                            )
-                            .value
-                        {
-                            let actual_value_hash = value_hash(&elem_value).unwrap();
-                            subtrees_metadata.data.insert(
-                                prefix,
-                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
-                            );
-                        }
-                    }
-                },
-                _ => {
-                    subtrees_metadata.data.insert(
-                        prefix,
-                        (
-                            current_path.to_vec(),
-                            CryptoHash::default(),
-                            CryptoHash::default(),
-                        ),
-                    );
-                }
-            }
-        }
-        Ok(subtrees_metadata)
-    }
-
     pub fn fetch_chunk(
         &self,
         global_chunk_id: &[u8],
@@ -260,7 +122,7 @@ impl GroveDb {
 
         let mut session = self.start_syncing_session(app_hash);
 
-        session.add_subtree_sync_info(self, SubtreePath::empty(), app_hash, None, root_prefix, vec![], vec![])?;
+        session.add_subtree_sync_info(self, SubtreePath::empty(), app_hash, None, root_prefix)?;
 
         Ok(session)
     }
@@ -277,32 +139,6 @@ pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
     }
     subtree_path_str
 }
-
-// Splits the given global chunk id into [SUBTREE_PREFIX:CHUNK_ID]
-pub fn util_split_global_chunk_id(
-    global_chunk_id: &[u8],
-    app_hash: [u8; 32],
-) -> Result<(crate::SubtreePrefix, Vec<u8>), Error> {
-    let chunk_prefix_length: usize = 32;
-    if global_chunk_id.len() < chunk_prefix_length {
-        return Err(Error::CorruptedData(
-            "expected global chunk id of at least 32 length".to_string(),
-        ));
-    }
-
-    if global_chunk_id == app_hash {
-        let array_of_zeros: [u8; 32] = [0; 32];
-        let root_chunk_prefix_key: crate::SubtreePrefix = array_of_zeros;
-        return Ok((root_chunk_prefix_key, vec![]));
-    }
-
-    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
-    let mut array = [0u8; 32];
-    array.copy_from_slice(chunk_prefix);
-    let chunk_prefix_key: crate::SubtreePrefix = array;
-    Ok((chunk_prefix_key, chunk_id.to_vec()))
-}
-
 
 pub fn util_split_global_chunk_id_2(
     global_chunk_id: &[u8],

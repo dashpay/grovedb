@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction};
 use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, };
@@ -17,6 +17,8 @@ const KEY_INT_2: &[u8] = b"key_int_2";
 const KEY_INT_REF_0: &[u8] = b"key_int_ref_0";
 const KEY_INT_A: &[u8] = b"key_sum_0";
 const ROOT_PATH: &[&[u8]] = &[];
+
+pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 // Allow insertions to overwrite trees
 // This is necessary so the tutorial can be rerun easily
@@ -37,21 +39,21 @@ fn populate_db(grovedb_path: String) -> GroveDb {
 
     let tx = db.start_transaction();
     let batch_size = 50;
-    for i in 0..=5 {
+    for i in 0..=50 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_0], i * batch_size, i * batch_size + batch_size - 1, &tx);
     }
     let _ = db.commit_transaction(tx);
 
     let tx = db.start_transaction();
     let batch_size = 50;
-    for i in 0..=55 {
+    for i in 0..=50 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_1], i * batch_size, i * batch_size + batch_size - 1, &tx);
     }
     let _ = db.commit_transaction(tx);
 
     let tx = db.start_transaction();
     let batch_size = 50;
-    for i in 0..=55 {
+    for i in 0..=50 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_2], i * batch_size, i * batch_size + batch_size - 1, &tx);
     }
     let _ = db.commit_transaction(tx);
@@ -97,10 +99,6 @@ fn main() {
     let root_hash_destination = db_destination.root_hash(None).unwrap().unwrap();
     println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
-    println!("\n######### source_subtree_metadata of db_source");
-    let subtrees_metadata_source = db_source.get_subtrees_metadata(None).unwrap();
-    println!("{:?}", subtrees_metadata_source);
-
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
     sync_db_demo(&db_checkpoint_0, &db_destination).unwrap();
 
@@ -112,6 +110,7 @@ fn main() {
     else {
         println!("DB verification success");
     }
+    return;
 
     println!("\n######### root_hashes:");
     let root_hash_source = db_source.root_hash(None).unwrap().unwrap();
@@ -249,11 +248,25 @@ fn sync_db_demo(
     // The very first chunk to fetch is always identified by the root app_hash
     chunk_queue.push_back(app_hash.to_vec());
 
+    let mut num_chunks = 0;
+    let mut duration_sum_fetch: Duration = Duration::ZERO;
+    let mut duration_sum_apply: Duration = Duration::ZERO;
     while let Some(chunk_id) = chunk_queue.pop_front() {
+        num_chunks += 1;
+        let start_time_fetch = Instant::now();
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION)?;
+        let elapsed_fetch = start_time_fetch.elapsed();
+        duration_sum_fetch += elapsed_fetch;
+
+        let start_time_apply = Instant::now();
         let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), ops, CURRENT_STATE_SYNC_VERSION)?;
+        let elapsed_apply = start_time_apply.elapsed();
+        duration_sum_apply += elapsed_apply;
         chunk_queue.extend(more_chunks);
     }
+    println!("num_chunks: {}", num_chunks);
+    println!("duration_sum_fetch: {}", duration_sum_fetch.as_secs_f64());
+    println!("duration_sum_apply: {}", duration_sum_apply.as_secs_f64());
 
     if session.is_sync_completed() {
         target_db.commit_session(session);

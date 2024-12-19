@@ -8,11 +8,14 @@ use std::fs::Metadata;
 use grovedb_costs::CostsExt;
 
 use grovedb_merk::{CryptoHash, Restorer};
+use grovedb_merk::tree::kv::ValueDefinedCostType;
+use grovedb_merk::tree::value_hash;
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
+use grovedb_storage::rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, RocksDbStorage};
+use grovedb_storage::StorageContext;
 
-use super::{util_decode_vec_ops, util_split_global_chunk_id, CURRENT_STATE_SYNC_VERSION, util_create_global_chunk_id_2};
-use crate::{replication::util_path_to_string, Error, GroveDb, Transaction, replication};
+use super::{util_decode_vec_ops, CURRENT_STATE_SYNC_VERSION, util_create_global_chunk_id_2};
+use crate::{replication::util_path_to_string, Error, GroveDb, Transaction, replication, TransactionArg, Element};
 use crate::util::storage_context_optional_tx;
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
@@ -25,7 +28,7 @@ struct SubtreeStateSyncInfo<'db> {
     /// Set of global chunk ids requested to be fetched and pending for
     /// processing. For the description of global chunk id check
     /// fetch_chunk().
-    root_key: Option<Vec<u8>>,
+    current_root_key: Option<Vec<u8>>,
     is_sum_tree: bool,
     pending_chunks: BTreeSet<Vec<u8>>,
     current_path: Vec<Vec<u8>>,
@@ -34,6 +37,9 @@ struct SubtreeStateSyncInfo<'db> {
 }
 
 impl<'db> SubtreeStateSyncInfo<'db> {
+    pub fn get_current_path(&self) -> Vec<Vec<u8>> {
+        self.current_path.clone()
+    }
     // Apply a chunk using the given SubtreeStateSyncInfo
     // state_sync_info: Consumed SubtreeStateSyncInfo
     // chunk_id: Local chunk id
@@ -85,7 +91,7 @@ impl<'tx> SubtreeStateSyncInfo<'tx> {
     pub fn new(restorer: Restorer<PrefixedRocksDbImmediateStorageContext<'tx>>) -> Self {
         SubtreeStateSyncInfo {
             restorer,
-            root_key: None,
+            current_root_key: None,
             is_sum_tree: false,
             pending_chunks: Default::default(),
             current_path: vec![],
@@ -149,8 +155,6 @@ impl<'db> MultiStateSyncSession<'db> {
         hash: CryptoHash,
         actual_hash: Option<CryptoHash>,
         chunk_prefix: [u8; 32],
-        parent_path: Vec<Vec<u8>>,
-        current_path: Vec<u8>,
     ) -> Result<(Vec<u8>), Error> {
         // SAFETY: we get an immutable reference of a transaction that stays behind
         // `Pin` so this reference shall remain valid for the whole session
@@ -165,9 +169,9 @@ impl<'db> MultiStateSyncSession<'db> {
             let restorer = Restorer::new(merk, hash, actual_hash);
             let mut sync_info = SubtreeStateSyncInfo::new(restorer);
             sync_info.pending_chunks.insert(vec![]);
-            sync_info.root_key = root_key.clone();
+            sync_info.current_root_key = root_key.clone();
             sync_info.is_sum_tree = is_sum_tree;
-            println!("{}", format!("adding:{} {:?} {} {:?}", hex::encode(chunk_prefix), root_key.clone(), is_sum_tree, util_path_to_string(path.to_vec().as_slice())));
+            sync_info.current_path = path.to_vec();
             self.as_mut()
                 .current_prefixes()
                 .insert(chunk_prefix, sync_info);
@@ -176,15 +180,6 @@ impl<'db> MultiStateSyncSession<'db> {
         } else {
             Err(Error::InternalError("Unable to open merk for replication"))
         }
-    }
-
-    pub fn add_subtree_sync_info_2<'b, B: AsRef<[u8]>>(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-        db: &'db GroveDb,
-        metadata: SubtreeMetadata
-    ) -> Result<(Vec<u8>), Error> {
-        let (prefix, path, hash, actual_hash) = metadata;
-        Ok(vec![])
     }
 
     fn current_prefixes(
@@ -230,7 +225,7 @@ impl<'db> MultiStateSyncSession<'db> {
         // [OLD_WAY]
         //let (chunk_prefix, chunk_id) = util_split_global_chunk_id(global_chunk_id, self.app_hash)?;
         // [NEW_WAY]
-        let (chunk_prefix, _, _, chunk_id) = replication::util_split_global_chunk_id_2(global_chunk_id, &self.app_hash)?;
+        let (chunk_prefix, key_root, is_summ_tree, chunk_id) = replication::util_split_global_chunk_id_2(global_chunk_id, &self.app_hash)?;
 
         if self.is_empty() {
             return Err(Error::InternalError("GroveDB is not in syncing mode"));
@@ -247,7 +242,7 @@ impl<'db> MultiStateSyncSession<'db> {
         if !res.is_empty() {
             for local_chunk_id in res.iter() {
                 // [NEW_WAY]
-                let x = util_create_global_chunk_id_2(chunk_prefix, subtree_state_sync.root_key.clone(), subtree_state_sync.is_sum_tree.clone(), local_chunk_id.clone());
+                let x = util_create_global_chunk_id_2(chunk_prefix, subtree_state_sync.current_root_key.clone(), subtree_state_sync.is_sum_tree.clone(), local_chunk_id.clone());
                 next_chunk_ids.push(x);
                 // [OLD_WAY]
                 //let mut next_global_chunk_id = chunk_prefix.to_vec();
@@ -261,6 +256,8 @@ impl<'db> MultiStateSyncSession<'db> {
                 return Ok(vec![]);
             }
 
+            let completed_path = subtree_state_sync.get_current_path();
+
             // Subtree is finished. We can save it.
             if (subtree_state_sync.num_processed_chunks > 0)
                 && (current_prefixes
@@ -272,9 +269,13 @@ impl<'db> MultiStateSyncSession<'db> {
             {
                 return Err(Error::InternalError("Unable to finalize Merk"));
             }
+
             self.as_mut().processed_prefixes().insert(chunk_prefix);
 
-            if let Ok(res) = self.discover_subtrees(db) {
+            println!("    finished tree: {:?}", util_path_to_string(completed_path.as_slice()));
+            let new_subtrees_metadata = self.discover_new_subtrees_metadata(db, completed_path.to_vec())?;
+
+            if let Ok(res) = self.prepare_sync_state_sessions(db, new_subtrees_metadata) {
                 next_chunk_ids.extend(res);
                 Ok(next_chunk_ids)
             } else {
@@ -283,14 +284,72 @@ impl<'db> MultiStateSyncSession<'db> {
         }
     }
 
-    /// Prepares sync session for the freshly discovered subtrees and returns
-    /// global chunk ids of those new subtrees.
-    fn discover_subtrees(
+    fn discover_new_subtrees_metadata(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
         db: &'db GroveDb,
-    ) -> Result<Vec<Vec<u8>>, Error> {
-        let subtrees_metadata = db.get_subtrees_metadata(Some(&self.transaction))?;
+        path_vec: Vec<Vec<u8>>,
+    ) -> Result<SubtreesMetadata, Error> {
+        let transaction_ref: &'db Transaction<'db> = unsafe {
+            let tx: &mut Transaction<'db> =
+                &mut Pin::into_inner_unchecked(self.as_mut()).transaction;
+            &*(tx as *mut _)
+        };
+        let subtree_path: Vec<&[u8]> = path_vec.iter().map(|vec| vec.as_slice()).collect();
+        let path: &[&[u8]] = &subtree_path;
+        let merk = db.open_transactional_merk_at_path(path.into(), transaction_ref, None)
+            .value
+            .map_err(|e| Error::CorruptedData(
+                format!("failed to open merk by path-tx:{}", e),
+            ))?;
+        if merk.is_empty_tree().unwrap() {
+            return Ok(SubtreesMetadata::default());
+        }
+        let mut subtree_keys = BTreeSet::new();
 
+        let mut raw_iter = Element::iterator(merk.storage.raw_iter()).unwrap();
+        while let Some((key, value)) = raw_iter.next_element().unwrap().unwrap() {
+            if value.is_tree() {
+                subtree_keys.insert(key.to_vec());
+            }
+        }
+
+        let mut subtrees_metadata = SubtreesMetadata::new();
+        for subtree_key in &subtree_keys {
+            if let Ok(Some((elem_value, elem_value_hash))) = merk
+                .get_value_and_value_hash(
+                    subtree_key.as_slice(),
+                    true,
+                    None::<&fn(&[u8]) -> Option<ValueDefinedCostType>>,
+                )
+                .value
+            {
+                let actual_value_hash = value_hash(&elem_value).unwrap();
+                let mut new_path = path_vec.to_vec();
+                new_path.push(subtree_key.to_vec());
+
+                let subtree_path: Vec<&[u8]> = new_path.iter().map(|vec| vec.as_slice()).collect();
+                let path: &[&[u8]] = &subtree_path;
+                let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+
+                println!("    detected {:?} prefix:{}", util_path_to_string(&new_path), hex::encode(prefix));
+
+                subtrees_metadata.data.insert(
+                    prefix,
+                    (new_path.to_vec(), actual_value_hash, elem_value_hash),
+                );
+            }
+        }
+
+        Ok((subtrees_metadata))
+    }
+
+    /// Prepares sync session for the freshly discovered subtrees and returns
+    /// global chunk ids of those new subtrees.
+    fn prepare_sync_state_sessions(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        db: &'db GroveDb,
+        subtrees_metadata: SubtreesMetadata,
+    ) -> Result<Vec<Vec<u8>>, Error> {
         let mut res = vec![];
 
         for (prefix, prefix_metadata) in &subtrees_metadata.data {
@@ -312,9 +371,7 @@ impl<'db> MultiStateSyncSession<'db> {
                     path.into(),
                     elem_value_hash.clone(),
                     Some(actual_value_hash.clone()),
-                    prefix.clone(),
-                    vec![],
-                    vec![],
+                    prefix.clone()
                 )?;
 
                 // [NEW_WAY]
@@ -361,7 +418,7 @@ impl fmt::Debug for SubtreesMetadata {
                 f,
                 " prefix:{:?} -> path:{:?}",
                 hex::encode(prefix),
-                metadata_path_str
+                metadata_path_str,
             )?;
         }
         Ok(())
