@@ -56,6 +56,9 @@ impl GroveDb {
                 if merk.is_empty_tree().unwrap() {
                     return Ok(vec![]);
                 }
+                if merk.height().is_none() {
+                    return Ok(vec![]);
+                }
 
                 let mut chunk_producer = ChunkProducer::new(&merk)
                     .map_err(|e| Error::CorruptedData(
