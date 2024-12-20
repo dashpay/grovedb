@@ -186,6 +186,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+use grovedb_merk::ChunkProducer;
 #[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
@@ -220,6 +221,7 @@ use crate::operations::proof::util::hex_to_ascii;
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 #[cfg(feature = "full")]
 use crate::Error::MerkError;
+use crate::replication::util_encode_vec_ops;
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
@@ -330,6 +332,44 @@ impl GroveDb {
         }
     }
 
+    fn open_transactional_merk_by_prefix<'db>(
+        &'db self,
+        prefix: SubtreePrefix,
+        root_key: Option<Vec<u8>>,
+        is_sum_tree: bool,
+        tx: &'db Transaction,
+        batch: Option<&'db StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext>, Error>
+    {
+        let mut cost = OperationCost::default();
+        let storage = self
+            .db
+            .get_transactional_storage_context_by_subtree_prefix(prefix, batch, tx)
+            .unwrap_add_cost(&mut cost);
+        if root_key.is_some() {
+            Merk::open_layered_with_root_key(
+                storage,
+                root_key,
+                is_sum_tree,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            ).map_err(|_| {
+                Error::CorruptedData("cannot open a subtree by prefix with given root key".to_owned())
+            }).add_cost(cost)
+        }
+        else {
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            ).map_err(|_| {
+                Error::CorruptedData("cannot open a root subtree by prefix".to_owned())
+            }).add_cost(cost)
+        }
+    }
+
     /// Opens a Merk at given path for with direct write access. Intended for
     /// replication purposes.
     fn open_merk_for_replication<'tx, 'db: 'tx, 'b, B>(
@@ -337,7 +377,7 @@ impl GroveDb {
         path: SubtreePath<'b, B>,
         tx: &'tx Transaction<'db>,
         grove_version: &GroveVersion,
-    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Error>
+    ) -> Result<(Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Option<Vec<u8>>, bool), Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -364,9 +404,10 @@ impl GroveDb {
                 .unwrap()?;
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                Ok((
                 Merk::open_layered_with_root_key(
                     storage,
-                    root_key,
+                    root_key.clone(),
                     is_sum_tree,
                     Some(&Element::value_defined_cost_for_serialized_value),
                     grove_version,
@@ -374,13 +415,17 @@ impl GroveDb {
                 .map_err(|_| {
                     Error::CorruptedData("cannot open a subtree with given root key".to_owned())
                 })
-                .unwrap()
+                .unwrap()?,
+                    root_key,
+                    is_sum_tree
+                ))
             } else {
                 Err(Error::CorruptedPath(
                     "cannot open a subtree as parent exists but is not a tree".to_string(),
                 ))
             }
         } else {
+            Ok((
             Merk::open_base(
                 storage,
                 false,
@@ -388,7 +433,10 @@ impl GroveDb {
                 grove_version,
             )
             .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-            .unwrap()
+            .unwrap()?,
+                None,
+                false
+            ))
         }
     }
 
@@ -455,6 +503,43 @@ impl GroveDb {
             )
             .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
             .add_cost(cost)
+        }
+    }
+
+    fn open_non_transactional_merk_by_prefix<'db>(
+        &'db self,
+        prefix: SubtreePrefix,
+        root_key: Option<Vec<u8>>,
+        is_sum_tree: bool,
+        batch: Option<&'db StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
+    {
+        let mut cost = OperationCost::default();
+        let storage = self
+            .db
+            .get_storage_context_by_subtree_prefix(prefix, batch)
+            .unwrap_add_cost(&mut cost);
+        if root_key.is_some() {
+            Merk::open_layered_with_root_key(
+                storage,
+                root_key,
+                is_sum_tree,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            ).map_err(|_| {
+                Error::CorruptedData("cannot open a subtree by prefix with given root key".to_owned())
+            }).add_cost(cost)
+        }
+        else {
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            ).map_err(|_| {
+                Error::CorruptedData("cannot open a root subtree by prefix".to_owned())
+            }).add_cost(cost)
         }
     }
 
