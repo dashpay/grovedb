@@ -7,7 +7,6 @@ use rand::{distributions::Alphanumeric, Rng, };
 use grovedb::element::SumValue;
 use grovedb::replication::CURRENT_STATE_SYNC_VERSION;
 use grovedb_version::version::GroveVersion;
-use grovedb::replication::MultiStateSyncSession;
 
 const MAIN_ΚΕΥ: &[u8] = b"key_main";
 const MAIN_ΚΕΥ_EMPTY: &[u8] = b"key_main_empty";
@@ -254,24 +253,14 @@ fn sync_db_demo(
     chunk_queue.push_back(app_hash.to_vec());
 
     let mut num_chunks = 0;
-    let mut duration_sum_fetch: Duration = Duration::ZERO;
-    let mut duration_sum_apply: Duration = Duration::ZERO;
     while let Some(chunk_id) = chunk_queue.pop_front() {
         num_chunks += 1;
-        let start_time_fetch = Instant::now();
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-        let elapsed_fetch = start_time_fetch.elapsed();
-        duration_sum_fetch += elapsed_fetch;
 
-        let start_time_apply = Instant::now();
         let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-        let elapsed_apply = start_time_apply.elapsed();
-        duration_sum_apply += elapsed_apply;
         chunk_queue.extend(more_chunks);
     }
     println!("num_chunks: {}", num_chunks);
-    println!("duration_sum_fetch: {}", duration_sum_fetch.as_secs_f64());
-    println!("duration_sum_apply: {}", duration_sum_apply.as_secs_f64());
 
     if session.is_sync_completed() {
         target_db.commit_session(session);

@@ -5,17 +5,13 @@ use std::pin::Pin;
 use grovedb_merk::{
     ed::Encode,
     proofs::{Decoder, Op},
-    tree::{hash::CryptoHash, kv::ValueDefinedCostType, value_hash},
+    tree::{hash::CryptoHash},
     ChunkProducer,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[rustfmt::skip]
-use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
 pub use self::state_sync_session::MultiStateSyncSession;
-use self::state_sync_session::SubtreesMetadata;
 use crate::{Error, GroveDb, TransactionArg};
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
@@ -34,12 +30,18 @@ impl GroveDb {
     // Fetch a chunk by global chunk id (should be called by ABCI when
     // LoadSnapshotChunk method is called) Params:
     // global_chunk_id: Global chunk id in the following format:
-    // [SUBTREE_PREFIX:CHUNK_ID] SUBTREE_PREFIX: 32 bytes (mandatory) (All zeros
-    // = Root subtree) CHUNK_ID: 0.. bytes (optional) Traversal instructions to
+    // [SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]
+    // SUBTREE_PREFIX: 32 bytes (mandatory) (All zeros = Root subtree)
+    // SIZE_ROOT_KEY: 1 byte: Size of ROOT_KEY in bytes
+    // ROOT_KEY: SIZE_ROOT_KEY bytes (optional)
+    // IS_SUM_TREE: 1 byte (mandatory) marks if the tree is a sum tree or not
+    // CHUNK_ID: 0.. bytes (optional) Traversal instructions to
     // the root of the given chunk. Traversal instructions are "1" for left, and
     // "0" for right. TODO: Compact CHUNK_ID into bitset for size optimization
     // as a subtree can be big hence traversal instructions for the deepest chunks
-    // tx: Transaction. Function returns the data by opening merks at given tx.
+    // transaction: Transaction. Function returns the data by opening merks at given tx.
+    // version: Version of state sync protocol version
+    // grove_version: Version of groveDB
     // Returns the Chunk proof operators for the requested chunk encoded in bytes
     pub fn fetch_chunk(
         &self,
@@ -61,7 +63,7 @@ impl GroveDb {
 
         let root_app_hash = self.root_hash(transaction, grove_version).value?;
         let (chunk_prefix, root_key, is_sum_tree, chunk_id) =
-            util_split_global_chunk_id_2(global_chunk_id, &root_app_hash)?;
+            util_split_global_chunk_id(global_chunk_id, &root_app_hash)?;
 
         // TODO: Refactor this by writing fetch_chunk_inner (as only merk constructor and type are different)
         match transaction {
@@ -168,11 +170,11 @@ pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
     subtree_path_str
 }
 
-pub fn util_split_global_chunk_id_2(
+// Splits the given global chunk id into [SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]
+pub fn util_split_global_chunk_id(
     global_chunk_id: &[u8],
     app_hash: &[u8],
 ) -> Result<(crate::SubtreePrefix, Option<Vec<u8>>, bool, Vec<u8>), Error> {
-    //println!("got>{}", hex::encode(global_chunk_id));
     let chunk_prefix_length: usize = 32;
     if global_chunk_id.len() < chunk_prefix_length {
         return Err(Error::CorruptedData(
@@ -224,7 +226,7 @@ pub fn util_split_global_chunk_id_2(
 }
 
 // Create the given global chunk id into [SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]
-pub fn util_create_global_chunk_id_2(
+pub fn util_create_global_chunk_id(
     subtree_prefix: [u8; blake3::OUT_LEN],
     root_key_opt: Option<Vec<u8>>,
     is_sum_tree:bool,
@@ -252,9 +254,8 @@ pub fn util_create_global_chunk_id_2(
     }
     res.push(is_sum_tree_v);
 
-
     res.extend(chunk_id.to_vec());
-    //println!("snd>{}|{}|{}|{}|{:?}", hex::encode(res.clone()), root_key_len, hex::encode(root_key_vec), is_sum_tree_v, chunk_id);
+
     res
 }
 
