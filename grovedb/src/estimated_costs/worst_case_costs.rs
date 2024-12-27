@@ -18,9 +18,7 @@ use grovedb_merk::{
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::{
-    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 use integer_encoding::VarInt;
 
 use crate::{
@@ -221,7 +219,7 @@ impl GroveDb {
             _ => add_cost_case_merk_insert(
                 &mut cost,
                 key_len,
-                cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version)) as u32,
+                cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32,
                 in_parent_tree_using_sums,
             ),
         };
@@ -289,7 +287,7 @@ impl GroveDb {
             _ => add_cost_case_merk_replace(
                 &mut cost,
                 key_len,
-                cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version)) as u32,
+                cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32,
                 in_parent_tree_using_sums,
             ),
         };
@@ -331,8 +329,7 @@ impl GroveDb {
                 });
                 // Items need to be always the same serialized size for this to work
                 let sum_item_cost_size =
-                    cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version))
-                        as u32;
+                    cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32;
                 let value_len = sum_item_cost_size + flags_len;
                 add_cost_case_merk_patch(
                     &mut cost,
@@ -536,7 +533,9 @@ mod test {
         // Open a merk and insert 10 elements.
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch, grove_version);
+        let tx = storage.start_transaction();
+
+        let mut merk = empty_path_merk(&*storage, &batch, &tx, grove_version);
 
         let merk_batch = make_batch_seq(1..10);
         merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
@@ -545,12 +544,12 @@ mod test {
 
         // this consumes the batch so storage contexts and merks will be dropped
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = empty_path_merk_read_only(&*storage, grove_version);
+        let merk = empty_path_merk_read_only(&*storage, &tx, grove_version);
 
         // To simulate worst case, we need to pick a node that:
         // 1. Is not in memory

@@ -9,8 +9,7 @@ use grovedb_merk::{
     CryptoHash,
 };
 use grovedb_version::{
-    check_grovedb_v0, error::GroveVersionError, version::GroveVersion, TryFromVersioned,
-    TryIntoVersioned,
+    check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
 };
 
 #[cfg(feature = "proof_debug")]

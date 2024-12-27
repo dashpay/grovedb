@@ -35,7 +35,7 @@ use crate::{
     operations::proof::{GroveDBProof, LayerProof, ProveOptions},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
-    GroveDb,
+    GroveDb, Transaction,
 };
 
 const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
@@ -227,9 +227,10 @@ async fn fetch_node(
     }): Json<WithSession<NodeFetchRequest>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
     let db = state.get_snapshot(session_id).await?;
+    let tx = db.start_transaction();
 
     let merk = db
-        .open_non_transactional_merk_at_path(path.as_slice().into(), None, GroveVersion::latest())
+        .open_transactional_merk_at_path(path.as_slice().into(), &tx, None, GroveVersion::latest())
         .unwrap()?;
     let node = merk.get_node_dbg(&key)?;
 
@@ -249,9 +250,10 @@ async fn fetch_root_node(
     }): Json<WithSession<()>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
     let db = state.get_snapshot(session_id).await?;
+    let tx = db.start_transaction();
 
     let merk = db
-        .open_non_transactional_merk_at_path(SubtreePath::empty(), None, GroveVersion::latest())
+        .open_transactional_merk_at_path(SubtreePath::empty(), &tx, None, GroveVersion::latest())
         .unwrap()?;
 
     let node = merk.get_root_node_dbg()?;
@@ -289,6 +291,7 @@ async fn fetch_with_path_query(
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<Vec<grovedbg_types::NodeUpdate>>, AppError> {
     let db = state.get_snapshot(session_id).await?;
+    let tx = db.start_transaction();
 
     let path_query = path_query_to_grovedb(json_path_query);
 
@@ -299,16 +302,21 @@ async fn fetch_with_path_query(
             true,
             false,
             QueryResultType::QueryPathKeyElementTrioResultType,
-            None,
+            Some(&tx),
             GroveVersion::latest(),
         )
         .unwrap()?
         .0;
-    Ok(Json(query_result_to_grovedbg(&db, grovedb_query_result)?))
+    Ok(Json(query_result_to_grovedbg(
+        &db,
+        &tx,
+        grovedb_query_result,
+    )?))
 }
 
 fn query_result_to_grovedbg(
     db: &GroveDb,
+    tx: &Transaction,
     query_result: QueryResultElements,
 ) -> Result<Vec<NodeUpdate>, crate::Error> {
     let mut result = Vec::new();
@@ -322,8 +330,9 @@ fn query_result_to_grovedbg(
                 _ => {
                     last_merk = Some((
                         path.clone(),
-                        db.open_non_transactional_merk_at_path(
+                        db.open_transactional_merk_at_path(
                             path.as_slice().into(),
+                            &tx,
                             None,
                             GroveVersion::latest(),
                         )

@@ -5,7 +5,7 @@ use grovedb_merk::{
     tree::kv::ValueDefinedCostType,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
-use grovedb_storage::StorageBatch;
+use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -264,11 +264,13 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     .expect("should insert item");
 
     let batch = StorageBatch::new();
+    let tx = db.start_transaction();
 
     // Open merk and check all elements in it
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -352,10 +354,12 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     )
     .unwrap()
     .expect("should insert item");
+    let tx = db.start_transaction();
 
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -402,12 +406,14 @@ fn test_sum_tree_feature() {
     .expect("should insert tree");
 
     let batch = StorageBatch::new();
+    let tx = db.start_transaction();
 
     // Sum should be non for non sum tree
     // TODO: change interface to retrieve element directly
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -421,13 +427,14 @@ fn test_sum_tree_feature() {
         b"key2",
         Element::empty_sum_tree(),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
     .expect("should insert sum tree");
+
     let sum_tree = db
-        .get([TEST_LEAF].as_ref(), b"key2", None, grove_version)
+        .get([TEST_LEAF].as_ref(), b"key2", Some(&tx), grove_version)
         .unwrap()
         .expect("should retrieve tree");
     assert_eq!(sum_tree.sum_value_or_default(), 0);
@@ -438,15 +445,16 @@ fn test_sum_tree_feature() {
         b"item1",
         Element::new_sum_item(30),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
     .expect("should insert item");
     // TODO: change interface to retrieve element directly
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key2"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -460,7 +468,7 @@ fn test_sum_tree_feature() {
         b"item2",
         Element::new_sum_item(-10),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
@@ -470,14 +478,15 @@ fn test_sum_tree_feature() {
         b"item3",
         Element::new_sum_item(50),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key2"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -491,14 +500,15 @@ fn test_sum_tree_feature() {
         b"item4",
         Element::new_item(vec![29]),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key2"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -512,7 +522,7 @@ fn test_sum_tree_feature() {
         b"item2",
         Element::new_sum_item(10),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
@@ -522,14 +532,15 @@ fn test_sum_tree_feature() {
         b"item3",
         Element::new_sum_item(-100),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key2"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -542,7 +553,7 @@ fn test_sum_tree_feature() {
         [TEST_LEAF, b"key2"].as_ref(),
         b"item4",
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
@@ -553,14 +564,15 @@ fn test_sum_tree_feature() {
         b"item4",
         Element::new_sum_item(10000000),
         None,
-        None,
+        Some(&tx),
         grove_version,
     )
     .unwrap()
     .expect("should insert item");
     let merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key2"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -668,11 +680,13 @@ fn test_sum_tree_propagation() {
     assert_eq!(sum_tree.sum_value_or_default(), 35);
 
     let batch = StorageBatch::new();
+    let tx = db.start_transaction();
 
     // Assert node feature types
     let test_leaf_merk = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -692,8 +706,9 @@ fn test_sum_tree_propagation() {
     ));
 
     let parent_sum_tree = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -715,8 +730,9 @@ fn test_sum_tree_propagation() {
     ));
 
     let child_sum_tree = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key", b"tree2"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -800,9 +816,12 @@ fn test_sum_tree_with_batches() {
         .expect("should apply batch");
 
     let batch = StorageBatch::new();
+    let tx = db.start_transaction();
+
     let sum_tree = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key1"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -840,14 +859,24 @@ fn test_sum_tree_with_batches() {
         b"c".to_vec(),
         Element::new_sum_item(10),
     )];
-    db.apply_batch(ops, None, None, grove_version)
+    db.apply_batch(ops, None, Some(&tx), grove_version)
         .unwrap()
         .expect("should apply batch");
 
+    db.db
+        .commit_multi_context_batch(batch, Some(&tx))
+        .unwrap()
+        .unwrap();
+
+    db.commit_transaction(tx).unwrap().unwrap();
+
     let batch = StorageBatch::new();
+    let tx = db.start_transaction();
+
     let sum_tree = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key1"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )
@@ -932,9 +961,12 @@ fn test_sum_tree_with_batches() {
         .expect("should apply batch");
 
     let batch = StorageBatch::new();
+    let tx = db.start_transaction();
+
     let sum_tree = db
-        .open_non_transactional_merk_at_path(
+        .open_transactional_merk_at_path(
             [TEST_LEAF, b"key1"].as_ref().into(),
+            &tx,
             Some(&batch),
             grove_version,
         )

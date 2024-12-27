@@ -4,7 +4,7 @@
 use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::Error;
 #[cfg(feature = "full")]

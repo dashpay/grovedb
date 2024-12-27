@@ -116,6 +116,15 @@ impl<T, E> CostResult<T, E> {
     pub fn cost_as_result(self) -> Result<OperationCost, E> {
         self.value.map(|_| self.cost)
     }
+
+    /// Call the provided function on success without altering result or cost.
+    pub fn for_ok(self, f: impl FnOnce(&T)) -> CostResult<T, E> {
+        if let Ok(x) = &self.value {
+            f(x)
+        }
+
+        self
+    }
 }
 
 impl<T, E> CostResult<Result<T, E>, E> {
@@ -170,8 +179,9 @@ impl<T> CostsExt for T {}
 /// 1. Early termination on error;
 /// 2. Because of 1, `Result` is removed from the equation;
 /// 3. `CostContext` is removed too because it is added to external cost
-/// accumulator; 4. Early termination uses external cost accumulator so previous
-///    costs won't be lost.
+/// accumulator;
+/// 4. Early termination uses external cost accumulator so previous costs won't
+///    be lost.
 #[macro_export]
 macro_rules! cost_return_on_error {
     ( &mut $cost:ident, $($body:tt)+ ) => {
@@ -193,7 +203,7 @@ macro_rules! cost_return_on_error {
 /// so no costs will be added except previously accumulated.
 #[macro_export]
 macro_rules! cost_return_on_error_no_add {
-    ( &$cost:ident, $($body:tt)+ ) => {
+    ( $cost:ident, $($body:tt)+ ) => {
         {
             use $crate::CostsExt;
             let result = { $($body)+ };

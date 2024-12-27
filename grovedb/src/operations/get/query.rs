@@ -5,9 +5,7 @@ use grovedb_costs::cost_return_on_error_default;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_version::{
-    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
@@ -15,7 +13,7 @@ use integer_encoding::VarInt;
 use crate::element::SumValue;
 use crate::{
     element::QueryOptions, operations::proof::ProveOptions,
-    query_result_type::PathKeyOptionalElementTrio,
+    query_result_type::PathKeyOptionalElementTrio, util::TxRef, Transaction,
 };
 #[cfg(feature = "full")]
 use crate::{
@@ -56,6 +54,7 @@ impl GroveDb {
         );
 
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let elements = cost_return_on_error!(
             &mut cost,
@@ -83,7 +82,7 @@ impl GroveDb {
                                 .follow_reference(
                                     absolute_path.as_slice().into(),
                                     allow_cache,
-                                    transaction,
+                                    tx.as_ref(),
                                     grove_version,
                                 )
                                 .unwrap_add_cost(&mut cost)?;
@@ -133,7 +132,7 @@ where {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             PathQuery::merge(path_queries.to_vec(), grove_version)
         );
         let (result, _) = cost_return_on_error!(
@@ -182,7 +181,7 @@ where {
         element: Element,
         allow_cache: bool,
         cost: &mut OperationCost,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         grove_version: &GroveVersion,
     ) -> Result<Element, Error> {
         check_grovedb_v0!(
@@ -243,6 +242,7 @@ where {
             grove_version.grovedb_versions.operations.query.query
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -261,12 +261,12 @@ where {
             .into_iterator()
             .map(|result_item| {
                 result_item.map_element(|element| {
-                    self.follow_element(element, allow_cache, &mut cost, transaction, grove_version)
+                    self.follow_element(element, allow_cache, &mut cost, tx.as_ref(), grove_version)
                 })
             })
             .collect::<Result<Vec<QueryResultElement>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((QueryResultElements { elements: results }, skipped)).wrap_with_cost(cost)
     }
 
@@ -290,6 +290,7 @@ where {
                 .query_item_value
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -321,7 +322,7 @@ where {
                                         .follow_reference(
                                             absolute_path.as_slice().into(),
                                             allow_cache,
-                                            transaction,
+                                            tx.as_ref(),
                                             grove_version,
                                         )
                                         .unwrap_add_cost(&mut cost)?;
@@ -352,7 +353,7 @@ where {
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
@@ -376,6 +377,7 @@ where {
                 .query_item_value_or_sum
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -407,7 +409,7 @@ where {
                                         .follow_reference(
                                             absolute_path.as_slice().into(),
                                             allow_cache,
-                                            transaction,
+                                            tx.as_ref(),
                                             grove_version,
                                         )
                                         .unwrap_add_cost(&mut cost)?;
@@ -451,7 +453,7 @@ where {
             })
             .collect::<Result<Vec<QueryItemOrSumReturnType>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
@@ -470,6 +472,7 @@ where {
             grove_version.grovedb_versions.operations.query.query_sums
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -501,7 +504,7 @@ where {
                                         .follow_reference(
                                             absolute_path.as_slice().into(),
                                             allow_cache,
-                                            transaction,
+                                            tx.as_ref(),
                                             grove_version,
                                         )
                                         .unwrap_add_cost(&mut cost)?;
@@ -534,7 +537,7 @@ where {
             })
             .collect::<Result<Vec<i64>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
@@ -599,7 +602,7 @@ where {
         let mut cost = OperationCost::default();
 
         let terminal_keys = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             path_query.terminal_keys(max_results, grove_version)
         );
 
@@ -658,7 +661,7 @@ where {
         let mut cost = OperationCost::default();
 
         let terminal_keys = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             path_query.terminal_keys(max_results, grove_version)
         );
 

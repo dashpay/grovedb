@@ -12,9 +12,7 @@ use grovedb_merk::{
     Merk, ProofWithoutEncodingResult,
 };
 use grovedb_storage::StorageContext;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "proof_debug")]
 use crate::query_result_type::QueryResultType;
@@ -23,7 +21,7 @@ use crate::{
         util::hex_to_ascii, GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions,
     },
     reference_path::path_from_reference_path_type,
-    Element, Error, GroveDb, PathQuery,
+    Element, Error, GroveDb, PathQuery, Transaction,
 };
 
 impl GroveDb {
@@ -89,7 +87,7 @@ impl GroveDb {
             .with_big_endian()
             .with_no_limit();
         let encoded_proof = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             bincode::encode_to_vec(proof, config)
                 .map_err(|e| Error::CorruptedData(format!("unable to encode proof {}", e)))
         );
@@ -121,6 +119,8 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        let tx = self.start_transaction();
+
         #[cfg(feature = "proof_debug")]
         {
             // we want to query raw because we want the references to not be resolved at
@@ -134,7 +134,7 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
+                    Some(&tx),
                     grove_version,
                 )
             )
@@ -150,7 +150,7 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
+                    Some(&tx),
                     grove_version,
                 )
             )
@@ -169,6 +169,7 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 &prove_options,
+                &tx,
                 grove_version
             )
         );
@@ -189,12 +190,13 @@ impl GroveDb {
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        tx: &Transaction,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             path_query
                 .query_items_at_path(path.as_slice(), grove_version)
                 .and_then(|query_items| {
@@ -211,7 +213,7 @@ impl GroveDb {
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.as_slice().into(), None, grove_version)
+            self.open_transactional_merk_at_path(path.as_slice().into(), &tx, None, grove_version)
         );
 
         let limit = if path.len() < path_query.path.len() {
@@ -279,7 +281,7 @@ impl GroveDb {
                                     self.follow_reference(
                                         absolute_path.as_slice().into(),
                                         true,
-                                        None,
+                                        tx,
                                         grove_version
                                     )
                                 );
@@ -340,6 +342,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        tx,
                                         grove_version,
                                     )
                                 );

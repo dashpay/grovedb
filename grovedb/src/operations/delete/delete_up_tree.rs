@@ -6,9 +6,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
     batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
@@ -138,7 +136,7 @@ impl GroveDb {
         );
 
         let ops = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             if let Some(stop_path_height) = options.stop_path_height {
                 maybe_ops.ok_or_else(|| {
                     Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(

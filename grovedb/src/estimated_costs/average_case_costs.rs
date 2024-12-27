@@ -16,9 +16,7 @@ use grovedb_merk::{
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::{
-    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 use integer_encoding::VarInt;
 
 use crate::{
@@ -85,7 +83,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let flags_size = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             estimated_layer_information
                 .estimated_layer_sizes
                 .layered_flags_size()
@@ -173,7 +171,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let flags_size = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             estimated_layer_information
                 .estimated_layer_sizes
                 .layered_flags_size()
@@ -235,7 +233,7 @@ impl GroveDb {
             _ => add_cost_case_merk_insert(
                 &mut cost,
                 key_len,
-                cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version)) as u32,
+                cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32,
                 in_tree_using_sums,
             ),
         };
@@ -296,7 +294,7 @@ impl GroveDb {
                 let sum_item_cost_size = if value.is_sum_item() {
                     SUM_ITEM_COST_SIZE
                 } else {
-                    cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version)) as u32
+                    cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32
                 };
                 let value_len = sum_item_cost_size + flags_len;
                 add_cost_case_merk_replace_same_size(
@@ -309,7 +307,7 @@ impl GroveDb {
             _ => add_cost_case_merk_replace_same_size(
                 &mut cost,
                 key_len,
-                cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version)) as u32,
+                cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32,
                 in_tree_using_sums,
             ),
         };
@@ -351,8 +349,7 @@ impl GroveDb {
                 });
                 // Items need to be always the same serialized size for this to work
                 let item_cost_size =
-                    cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version))
-                        as u32;
+                    cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32;
                 let value_len = item_cost_size + flags_len;
                 add_cost_case_merk_patch(
                     &mut cost,
@@ -394,7 +391,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let value_size = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             estimated_layer_information
                 .estimated_layer_sizes
                 .value_with_feature_and_flags_size()
@@ -601,10 +598,11 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let batch = StorageBatch::new();
+        let tx = storage.start_transaction();
 
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(EMPTY_PATH, Some(&batch))
+                .get_transactional_storage_context(EMPTY_PATH, Some(&batch), &tx)
                 .unwrap(),
             false,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -619,13 +617,15 @@ mod test {
 
         // this consumes the batch so storage contexts and merks will be dropped
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
         let merk = Merk::open_base(
-            storage.get_storage_context(EMPTY_PATH, None).unwrap(),
+            storage
+                .get_transactional_storage_context(EMPTY_PATH, None, &tx)
+                .unwrap(),
             false,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,

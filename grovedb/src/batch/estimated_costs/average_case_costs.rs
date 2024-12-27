@@ -196,7 +196,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         let mut cost = OperationCost::default();
 
         let layer_element_estimates = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             self.paths.get(path).ok_or_else(|| {
                 let paths = self
                     .paths
@@ -218,7 +218,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         // Then we have to get the tree
         if self.cached_merks.get(path).is_none() {
             let layer_info = cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 self.paths.get(path).ok_or_else(|| {
                     let paths = self
                         .paths
@@ -233,7 +233,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 })
             );
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
                     &mut cost,
                     path,
@@ -272,7 +272,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             // Then we have to get the tree
             if !self.cached_merks.contains_key(&base_path) {
                 cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
                         &mut cost,
                         &base_path,

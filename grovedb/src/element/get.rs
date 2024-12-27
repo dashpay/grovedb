@@ -1,28 +1,24 @@
 //! Get
 //! Implements functions in Element for getting
 
-#[cfg(feature = "full")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::tree::kv::KV;
-#[cfg(feature = "full")]
-use grovedb_merk::Merk;
-#[cfg(feature = "full")]
-use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
-#[cfg(feature = "full")]
-use grovedb_storage::StorageContext;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+use grovedb_merk::{
+    ed::Decode,
+    tree::{kv::KV, TreeNodeInner},
+    Merk,
 };
+use grovedb_storage::StorageContext;
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use integer_encoding::VarInt;
 
-use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
-#[cfg(feature = "full")]
-use crate::{Element, Error, Hash};
+use crate::{
+    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    Element, Error, Hash,
+};
 
 impl Element {
-    #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -47,7 +43,6 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -73,7 +68,7 @@ impl Element {
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let element = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             value_opt
                 .map(|value| {
                     Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
@@ -86,7 +81,6 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     /// Errors if element doesn't exist
@@ -110,7 +104,6 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "full")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     pub fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -134,7 +127,7 @@ impl Element {
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             node_value_opt
                 .map(|node_value| {
                     Decode::decode(node_value.as_slice())
@@ -145,7 +138,7 @@ impl Element {
 
         let value = maybe_tree_inner.map(|tree_inner| tree_inner.value_as_owned());
         let element = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             value
                 .as_ref()
                 .map(|value| {
@@ -198,7 +191,6 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -223,14 +215,13 @@ impl Element {
         );
 
         let absolute_element = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()))
         );
 
         Ok(absolute_element).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
     /// Get an element's value hash from Merk under a key
     pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
@@ -257,9 +248,48 @@ impl Element {
 
         Ok(value_hash).wrap_with_cost(cost)
     }
+
+    /// Get an element and its value hash from Merk under a key
+    pub fn get_with_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        key: K,
+        allow_cache: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Element, Hash), Error> {
+        check_grovedb_v0_with_cost!(
+            "get_with_value_hash",
+            grove_version.grovedb_versions.element.get_with_value_hash
+        );
+        let mut cost = OperationCost::default();
+
+        let Some((value, value_hash)) = cost_return_on_error!(
+            &mut cost,
+            merk.get_value_and_value_hash(
+                key.as_ref(),
+                allow_cache,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version
+            )
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+        ) else {
+            return Err(Error::PathKeyNotFound(format!(
+                "get: key \"{}\" not found in Merk that has a root key [{}] and is of type {}",
+                hex::encode(key),
+                merk.root_key()
+                    .map(hex::encode)
+                    .unwrap_or("None".to_string()),
+                merk.merk_type
+            )))
+            .wrap_with_cost(cost);
+        };
+
+        Self::deserialize(value.as_slice(), grove_version)
+            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+            .map(|e| (e, value_hash))
+            .wrap_with_cost(cost)
+    }
 }
 
-#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use grovedb_path::SubtreePath;
@@ -272,8 +302,10 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
+        let tx = storage.start_transaction();
+
         let ctx = storage
-            .get_storage_context(SubtreePath::empty(), Some(&batch))
+            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &tx)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,
@@ -293,12 +325,12 @@ mod tests {
             .expect("expected successful insertion 2");
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .unwrap();
 
         let ctx = storage
-            .get_storage_context(SubtreePath::empty(), None)
+            .get_transactional_storage_context(SubtreePath::empty(), None, &tx)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,

@@ -230,7 +230,7 @@ where
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
-            &cost,
+            cost,
             self.tree.own_result(|t| t
                 .put_value(
                     value,
@@ -275,7 +275,7 @@ where
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
-            &cost,
+            cost,
             self.tree.own_result(|t| t
                 .put_value_with_fixed_cost(
                     value,
@@ -321,7 +321,7 @@ where
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
-            &cost,
+            cost,
             self.tree.own_result(|t| t
                 .put_value_and_reference_value_hash(
                     value,
@@ -368,7 +368,7 @@ where
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
         cost_return_on_error_no_add!(
-            &cost,
+            cost,
             self.tree.own_result(|t| t
                 .put_value_with_reference_value_hash_and_value_cost(
                     value,

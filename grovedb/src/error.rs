@@ -42,10 +42,6 @@ pub enum Error {
     /// isn't there
     #[error("path not found: {0}")]
     PathNotFound(String),
-    /// The path not found could represent a valid query, just where the parent
-    /// path merk isn't there
-    #[error("path parent layer not found: {0}")]
-    PathParentLayerNotFound(String),
 
     /// The path's item by key referenced was not found
     #[error("corrupted referenced path key not found: {0}")]
@@ -56,6 +52,10 @@ pub enum Error {
     /// The path's parent merk wasn't found
     #[error("corrupted referenced path key not found: {0}")]
     CorruptedReferencePathParentLayerNotFound(String),
+
+    /// Bidirectional references rule was violated
+    #[error("bidirectional reference rule violation: {0}")]
+    BidirectionalReferenceRule(String),
 
     /// The invalid parent layer path represents a logical error from the client
     /// library

@@ -12,8 +12,6 @@ use grovedb_storage::StorageContext;
 #[cfg(feature = "full")]
 use grovedb_version::check_grovedb_v0_with_cost;
 #[cfg(feature = "full")]
-use grovedb_version::error::GroveVersionError;
-#[cfg(feature = "full")]
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "full")]

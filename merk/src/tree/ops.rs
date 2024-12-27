@@ -514,13 +514,13 @@ where
                             Delete => self.tree().inner.kv.value_byte_cost_size(),
                             DeleteLayered | DeleteLayeredMaybeSpecialized => {
                                 cost_return_on_error_no_add!(
-                                    &cost,
+                                    cost,
                                     old_specialized_cost(&key_vec, value)
                                 )
                             }
                             DeleteMaybeSpecialized => {
                                 cost_return_on_error_no_add!(
-                                    &cost,
+                                    cost,
                                     old_specialized_cost(&key_vec, value)
                                 )
                             }
@@ -534,7 +534,7 @@ where
                             prefixed_key_len + prefixed_key_len.required_space() as u32;
                         let value = self.tree().value_ref();
                         cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             section_removal_bytes(value, total_key_len, old_cost)
                         )
                     };

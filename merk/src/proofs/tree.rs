@@ -379,11 +379,11 @@ where
     }
 
     for op in ops {
-        match cost_return_on_error_no_add!(&cost, op) {
+        match cost_return_on_error_no_add!(cost, op) {
             Op::Parent => {
                 let (mut parent, child) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
                 );
                 cost_return_on_error!(
                     &mut cost,
@@ -400,8 +400,8 @@ where
             }
             Op::Child => {
                 let (child, mut parent) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
                 );
                 cost_return_on_error!(
                     &mut cost,
@@ -418,8 +418,8 @@ where
             }
             Op::ParentInverted => {
                 let (mut parent, child) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
                 );
                 cost_return_on_error!(
                     &mut cost,
@@ -436,8 +436,8 @@ where
             }
             Op::ChildInverted => {
                 let (child, mut parent) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
+                    cost_return_on_error_no_add!(cost, try_pop(&mut stack)),
                 );
                 cost_return_on_error!(
                     &mut cost,
@@ -470,7 +470,7 @@ where
                     maybe_last_key = Some(key.clone());
                 }
 
-                cost_return_on_error_no_add!(&cost, visit_node(&node));
+                cost_return_on_error_no_add!(cost, visit_node(&node));
 
                 let tree: Tree = node.into();
                 stack.push(tree);
@@ -493,7 +493,7 @@ where
                     maybe_last_key = Some(key.clone());
                 }
 
-                cost_return_on_error_no_add!(&cost, visit_node(&node));
+                cost_return_on_error_no_add!(cost, visit_node(&node));
 
                 let tree: Tree = node.into();
                 stack.push(tree);

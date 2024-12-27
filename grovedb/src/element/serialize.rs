@@ -2,7 +2,7 @@
 //! Implements serialization functions in Element
 
 use bincode::config;
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};

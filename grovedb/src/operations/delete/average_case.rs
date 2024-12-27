@@ -67,11 +67,11 @@ impl GroveDb {
                     estimated_element_size,
                     is_sum_tree,
                 ) = cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     if height == path_len - 1 {
                         if let Some(layer_info) = estimated_layer_info.get(height as u64) {
                             let estimated_value_len = cost_return_on_error_no_add!(
-                                &cost,
+                                cost,
                                 layer_info
                                     .estimated_layer_sizes
                                     .value_with_feature_and_flags_size()
@@ -96,7 +96,7 @@ impl GroveDb {
                         used_path = smaller_path;
                         if let Some(layer_info) = estimated_layer_info.get(height as u64) {
                             let estimated_value_len = cost_return_on_error_no_add!(
-                                &cost,
+                                cost,
                                 layer_info
                                     .estimated_layer_sizes
                                     .subtree_with_feature_and_flags_size()
@@ -158,7 +158,7 @@ impl GroveDb {
 
         if validate {
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 GroveDb::add_average_case_get_merk_at_path::<S>(
                     &mut cost,
                     path,
@@ -170,7 +170,7 @@ impl GroveDb {
         }
         if check_if_tree {
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 GroveDb::add_average_case_get_raw_cost::<S>(
                     &mut cost,
                     path,

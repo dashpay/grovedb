@@ -36,13 +36,12 @@ use bincode::{
 };
 use grovedb_merk::{Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
-use grovedb_storage::StorageContext;
+use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 use grovedb_visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
-    element::Element, reference_path::ReferencePathType, util::storage_context_optional_tx,
-    GroveDb, TransactionArg,
+    element::Element, reference_path::ReferencePathType, util::TxRef, GroveDb, TransactionArg,
 };
 
 impl Visualize for Element {
@@ -192,35 +191,40 @@ impl GroveDb {
     ) -> Result<Drawer<W>> {
         drawer.down();
 
-        storage_context_optional_tx!(self.db, (&path).into(), None, transaction, storage, {
-            let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
-            while let Some((key, element)) = iter
-                .next_element(grove_version)
-                .unwrap()
-                .expect("cannot get next element")
-            {
-                drawer.write(b"\n[key: ")?;
-                drawer = key.visualize(drawer)?;
-                drawer.write(b" ")?;
-                match element {
-                    Element::Tree(..) => {
-                        drawer.write(b"Merk root is: ")?;
-                        drawer = element.visualize(drawer)?;
-                        drawer.down();
-                        drawer = self.draw_subtree(
-                            drawer,
-                            path.derive_owned_with_child(key),
-                            transaction,
-                            grove_version,
-                        )?;
-                        drawer.up();
-                    }
-                    other => {
-                        drawer = other.visualize(drawer)?;
-                    }
+        let tx = TxRef::new(&self.db, transaction);
+
+        let storage = self
+            .db
+            .get_transactional_storage_context((&path).into(), None, tx.as_ref())
+            .unwrap();
+
+        let mut iter = Element::iterator(storage.raw_iter()).unwrap();
+        while let Some((key, element)) = iter
+            .next_element(grove_version)
+            .unwrap()
+            .expect("cannot get next element")
+        {
+            drawer.write(b"\n[key: ")?;
+            drawer = key.visualize(drawer)?;
+            drawer.write(b" ")?;
+            match element {
+                Element::Tree(..) => {
+                    drawer.write(b"Merk root is: ")?;
+                    drawer = element.visualize(drawer)?;
+                    drawer.down();
+                    drawer = self.draw_subtree(
+                        drawer,
+                        path.derive_owned_with_child(key),
+                        transaction,
+                        grove_version,
+                    )?;
+                    drawer.up();
+                }
+                other => {
+                    drawer = other.visualize(drawer)?;
                 }
             }
-        });
+        }
 
         drawer.up();
         Ok(drawer)

@@ -16,7 +16,7 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
-use crate::{replication, Error, GroveDb, Transaction, TransactionArg};
+use crate::{replication, util::TxRef, Error, GroveDb, Transaction, TransactionArg};
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
@@ -169,7 +169,7 @@ impl GroveDb {
     // of root (as it is now)
     pub fn get_subtrees_metadata(
         &self,
-        tx: TransactionArg,
+        transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> Result<SubtreesMetadata, Error> {
         check_grovedb_v0!(
@@ -181,8 +181,10 @@ impl GroveDb {
         );
         let mut subtrees_metadata = SubtreesMetadata::new();
 
+        let tx = TxRef::new(&self.db, transaction);
+
         let subtrees_root = self
-            .find_subtrees(&SubtreePath::empty(), tx, grove_version)
+            .find_subtrees(&SubtreePath::empty(), Some(tx.as_ref()), grove_version)
             .value?;
         for subtree in subtrees_root.into_iter() {
             let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
@@ -192,48 +194,31 @@ impl GroveDb {
             let current_path = SubtreePath::from(path);
 
             match (current_path.derive_parent(), subtree.last()) {
-                (Some((parent_path, _)), Some(parent_key)) => match tx {
-                    None => {
-                        let parent_merk = self
-                            .open_non_transactional_merk_at_path(parent_path, None, grove_version)
-                            .value?;
-                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
-                            .get_value_and_value_hash(
-                                parent_key,
-                                true,
-                                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                                grove_version,
-                            )
-                            .value
-                        {
-                            let actual_value_hash = value_hash(&elem_value).unwrap();
-                            subtrees_metadata.data.insert(
-                                prefix,
-                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
-                            );
-                        }
+                (Some((parent_path, _)), Some(parent_key)) => {
+                    let parent_merk = self
+                        .open_transactional_merk_at_path(
+                            parent_path,
+                            tx.as_ref(),
+                            None,
+                            grove_version,
+                        )
+                        .value?;
+                    if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
+                        .get_value_and_value_hash(
+                            parent_key,
+                            true,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .value
+                    {
+                        let actual_value_hash = value_hash(&elem_value).unwrap();
+                        subtrees_metadata.data.insert(
+                            prefix,
+                            (current_path.to_vec(), actual_value_hash, elem_value_hash),
+                        );
                     }
-                    Some(t) => {
-                        let parent_merk = self
-                            .open_transactional_merk_at_path(parent_path, t, None, grove_version)
-                            .value?;
-                        if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
-                            .get_value_and_value_hash(
-                                parent_key,
-                                true,
-                                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                                grove_version,
-                            )
-                            .value
-                        {
-                            let actual_value_hash = value_hash(&elem_value).unwrap();
-                            subtrees_metadata.data.insert(
-                                prefix,
-                                (current_path.to_vec(), actual_value_hash, elem_value_hash),
-                            );
-                        }
-                    }
-                },
+                }
                 _ => {
                     subtrees_metadata.data.insert(
                         prefix,
@@ -262,7 +247,7 @@ impl GroveDb {
     pub fn fetch_chunk(
         &self,
         global_chunk_id: &[u8],
-        tx: TransactionArg,
+        transaction: TransactionArg,
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
@@ -277,11 +262,13 @@ impl GroveDb {
             ));
         }
 
-        let root_app_hash = self.root_hash(tx, grove_version).value?;
+        let tx = TxRef::new(&self.db, transaction);
+
+        let root_app_hash = self.root_hash(Some(tx.as_ref()), grove_version).value?;
         let (chunk_prefix, chunk_id) =
             replication::util_split_global_chunk_id(global_chunk_id, &root_app_hash)?;
 
-        let subtrees_metadata = self.get_subtrees_metadata(tx, grove_version)?;
+        let subtrees_metadata = self.get_subtrees_metadata(Some(tx.as_ref()), grove_version)?;
 
         match subtrees_metadata.data.get(&chunk_prefix) {
             Some(path_data) => {
@@ -289,67 +276,33 @@ impl GroveDb {
                 let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
                 let path: &[&[u8]] = &subtree_path;
 
-                match tx {
-                    None => {
-                        let merk = self
-                            .open_non_transactional_merk_at_path(path.into(), None, grove_version)
-                            .value?;
+                let merk = self
+                    .open_transactional_merk_at_path(path.into(), tx.as_ref(), None, grove_version)
+                    .value?;
 
-                        if merk.is_empty_tree().unwrap() {
-                            return Ok(vec![]);
-                        }
+                if merk.is_empty_tree().unwrap() {
+                    return Ok(vec![]);
+                }
 
-                        let chunk_producer_res = ChunkProducer::new(&merk);
-                        match chunk_producer_res {
-                            Ok(mut chunk_producer) => {
-                                let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
-                                match chunk_res {
-                                    Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
-                                        Ok(op_bytes) => Ok(op_bytes),
-                                        Err(_) => Err(Error::CorruptedData(
-                                            "Unable to create to load chunk".to_string(),
-                                        )),
-                                    },
-                                    Err(_) => Err(Error::CorruptedData(
-                                        "Unable to create to load chunk".to_string(),
-                                    )),
-                                }
-                            }
+                let chunk_producer_res = ChunkProducer::new(&merk);
+                match chunk_producer_res {
+                    Ok(mut chunk_producer) => {
+                        let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
+                        match chunk_res {
+                            Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
+                                Ok(op_bytes) => Ok(op_bytes),
+                                Err(_) => Err(Error::CorruptedData(
+                                    "Unable to create to load chunk".to_string(),
+                                )),
+                            },
                             Err(_) => Err(Error::CorruptedData(
-                                "Unable to create Chunk producer".to_string(),
+                                "Unable to create to load chunk".to_string(),
                             )),
                         }
                     }
-                    Some(t) => {
-                        let merk = self
-                            .open_transactional_merk_at_path(path.into(), t, None, grove_version)
-                            .value?;
-
-                        if merk.is_empty_tree().unwrap() {
-                            return Ok(vec![]);
-                        }
-
-                        let chunk_producer_res = ChunkProducer::new(&merk);
-                        match chunk_producer_res {
-                            Ok(mut chunk_producer) => {
-                                let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
-                                match chunk_res {
-                                    Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
-                                        Ok(op_bytes) => Ok(op_bytes),
-                                        Err(_) => Err(Error::CorruptedData(
-                                            "Unable to create to load chunk".to_string(),
-                                        )),
-                                    },
-                                    Err(_) => Err(Error::CorruptedData(
-                                        "Unable to create to load chunk".to_string(),
-                                    )),
-                                }
-                            }
-                            Err(_) => Err(Error::CorruptedData(
-                                "Unable to create Chunk producer".to_string(),
-                            )),
-                        }
-                    }
+                    Err(_) => Err(Error::CorruptedData(
+                        "Unable to create Chunk producer".to_string(),
+                    )),
                 }
             }
             None => Err(Error::CorruptedData("Prefix not found".to_string())),

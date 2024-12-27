@@ -60,7 +60,6 @@ pub const SUM_ITEM_COST_SIZE: u32 = SUM_VALUE_EXTRA_COST + 2; // 11
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 
-#[cfg(any(feature = "full", feature = "verify"))]
 /// int 64 sum value
 pub type SumValue = i64;
 

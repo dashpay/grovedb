@@ -555,11 +555,12 @@ mod batch_no_transaction {
     fn test_various_cf_methods() {
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
+        let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into(), Some(&batch))
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), Some(&batch), &tx)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into(), Some(&batch))
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), Some(&batch), &tx)
             .unwrap();
 
         context_ayya
@@ -611,10 +612,10 @@ mod batch_no_transaction {
             .expect("cannot commit batch");
 
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into(), None)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &tx)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into(), None)
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), None, &tx)
             .unwrap();
 
         assert_eq!(
@@ -696,11 +697,12 @@ mod batch_no_transaction {
     fn test_with_db_batches() {
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
+        let tx = storage.start_transaction();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into(), Some(&batch))
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), Some(&batch), &tx)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into(), Some(&batch))
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), Some(&batch), &tx)
             .unwrap();
 
         context_ayya
@@ -761,7 +763,7 @@ mod batch_no_transaction {
             .expect("cannot commit multi context batch");
 
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into(), None)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &tx)
             .unwrap();
         assert_eq!(
             context_ayya
@@ -786,11 +788,13 @@ mod batch_transaction {
 
         let batch = StorageBatch::new();
         let batch_tx = StorageBatch::new();
+
+        let other_tx = storage.start_transaction();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into(), Some(&batch))
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), Some(&batch), &other_tx)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into(), Some(&batch))
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), Some(&batch), &other_tx)
             .unwrap();
         let context_ayya_tx = storage
             .get_transactional_storage_context(
@@ -1033,11 +1037,12 @@ mod batch_transaction {
         );
 
         // And still no data in the database until transaction is commited
+        let other_tx = storage.start_transaction();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into(), None)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &other_tx)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into(), None)
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), None, &other_tx)
             .unwrap();
 
         let mut iter = context_ayya.raw_iter();
@@ -1053,11 +1058,12 @@ mod batch_transaction {
             .unwrap()
             .expect("cannot commit transaction");
 
+        let other_tx = storage.start_transaction();
         let context_ayya = storage
-            .get_storage_context([b"ayya"].as_ref().into(), None)
+            .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &other_tx)
             .unwrap();
         let context_ayyb = storage
-            .get_storage_context([b"ayyb"].as_ref().into(), None)
+            .get_transactional_storage_context([b"ayyb"].as_ref().into(), None, &other_tx)
             .unwrap();
 
         assert_eq!(

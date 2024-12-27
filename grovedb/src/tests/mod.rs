@@ -110,39 +110,39 @@ pub fn make_deep_tree(grove_version: &GroveVersion) -> TempGroveDb {
     // root
     //     test_leaf
     //         innertree
-    //             k1,v1
-    //             k2,v2
-    //             k3,v3
+    //             key1,value1
+    //             key2,value2
+    //             key3,value3
     //         innertree4
-    //             k4,v4
-    //             k5,v5
+    //             key4,value4
+    //             key5,value5
     //     another_test_leaf
     //         innertree2
-    //             k3,v3
+    //             key3,value3
     //         innertree3
-    //             k4,v4
+    //             key4,value4
     //     deep_leaf
     //          deep_node_1
     //              deeper_1
-    //                  k1,v1
-    //                  k2,v2
-    //                  k3,v3
+    //                  key1,value1
+    //                  key2,value2
+    //                  key3,value3
     //              deeper_2
-    //                  k4,v4
-    //                  k5,v5
-    //                  k6,v6
+    //                  key4,value4
+    //                  key5,value5
+    //                  key6,value6
     //          deep_node_2
     //              deeper_3
-    //                  k7,v7
-    //                  k8,v8
-    //                  k9,v9
+    //                  key7,value7
+    //                  key8,value8
+    //                  key9,value9
     //              deeper_4
-    //                  k10,v10
-    //                  k11,v11
+    //                  key10,value10
+    //                  key11,value11
     //              deeper_5
-    //                  k12,v12
-    //                  k13,v13
-    //                  k14,v14
+    //                  key12,value12
+    //                  key13,value13
+    //                  key14,value14
 
     // Insert elements into grovedb instance
     let temp_db = make_test_grovedb(grove_version);
@@ -1189,8 +1189,6 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-
-        dbg!(&result);
 
         assert!(matches!(
             result,
@@ -3118,10 +3116,13 @@ mod tests {
         // let mut iter = db
         //     .elements_iterator([TEST_LEAF, b"subtree1"].as_ref(), None)
         //     .expect("cannot create iterator");
+
+        let tx = db.start_transaction();
+
         let storage_context = db
             .grove_db
             .db
-            .get_storage_context([TEST_LEAF, b"subtree1"].as_ref().into(), None)
+            .get_transactional_storage_context([TEST_LEAF, b"subtree1"].as_ref().into(), None, &tx)
             .unwrap();
         let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
         assert_eq!(
@@ -3210,7 +3211,12 @@ mod tests {
     fn test_root_subtree_has_root_key() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        let storage = db.db.get_storage_context(EMPTY_PATH, None).unwrap();
+        let tx = db.start_transaction();
+
+        let storage = db
+            .db
+            .get_transactional_storage_context(EMPTY_PATH, None, &tx)
+            .unwrap();
         let root_merk = Merk::open_base(
             storage,
             false,
@@ -3310,10 +3316,16 @@ mod tests {
         // Retrieve subtree instance
         // Check if it returns the same instance that was inserted
         {
+            let tx = db.start_transaction();
+
             let subtree_storage = db
                 .grove_db
                 .db
-                .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into(), None)
+                .get_transactional_storage_context(
+                    [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
+                    None,
+                    &tx,
+                )
                 .unwrap();
             let subtree = Merk::open_layered_with_root_key(
                 subtree_storage,
@@ -3379,10 +3391,15 @@ mod tests {
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
         // Should be able to retrieve instances created before transaction
+        let tx = db.start_transaction();
         let subtree_storage = db
             .grove_db
             .db
-            .get_storage_context([TEST_LEAF, b"key1", b"key2"].as_ref().into(), None)
+            .get_transactional_storage_context(
+                [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
+                None,
+                &tx,
+            )
             .unwrap();
         let subtree = Merk::open_layered_with_root_key(
             subtree_storage,
@@ -3910,7 +3927,7 @@ mod tests {
         assert!(elem_result.is_err());
         assert!(matches!(
             elem_result,
-            Err(Error::PathParentLayerNotFound(..))
+            Err(Error::InvalidParentLayerPath(..))
         ));
     }
 
@@ -4124,4 +4141,22 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+}
+
+#[test]
+fn subtrees_cant_be_referenced() {
+    let db = make_deep_tree(&GroveVersion::latest());
+    assert!(db
+        .insert(
+            SubtreePath::empty(),
+            b"test_ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec()
+            ])),
+            None,
+            None,
+            &GroveVersion::latest(),
+        )
+        .unwrap()
+        .is_err());
 }

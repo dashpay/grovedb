@@ -7,9 +7,7 @@ use grovedb_merk::{
     estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, tree::kv::KV,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use intmap::IntMap;
 
 use crate::{
@@ -61,7 +59,7 @@ impl GroveDb {
                     max_element_size,
                     is_sum_tree,
                 ) = cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     if height == path_len {
                         if let Some((is_in_sum_tree, _)) = intermediate_tree_info.get(height as u64)
                         {
@@ -140,7 +138,7 @@ impl GroveDb {
 
         if validate {
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 GroveDb::add_worst_case_get_merk_at_path::<S>(
                     &mut cost,
                     path,
@@ -151,7 +149,7 @@ impl GroveDb {
         }
         if check_if_tree {
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 GroveDb::add_worst_case_get_raw_cost::<S>(
                     &mut cost,
                     path,

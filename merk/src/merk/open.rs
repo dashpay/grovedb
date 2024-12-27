@@ -22,6 +22,7 @@ where
             storage,
             merk_type,
             is_sum_tree,
+            meta_cache: Default::default(),
         }
     }
 
@@ -40,6 +41,7 @@ where
             storage,
             merk_type: StandaloneMerk,
             is_sum_tree,
+            meta_cache: Default::default(),
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -61,6 +63,7 @@ where
             storage,
             merk_type: BaseMerk,
             is_sum_tree,
+            meta_cache: Default::default(),
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -83,6 +86,7 @@ where
             storage,
             merk_type: LayeredMerk,
             is_sum_tree,
+            meta_cache: Default::default(),
         };
 
         merk.load_root(value_defined_cost_fn, grove_version)
@@ -112,9 +116,14 @@ mod test {
         let test_prefix = [b"ayy"];
 
         let batch = StorageBatch::new();
+        let tx = storage.start_transaction();
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
+                .get_transactional_storage_context(
+                    SubtreePath::from(test_prefix.as_ref()),
+                    Some(&batch),
+                    &tx,
+                )
                 .unwrap(),
             false,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -135,13 +144,17 @@ mod test {
         let root_hash = merk.root_hash();
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("cannot commit batch");
 
         let merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
+                .get_transactional_storage_context(
+                    SubtreePath::from(test_prefix.as_ref()),
+                    None,
+                    &tx,
+                )
                 .unwrap(),
             false,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -157,10 +170,11 @@ mod test {
         let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
+        let tx = storage.start_transaction();
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), Some(&batch))
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &tx)
                 .unwrap(),
             false,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -184,13 +198,13 @@ mod test {
         .expect("apply failed");
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("cannot commit batch");
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), None)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &tx)
                 .unwrap(),
             false,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
