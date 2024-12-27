@@ -13,6 +13,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::DebugByteVectors;
 
 use crate::{
+    bidirectional_references::BidirectionalReference,
     merk_cache::{MerkCache, MerkHandle},
     operations::MAX_REFERENCE_HOPS,
     reference_path::ReferencePathType,
@@ -216,7 +217,14 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
         );
 
         match element {
-            Element::Reference(ref_path, ..) => {
+            Element::Reference(ref_path, ..)
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: ref_path,
+                    ..
+                },
+                ..,
+            ) => {
                 current_path = referred_path;
                 current_key = referred_key;
                 current_ref = ref_path;

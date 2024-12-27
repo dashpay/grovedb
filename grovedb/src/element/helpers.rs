@@ -17,6 +17,8 @@ use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
+#[cfg(any(feature = "full"))]
+use crate::bidirectional_references::BidirectionalReference;
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -162,7 +164,10 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
-            | Element::SumItem(_, flags) => flags,
+            | Element::SumItem(_, flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => flags,
         }
     }
 
@@ -174,7 +179,10 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
-            | Element::SumItem(_, flags) => flags,
+            | Element::SumItem(_, flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => flags,
         }
     }
 
@@ -186,7 +194,10 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
-            | Element::SumItem(_, flags) => flags,
+            | Element::SumItem(_, flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => flags,
         }
     }
 
@@ -198,7 +209,12 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
-            | Element::SumItem(_, flags) => *flags = new_flags,
+            | Element::SumItem(_, flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => {
+                *flags = new_flags
+            }
         }
     }
 

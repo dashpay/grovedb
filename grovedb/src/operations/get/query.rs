@@ -12,8 +12,9 @@ use integer_encoding::VarInt;
 #[cfg(feature = "full")]
 use crate::element::SumValue;
 use crate::{
-    element::QueryOptions, operations::proof::ProveOptions,
-    query_result_type::PathKeyOptionalElementTrio, util::TxRef, Transaction,
+    bidirectional_references::BidirectionalReference, element::QueryOptions,
+    operations::proof::ProveOptions, query_result_type::PathKeyOptionalElementTrio, util::TxRef,
+    Transaction,
 };
 #[cfg(feature = "full")]
 use crate::{
@@ -193,7 +194,14 @@ where {
                 .follow_element
         );
         match element {
-            Element::Reference(reference_path, ..) => {
+            Element::Reference(reference_path, ..)
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    ..
+                },
+                ..,
+            ) => {
                 match reference_path {
                     ReferencePathType::AbsolutePathReference(absolute_path) => {
                         // While `map` on iterator is lazy, we should accumulate costs
@@ -221,7 +229,11 @@ where {
                     )),
                 }
             }
-            Element::Item(..) | Element::SumItem(..) | Element::SumTree(..) => Ok(element),
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::SumTree(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..) => Ok(element),
             Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
         }
     }
@@ -310,7 +322,14 @@ where {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        Element::Reference(reference_path, ..)
+                        | Element::BidirectionalReference(
+                            BidirectionalReference {
+                                forward_reference_path: reference_path,
+                                ..
+                            },
+                            ..,
+                        ) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -340,8 +359,13 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(item),
-                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                        Element::Item(item, _) | Element::ItemWithBackwardsReferences(item, ..) => {
+                            Ok(item)
+                        }
+                        Element::SumItem(item, _)
+                        | Element::SumItemWithBackwardsReferences(item, ..) => {
+                            Ok(item.encode_var_vec())
+                        }
                         Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
@@ -397,7 +421,14 @@ where {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        Element::Reference(reference_path, ..)
+                        | Element::BidirectionalReference(
+                            BidirectionalReference {
+                                forward_reference_path: reference_path,
+                                ..
+                            },
+                            ..,
+                        ) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -434,8 +465,11 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
-                        Element::SumItem(sum_value, _) => {
+                        Element::Item(item, _) | Element::ItemWithBackwardsReferences(item, ..) => {
+                            Ok(QueryItemOrSumReturnType::ItemData(item))
+                        }
+                        Element::SumItem(sum_value, _)
+                        | Element::SumItemWithBackwardsReferences(sum_value, ..) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
                         Element::SumTree(_, sum_value, _) => {
@@ -492,7 +526,14 @@ where {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        Element::Reference(reference_path, ..)
+                        | Element::BidirectionalReference(
+                            BidirectionalReference {
+                                forward_reference_path: reference_path,
+                                ..
+                            },
+                            ..,
+                        ) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -522,13 +563,15 @@ where {
                                 )),
                             }
                         }
-                        Element::SumItem(item, _) => Ok(item),
-                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => {
-                            Err(Error::InvalidQuery(
-                                "path_queries over sum items can only refer to sum items and \
-                                 references",
-                            ))
-                        }
+                        Element::SumItem(item, _)
+                        | Element::SumItemWithBackwardsReferences(item, ..) => Ok(item),
+                        Element::Tree(..)
+                        | Element::SumTree(..)
+                        | Element::Item(..)
+                        | Element::ItemWithBackwardsReferences(..) => Err(Error::InvalidQuery(
+                            "path_queries over sum items can only refer to sum items and \
+                             references",
+                        )),
                     }
                 }
                 _ => Err(Error::CorruptedCodeExecution(

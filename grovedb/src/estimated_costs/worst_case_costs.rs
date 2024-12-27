@@ -18,7 +18,9 @@ use grovedb_merk::{
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
+};
 use integer_encoding::VarInt;
 
 use crate::{

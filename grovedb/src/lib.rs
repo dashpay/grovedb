@@ -127,6 +127,8 @@
 
 #[cfg(feature = "full")]
 pub mod batch;
+#[cfg(feature = "full")]
+mod bidirectional_references;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -159,6 +161,7 @@ use std::sync::Arc;
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+use bidirectional_references::BidirectionalReference;
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -792,7 +795,10 @@ impl GroveDb {
                         grove_version,
                     )?);
                 }
-                Element::Item(..) | Element::SumItem(..) => {
+                Element::Item(..)
+                | Element::SumItem(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -815,7 +821,14 @@ impl GroveDb {
                         );
                     }
                 }
-                Element::Reference(ref reference_path, ..) => {
+                Element::Reference(ref reference_path, ..)
+                | Element::BidirectionalReference(
+                    BidirectionalReference {
+                        forward_reference_path: ref reference_path,
+                        ..
+                    },
+                    ..,
+                ) => {
                     // Skip this whole check if we don't `verify_references`
                     if !verify_references {
                         continue;

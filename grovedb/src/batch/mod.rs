@@ -71,6 +71,7 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
+    bidirectional_references::BidirectionalReference,
     element::{MaxReferenceHop, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     operations::{get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
@@ -1005,13 +1006,23 @@ where
         };
 
         match element {
-            Element::Item(..) | Element::SumItem(..) => {
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..) => {
                 let serialized =
                     cost_return_on_error_no_add!(cost, element.serialize(grove_version));
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
-            Element::Reference(path, ..) => {
+            Element::Reference(path, ..)
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: path,
+                    ..
+                },
+                ..,
+            ) => {
                 let path = cost_return_on_error_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path, qualified_path)
@@ -1079,7 +1090,10 @@ where
                 | GroveOp::Replace { element }
                 | GroveOp::Patch { element, .. } => {
                     match element {
-                        Element::Item(..) | Element::SumItem(..) => {
+                        Element::Item(..)
+                        | Element::SumItem(..)
+                        | Element::ItemWithBackwardsReferences(..)
+                        | Element::SumItemWithBackwardsReferences(..) => {
                             let serialized = cost_return_on_error_no_add!(
                                 cost,
                                 element.serialize(grove_version)
@@ -1126,7 +1140,14 @@ where
                                 }
                             }
                         }
-                        Element::Reference(path, ..) => {
+                        Element::Reference(path, ..)
+                        | Element::BidirectionalReference(
+                            BidirectionalReference {
+                                forward_reference_path: path,
+                                ..
+                            },
+                            ..,
+                        ) => {
                             let path = cost_return_on_error_no_add!(
                                 cost,
                                 path_from_reference_qualified_path_type(
@@ -1152,13 +1173,23 @@ where
                     }
                 }
                 GroveOp::InsertOnly { element } => match element {
-                    Element::Item(..) | Element::SumItem(..) => {
+                    Element::Item(..)
+                    | Element::SumItem(..)
+                    | Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..) => {
                         let serialized =
                             cost_return_on_error_no_add!(cost, element.serialize(grove_version));
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    Element::Reference(path, ..) => {
+                    Element::Reference(path, ..)
+                    | Element::BidirectionalReference(
+                        BidirectionalReference {
+                            forward_reference_path: path,
+                            ..
+                        },
+                        ..,
+                    ) => {
                         let path = cost_return_on_error_no_add!(
                             cost,
                             path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -1300,7 +1331,12 @@ where
                 | GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
                 | GroveOp::Patch { element, .. } => match &element {
-                    Element::Reference(path_reference, element_max_reference_hop, _) => {
+                    Element::Reference(path_reference, element_max_reference_hop, _)
+                    | Element::BidirectionalReference(BidirectionalReference {
+                        forward_reference_path: path_reference,
+                        max_hop: element_max_reference_hop,
+                        ..
+                    }) => {
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
@@ -1365,7 +1401,10 @@ where
                             )
                         );
                     }
-                    Element::Item(..) | Element::SumItem(..) => {
+                    Element::Item(..)
+                    | Element::SumItem(..)
+                    | Element::ItemWithBackwardsReferences(..)
+                    | Element::SumItemWithBackwardsReferences(..) => {
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element

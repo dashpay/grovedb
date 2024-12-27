@@ -11,6 +11,9 @@ use grovedb_storage::Storage;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
+    bidirectional_references::{
+        process_bidirectional_reference_insertion, process_update_element_with_backward_references,
+    },
     merk_cache::{MerkCache, MerkHandle},
     util::{self, TxRef},
     Element, Error, GroveDb, TransactionArg,
@@ -172,9 +175,10 @@ impl GroveDb {
                         reference_path.clone()
                     )
                 );
+                let referenced_item: Element = resolved_reference.target_element;
 
                 if matches!(
-                    resolved_reference.target_element,
+                    referenced_item,
                     Element::Tree(_, _) | Element::SumTree(_, _, _)
                 ) {
                     return Err(Error::NotSupported(
@@ -183,15 +187,26 @@ impl GroveDb {
                     .wrap_with_cost(cost);
                 }
 
-                cost_return_on_error!(
+                let delta = cost_return_on_error!(
                     &mut cost,
-                    subtree_to_insert_into.for_merk(|m| element.insert_reference(
+                    subtree_to_insert_into.for_merk(|m| element.insert_reference_if_changed_value(
                         m,
                         key,
                         resolved_reference.target_node_value_hash,
                         Some(options.as_merk_options()),
                         grove_version,
                     ))
+                );
+
+                cost_return_on_error!(
+                    &mut cost,
+                    process_update_element_with_backward_references(
+                        merk_cache,
+                        subtree_to_insert_into.clone(),
+                        path,
+                        key,
+                        delta
+                    )
                 );
             }
 
@@ -202,9 +217,9 @@ impl GroveDb {
                     ))
                     .wrap_with_cost(cost);
                 } else {
-                    cost_return_on_error!(
+                    let delta = cost_return_on_error!(
                         &mut cost,
-                        subtree_to_insert_into.for_merk(|m| element.insert_subtree(
+                        subtree_to_insert_into.for_merk(|m| element.insert_subtree_if_changed(
                             m,
                             key,
                             NULL_HASH,
@@ -212,17 +227,50 @@ impl GroveDb {
                             grove_version
                         ))
                     );
+
+                    cost_return_on_error!(
+                        &mut cost,
+                        process_update_element_with_backward_references(
+                            merk_cache,
+                            subtree_to_insert_into.clone(),
+                            path,
+                            key,
+                            delta
+                        )
+                    );
                 }
             }
-            _ => {
+            Element::BidirectionalReference(reference) => {
                 cost_return_on_error!(
                     &mut cost,
-                    subtree_to_insert_into.for_merk(|m| element.insert(
+                    process_bidirectional_reference_insertion(
+                        merk_cache,
+                        path,
+                        key,
+                        reference,
+                        Some(options)
+                    )
+                );
+            }
+            _ => {
+                let delta = cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| element.insert_if_changed_value(
                         m,
                         key,
                         Some(options.as_merk_options()),
                         grove_version
                     ))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    process_update_element_with_backward_references(
+                        merk_cache,
+                        subtree_to_insert_into.clone(),
+                        path,
+                        key,
+                        delta
+                    )
                 );
             }
         }
@@ -1820,13 +1868,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 9, // todo: verify this
+                seek_count: 10, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 409, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 487, // todo verify this
+                storage_loaded_bytes: 558, // todo verify this
                 hash_node_calls: 11,
             }
         );

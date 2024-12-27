@@ -30,12 +30,15 @@ use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
 #[cfg(feature = "full")]
 use grovedb_visualize::visualize_to_vec;
+pub(crate) use insert::Delta;
 
-use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
 #[cfg(feature = "full")]
 use crate::OperationCost;
+use crate::{
+    bidirectional_references::BidirectionalReference, operations::proof::util::hex_to_ascii,
+};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Optional meta-data to be stored per element
@@ -84,6 +87,13 @@ pub enum Element {
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+    /// A reference to an object by its path
+    BidirectionalReference(BidirectionalReference),
+    /// An ordinary value that has a backwards reference
+    ItemWithBackwardsReferences(Vec<u8>, Option<ElementFlags>),
+    /// Signed integer value that can be totaled in a sum tree that has a
+    /// backwards reference
+    SumItemWithBackwardsReferences(SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Display for Element {
@@ -104,6 +114,24 @@ impl fmt::Display for Element {
                     f,
                     "Reference({}, max_hop: {}{})",
                     path,
+                    max_hop.map_or("None".to_string(), |h| h.to_string()),
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path,
+                cascade_on_update,
+                max_hop,
+                flags,
+                ..
+            }) => {
+                // TODO: print something on backward_references
+                write!(
+                    f,
+                    "BidirectionalReference({forward_reference_path}, max_hop: {}{}, cascade: \
+                     {cascade_on_update})",
                     max_hop.map_or("None".to_string(), |h| h.to_string()),
                     flags
                         .as_ref()
@@ -141,6 +169,22 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::ItemWithBackwardsReferences(data, flags) => write!(
+                f,
+                "ItemWithBackwardReferences({}{})",
+                hex_to_ascii(data),
+                flags
+                    .as_ref()
+                    .map_or(String::new(), |f| format!(", flags: {:?}", f))
+            ),
+            Element::SumItemWithBackwardsReferences(sum_value, flags) => write!(
+                f,
+                "SumItemWithBackwardReferences({}{})",
+                sum_value,
+                flags
+                    .as_ref()
+                    .map_or(String::new(), |f| format!(", flags: {:?}", f))
+            ),
         }
     }
 }
@@ -153,6 +197,9 @@ impl Element {
             Element::Tree(..) => "tree",
             Element::SumItem(..) => "sum item",
             Element::SumTree(..) => "sum tree",
+            Element::BidirectionalReference(..) => "bidirectional reference",
+            Element::ItemWithBackwardsReferences(..) => "item with backwards references",
+            Element::SumItemWithBackwardsReferences(..) => "sum item with backwards references",
         }
     }
 
