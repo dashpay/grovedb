@@ -240,6 +240,18 @@ pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 #[cfg(feature = "full")]
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
+/// Type alias for the return type of the `verify_merk_and_submerks` and `verify_grovedb` functions.
+/// It represents a mapping of paths (as vectors of vectors of bytes) to a tuple
+/// of three cryptographic hashes: the root hash, the combined value hash, and the expected value hash.
+type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>;
+
+/// Type alias for the return type of the `open_merk_for_replication` function.
+/// It represents a tuple containing:
+/// - A `Merk` instance with a prefixed RocksDB immediate storage context.
+/// - An optional `root_key`, represented as a vector of bytes.
+/// - A boolean indicating whether the Merk is a sum tree.
+type OpenedMerkForReplication<'tx> = (Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Option<Vec<u8>>, bool);
+
 #[cfg(feature = "full")]
 impl GroveDb {
     /// Opens a given path
@@ -377,14 +389,7 @@ impl GroveDb {
         path: SubtreePath<'b, B>,
         tx: &'tx Transaction<'db>,
         grove_version: &GroveVersion,
-    ) -> Result<
-        (
-            Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
-            Option<Vec<u8>>,
-            bool,
-        ),
-        Error,
-    >
+    ) -> Result<OpenedMerkForReplication<'tx>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -1029,7 +1034,7 @@ impl GroveDb {
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
-    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
+    ) -> Result<VerificationIssues, Error> {
         if let Some(transaction) = transaction {
             let root_merk = self
                 .open_transactional_merk_at_path(
@@ -1073,7 +1078,7 @@ impl GroveDb {
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
-    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
+    ) -> Result<VerificationIssues, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
@@ -1217,7 +1222,7 @@ impl GroveDb {
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
-    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
+    ) -> Result<VerificationIssues, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
