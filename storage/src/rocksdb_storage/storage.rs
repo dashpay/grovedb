@@ -476,9 +476,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
         &'db self,
         prefix: SubtreePrefix,
         batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext>
-    {
-        PrefixedRocksDbStorageContext::new(&self.db, prefix, batch).wrap_with_cost(OperationCost::default())
+    ) -> CostContext<Self::BatchStorageContext> {
+        PrefixedRocksDbStorageContext::new(&self.db, prefix, batch)
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn get_transactional_storage_context<'b, B>(
@@ -500,9 +500,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
         prefix: SubtreePrefix,
         batch: Option<&'db StorageBatch>,
         transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::BatchTransactionalStorageContext>
-    {
-        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch).wrap_with_cost(OperationCost::default())
+    ) -> CostContext<Self::BatchTransactionalStorageContext> {
+        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn get_immediate_storage_context<'b, B>(
@@ -522,9 +522,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
         &'db self,
         prefix: SubtreePrefix,
         transaction: &'db Self::Transaction,
-    ) -> CostContext<Self::ImmediateStorageContext>
-    {
-        PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix).wrap_with_cost(OperationCost::default())
+    ) -> CostContext<Self::ImmediateStorageContext> {
+        PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn commit_multi_context_batch(

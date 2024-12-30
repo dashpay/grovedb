@@ -110,8 +110,8 @@ pub trait Storage<'db> {
     where
         B: AsRef<[u8]> + 'b;
 
-    /// Make context for a subtree by prefix on transactional data, keeping all write
-    /// operations inside a `batch` if provided.
+    /// Make context for a subtree by prefix on transactional data, keeping all
+    /// write operations inside a `batch` if provided.
     fn get_transactional_storage_context_by_subtree_prefix(
         &'db self,
         prefix: SubtreePrefix,
@@ -129,8 +129,8 @@ pub trait Storage<'db> {
     where
         B: AsRef<[u8]> + 'b;
 
-    /// Make context for a subtree by prefix on transactional data that will apply all
-    /// operations straight to the storage.
+    /// Make context for a subtree by prefix on transactional data that will
+    /// apply all operations straight to the storage.
     fn get_immediate_storage_context_by_subtree_prefix(
         &'db self,
         prefix: SubtreePrefix,

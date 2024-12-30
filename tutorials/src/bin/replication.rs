@@ -263,7 +263,7 @@ fn sync_db_demo(
     println!("num_chunks: {}", num_chunks);
 
     if session.is_sync_completed() {
-        target_db.commit_session(session);
+        target_db.commit_session(session).expect("failed to commit session");
     }
     let elapsed = start_time.elapsed();
     println!("state_synced in {:.2?}", elapsed);
