@@ -1,7 +1,5 @@
 mod state_sync_session;
 
-use std::pin::Pin;
-
 use grovedb_merk::{tree::hash::CryptoHash, ChunkProducer};
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
@@ -22,12 +20,12 @@ pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    pub fn start_syncing_session(&self, app_hash: [u8; 32]) -> Pin<Box<MultiStateSyncSession>> {
+    pub fn start_syncing_session(&self, app_hash: [u8; 32]) -> Box<MultiStateSyncSession> {
         MultiStateSyncSession::new(self.start_transaction(), app_hash)
     }
 
-    pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) -> Result<(), Error> {
-        match self.commit_transaction(session.into_transaction()).value {
+    pub fn commit_session(&self, session: Box<MultiStateSyncSession>) -> Result<(), Error> {
+        match self.commit_transaction(session.transaction).value {
             Ok(_) => Ok(()),
             Err(e) => {
                 // Log the error or handle it as needed
@@ -221,7 +219,7 @@ impl GroveDb {
         app_hash: CryptoHash,
         version: u16,
         grove_version: &GroveVersion,
-    ) -> Result<Pin<Box<MultiStateSyncSession>>, Error> {
+    ) -> Result<Box<MultiStateSyncSession>, Error> {
         check_grovedb_v0!(
             "start_snapshot_syncing",
             grove_version

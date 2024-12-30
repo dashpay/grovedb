@@ -1,9 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    marker::PhantomPinned,
     pin::Pin,
 };
+use std::borrow::BorrowMut;
 
 use grovedb_merk::{
     tree::{kv::ValueDefinedCostType, value_hash},
@@ -161,22 +161,18 @@ pub struct MultiStateSyncSession<'db> {
 
     /// Transaction used for the synchronization process.
     /// This is placed last to ensure it is dropped last.
-    transaction: Transaction<'db>,
-
-    /// Marker to ensure this struct is not moved in memory.
-    _pin: PhantomPinned,
+    pub(crate) transaction: Transaction<'db>,
 }
 
 impl<'db> MultiStateSyncSession<'db> {
     /// Initializes a new state sync session.
-    pub fn new(transaction: Transaction<'db>, app_hash: [u8; 32]) -> Pin<Box<Self>> {
-        Box::pin(MultiStateSyncSession {
+    pub fn new(transaction: Transaction<'db>, app_hash: [u8; 32]) -> Box<Self> {
+        Box::new(MultiStateSyncSession {
             transaction,
             current_prefixes: Default::default(),
             processed_prefixes: Default::default(),
             app_hash,
             version: CURRENT_STATE_SYNC_VERSION,
-            _pin: PhantomPinned,
         })
     }
 
@@ -194,14 +190,8 @@ impl<'db> MultiStateSyncSession<'db> {
         true
     }
 
-    pub fn into_transaction(self: Pin<Box<Self>>) -> Transaction<'db> {
-        // SAFETY: the struct isn't used anymore and no one will refer to transaction
-        // address again
-        unsafe { Pin::into_inner_unchecked(self) }.transaction
-    }
-
     pub fn add_subtree_sync_info<'b, B: AsRef<[u8]>>(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Box<MultiStateSyncSession<'db>>,
         db: &'db GroveDb,
         path: SubtreePath<'b, B>,
         hash: CryptoHash,
@@ -209,10 +199,7 @@ impl<'db> MultiStateSyncSession<'db> {
         chunk_prefix: [u8; 32],
         grove_version: &GroveVersion,
     ) -> Result<Vec<u8>, Error> {
-        let transaction_ref: &'db Transaction<'db> = unsafe {
-            let tx: &Transaction<'db> = &self.as_ref().transaction;
-            &*(tx as *const _)
-        };
+        let transaction_ref = &self.transaction;
 
         if let Ok((merk, root_key, is_sum_tree)) =
             db.open_merk_for_replication(path.clone(), transaction_ref, grove_version)
@@ -223,8 +210,8 @@ impl<'db> MultiStateSyncSession<'db> {
             sync_info.root_key = root_key.clone();
             sync_info.is_sum_tree = is_sum_tree;
             sync_info.current_path = path.to_vec();
-            self.as_mut()
-                .current_prefixes()
+            Box::new(self)
+                .current_prefixes
                 .insert(chunk_prefix, sync_info);
             Ok(encode_global_chunk_id(
                 chunk_prefix,
@@ -240,19 +227,15 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     fn current_prefixes(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        self: Box<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>> {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaciton` so it will be safe to modify them
-        &mut unsafe { self.get_unchecked_mut() }.current_prefixes
+        self.current_prefixes.borrow_mut()
     }
 
     fn processed_prefixes(
-        self: Pin<&mut MultiStateSyncSession<'db>>,
+        mut self: Box<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeSet<SubtreePrefix> {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaciton` so it will be safe to modify them
-        &mut unsafe { self.get_unchecked_mut() }.processed_prefixes
+        self.processed_prefixes.borrow_mut()
     }
 
     /// Applies a chunk during the state synchronization process.
@@ -290,7 +273,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - The pinned `self` ensures that the session cannot be moved in memory,
     ///   preserving consistency during the synchronization process.
     pub fn apply_chunk(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Box<MultiStateSyncSession<'db>>,
         db: &'db GroveDb,
         global_chunk_id: &[u8],
         chunk: Vec<u8>,
@@ -320,7 +303,7 @@ impl<'db> MultiStateSyncSession<'db> {
             ));
         }
 
-        let current_prefixes = self.as_mut().current_prefixes();
+        let current_prefixes = Box::new(self.as_mut()).current_prefixes();
         let Some(subtree_state_sync) = current_prefixes.get_mut(&chunk_prefix) else {
             return Err(Error::InternalError(
                 "Unable to process incoming chunk".to_string(),
@@ -365,7 +348,7 @@ impl<'db> MultiStateSyncSession<'db> {
                 }
             }
 
-            self.as_mut().processed_prefixes().insert(chunk_prefix);
+            Box::new(&mut *self).processed_prefixes.insert(chunk_prefix);
 
             println!(
                 "    finished tree: {:?}",
@@ -418,15 +401,12 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - The function modifies the state of the synchronization session, so it
     ///   should be used carefully to maintain session integrity.
     fn discover_new_subtrees_metadata(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Box<MultiStateSyncSession<'db>>,
         db: &'db GroveDb,
         path_vec: Vec<Vec<u8>>,
         grove_version: &GroveVersion,
     ) -> Result<SubtreesMetadata, Error> {
-        let transaction_ref: &'db Transaction<'db> = unsafe {
-            let tx: &Transaction<'db> = &self.as_ref().transaction;
-            &*(tx as *const _)
-        };
+        let transaction_ref = &self.transaction;
         let subtree_path: Vec<&[u8]> = path_vec.iter().map(|vec| vec.as_slice()).collect();
         let path: &[&[u8]] = &subtree_path;
         let merk = db
@@ -514,7 +494,7 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - Proper handling of the returned global chunk IDs is essential to
     ///   ensure seamless state synchronization.
     fn prepare_sync_state_sessions(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+        self: &mut Box<MultiStateSyncSession<'db>>,
         db: &'db GroveDb,
         subtrees_metadata: SubtreesMetadata,
         grove_version: &GroveVersion,
