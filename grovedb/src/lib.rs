@@ -240,9 +240,11 @@ pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 #[cfg(feature = "full")]
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
-/// Type alias for the return type of the `verify_merk_and_submerks` and `verify_grovedb` functions.
-/// It represents a mapping of paths (as vectors of vectors of bytes) to a tuple
-/// of three cryptographic hashes: the root hash, the combined value hash, and the expected value hash.
+/// Type alias for the return type of the `verify_merk_and_submerks` and
+/// `verify_grovedb` functions. It represents a mapping of paths (as vectors of
+/// vectors of bytes) to a tuple of three cryptographic hashes: the root hash,
+/// the combined value hash, and the expected value hash.
+#[cfg(feature = "full")]
 type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>;
 
 /// Type alias for the return type of the `open_merk_for_replication` function.
@@ -250,7 +252,12 @@ type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoH
 /// - A `Merk` instance with a prefixed RocksDB immediate storage context.
 /// - An optional `root_key`, represented as a vector of bytes.
 /// - A boolean indicating whether the Merk is a sum tree.
-type OpenedMerkForReplication<'tx> = (Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Option<Vec<u8>>, bool);
+#[cfg(feature = "full")]
+type OpenedMerkForReplication<'tx> = (
+    Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
+    Option<Vec<u8>>,
+    bool,
+);
 
 #[cfg(feature = "full")]
 impl GroveDb {
