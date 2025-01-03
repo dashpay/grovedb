@@ -200,11 +200,13 @@ impl<'db> MultiStateSyncSession<'db> {
         unsafe { Pin::into_inner_unchecked(self) }.transaction
     }
 
-    /// Adds synchronization information for a subtree into the current synchronization session.
+    /// Adds synchronization information for a subtree into the current
+    /// synchronization session.
     ///
-    /// This function interacts with a `GroveDb` database to open a Merk tree at the specified path,
-    /// calculate and verify its cryptographic hashes, and update the session state with the relevant
-    /// synchronization information. The function generates and returns the global chunk ID for
+    /// This function interacts with a `GroveDb` database to open a Merk tree at
+    /// the specified path, calculate and verify its cryptographic hashes,
+    /// and update the session state with the relevant synchronization
+    /// information. The function generates and returns the global chunk ID for
     /// the subtree.
     ///
     /// # Parameters
@@ -212,13 +214,17 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - `db`: A reference to the `GroveDb` instance.
     /// - `path`: The path to the subtree as a `SubtreePath`.
     /// - `hash`: The expected cryptographic hash of the subtree.
-    /// - `actual_hash`: An optional actual cryptographic hash to compare against the expected hash.
-    /// - `chunk_prefix`: A 32-byte prefix used for identifying chunks in the synchronization process.
+    /// - `actual_hash`: An optional actual cryptographic hash to compare
+    ///   against the expected hash.
+    /// - `chunk_prefix`: A 32-byte prefix used for identifying chunks in the
+    ///   synchronization process.
     /// - `grove_version`: The GroveDB version to use for processing.
     ///
     /// # Returns
-    /// - `Ok(Vec<u8>)`: On success, returns the encoded global chunk ID for the subtree.
-    /// - `Err(Error)`: If the Merk tree cannot be opened or synchronization information cannot be added.
+    /// - `Ok(Vec<u8>)`: On success, returns the encoded global chunk ID for the
+    ///   subtree.
+    /// - `Err(Error)`: If the Merk tree cannot be opened or synchronization
+    ///   information cannot be added.
     ///
     /// # Errors
     /// This function returns an error if:
@@ -227,8 +233,9 @@ impl<'db> MultiStateSyncSession<'db> {
     /// - Internal errors occur during processing.
     ///
     /// # Safety
-    /// - This function uses unsafe code to create a reference to the transaction.
-    ///   Ensure that the transaction is properly managed and the lifetime guarantees are respected.
+    /// - This function uses unsafe code to create a reference to the
+    ///   transaction. Ensure that the transaction is properly managed and the
+    ///   lifetime guarantees are respected.
     pub fn add_subtree_sync_info<'b, B: AsRef<[u8]>>(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
         db: &'db GroveDb,
