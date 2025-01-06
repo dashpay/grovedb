@@ -48,10 +48,6 @@ struct SubtreeStateSyncInfo<'db> {
 }
 
 impl SubtreeStateSyncInfo<'_> {
-    pub fn get_current_path(&self) -> Vec<Vec<u8>> {
-        self.current_path.clone()
-    }
-
     /// Applies a chunk using the given `SubtreeStateSyncInfo`.
     ///
     /// # Parameters
@@ -382,7 +378,7 @@ impl<'db> MultiStateSyncSession<'db> {
                 return Ok(vec![]);
             }
 
-            let completed_path = subtree_state_sync.get_current_path();
+            let completed_path = subtree_state_sync.current_path.clone();
 
             // Subtree is finished. We can save it.
             if subtree_state_sync.num_processed_chunks > 0 {
@@ -403,12 +399,8 @@ impl<'db> MultiStateSyncSession<'db> {
 
             self.as_mut().processed_prefixes().insert(chunk_prefix);
 
-            println!(
-                "    finished tree: {:?}",
-                path_to_string(completed_path.as_slice())
-            );
             let new_subtrees_metadata =
-                self.discover_new_subtrees_metadata(db, completed_path.to_vec(), grove_version)?;
+                self.discover_new_subtrees_metadata(db, &completed_path, grove_version)?;
 
             if let Ok(res) =
                 self.prepare_sync_state_sessions(db, new_subtrees_metadata, grove_version)
@@ -456,7 +448,7 @@ impl<'db> MultiStateSyncSession<'db> {
     fn discover_new_subtrees_metadata(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
         db: &'db GroveDb,
-        path_vec: Vec<Vec<u8>>,
+        path_vec: &[Vec<u8>],
         grove_version: &GroveVersion,
     ) -> Result<SubtreesMetadata, Error> {
         let transaction_ref: &'db Transaction<'db> = unsafe {
@@ -499,12 +491,6 @@ impl<'db> MultiStateSyncSession<'db> {
                 let subtree_path: Vec<&[u8]> = new_path.iter().map(|vec| vec.as_slice()).collect();
                 let path: &[&[u8]] = &subtree_path;
                 let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
-
-                println!(
-                    "    discovered {:?} prefix:{}",
-                    path_to_string(&new_path),
-                    hex::encode(prefix)
-                );
 
                 subtrees_metadata.data.insert(
                     prefix,
@@ -566,10 +552,6 @@ impl<'db> MultiStateSyncSession<'db> {
                 let subtree_path: Vec<&[u8]> =
                     current_path.iter().map(|vec| vec.as_slice()).collect();
                 let path: &[&[u8]] = &subtree_path;
-                println!(
-                    "    path:{:?} starting...",
-                    path_to_string(&prefix_metadata.0)
-                );
 
                 let next_chunks_ids = self.add_subtree_sync_info(
                     db,

@@ -236,8 +236,6 @@ impl GroveDb {
             ));
         }
 
-        println!("    starting:{:?}...", utils::path_to_string(&[]));
-
         let root_prefix = [0u8; 32];
 
         let mut session = self.start_syncing_session(app_hash);
