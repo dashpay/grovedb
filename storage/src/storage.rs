@@ -43,6 +43,8 @@ use grovedb_visualize::visualize_to_vec;
 
 use crate::{worst_case_costs::WorstKeyLength, Error};
 
+pub type SubtreePrefix = [u8; blake3::OUT_LEN];
+
 /// Top-level storage_cost abstraction.
 /// Should be able to hold storage_cost connection and to start transaction when
 /// needed. All query operations will be exposed using [StorageContext].
@@ -89,6 +91,14 @@ pub trait Storage<'db> {
     where
         B: AsRef<[u8]> + 'b;
 
+    /// Make storage context for a subtree with prefix, keeping all write
+    /// operations inside a `batch` if provided.
+    fn get_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        batch: Option<&'db StorageBatch>,
+    ) -> CostContext<Self::BatchStorageContext>;
+
     /// Make context for a subtree on transactional data, keeping all write
     /// operations inside a `batch` if provided.
     fn get_transactional_storage_context<'b, B>(
@@ -100,6 +110,15 @@ pub trait Storage<'db> {
     where
         B: AsRef<[u8]> + 'b;
 
+    /// Make context for a subtree by prefix on transactional data, keeping all
+    /// write operations inside a `batch` if provided.
+    fn get_transactional_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        batch: Option<&'db StorageBatch>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::BatchTransactionalStorageContext>;
+
     /// Make context for a subtree on transactional data that will apply all
     /// operations straight to the storage.
     fn get_immediate_storage_context<'b, B>(
@@ -109,6 +128,14 @@ pub trait Storage<'db> {
     ) -> CostContext<Self::ImmediateStorageContext>
     where
         B: AsRef<[u8]> + 'b;
+
+    /// Make context for a subtree by prefix on transactional data that will
+    /// apply all operations straight to the storage.
+    fn get_immediate_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>;
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;

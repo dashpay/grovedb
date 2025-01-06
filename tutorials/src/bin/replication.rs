@@ -1,11 +1,11 @@
 use std::collections::VecDeque;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use grovedb::{operations::insert::InsertOptions, Element, GroveDb, PathQuery, Query, Transaction};
 use grovedb::reference_path::ReferencePathType;
 use rand::{distributions::Alphanumeric, Rng, };
 use grovedb::element::SumValue;
 use grovedb::replication::CURRENT_STATE_SYNC_VERSION;
-use grovedb::replication::MultiStateSyncInfo;
 use grovedb_version::version::GroveVersion;
 
 const MAIN_ΚΕΥ: &[u8] = b"key_main";
@@ -17,6 +17,8 @@ const KEY_INT_2: &[u8] = b"key_int_2";
 const KEY_INT_REF_0: &[u8] = b"key_int_ref_0";
 const KEY_INT_A: &[u8] = b"key_sum_0";
 const ROOT_PATH: &[&[u8]] = &[];
+
+pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 // Allow insertions to overwrite trees
 // This is necessary so the tutorial can be rerun easily
@@ -37,14 +39,14 @@ fn populate_db(grovedb_path: String, grove_version: &GroveVersion) -> GroveDb {
 
     let tx = db.start_transaction();
     let batch_size = 50;
-    for i in 0..=5 {
+    for i in 0..=100 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_0], i * batch_size, i * batch_size + batch_size - 1, &tx, &grove_version);
     }
     let _ = db.commit_transaction(tx);
 
     let tx = db.start_transaction();
     let batch_size = 50;
-    for i in 0..=5 {
+    for i in 0..=100 {
         insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_1], i * batch_size, i * batch_size + batch_size - 1, &tx, &grove_version);
     }
     let _ = db.commit_transaction(tx);
@@ -98,15 +100,8 @@ fn main() {
     let root_hash_destination = db_destination.root_hash(None, grove_version).unwrap().unwrap();
     println!("root_hash_destination: {:?}", hex::encode(root_hash_destination));
 
-    println!("\n######### source_subtree_metadata of db_source");
-    let subtrees_metadata_source = db_source.get_subtrees_metadata(None, grove_version).unwrap();
-    println!("{:?}", subtrees_metadata_source);
-
     println!("\n######### db_checkpoint_0 -> db_destination state sync");
-    let state_info = MultiStateSyncInfo::default();
-    let tx = db_destination.start_transaction();
-    sync_db_demo(&db_checkpoint_0, &db_destination, state_info, &tx, &grove_version).unwrap();
-    db_destination.commit_transaction(tx).unwrap().expect("expected to commit transaction");
+    sync_db_demo(&db_checkpoint_0, &db_destination, &grove_version).unwrap();
 
     println!("\n######### verify db_destination");
     let incorrect_hashes = db_destination.verify_grovedb(None, true, false, grove_version).unwrap();
@@ -246,24 +241,33 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>, grove_version: &GroveVer
 fn sync_db_demo(
     source_db: &GroveDb,
     target_db: &GroveDb,
-    state_sync_info: MultiStateSyncInfo,
-    target_tx: &Transaction,
     grove_version: &GroveVersion,
 ) -> Result<(), grovedb::Error> {
+    let start_time = Instant::now();
     let app_hash = source_db.root_hash(None, grove_version).value.unwrap();
-    let mut state_sync_info = target_db.start_snapshot_syncing(state_sync_info, app_hash, target_tx, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+    let mut session = target_db.start_snapshot_syncing(app_hash, CURRENT_STATE_SYNC_VERSION, grove_version)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
     // The very first chunk to fetch is always identified by the root app_hash
     chunk_queue.push_back(app_hash.to_vec());
 
+    let mut num_chunks = 0;
     while let Some(chunk_id) = chunk_queue.pop_front() {
+        num_chunks += 1;
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-        let (more_chunks, new_state_sync_info) = target_db.apply_chunk(state_sync_info, chunk_id.as_slice(), ops, target_tx, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-        state_sync_info = new_state_sync_info;
+
+        let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
         chunk_queue.extend(more_chunks);
     }
+    println!("num_chunks: {}", num_chunks);
+
+    if session.is_sync_completed() {
+        target_db.commit_session(session).expect("failed to commit session");
+    }
+    let elapsed = start_time.elapsed();
+    println!("state_synced in {:.2?}", elapsed);
+
 
     Ok(())
 }

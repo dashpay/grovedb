@@ -240,6 +240,25 @@ pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 #[cfg(feature = "full")]
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
+/// Type alias for the return type of the `verify_merk_and_submerks` and
+/// `verify_grovedb` functions. It represents a mapping of paths (as vectors of
+/// vectors of bytes) to a tuple of three cryptographic hashes: the root hash,
+/// the combined value hash, and the expected value hash.
+#[cfg(feature = "full")]
+type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>;
+
+/// Type alias for the return type of the `open_merk_for_replication` function.
+/// It represents a tuple containing:
+/// - A `Merk` instance with a prefixed RocksDB immediate storage context.
+/// - An optional `root_key`, represented as a vector of bytes.
+/// - A boolean indicating whether the Merk is a sum tree.
+#[cfg(feature = "full")]
+type OpenedMerkForReplication<'tx> = (
+    Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
+    Option<Vec<u8>>,
+    bool,
+);
+
 #[cfg(feature = "full")]
 impl GroveDb {
     /// Opens a given path
@@ -330,6 +349,46 @@ impl GroveDb {
         }
     }
 
+    fn open_transactional_merk_by_prefix<'db>(
+        &'db self,
+        prefix: SubtreePrefix,
+        root_key: Option<Vec<u8>>,
+        is_sum_tree: bool,
+        tx: &'db Transaction,
+        batch: Option<&'db StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
+        let mut cost = OperationCost::default();
+        let storage = self
+            .db
+            .get_transactional_storage_context_by_subtree_prefix(prefix, batch, tx)
+            .unwrap_add_cost(&mut cost);
+        if root_key.is_some() {
+            Merk::open_layered_with_root_key(
+                storage,
+                root_key,
+                is_sum_tree,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|_| {
+                Error::CorruptedData(
+                    "cannot open a subtree by prefix with given root key".to_owned(),
+                )
+            })
+            .add_cost(cost)
+        } else {
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a root subtree by prefix".to_owned()))
+            .add_cost(cost)
+        }
+    }
+
     /// Opens a Merk at given path for with direct write access. Intended for
     /// replication purposes.
     fn open_merk_for_replication<'tx, 'db: 'tx, 'b, B>(
@@ -337,7 +396,7 @@ impl GroveDb {
         path: SubtreePath<'b, B>,
         tx: &'tx Transaction<'db>,
         grove_version: &GroveVersion,
-    ) -> Result<Merk<PrefixedRocksDbImmediateStorageContext<'tx>>, Error>
+    ) -> Result<OpenedMerkForReplication<'tx>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -364,31 +423,39 @@ impl GroveDb {
                 .unwrap()?;
             let is_sum_tree = element.is_sum_tree();
             if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                Merk::open_layered_with_root_key(
-                    storage,
+                Ok((
+                    Merk::open_layered_with_root_key(
+                        storage,
+                        root_key.clone(),
+                        is_sum_tree,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version,
+                    )
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                    .unwrap()?,
                     root_key,
                     is_sum_tree,
-                    Some(&Element::value_defined_cost_for_serialized_value),
-                    grove_version,
-                )
-                .map_err(|_| {
-                    Error::CorruptedData("cannot open a subtree with given root key".to_owned())
-                })
-                .unwrap()
+                ))
             } else {
                 Err(Error::CorruptedPath(
                     "cannot open a subtree as parent exists but is not a tree".to_string(),
                 ))
             }
         } else {
-            Merk::open_base(
-                storage,
+            Ok((
+                Merk::open_base(
+                    storage,
+                    false,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
+                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+                .unwrap()?,
+                None,
                 false,
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                grove_version,
-            )
-            .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
-            .unwrap()
+            ))
         }
     }
 
@@ -398,7 +465,7 @@ impl GroveDb {
         path: SubtreePath<'b, B>,
         batch: Option<&'db StorageBatch>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext<'db>>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
@@ -454,6 +521,45 @@ impl GroveDb {
                 grove_version,
             )
             .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+            .add_cost(cost)
+        }
+    }
+
+    fn open_non_transactional_merk_by_prefix<'db>(
+        &'db self,
+        prefix: SubtreePrefix,
+        root_key: Option<Vec<u8>>,
+        is_sum_tree: bool,
+        batch: Option<&'db StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext<'db>>, Error> {
+        let mut cost = OperationCost::default();
+        let storage = self
+            .db
+            .get_storage_context_by_subtree_prefix(prefix, batch)
+            .unwrap_add_cost(&mut cost);
+        if root_key.is_some() {
+            Merk::open_layered_with_root_key(
+                storage,
+                root_key,
+                is_sum_tree,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|_| {
+                Error::CorruptedData(
+                    "cannot open a subtree by prefix with given root key".to_owned(),
+                )
+            })
+            .add_cost(cost)
+        } else {
+            Merk::open_base(
+                storage,
+                false,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|_| Error::CorruptedData("cannot open a root subtree by prefix".to_owned()))
             .add_cost(cost)
         }
     }
@@ -935,7 +1041,7 @@ impl GroveDb {
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
-    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
+    ) -> Result<VerificationIssues, Error> {
         if let Some(transaction) = transaction {
             let root_merk = self
                 .open_transactional_merk_at_path(
@@ -979,7 +1085,7 @@ impl GroveDb {
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
-    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
+    ) -> Result<VerificationIssues, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
@@ -1123,7 +1229,7 @@ impl GroveDb {
         verify_references: bool,
         allow_cache: bool,
         grove_version: &GroveVersion,
-    ) -> Result<HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>, Error> {
+    ) -> Result<VerificationIssues, Error> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
