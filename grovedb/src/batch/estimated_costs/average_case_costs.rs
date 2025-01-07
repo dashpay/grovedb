@@ -21,7 +21,7 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
-
+use grovedb_merk::merk::TreeType;
 use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
@@ -44,7 +44,7 @@ impl GroveOp {
         propagate: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        let in_tree_using_sums = layer_element_estimates.is_sum_tree;
+        let in_tree_type = layer_element_estimates.tree_type;
         let propagate_if_input = || {
             if propagate {
                 Some(layer_element_estimates)
@@ -53,10 +53,10 @@ impl GroveOp {
             }
         };
         match self {
-            GroveOp::ReplaceTreeRootKey { sum, .. } => GroveDb::average_case_merk_replace_tree(
+            GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => GroveDb::average_case_merk_replace_tree(
                 key,
                 layer_element_estimates,
-                sum.is_some(),
+                aggregate_data,
                 propagate,
                 grove_version,
             ),
@@ -119,16 +119,9 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::DeleteTree => GroveDb::average_case_merk_delete_tree(
+            GroveOp::DeleteTree(tree_type) => GroveDb::average_case_merk_delete_tree(
                 key,
-                false,
-                layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
-            GroveOp::DeleteSumTree => GroveDb::average_case_merk_delete_tree(
-                key,
-                true,
+                tree_type,
                 layer_element_estimates,
                 propagate,
                 grove_version,
@@ -142,7 +135,7 @@ impl GroveOp {
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
-    cached_merks: HashMap<KeyInfoPath, IsSumTree>,
+    cached_merks: HashMap<KeyInfoPath, TreeType>,
 }
 
 #[cfg(feature = "full")]
@@ -167,7 +160,7 @@ impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
 
 #[cfg(feature = "full")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
-    fn insert(&mut self, op: &QualifiedGroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -175,7 +168,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         // empty at this point.
         // There is however a hash call that creates the prefix
         average_case_cost.hash_node_calls += 1;
-        self.cached_merks.insert(inserted_path, is_sum_tree);
+        self.cached_merks.insert(inserted_path, tree_type);
         Ok(()).wrap_with_cost(average_case_cost)
     }
 

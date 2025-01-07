@@ -147,6 +147,18 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree and return the flags and the tree type
+    pub fn tree_flags_and_type(&self) -> Option<(&Option<ElementFlags>, TreeType)> {
+        match self {
+            Element::Tree(_, flags) => Some((flags, TreeType::NormalTree)),
+            Element::SumTree(_, _, flags) => Some((flags, TreeType::SumTree)),
+            Element::BigSumTree(_, _, flags) => Some((flags, TreeType::BigSumTree)),
+            Element::CountTree(_, _, flags) => Some((flags, TreeType::CountTree)),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree and return the tree type
     pub fn tree_type(&self) -> Option<TreeType> {
         match self {

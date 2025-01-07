@@ -445,7 +445,7 @@ macro_rules! root_merk_optional_tx {
                     &mut $cost,
                     ::grovedb_merk::Merk::open_base(
                         storage.unwrap_add_cost(&mut $cost),
-                        false,
+                        TreeType::NormalTree,
                         Some(&Element::value_defined_cost_for_serialized_value),
                         $grove_version,
                     ).map(|merk_res|

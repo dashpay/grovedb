@@ -23,6 +23,7 @@ use crate::{
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
+use crate::element::{BigSumValue, CountValue};
 
 #[cfg(feature = "full")]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -32,6 +33,10 @@ pub enum QueryItemOrSumReturnType {
     ItemData(Vec<u8>),
     /// A sum item or a sum tree value
     SumValue(SumValue),
+    /// A big sum tree value
+    BigSumValue(BigSumValue),
+    /// A count value
+    CountValue(CountValue),
 }
 
 #[cfg(feature = "full")]
@@ -222,7 +227,7 @@ where {
                     )),
                 }
             }
-            Element::Item(..) | Element::SumItem(..) | Element::SumTree(..) => Ok(element),
+            Element::Item(..) | Element::SumItem(..) | Element::SumTree(..) | Element::BigSumTree(..) | Element::CountTree(..) => Ok(element),
             Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
         }
     }
@@ -341,7 +346,7 @@ where {
                         }
                         Element::Item(item, _) => Ok(item),
                         Element::SumItem(item, _) => Ok(item.encode_var_vec()),
-                        Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
+                        Element::Tree(..) | Element::SumTree(..) | Element::BigSumTree(..) | Element::CountTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
                     }
@@ -422,6 +427,12 @@ where {
                                         Element::SumTree(_, sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
+                                        Element::BigSumTree(_, big_sum_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                                        }
+                                        Element::CountTree(_, count_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::CountValue(count_value))
+                                        }
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),
@@ -438,6 +449,12 @@ where {
                         }
                         Element::SumTree(_, sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
+                        }
+                        Element::BigSumTree(_, big_sum_value, _) => {
+                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                        }
+                        Element::CountTree(_, count_value, _) => {
+                            Ok(QueryItemOrSumReturnType::CountValue(count_value))
                         }
                         Element::Tree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items, sum items, references and sum \
@@ -520,7 +537,7 @@ where {
                             }
                         }
                         Element::SumItem(item, _) => Ok(item),
-                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => {
+                        Element::Tree(..) | Element::SumTree(..) | Element::BigSumTree(..) | Element::CountTree(..) | Element::Item(..) => {
                             Err(Error::InvalidQuery(
                                 "path_queries over sum items can only refer to sum items and \
                                  references",
