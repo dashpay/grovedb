@@ -59,6 +59,7 @@ use grovedb_version::version::GroveVersion;
 use source::MerkSource;
 
 use crate::{
+    TreeFeatureType,
     error::Error,
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
     proofs::{
@@ -243,15 +244,49 @@ impl MerkType {
         }
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum TreeType {
-    NormalTree,
-    SumTree,
-    BigSumTree,
-    CountTree,
+    NormalTree = 0,
+    SumTree = 1,
+    BigSumTree = 2,
+    CountTree = 3,
+}
+
+impl TryFrom<u8> for TreeType {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(TreeType::NormalTree),
+            1 => Ok(TreeType::SumTree),
+            2 => Ok(TreeType::BigSumTree),
+            3 => Ok(TreeType::CountTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 3", n))), // Error handling
+        }
+    }
+}
+
+impl fmt::Display for TreeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match *self {
+            TreeType::NormalTree => "Normal Tree",
+            TreeType::SumTree => "Sum Tree",
+            TreeType::BigSumTree => "Big Sum Tree",
+            TreeType::CountTree => "Count Tree",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 impl TreeType {
+    pub fn allows_sum_item(&self) -> bool {
+        match self {
+            TreeType::NormalTree => false,
+            TreeType::SumTree => true,
+            TreeType::BigSumTree => true,
+            TreeType::CountTree => false,
+        }
+    }
     pub fn inner_node_type(&self) -> NodeType {
         match self {
             TreeType::NormalTree => NodeType::NormalNode,
@@ -259,6 +294,15 @@ impl TreeType {
             TreeType::BigSumTree => NodeType::BigSumNode,
             TreeType::CountTree => NodeType::CountNode,
         }
+    }
+
+    pub fn empty_tree_feature_type(&self) -> TreeFeatureType {
+        match self {
+        TreeType::NormalTree => TreeFeatureType::BasicMerkNode,
+        TreeType::SumTree => TreeFeatureType::SummedMerkNode(0),
+        TreeType::BigSumTree => TreeFeatureType::BigSummedMerkNode(0),
+        TreeType::CountTree => TreeFeatureType::CountedMerkNode(0),
+            }
     }
 }
 

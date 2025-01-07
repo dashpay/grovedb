@@ -9,6 +9,7 @@ use grovedb_merk::{
     tree::{kv::ValueDefinedCostType, value_hash},
     CryptoHash, Restorer,
 };
+use grovedb_merk::merk::TreeType;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, RocksDbStorage},
@@ -37,8 +38,8 @@ struct SubtreeStateSyncInfo<'db> {
     /// Tree root key
     root_key: Option<Vec<u8>>,
 
-    /// Is Sum tree?
-    is_sum_tree: bool,
+    /// The type of tree
+    tree_type: TreeType,
 
     /// Path of current tree
     current_path: Vec<Vec<u8>>,
@@ -130,7 +131,7 @@ impl<'tx> SubtreeStateSyncInfo<'tx> {
         SubtreeStateSyncInfo {
             restorer,
             root_key: None,
-            is_sum_tree: false,
+            tree_type: TreeType::NormalTree,
             pending_chunks: Default::default(),
             current_path: vec![],
             num_processed_chunks: 0,
@@ -246,14 +247,14 @@ impl<'db> MultiStateSyncSession<'db> {
             &*(tx as *const _)
         };
 
-        if let Ok((merk, root_key, is_sum_tree)) =
+        if let Ok((merk, root_key, tree_type)) =
             db.open_merk_for_replication(path.clone(), transaction_ref, grove_version)
         {
             let restorer = Restorer::new(merk, hash, actual_hash);
             let mut sync_info = SubtreeStateSyncInfo::new(restorer);
             sync_info.pending_chunks.insert(vec![]);
             sync_info.root_key = root_key.clone();
-            sync_info.is_sum_tree = is_sum_tree;
+            sync_info.tree_type = tree_type;
             sync_info.current_path = path.to_vec();
             self.as_mut()
                 .current_prefixes()
@@ -261,7 +262,7 @@ impl<'db> MultiStateSyncSession<'db> {
             Ok(encode_global_chunk_id(
                 chunk_prefix,
                 root_key,
-                is_sum_tree,
+                tree_type,
                 vec![],
             ))
         } else {
@@ -367,7 +368,7 @@ impl<'db> MultiStateSyncSession<'db> {
                 next_chunk_ids.push(encode_global_chunk_id(
                     chunk_prefix,
                     subtree_state_sync.root_key.clone(),
-                    subtree_state_sync.is_sum_tree,
+                    subtree_state_sync.tree_type,
                     local_chunk_id.clone(),
                 ));
             }

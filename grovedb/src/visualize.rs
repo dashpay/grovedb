@@ -101,6 +101,28 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::BigSumTree(root_key, value, flags) => {
+                drawer.write(b"big_sum_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!(" {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
+            Element::CountTree(root_key, value, flags) => {
+                drawer.write(b"count_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!(" {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

@@ -28,7 +28,7 @@ macro_rules! storage_context_with_parent_optional_tx {
 	$transaction:ident,
 	$storage:ident,
 	$root_key:ident,
-    $is_sum_tree:ident,
+    $tree_type:ident,
     $grove_version:ident,
 	{ $($body:tt)* }
     ) => {
@@ -54,24 +54,13 @@ macro_rules! storage_context_with_parent_optional_tx {
                             )
                         })
                     );
-                    match element {
-                        Element::Tree(root_key, _) => {
-                            let $root_key = root_key;
-                            let $is_sum_tree = false;
-                            $($body)*
-                        }
-                        Element::SumTree(root_key, ..) => {
-                            let $root_key = root_key;
-                            let $is_sum_tree = true;
-                            $($body)*
-                        }
-                        _ => {
-                            return Err(Error::CorruptedData(
+                    let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                        return Err(Error::CorruptedData(
                                 "parent is not a tree"
                                     .to_owned(),
                             )).wrap_with_cost($cost);
-                        }
-                    }
+                    };
+                    $($body)*
                 } else {
                     return Err(Error::CorruptedData(
                         "path is empty".to_owned(),
@@ -95,24 +84,13 @@ macro_rules! storage_context_with_parent_optional_tx {
                             )
                         })
                     );
-                    match element {
-                        Element::Tree(root_key, _) => {
-                            let $root_key = root_key;
-                            let $is_sum_tree = false;
-                            $($body)*
-                        }
-                        Element::SumTree(root_key, ..) => {
-                            let $root_key = root_key;
-                            let $is_sum_tree = true;
-                            $($body)*
-                        }
-                        _ => {
-                            return Err(Error::CorruptedData(
+                    let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                        return Err(Error::CorruptedData(
                                 "parent is not a tree"
                                     .to_owned(),
                             )).wrap_with_cost($cost);
-                        }
-                    }
+                    };
+                    $($body)*
                 } else {
                     return Err(Error::CorruptedData(
                         "path is empty".to_owned(),
@@ -134,7 +112,7 @@ macro_rules! storage_context_with_parent_optional_tx_internal_error {
 	$transaction:ident,
 	$storage:ident,
 	$root_key:ident,
-    $is_sum_tree:ident,
+    $tree_type:ident,
     $grove_version:ident,
 	{ $($body:tt)* }
     ) => {
@@ -162,24 +140,13 @@ macro_rules! storage_context_with_parent_optional_tx_internal_error {
                         }).unwrap_add_cost(&mut $cost);
                     match result {
                         Ok(element) => {
-                            match element {
-                                Element::Tree(root_key, _) => {
-                                    let $root_key = root_key;
-                                    let $is_sum_tree = false;
-                                    $($body)*
-                                }
-                                Element::SumTree(root_key, ..) => {
-                                    let $root_key = root_key;
-                                    let $is_sum_tree = true;
-                                    $($body)*
-                                    }
-                                    _ => {
-                                        return Err(Error::CorruptedData(
-                                            "parent is not a tree"
-                                                .to_owned(),
-                                        )).wrap_with_cost($cost);
-                                    }
-                            }
+                            let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                                return Err(Error::CorruptedData(
+                                        "parent is not a tree"
+                                            .to_owned(),
+                                    )).wrap_with_cost($cost);
+                            };
+                            $($body)*
                         },
                         Err(e) => Err(e),
                     }
@@ -210,24 +177,13 @@ macro_rules! storage_context_with_parent_optional_tx_internal_error {
                         }).unwrap_add_cost(&mut $cost);
                     match result {
                         Ok(element) => {
-                            match element {
-                                Element::Tree(root_key, _) => {
-                                    let $root_key = root_key;
-                                    let $is_sum_tree = false;
-                                    $($body)*
-                                }
-                                Element::SumTree(root_key, ..) => {
-                                    let $root_key = root_key;
-                                    let $is_sum_tree = true;
-                                    $($body)*
-                                    }
-                                    _ => {
-                                        return Err(Error::CorruptedData(
-                                            "parent is not a tree"
-                                                .to_owned(),
-                                        )).wrap_with_cost($cost);
-                                    }
-                            }
+                            let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                                return Err(Error::CorruptedData(
+                                        "parent is not a tree"
+                                            .to_owned(),
+                                    )).wrap_with_cost($cost);
+                            };
+                            $($body)*
                         },
                         Err(e) => Err(e),
                     }
@@ -293,7 +249,7 @@ macro_rules! merk_optional_tx {
                     &mut $cost,
                     ::grovedb_merk::Merk::open_base(
                         storage.unwrap_add_cost(&mut $cost),
-                        false,
+                        TreeType::NormalTree,
                         Some(&Element::value_defined_cost_for_serialized_value),
                         $grove_version,
                     ).map(|merk_res|
@@ -315,7 +271,7 @@ macro_rules! merk_optional_tx {
                 $transaction,
                 storage,
                 root_key,
-                is_sum_tree,
+                tree_type,
                 $grove_version,
                 {
                     #[allow(unused_mut)]
@@ -324,7 +280,7 @@ macro_rules! merk_optional_tx {
                         ::grovedb_merk::Merk::open_layered_with_root_key(
                             storage,
                             root_key,
-                            is_sum_tree,
+                            tree_type,
                             Some(&Element::value_defined_cost_for_serialized_value),
                             $grove_version,
                         ).map(|merk_res|
@@ -367,7 +323,7 @@ macro_rules! merk_optional_tx_internal_error {
                     &mut $cost,
                     ::grovedb_merk::Merk::open_base(
                         storage.unwrap_add_cost(&mut $cost),
-                        false,
+                        TreeType::NormalTree,
                         Some(&Element::value_defined_cost_for_serialized_value),
                         $grove_version
                     ).map(|merk_res|
@@ -389,7 +345,7 @@ macro_rules! merk_optional_tx_internal_error {
                 $transaction,
                 storage,
                 root_key,
-                is_sum_tree,
+                tree_type,
                 $grove_version,
                 {
                     #[allow(unused_mut)]
@@ -398,7 +354,7 @@ macro_rules! merk_optional_tx_internal_error {
                         ::grovedb_merk::Merk::open_layered_with_root_key(
                             storage,
                             root_key,
-                            is_sum_tree,
+                            tree_type,
                             Some(&Element::value_defined_cost_for_serialized_value),
                             $grove_version,
                         ).map(|merk_res|
@@ -438,7 +394,7 @@ macro_rules! merk_optional_tx_path_not_empty {
                 $transaction,
                 storage,
                 root_key,
-                is_sum_tree,
+                tree_type,
                 $grove_version,
                 {
                     #[allow(unused_mut)]
@@ -447,7 +403,7 @@ macro_rules! merk_optional_tx_path_not_empty {
                         ::grovedb_merk::Merk::open_layered_with_root_key(
                             storage,
                             root_key,
-                            is_sum_tree,
+                            tree_type,
                             Some(&Element::value_defined_cost_for_serialized_value),
                             $grove_version,
                         ).map(|merk_res|

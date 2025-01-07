@@ -3,6 +3,7 @@ mod state_sync_session;
 use std::pin::Pin;
 
 use grovedb_merk::{tree::hash::CryptoHash, ChunkProducer};
+use grovedb_merk::merk::TreeType;
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
@@ -16,7 +17,7 @@ use crate::{Error, GroveDb, TransactionArg};
 /// - `Option<Vec<u8>>`: The root key, which may be `None` if not present.
 /// - `bool`: Indicates whether the tree is a sum tree.
 /// - `Vec<u8>`: The chunk ID representing traversal instructions.
-pub type ChunkIdentifier = (crate::SubtreePrefix, Option<Vec<u8>>, bool, Vec<u8>);
+pub type ChunkIdentifier = (crate::SubtreePrefix, Option<Vec<u8>>, TreeType, Vec<u8>);
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
@@ -82,7 +83,7 @@ impl GroveDb {
         }
 
         let root_app_hash = self.root_hash(transaction, grove_version).value?;
-        let (chunk_prefix, root_key, is_sum_tree, chunk_id) =
+        let (chunk_prefix, root_key, tree_type, chunk_id) =
             utils::decode_global_chunk_id(global_chunk_id, &root_app_hash)?;
 
         // TODO: Refactor this by writing fetch_chunk_inner (as only merk constructor
@@ -92,7 +93,7 @@ impl GroveDb {
                 .open_transactional_merk_by_prefix(
                     chunk_prefix,
                     root_key,
-                    is_sum_tree,
+                    tree_type,
                     tx,
                     None,
                     grove_version,
@@ -138,7 +139,7 @@ impl GroveDb {
                 .open_non_transactional_merk_by_prefix(
                     chunk_prefix,
                     root_key,
-                    is_sum_tree,
+                    tree_type,
                     None,
                     grove_version,
                 )
@@ -258,7 +259,7 @@ pub(crate) mod utils {
         ed::Encode,
         proofs::{Decoder, Op},
     };
-
+    use grovedb_merk::merk::TreeType;
     use crate::{replication::ChunkIdentifier, Error};
 
     /// Converts a path, represented as a slice of byte vectors (`&[Vec<u8>]`),
@@ -324,7 +325,7 @@ pub(crate) mod utils {
 
         if global_chunk_id == app_hash {
             let root_chunk_prefix_key: crate::SubtreePrefix = [0u8; 32];
-            return Ok((root_chunk_prefix_key, None, false, vec![]));
+            return Ok((root_chunk_prefix_key, None, TreeType::NormalTree, vec![]));
         }
 
         let (chunk_prefix_key, remaining) = global_chunk_id.split_at(chunk_prefix_length);
@@ -350,6 +351,8 @@ pub(crate) mod utils {
         }
         let (is_sum_tree, chunk_id) = remaining.split_at(is_sum_tree_length);
 
+        let tree_type = is_sum_tree[0].try_into()?;
+
         let subtree_prefix: crate::SubtreePrefix = chunk_prefix_key
             .try_into()
             .map_err(|_| Error::CorruptedData("unable to construct subtree".to_string()))?;
@@ -358,11 +361,11 @@ pub(crate) mod utils {
             Ok((
                 subtree_prefix,
                 Some(root_key.to_vec()),
-                is_sum_tree[0] != 0,
+                tree_type,
                 chunk_id.to_vec(),
             ))
         } else {
-            Ok((subtree_prefix, None, is_sum_tree[0] != 0, chunk_id.to_vec()))
+            Ok((subtree_prefix, None, tree_type, chunk_id.to_vec()))
         }
     }
 
@@ -381,7 +384,7 @@ pub(crate) mod utils {
     pub fn encode_global_chunk_id(
         subtree_prefix: [u8; blake3::OUT_LEN],
         root_key_opt: Option<Vec<u8>>,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         chunk_id: Vec<u8>,
     ) -> Vec<u8> {
         let mut res = vec![];
@@ -395,11 +398,7 @@ pub(crate) mod utils {
             res.push(0u8);
         }
 
-        let mut is_sum_tree_v = 0u8;
-        if is_sum_tree {
-            is_sum_tree_v = 1u8;
-        }
-        res.push(is_sum_tree_v);
+        res.push(tree_type as u8);
 
         res.extend(chunk_id.to_vec());
 

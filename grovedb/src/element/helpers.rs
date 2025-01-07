@@ -16,7 +16,7 @@ use grovedb_merk::{
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_merk::merk::TreeType;
+use grovedb_merk::merk::{NodeType, TreeType};
 use grovedb_merk::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
@@ -123,12 +123,37 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree and return the root_tree info and tree type
+    pub fn root_key_and_tree_type_owned(self) -> Option<(Option<Vec<u8>>, TreeType)> {
+        match self {
+            Element::Tree(root_key, _) => Some((root_key, TreeType::NormalTree)),
+            Element::SumTree(root_key, _, _) => Some((root_key, TreeType::SumTree)),
+            Element::BigSumTree(root_key, _, _) => Some((root_key, TreeType::BigSumTree)),
+            Element::CountTree(root_key, _, _) => Some((root_key, TreeType::CountTree)),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree and return the root_tree info and the tree type
+    pub fn root_key_and_tree_type(&self) -> Option<(&Option<Vec<u8>>, TreeType)> {
+        match self {
+            Element::Tree(root_key, _) => Some((root_key, TreeType::NormalTree)),
+            Element::SumTree(root_key, _, _) => Some((root_key, TreeType::SumTree)),
+            Element::BigSumTree(root_key, _, _) => Some((root_key, TreeType::BigSumTree)),
+            Element::CountTree(root_key, _, _) => Some((root_key, TreeType::CountTree)),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree and return the tree type
     pub fn tree_type(&self) -> Option<TreeType> {
         match self {
             Element::Tree(_, _) => Some(TreeType::NormalTree),
             Element::SumTree(_, _, _) => Some(TreeType::SumTree),
             Element::BigSumTree(_, _, _) => Some(TreeType::BigSumTree),
+            Element::CountTree(_, _, _) => Some(TreeType::CountTree),
             _ => None,
         }
     }
@@ -148,7 +173,7 @@ impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
     pub fn is_any_tree(&self) -> bool {
-        matches!(self, Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..))
+        matches!(self, Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..) | Element::CountTree(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -194,6 +219,8 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
+            | Element::BigSumTree(.., flags)
+            | Element::CountTree(.., flags)
             | Element::SumItem(_, flags) => flags,
         }
     }
@@ -206,6 +233,8 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
+            | Element::BigSumTree(.., flags)
+            | Element::CountTree(.., flags)
             | Element::SumItem(_, flags) => flags,
         }
     }
@@ -218,6 +247,8 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
+            | Element::BigSumTree(.., flags)
+            | Element::CountTree(.., flags)
             | Element::SumItem(_, flags) => flags,
         }
     }
@@ -230,6 +261,8 @@ impl Element {
             | Element::Item(_, flags)
             | Element::Reference(_, _, flags)
             | Element::SumTree(.., flags)
+            | Element::BigSumTree(.., flags)
+            | Element::CountTree(.., flags)
             | Element::SumItem(_, flags) => *flags = new_flags,
         }
     }
@@ -284,7 +317,7 @@ impl Element {
     pub fn specialized_costs_for_key_value(
         key: &Vec<u8>,
         value: &[u8],
-        is_sum_node: bool,
+        node_type: NodeType,
         grove_version: &GroveVersion,
     ) -> Result<u32, Error> {
         check_grovedb_v0!(
@@ -307,7 +340,7 @@ impl Element {
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
-                    is_sum_node,
+                    node_type,
                 )
             }
             Element::SumTree(_, _sum_value, flags) => {
@@ -320,7 +353,7 @@ impl Element {
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
-                    is_sum_node,
+                    node_type,
                 )
             }
             Element::BigSumTree(_, _sum_value, flags) => {
@@ -333,7 +366,7 @@ impl Element {
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len,
                     value_len,
-                    is_sum_node,
+                    node_type,
                 )
             }
             Element::SumItem(.., flags) => {
@@ -343,9 +376,9 @@ impl Element {
                 });
                 let value_len = SUM_ITEM_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
-                KV::node_value_byte_cost_size(key_len, value_len, is_sum_node)
+                KV::node_value_byte_cost_size(key_len, value_len, node_type)
             }
-            _ => KV::node_value_byte_cost_size(key.len() as u32, value.len() as u32, is_sum_node),
+            _ => KV::node_value_byte_cost_size(key.len() as u32, value.len() as u32, node_type),
         };
         Ok(cost)
     }

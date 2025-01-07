@@ -3213,7 +3213,7 @@ mod tests {
         let storage = db.db.get_storage_context(EMPTY_PATH, None).unwrap();
         let root_merk = Merk::open_base(
             storage,
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
@@ -3318,7 +3318,7 @@ mod tests {
             let subtree = Merk::open_layered_with_root_key(
                 subtree_storage,
                 Some(b"key3".to_vec()),
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -3367,7 +3367,7 @@ mod tests {
         let subtree = Merk::open_layered_with_root_key(
             subtree_storage,
             Some(b"key4".to_vec()),
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
@@ -3387,7 +3387,7 @@ mod tests {
         let subtree = Merk::open_layered_with_root_key(
             subtree_storage,
             Some(b"key3".to_vec()),
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )

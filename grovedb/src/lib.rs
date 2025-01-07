@@ -319,12 +319,11 @@ impl GroveDb {
                     }
                 )
             );
-            let is_sum_tree = element.is_sum_tree();
-            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
                 Merk::open_layered_with_root_key(
                     storage,
                     root_key,
-                    is_sum_tree,
+                    tree_type,
                     Some(&Element::value_defined_cost_for_serialized_value),
                     grove_version,
                 )
@@ -341,7 +340,7 @@ impl GroveDb {
         } else {
             Merk::open_base(
                 storage,
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -381,7 +380,7 @@ impl GroveDb {
         } else {
             Merk::open_base(
                 storage,
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -1130,7 +1129,7 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
             match element {
-                Element::SumTree(..) | Element::Tree(..) => {
+                Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..) | Element::CountTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1274,7 +1273,7 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
             match element {
-                Element::SumTree(..) | Element::Tree(..) => {
+                Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..) | Element::CountTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

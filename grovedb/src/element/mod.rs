@@ -27,8 +27,9 @@ use bincode::{Decode, Encode};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
-use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
-use grovedb_merk::estimated_costs::{BIG_SUM_LAYER_COST_SIZE, BIG_SUM_VALUE_EXTRA_COST};
+use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE, BIG_SUM_LAYER_COST_SIZE, BIG_SUM_VALUE_EXTRA_COST};
+#[cfg(feature = "full")]
+use grovedb_merk::merk::TreeType;
 #[cfg(feature = "full")]
 use grovedb_visualize::visualize_to_vec;
 
@@ -65,6 +66,10 @@ pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 /// The cost of a big sum tree
 pub const BIG_SUM_TREE_COST_SIZE: u32 = BIG_SUM_LAYER_COST_SIZE; // 19
 
+#[cfg(feature = "full")]
+/// The cost of a count tree
+pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
+
 #[cfg(any(feature = "full", feature = "verify"))]
 /// int 64 sum value
 pub type SumValue = i64;
@@ -76,6 +81,22 @@ pub type BigSumValue = i128;
 #[cfg(any(feature = "full", feature = "verify"))]
 /// int 64 count value
 pub type CountValue = u64;
+
+pub trait CostSize {
+    fn cost_size(&self) -> u32;
+}
+
+impl CostSize for TreeType {
+    fn cost_size(&self) -> u32 {
+        match self {
+            TreeType::NormalTree => TREE_COST_SIZE,
+            TreeType::SumTree => SUM_TREE_COST_SIZE,
+            TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
+            TreeType::CountTree => COUNT_TREE_COST_SIZE,
+        }
+    }
+}
+
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Variants of GroveDB stored entities
@@ -102,9 +123,9 @@ pub enum Element {
     /// nodes in big form i128
     /// The big sum tree is valuable if you have a big sum tree of sum trees
     BigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
-    // /// Same as Element::Tree but underlying Merk counts value of its countable
-    // /// nodes
-    // CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk counts value of its countable
+    /// nodes
+    CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
 }
 
 impl fmt::Display for Element {
@@ -173,6 +194,17 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::CountTree(root_key, count_value, flags) => {
+                write!(
+                    f,
+                    "CountTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -186,6 +218,7 @@ impl Element {
             Element::SumItem(..) => "sum item",
             Element::SumTree(..) => "sum tree",
             Element::BigSumTree(..) => "big sum tree",
+            Element::CountTree(..) => "count tree",
         }
     }
 

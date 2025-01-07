@@ -2,6 +2,7 @@
 
 #[cfg(feature = "full")]
 mod tests {
+    use grovedb_merk::merk::TreeType;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -46,7 +47,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
-            false,
+            TreeType::NormalTree,
         )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
@@ -153,7 +154,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
-            false,
+            TreeType::NormalTree,
         )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)

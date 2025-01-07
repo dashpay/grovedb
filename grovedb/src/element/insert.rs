@@ -32,7 +32,7 @@ impl Element {
 
         let serialized = cost_return_on_error_default!(self.serialize(grove_version));
 
-        if !merk.tree_type && self.is_sum_item() {
+        if !merk.tree_type.allows_sum_item() && self.is_sum_item() {
             return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
                 .wrap_with_cost(Default::default());
         }
@@ -55,14 +55,14 @@ impl Element {
         } else {
             [(key, Op::Put(serialized, merk_feature_type))]
         };
-        let uses_sum_nodes = merk.tree_type;
+        let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch_operations,
             &[],
             options,
             &|key, value| {
                 // it is possible that a normal item was being replaced with a
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
+                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
@@ -314,13 +314,13 @@ impl Element {
             key,
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
-        let uses_sum_nodes = merk.tree_type;
+        let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch_operations,
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
+                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
@@ -401,13 +401,13 @@ impl Element {
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
-        let uses_sum_nodes = merk.tree_type;
+        let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch_operations,
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
+                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
                     .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),

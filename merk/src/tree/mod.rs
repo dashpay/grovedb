@@ -94,6 +94,12 @@ impl TreeNodeInner {
         self.kv.value
     }
 
+    /// Get the value as owned of the key value struct
+    pub fn value_as_owned_with_feature(self) -> (Vec<u8>, TreeFeatureType) {
+        (self.kv.value, self.kv.feature_type)
+    }
+
+
     /// Get the value as slice of the key value struct
     pub fn value_as_slice(&self) -> &[u8] {
         self.kv.value.as_slice()

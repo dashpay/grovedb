@@ -20,7 +20,7 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
-
+use grovedb_merk::merk::TreeType;
 use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
@@ -36,7 +36,7 @@ impl GroveOp {
     fn worst_case_cost(
         &self,
         key: &KeyInfo,
-        is_in_parent_sum_tree: bool,
+        in_parent_tree_type: TreeType,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
         propagate: bool,
         grove_version: &GroveVersion,
@@ -49,20 +49,20 @@ impl GroveOp {
             }
         };
         match self {
-            GroveOp::ReplaceTreeRootKey { sum, .. } => GroveDb::worst_case_merk_replace_tree(
+            GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => GroveDb::worst_case_merk_replace_tree(
                 key,
-                sum.is_some(),
-                is_in_parent_sum_tree,
+                aggregate_data,
+                in_parent_tree_type,
                 worst_case_layer_element_estimates,
                 propagate,
                 grove_version,
             ),
-            GroveOp::InsertTreeWithRootHash { flags, sum, .. } => {
+            GroveOp::InsertTreeWithRootHash { flags, aggregate_data, .. } => {
                 GroveDb::worst_case_merk_insert_tree(
                     key,
                     flags,
-                    sum.is_some(),
-                    is_in_parent_sum_tree,
+                    aggregate_data,
+                    in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
                 )
@@ -71,7 +71,7 @@ impl GroveOp {
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
-                    is_in_parent_sum_tree,
+                    in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
                 )
@@ -88,14 +88,14 @@ impl GroveOp {
                     *max_reference_hop,
                     flags.clone(),
                 ),
-                is_in_parent_sum_tree,
+                in_parent_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
             GroveOp::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
-                is_in_parent_sum_tree,
+                in_parent_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
@@ -105,7 +105,7 @@ impl GroveOp {
             } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
-                is_in_parent_sum_tree,
+                in_parent_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
@@ -115,16 +115,9 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::DeleteTree => GroveDb::worst_case_merk_delete_tree(
+            GroveOp::DeleteTree(tree_type) => GroveDb::worst_case_merk_delete_tree(
                 key,
-                false,
-                worst_case_layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
-            GroveOp::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
-                key,
-                true,
+                tree_type,
                 worst_case_layer_element_estimates,
                 propagate,
                 grove_version,

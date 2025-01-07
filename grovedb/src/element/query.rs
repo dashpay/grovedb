@@ -22,6 +22,8 @@ use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageConte
 use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
+#[cfg(feature = "full")]
+use grovedb_merk::merk::TreeType;
 
 #[cfg(feature = "full")]
 use crate::operations::proof::util::hex_to_ascii;

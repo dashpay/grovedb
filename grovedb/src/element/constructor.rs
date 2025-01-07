@@ -7,7 +7,7 @@ use crate::{
     reference_path::ReferencePathType,
     Element, ElementFlags,
 };
-use crate::element::BigSumValue;
+use crate::element::{BigSumValue, CountValue};
 
 impl Element {
     #[cfg(feature = "full")]
@@ -140,7 +140,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Set element to a sum tree with flags
+    /// Set element to a big sum tree with flags
     pub fn new_big_sum_tree_with_flags(
         maybe_root_key: Option<Vec<u8>>,
         flags: Option<ElementFlags>,
@@ -149,12 +149,37 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Set element to a sum tree with flags and sum value
+    /// Set element to a big sum tree with flags and sum value
     pub fn new_big_sum_tree_with_flags_and_sum_value(
         maybe_root_key: Option<Vec<u8>>,
         big_sum_value: BigSumValue,
         flags: Option<ElementFlags>,
     ) -> Self {
         Element::BigSumTree(maybe_root_key, big_sum_value, flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a count tree without flags
+    pub fn new_count_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::CountTree(maybe_root_key, 0, None)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a count tree with flags
+    pub fn new_count_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountTree(maybe_root_key, 0, flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a count tree with flags and sum value
+    pub fn new_count_tree_with_flags_and_count_value(
+        maybe_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountTree(maybe_root_key, count_value, flags)
     }
 }
