@@ -12,6 +12,7 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use super::{hash::CryptoHash, TreeNode};
 #[cfg(feature = "full")]
 use crate::HASH_LENGTH_U32;
+use crate::merk::NodeType;
 #[cfg(feature = "full")]
 use crate::tree::tree_feature_type::AggregateData;
 // TODO: optimize memory footprint
@@ -252,8 +253,8 @@ impl Link {
     // Costs for operations within a single merk
     #[inline]
     /// Encoded link size
-    pub const fn encoded_link_size(not_prefixed_key_len: u32, is_sum_tree: bool) -> u32 {
-        let sum_tree_cost = if is_sum_tree { 8 } else { 0 };
+    pub const fn encoded_link_size(not_prefixed_key_len: u32, node_type: NodeType) -> u32 {
+        let sum_tree_cost = node_type.cost();
         // Links are optional values that represent the right or left node for a given
         // 1 byte to represent key_length (this is a u8)
         // key_length to represent the actual key

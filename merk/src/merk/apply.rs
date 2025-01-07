@@ -17,6 +17,7 @@ use crate::{
     },
     Error, Merk, MerkBatch, MerkOptions,
 };
+use crate::merk::NodeType;
 
 impl<'db, S> Merk<S>
 where
@@ -64,7 +65,7 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
     {
-        let use_sum_nodes = self.is_sum_tree;
+        let node_type : NodeType = self.tree_type.inner_node_type();
         self.apply_with_costs_just_in_time_value_update(
             batch,
             aux,
@@ -73,7 +74,7 @@ where
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key.len() as u32,
                     value.len() as u32,
-                    use_sum_nodes,
+                    node_type,
                 ))
             },
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

@@ -9,26 +9,27 @@ use crate::{
     Error, Merk, MerkType,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
+use crate::merk::TreeType;
 
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
 {
     /// Open empty tree
-    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
+    pub fn open_empty(storage: S, merk_type: MerkType, tree_type: TreeType) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
             merk_type,
-            is_sum_tree,
+            tree_type,
         }
     }
 
     /// Open standalone tree
     pub fn open_standalone(
         storage: S,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         value_defined_cost_fn: Option<
             impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
@@ -39,7 +40,7 @@ where
             root_tree_key: Cell::new(None),
             storage,
             merk_type: StandaloneMerk,
-            is_sum_tree,
+            tree_type,
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -49,7 +50,7 @@ where
     /// Open base tree
     pub fn open_base(
         storage: S,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         value_defined_cost_fn: Option<
             impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
@@ -60,7 +61,7 @@ where
             root_tree_key: Cell::new(None),
             storage,
             merk_type: BaseMerk,
-            is_sum_tree,
+            tree_type,
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -71,7 +72,7 @@ where
     pub fn open_layered_with_root_key(
         storage: S,
         root_key: Option<Vec<u8>>,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         value_defined_cost_fn: Option<
             impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
@@ -82,7 +83,7 @@ where
             root_tree_key: Cell::new(root_key),
             storage,
             merk_type: LayeredMerk,
-            is_sum_tree,
+            tree_type,
         };
 
         merk.load_root(value_defined_cost_fn, grove_version)
@@ -102,6 +103,7 @@ mod test {
     use tempfile::TempDir;
 
     use crate::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType::BasicMerkNode};
+    use crate::merk::TreeType;
 
     #[test]
     fn test_reopen_root_hash() {
@@ -116,7 +118,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -143,7 +145,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -162,7 +164,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), Some(&batch))
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         );
@@ -192,7 +194,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         );

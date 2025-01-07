@@ -7,6 +7,7 @@ use crate::{
     reference_path::ReferencePathType,
     Element, ElementFlags,
 };
+use crate::element::BigSumValue;
 
 impl Element {
     #[cfg(feature = "full")]
@@ -130,5 +131,30 @@ impl Element {
         flags: Option<ElementFlags>,
     ) -> Self {
         Element::SumTree(maybe_root_key, sum_value, flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a big sum tree without flags
+    pub fn new_big_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::BigSumTree(maybe_root_key, 0, None)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a sum tree with flags
+    pub fn new_big_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::BigSumTree(maybe_root_key, 0, flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a sum tree with flags and sum value
+    pub fn new_big_sum_tree_with_flags_and_sum_value(
+        maybe_root_key: Option<Vec<u8>>,
+        big_sum_value: BigSumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::BigSumTree(maybe_root_key, big_sum_value, flags)
     }
 }

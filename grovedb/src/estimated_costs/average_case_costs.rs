@@ -20,7 +20,7 @@ use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 use integer_encoding::VarInt;
-
+use grovedb_merk::merk::TreeType;
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
@@ -203,7 +203,7 @@ impl GroveDb {
     pub fn average_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
-        in_tree_using_sums: bool,
+        in_tree_type: TreeType,
         propagate_for_level: Option<&EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -230,13 +230,13 @@ impl GroveDb {
                     TREE_COST_SIZE
                 };
                 let value_len = tree_cost_size + flags_len;
-                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums)
+                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_type)
             }
             _ => add_cost_case_merk_insert(
                 &mut cost,
                 key_len,
                 cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version)) as u32,
-                in_tree_using_sums,
+                in_tree_type,
             ),
         };
         if let Some(level) = propagate_for_level {

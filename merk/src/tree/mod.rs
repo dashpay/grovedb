@@ -74,6 +74,7 @@ use crate::tree::kv::ValueDefinedCostType;
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
+use crate::merk::NodeType;
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
@@ -157,9 +158,9 @@ impl TreeNode {
         }
     }
 
-    /// Is sum node?
-    pub fn is_sum_node(&self) -> bool {
-        self.inner.kv.feature_type.is_sum_feature()
+    /// the node type
+    pub fn node_type(&self) -> NodeType {
+        self.inner.kv.feature_type.node_type()
     }
 
     pub fn storage_cost_for_update(current_value_byte_cost: u32, old_cost: u32) -> StorageCost {
@@ -252,7 +253,7 @@ impl TreeNode {
             KV::value_byte_cost_size_for_key_and_value_lengths(
                 key_len,
                 value_len as u32,
-                self.inner.kv.feature_type.is_sum_feature(),
+                self.inner.kv.feature_type.node_type(),
             )
         } else {
             self.inner.kv.value_byte_cost_size()

@@ -38,7 +38,7 @@ impl Element {
             (false, false) => Op::Delete,
         };
         let batch = [(key, op)];
-        let uses_sum_nodes = merk.is_sum_tree;
+        let uses_sum_nodes = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch,
             &[],
@@ -85,7 +85,7 @@ impl Element {
             (false, false) => Op::Delete,
         };
         let batch = [(key, op)];
-        let uses_sum_nodes = merk.is_sum_tree;
+        let uses_sum_nodes = merk.tree_type;
         merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
             &batch,
             &[],

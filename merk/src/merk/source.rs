@@ -6,6 +6,7 @@ use crate::{
     tree::{kv::ValueDefinedCostType, Fetch, TreeNode},
     Error, Link, Merk,
 };
+use crate::merk::TreeType;
 
 impl<'db, S> Merk<S>
 where
@@ -14,7 +15,7 @@ where
     pub(in crate::merk) fn source(&self) -> MerkSource<S> {
         MerkSource {
             storage: &self.storage,
-            is_sum_tree: self.is_sum_tree,
+            tree_type: self.tree_type,
         }
     }
 }
@@ -22,14 +23,14 @@ where
 #[derive(Debug)]
 pub struct MerkSource<'s, S> {
     storage: &'s S,
-    is_sum_tree: bool,
+    tree_type: TreeType,
 }
 
 impl<'s, S> Clone for MerkSource<'s, S> {
     fn clone(&self) -> Self {
         MerkSource {
             storage: self.storage,
-            is_sum_tree: self.is_sum_tree,
+            tree_type: self.tree_type,
         }
     }
 }

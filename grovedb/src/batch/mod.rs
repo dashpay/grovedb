@@ -66,6 +66,7 @@ use grovedb_version::{
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
+use grovedb_merk::tree::AggregateData;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 pub use options::BatchApplyOptions;
 
@@ -91,8 +92,8 @@ pub enum GroveOp {
         hash: [u8; 32],
         /// Root key
         root_key: Option<Vec<u8>>,
-        /// Sum
-        sum: Option<i64>,
+        /// Aggregate data
+        aggregate_data: AggregateData,
     },
     /// Inserts an element that is known to not yet exist
     InsertOnly {
@@ -124,8 +125,8 @@ pub enum GroveOp {
         root_key: Option<Vec<u8>>,
         /// Flags
         flags: Option<ElementFlags>,
-        /// Sum
-        sum: Option<i64>,
+        /// Aggregate Data such as sum
+        aggregate_data: AggregateData,
     },
     /// Refresh the reference with information provided
     /// Providing this information is necessary to be able to calculate
@@ -905,7 +906,7 @@ where
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
 
-        let is_sum_tree = merk.is_sum_tree;
+        let is_sum_tree = merk.tree_type;
 
         if let Some(referenced_element) = referenced_element {
             let element = cost_return_on_error_no_add!(
@@ -1240,7 +1241,7 @@ where
         if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
             let mut merk =
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
-            merk.is_sum_tree = is_sum_tree;
+            merk.tree_type = is_sum_tree;
             e.insert(merk);
         }
 
@@ -1284,7 +1285,7 @@ where
         let path = &p;
 
         // This also populates Merk trees cache
-        let is_sum_tree = {
+        let tree_type = {
             let merk = match self.merks.entry(path.to_vec()) {
                 HashMapEntry::Occupied(o) => o.into_mut(),
                 HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
@@ -1292,7 +1293,7 @@ where
                     (self.get_merk_fn)(path, false)
                 )),
             };
-            merk.is_sum_tree
+            merk.tree_type
         };
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
@@ -1306,7 +1307,7 @@ where
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
-                                .get_feature_type(is_sum_tree)
+                                .get_feature_type(tree_type)
                                 .wrap_with_cost(OperationCost::default())
                         );
                         let path_reference = cost_return_on_error!(
@@ -1352,7 +1353,7 @@ where
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
-                                .get_feature_type(is_sum_tree)
+                                .get_feature_type(tree_type)
                                 .wrap_with_cost(OperationCost::default())
                         );
                         cost_return_on_error!(
@@ -1371,7 +1372,7 @@ where
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
-                                .get_feature_type(is_sum_tree)
+                                .get_feature_type(tree_type)
                                 .wrap_with_cost(OperationCost::default())
                         );
                         if batch_apply_options.validate_insertion_does_not_override {
@@ -1450,7 +1451,7 @@ where
                         .wrap_with_cost(cost);
                     };
 
-                    let merk_feature_type = if is_sum_tree {
+                    let merk_feature_type = if tree_type {
                         SummedMerkNode(0)
                     } else {
                         BasicMerkNode
@@ -1501,7 +1502,7 @@ where
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             false,
-                            is_sum_tree, /* we are in a sum tree, this might or might not be a
+                            tree_type, /* we are in a sum tree, this might or might not be a
                                           * sum item */
                             &mut batch_operations,
                             grove_version
@@ -1535,7 +1536,7 @@ where
                 GroveOp::ReplaceTreeRootKey {
                     hash,
                     root_key,
-                    sum,
+                    aggregate_data,
                 } => {
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     cost_return_on_error!(
@@ -1545,7 +1546,7 @@ where
                             key_info.get_key(),
                             root_key,
                             hash,
-                            sum,
+                            aggregate_data,
                             &mut batch_operations,
                             grove_version
                         )
@@ -1564,7 +1565,7 @@ where
                         ),
                     };
                     let merk_feature_type =
-                        cost_return_on_error_no_add!(&cost, element.get_feature_type(is_sum_tree));
+                        cost_return_on_error_no_add!(&cost, element.get_feature_type(tree_type));
 
                     cost_return_on_error!(
                         &mut cost,
@@ -1590,7 +1591,7 @@ where
                 &[],
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
-                    Element::specialized_costs_for_key_value(key, value, is_sum_tree, grove_version)
+                    Element::specialized_costs_for_key_value(key, value, tree_type, grove_version)
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                 },
                 Some(&Element::value_defined_cost_for_serialized_value),
@@ -1776,7 +1777,7 @@ impl GroveDb {
                         );
                     }
                 } else {
-                    let (root_hash, calculated_root_key, sum_value) = cost_return_on_error!(
+                    let (root_hash, calculated_root_key, aggregate_data) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1806,7 +1807,7 @@ impl GroveDb {
                                                 GroveOp::ReplaceTreeRootKey {
                                                     hash: root_hash,
                                                     root_key: calculated_root_key,
-                                                    sum: sum_value,
+                                                    aggregate_data,
                                                 }
                                                 .into(),
                                             );
@@ -1817,11 +1818,11 @@ impl GroveDb {
                                                 GroveOp::ReplaceTreeRootKey {
                                                     hash,
                                                     root_key,
-                                                    sum,
+                                                    aggregate_data,
                                                 } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
-                                                    *sum = sum_value;
+                                                    *aggregate_data = aggregate_data;
                                                 }
                                                 GroveOp::InsertTreeWithRootHash { .. } => {
                                                     return Err(Error::CorruptedCodeExecution(
@@ -1839,7 +1840,7 @@ impl GroveDb {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
-                                                                sum: None,
+                                                                aggregate_data: AggregateData::NoAggregateData,
                                                             }
                                                             .into();
                                                     } else if let Element::SumTree(.., flags) =
@@ -1850,7 +1851,7 @@ impl GroveDb {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
-                                                                sum: sum_value,
+                                                                aggregate_data,
                                                             }
                                                             .into();
                                                     } else {
@@ -1889,7 +1890,7 @@ impl GroveDb {
                                         GroveOp::ReplaceTreeRootKey {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
-                                            sum: sum_value,
+                                            aggregate_data,
                                         },
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
@@ -1901,7 +1902,7 @@ impl GroveDb {
                                     GroveOp::ReplaceTreeRootKey {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
-                                        sum: sum_value,
+                                        aggregate_data,
                                     }
                                     .into(),
                                 );

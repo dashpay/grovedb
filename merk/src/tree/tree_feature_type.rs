@@ -2,14 +2,14 @@
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::io::{Read, Write};
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 #[cfg(feature = "full")]
 use ed::Terminated;
 #[cfg(any(feature = "full", feature = "verify"))]
 use ed::{Decode, Encode};
 #[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
-
+use crate::merk::NodeType;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
 use crate::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
@@ -28,13 +28,90 @@ pub enum TreeFeatureType {
     CountedMerkNode(u64),
 }
 
+impl TreeFeatureType {
+    pub fn node_type(&self) -> NodeType {
+        match self {
+            BasicMerkNode => NodeType::NormalNode,
+            SummedMerkNode(_) => NodeType::SumNode,
+            BigSummedMerkNode(_) => NodeType::BigSumNode,
+            CountedMerkNode(_) => NodeType::CountNode,
+        }
+    }
+}
+
 #[cfg(any(feature = "full", feature = "verify"))]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AggregateData {
     NoAggregateData,
     Sum(i64),
     BigSum(i128),
     Count(u64),
+}
+
+impl AggregateData {
+    pub fn as_i64(&self) -> i64 {
+    match self {
+        AggregateData::NoAggregateData => 0,
+        AggregateData::Sum(s) => *s,
+        AggregateData::BigSum(i) => {
+            let max = i64::MAX as i128;
+            if *i > max {
+                i64::MAX
+            } else {
+                *i as i64
+            }
+        }
+        AggregateData::Count(c) => {
+            let max = i64::MAX as u64;
+            if *c > max {
+                i64::MAX
+            } else {
+                *c as i64
+            }
+        }
+    }
+}
+
+    pub fn as_u64(&self) -> u64 {
+        match self {
+            AggregateData::NoAggregateData => 0,
+            AggregateData::Sum(s) => {
+                if *s < 0 {
+                    0
+                } else {
+                    *s as u64
+                }
+            },
+            AggregateData::BigSum(i) => {
+                let max = u64::MAX as i128;
+                if *i > max {
+                    u64::MAX
+                } else if *i < 0 {
+                    0
+                } else {
+                    *i as u64
+                }
+            }
+            AggregateData::Count(c) => {
+                *c
+            }
+        }
+    }
+
+    pub fn as_i128(&self) -> i128 {
+        match self {
+            AggregateData::NoAggregateData => 0,
+            AggregateData::Sum(s) => {
+                    *s as i128
+            },
+            AggregateData::BigSum(i) => {
+                *i
+            }
+            AggregateData::Count(c) => {
+                *c as i128
+            }
+        }
+    }
 }
 
 impl From<TreeFeatureType> for AggregateData {
@@ -59,12 +136,6 @@ impl TreeFeatureType {
             BigSummedMerkNode(_) => Some(16),
             CountedMerkNode(m) => Some(m.encode_var_vec().len() as u32),
         }
-    }
-
-    #[inline]
-    /// Is sum feature?
-    pub fn is_sum_feature(&self) -> bool {
-        matches!(self, SummedMerkNode(_))
     }
 
     #[inline]

@@ -146,6 +146,7 @@ impl TreeNode {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
+    use crate::tree::AggregateData;
     use super::{super::Link, *};
     use crate::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
 
@@ -196,7 +197,7 @@ mod tests {
             [55; 32],
             Some(Link::Loaded {
                 hash: [66; 32],
-                sum: None,
+                aggregate_data: AggregateData::NoAggregateData,
                 child_heights: (123, 124),
                 tree: TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap(),
             }),
@@ -225,7 +226,7 @@ mod tests {
             [55; 32],
             Some(Link::Uncommitted {
                 hash: [66; 32],
-                sum: Some(10),
+                aggregate_data: AggregateData::Sum(10),
                 child_heights: (123, 124),
                 tree: TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap(),
             }),
@@ -254,7 +255,7 @@ mod tests {
             [55; 32],
             Some(Link::Reference {
                 hash: [66; 32],
-                aggregate_data: None,
+                aggregate_data: AggregateData::NoAggregateData,
                 child_heights: (123, 124),
                 key: vec![2],
             }),

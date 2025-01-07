@@ -243,6 +243,53 @@ impl MerkType {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TreeType {
+    NormalTree,
+    SumTree,
+    BigSumTree,
+    CountTree,
+}
+
+impl TreeType {
+    pub fn inner_node_type(&self) -> NodeType {
+        match self {
+            TreeType::NormalTree => NodeType::NormalNode,
+            TreeType::SumTree => NodeType::SumNode,
+            TreeType::BigSumTree => NodeType::BigSumNode,
+            TreeType::CountTree => NodeType::CountNode,
+        }
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NodeType {
+    NormalNode,
+    SumNode,
+    BigSumNode,
+    CountNode,
+}
+
+impl NodeType {
+    pub const fn feature_len(&self) -> u32 {
+        match self {
+            NodeType::NormalNode => 1,
+            NodeType::SumNode => 9,
+            NodeType::BigSumNode => 17,
+            NodeType::CountNode => 9,
+        }
+    }
+
+    pub const fn cost(&self) -> u32 {
+        match self {
+            NodeType::NormalNode => 0,
+            NodeType::SumNode => 8,
+            NodeType::BigSumNode => 16,
+            NodeType::CountNode => 8,
+        }
+    }
+}
 
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
@@ -252,8 +299,8 @@ pub struct Merk<S> {
     pub storage: S,
     /// Merk type
     pub merk_type: MerkType,
-    /// Is sum tree?
-    pub is_sum_tree: bool,
+    /// The tree type
+    pub tree_type: TreeType,
 }
 
 impl<S> fmt::Debug for Merk<S> {

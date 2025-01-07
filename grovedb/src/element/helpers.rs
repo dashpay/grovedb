@@ -16,7 +16,8 @@ use grovedb_merk::{
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-
+use grovedb_merk::merk::TreeType;
+use grovedb_merk::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -28,6 +29,7 @@ use crate::{
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};
+use crate::element::BIG_SUM_TREE_COST_SIZE;
 
 impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -36,6 +38,17 @@ impl Element {
     pub fn sum_value_or_default(&self) -> i64 {
         match self {
             Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => *sum_value,
+            _ => 0,
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the SumItem element type, returns 0 for
+    /// everything else
+    pub fn big_sum_value_or_default(&self) -> i128 {
+        match self {
+            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => *sum_value as i128,
+            Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
@@ -110,6 +123,23 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree and return the tree type
+    pub fn tree_type(&self) -> Option<TreeType> {
+        match self {
+            Element::Tree(_, _) => Some(TreeType::NormalTree),
+            Element::SumTree(_, _, _) => Some(TreeType::SumTree),
+            Element::BigSumTree(_, _, _) => Some(TreeType::BigSumTree),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a big sum tree
+    pub fn is_big_sum_tree(&self) -> bool {
+        matches!(self, Element::BigSumTree(..))
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree but not a sum tree
     pub fn is_basic_tree(&self) -> bool {
         matches!(self, Element::Tree(..))
@@ -118,7 +148,7 @@ impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
     pub fn is_any_tree(&self) -> bool {
-        matches!(self, Element::SumTree(..) | Element::Tree(..))
+        matches!(self, Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..))
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -147,10 +177,12 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the tree feature type
-    pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
-        match parent_is_sum_tree {
-            true => Ok(SummedMerkNode(self.sum_value_or_default())),
-            false => Ok(BasicMerkNode),
+    pub fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
+        match parent_tree_type {
+            TreeType::NormalTree => Ok(BasicMerkNode),
+            TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
+            TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
+            TreeType::CountTree => Ok(CountedMerkNode(1)),
         }
     }
 
@@ -291,6 +323,19 @@ impl Element {
                     is_sum_node,
                 )
             }
+            Element::BigSumTree(_, _sum_value, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = BIG_SUM_TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len,
+                    value_len,
+                    is_sum_node,
+                )
+            }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -315,6 +360,7 @@ impl Element {
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
+            Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
             Element::SumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
@@ -337,6 +383,7 @@ impl Element {
         match self {
             Element::Tree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::BigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             _ => None,
         }

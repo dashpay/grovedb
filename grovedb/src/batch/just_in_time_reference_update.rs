@@ -12,6 +12,7 @@ use grovedb_merk::{
     tree::{kv::KV, value_hash, TreeNode},
     CryptoHash, Merk,
 };
+use grovedb_merk::merk::TreeType;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
@@ -31,7 +32,7 @@ where
         new_element: &mut Element,
         old_element: Element,
         old_serialized_element: &[u8],
-        is_in_sum_tree: bool,
+        in_tree_type: TreeType,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
@@ -79,7 +80,7 @@ where
         let old_storage_cost = KV::node_value_byte_cost_size(
             key.len() as u32,
             old_serialized_element.len() as u32,
-            is_in_sum_tree,
+            in_tree_type.inner_node_type(),
         );
 
         let original_new_element = new_element.clone();
@@ -99,10 +100,10 @@ where
             KV::node_value_byte_cost_size(
                 key.len() as u32,
                 serialized_with_old_flags.len() as u32,
-                is_in_sum_tree,
+                in_tree_type.inner_node_type(),
             )
         } else {
-            KV::node_value_byte_cost_size(key.len() as u32, serialized.len() as u32, is_in_sum_tree)
+            KV::node_value_byte_cost_size(key.len() as u32, serialized.len() as u32, in_tree_type.inner_node_type())
         };
 
         let mut i = 0;
@@ -153,7 +154,7 @@ where
                 new_storage_cost = KV::node_value_byte_cost_size(
                     key.len() as u32,
                     new_serialized_bytes.len() as u32,
-                    is_in_sum_tree,
+                    in_tree_type.inner_node_type(),
                 );
 
                 if serialization_to_use == new_serialized_bytes {

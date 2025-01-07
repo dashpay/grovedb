@@ -711,7 +711,7 @@ impl GroveDb {
                 grove_version
             )
         );
-        let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
+        let uses_sum_tree = subtree_to_delete_from.tree_type;
         if element.is_any_tree() {
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_merk_path_ref = SubtreePath::from(&subtree_merk_path);
@@ -905,7 +905,7 @@ impl GroveDb {
             &mut cost,
             self.open_non_transactional_merk_at_path(path.clone(), Some(batch), grove_version)
         );
-        let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
+        let uses_sum_tree = subtree_to_delete_from.tree_type;
         if element.is_any_tree() {
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(

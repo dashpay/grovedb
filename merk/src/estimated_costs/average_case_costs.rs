@@ -12,6 +12,7 @@ use crate::{
     tree::{kv::KV, Link, TreeNode},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
+use crate::merk::{NodeType, TreeType};
 
 #[cfg(feature = "full")]
 /// Average key size
@@ -234,8 +235,8 @@ pub type EstimatedToBeEmpty = bool;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Information on an estimated layer
 pub struct EstimatedLayerInformation {
-    /// Is sum tree?
-    pub is_sum_tree: bool,
+    /// The kind of tree we are in
+    pub tree_type: TreeType,
     /// Estimated layer count
     pub estimated_layer_count: EstimatedLayerCount,
     /// Estimated layer sizes
@@ -291,13 +292,13 @@ impl TreeNode {
     pub fn average_case_encoded_tree_size(
         not_prefixed_key_len: u32,
         estimated_element_size: u32,
-        is_sum_node: bool,
+        node_type: NodeType,
     ) -> u32 {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
-        2 + (2 * Link::encoded_link_size(not_prefixed_key_len, is_sum_node))
-            + KV::encoded_kv_node_size(estimated_element_size, is_sum_node)
+        2 + (2 * Link::encoded_link_size(not_prefixed_key_len, node_type))
+            + KV::encoded_kv_node_size(estimated_element_size, node_type)
     }
 }
 
@@ -307,7 +308,7 @@ pub fn add_average_case_get_merk_node(
     cost: &mut OperationCost,
     not_prefixed_key_len: u32,
     approximate_element_size: u32,
-    is_sum_tree: bool,
+    node_type: NodeType,
 ) -> Result<(), Error> {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
@@ -318,7 +319,7 @@ pub fn add_average_case_get_merk_node(
     cost.storage_loaded_bytes += TreeNode::average_case_encoded_tree_size(
         not_prefixed_key_len,
         approximate_element_size,
-        is_sum_tree,
+        node_type,
     ) as u64;
     Ok(())
 }
@@ -340,11 +341,11 @@ pub fn add_average_case_merk_replace_layered(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    is_sum_node: bool,
+    node_type: NodeType,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.replaced_bytes =
-        KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
+        KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len, node_type);
 
     // first lets add the value hash
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
@@ -408,12 +409,11 @@ pub fn add_average_case_merk_propagate(
     let mut nodes_updated = 0;
     // Propagation requires to recompute and write hashes up to the root
     let EstimatedLayerInformation {
-        is_sum_tree,
+        tree_type,
         estimated_layer_count,
         estimated_layer_sizes,
     } = input;
     let levels = estimated_layer_count.estimate_levels();
-    let in_sum_tree = *is_sum_tree;
     nodes_updated += levels;
 
     if levels > 1 {
@@ -442,7 +442,7 @@ pub fn add_average_case_merk_propagate(
                 * (KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     *average_key_size as u32,
                     value_len,
-                    *is_sum_tree,
+                    tree_type.inner_node_type(),
                 ) + sum_tree_addition)
         }
         EstimatedLayerSizes::AllItems(average_key_size, average_item_size, average_flags_size)
@@ -457,7 +457,7 @@ pub fn add_average_case_merk_propagate(
                 * KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                     *average_key_size as u32,
                     average_value_len,
-                    in_sum_tree,
+                    tree_type.inner_node_type(),
                 )
         }
         EstimatedLayerSizes::Mix {
@@ -492,7 +492,7 @@ pub fn add_average_case_merk_propagate(
                         let cost = KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                             *average_key_size as u32,
                             value_len,
-                            in_sum_tree,
+                            tree_type.inner_node_type(),
                         ) + sum_tree_addition;
                         (*weight as u64)
                             .checked_mul(cost as u64)
@@ -507,7 +507,7 @@ pub fn add_average_case_merk_propagate(
                         let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                             *average_key_size as u32,
                             value_len,
-                            in_sum_tree,
+                            tree_type.inner_node_type(),
                         );
                         (*weight as u64)
                             .checked_mul(cost as u64)
@@ -522,7 +522,7 @@ pub fn add_average_case_merk_propagate(
                         let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                             *average_key_size as u32,
                             value_len,
-                            in_sum_tree,
+                            tree_type.inner_node_type(),
                         );
                         (*weight as u64)
                             .checked_mul(cost as u64)
@@ -557,7 +557,7 @@ pub fn add_average_case_merk_propagate(
                 * KV::layered_node_byte_cost_size_for_key_and_value_lengths(
                     *average_key_size as u32,
                     value_len + sum_tree_addition,
-                    in_sum_tree,
+                    tree_type.inner_node_type(),
                 )
         }
         EstimatedLayerSizes::AllItems(average_key_size, average_item_size, average_flags_size)
@@ -572,7 +572,7 @@ pub fn add_average_case_merk_propagate(
                 * KV::node_byte_cost_size_for_key_and_raw_value_lengths(
                     *average_key_size as u32,
                     average_value_len,
-                    in_sum_tree,
+                    tree_type.inner_node_type(),
                 )
         }
         EstimatedLayerSizes::Mix {
@@ -608,7 +608,7 @@ pub fn add_average_case_merk_propagate(
                             let cost = KV::layered_node_byte_cost_size_for_key_and_value_lengths(
                                 *average_key_size as u32,
                                 value_len + sum_tree_addition,
-                                in_sum_tree,
+                                tree_type.inner_node_type(),
                             );
                             (*weight as u64)
                                 .checked_mul(cost as u64)
@@ -625,7 +625,7 @@ pub fn add_average_case_merk_propagate(
                             let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
                                 *average_key_size as u32,
                                 value_len,
-                                in_sum_tree,
+                                tree_type.inner_node_type(),
                             );
                             (*weight as u64)
                                 .checked_mul(cost as u64)
@@ -642,7 +642,7 @@ pub fn add_average_case_merk_propagate(
                             let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
                                 *average_key_size as u32,
                                 value_len,
-                                false,
+                                tree_type.inner_node_type(), //todo this is an error that we will need to fix however most likely references were never in sum trees
                             );
                             (*weight as u64)
                                 .checked_mul(cost as u64)
