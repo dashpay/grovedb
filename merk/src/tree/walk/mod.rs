@@ -491,7 +491,7 @@ mod test {
                 hash: Default::default(),
                 key: b"foo".to_vec(),
                 child_heights: (0, 0),
-                sum: None,
+                aggregate_data: None,
             }),
             None,
             BasicMerkNode,

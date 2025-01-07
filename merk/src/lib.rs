@@ -84,7 +84,7 @@ pub use tree::{CryptoHash, TreeFeatureType};
 pub use crate::merk::{
     defaults::ROOT_KEY_KEY,
     prove::{ProofConstructionResult, ProofWithoutEncodingResult},
-    IsSumTree, KVIterator, Merk, MerkType, RootHashKeyAndSum,
+    IsSumTree, KVIterator, Merk, MerkType, RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "full")]
 pub use crate::visualize::VisualizeableMerk;

@@ -10,7 +10,7 @@ use std::{
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::RootHashKeyAndSum;
+use grovedb_merk::RootHashKeyAndAggregateData;
 #[cfg(feature = "full")]
 use grovedb_merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
@@ -192,7 +192,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
-    ) -> CostResult<RootHashKeyAndSum, Error> {
+    ) -> CostResult<RootHashKeyAndAggregateData, Error> {
         let mut cost = OperationCost::default();
 
         let layer_element_estimates = cost_return_on_error_no_add!(

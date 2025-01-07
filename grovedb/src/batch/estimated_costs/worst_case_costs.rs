@@ -14,7 +14,7 @@ use grovedb_costs::{
 use grovedb_merk::estimated_costs::worst_case_costs::{
     worst_case_merk_propagate, WorstCaseLayerInformation,
 };
-use grovedb_merk::RootHashKeyAndSum;
+use grovedb_merk::RootHashKeyAndAggregateData;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
@@ -188,7 +188,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
-    ) -> CostResult<RootHashKeyAndSum, Error> {
+    ) -> CostResult<RootHashKeyAndAggregateData, Error> {
         let mut cost = OperationCost::default();
 
         let worst_case_layer_element_estimates = cost_return_on_error_no_add!(

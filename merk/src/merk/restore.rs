@@ -315,11 +315,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .expect("rewrite is only called when traversal_instruction is not empty");
 
         let updated_key = chunk_tree.key();
-        let updated_sum = chunk_tree.sum();
+        let updated_sum = chunk_tree.aggregate_data();
 
-        if let Some(Link::Reference { key, sum, .. }) = parent.link_mut(*is_left) {
+        if let Some(Link::Reference { key, aggregate_data, .. }) = parent.link_mut(*is_left) {
             *key = updated_key.to_vec();
-            *sum = updated_sum;
+            *aggregate_data = updated_sum;
         }
 
         let parent_bytes = parent.encode();

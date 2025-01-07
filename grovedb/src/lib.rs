@@ -653,7 +653,7 @@ impl GroveDb {
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+                child_tree.root_hash_key_and_aggregate_data().map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -707,7 +707,7 @@ impl GroveDb {
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+                child_tree.root_hash_key_and_aggregate_data().map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -758,7 +758,7 @@ impl GroveDb {
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+                child_tree.root_hash_key_and_aggregate_data().map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,

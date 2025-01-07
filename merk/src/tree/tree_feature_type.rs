@@ -2,7 +2,7 @@
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::io::{Read, Write};
-
+use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 #[cfg(feature = "full")]
 use ed::Terminated;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -12,6 +12,7 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
+use crate::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -21,6 +22,30 @@ pub enum TreeFeatureType {
     BasicMerkNode,
     /// Summed Merk Tree Node
     SummedMerkNode(i64),
+    /// Big Summed Merk Tree Node
+    BigSummedMerkNode(i128),
+    /// Counted Merk Tree None
+    CountedMerkNode(u64),
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AggregateData {
+    NoAggregateData,
+    Sum(i64),
+    BigSum(i128),
+    Count(u64),
+}
+
+impl From<TreeFeatureType> for AggregateData {
+    fn from(value: TreeFeatureType) -> Self {
+        match value {
+            BasicMerkNode => AggregateData::NoAggregateData,
+            SummedMerkNode(val) => AggregateData::Sum(val),
+            BigSummedMerkNode(val) => AggregateData::BigSum(val),
+            CountedMerkNode(val) => AggregateData::Count(val),
+        }
+    }
 }
 
 #[cfg(feature = "full")]
@@ -31,6 +56,8 @@ impl TreeFeatureType {
         match self {
             BasicMerkNode => None,
             SummedMerkNode(m) => Some(m.encode_var_vec().len() as u32),
+            BigSummedMerkNode(_) => Some(16),
+            CountedMerkNode(m) => Some(m.encode_var_vec().len() as u32),
         }
     }
 
@@ -46,6 +73,8 @@ impl TreeFeatureType {
         match self {
             BasicMerkNode => 1,
             SummedMerkNode(_sum) => 9,
+            BigSummedMerkNode(_) => 17,
+            CountedMerkNode(_) => 9,
         }
     }
 }
@@ -63,7 +92,17 @@ impl Encode for TreeFeatureType {
             }
             SummedMerkNode(sum) => {
                 dest.write_all(&[1])?;
-                dest.write_varint(sum.to_owned())?;
+                dest.write_varint(*sum)?;
+                Ok(())
+            }
+            BigSummedMerkNode(sum) => {
+                dest.write_all(&[2])?;
+                dest.write_i128::<BigEndian>(*sum)?;
+                Ok(())
+            }
+            CountedMerkNode(count) => {
+                dest.write_all(&[3])?;
+                dest.write_varint(*count)?;
                 Ok(())
             }
         }
@@ -75,6 +114,15 @@ impl Encode for TreeFeatureType {
             BasicMerkNode => Ok(1),
             SummedMerkNode(sum) => {
                 let encoded_sum = sum.encode_var_vec();
+                // 1 for the enum type
+                // encoded_sum.len() for the length of the encoded vector
+                Ok(1 + encoded_sum.len())
+            }
+            BigSummedMerkNode(_) => {
+                Ok(17)
+            }
+            CountedMerkNode(count) => {
+                let encoded_sum = count.encode_var_vec();
                 // 1 for the enum type
                 // encoded_sum.len() for the length of the encoded vector
                 Ok(1 + encoded_sum.len())
@@ -94,6 +142,14 @@ impl Decode for TreeFeatureType {
             [1] => {
                 let encoded_sum: i64 = input.read_varint()?;
                 Ok(SummedMerkNode(encoded_sum))
+            }
+            [2] => {
+                let encoded_sum: i128 = input.read_i128::<BigEndian>()?;
+                Ok(BigSummedMerkNode(encoded_sum))
+            }
+            [3] => {
+                let encoded_count: u64 = input.read_varint()?;
+                Ok(CountedMerkNode(encoded_count))
             }
             _ => Err(ed::Error::UnexpectedByte(55)),
         }

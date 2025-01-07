@@ -117,6 +117,9 @@ pub enum Error {
     #[error(transparent)]
     /// Version error
     VersionError(grovedb_version::error::GroveVersionError),
+
+    #[error("big sum tree under normal sum tree error {0}")]
+    BigSumTreeUnderNormalSumTree(String),
 }
 
 impl From<grovedb_version::error::GroveVersionError> for Error {

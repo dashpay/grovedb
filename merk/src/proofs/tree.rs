@@ -21,6 +21,8 @@ use crate::{
     Link,
     TreeFeatureType::SummedMerkNode,
 };
+use crate::tree::AggregateData;
+use crate::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Contains a tree's child node and its hash. The hash can always be assumed to
@@ -36,24 +38,20 @@ pub struct Child {
 impl Child {
     #[cfg(feature = "full")]
     pub fn as_link(&self) -> Link {
-        let (key, sum) = match &self.tree.node {
-            Node::KV(key, _) | Node::KVValueHash(key, ..) => (key.as_slice(), None),
+        let (key, aggregate_data) = match &self.tree.node {
+            Node::KV(key, _) | Node::KVValueHash(key, ..) => (key.as_slice(), AggregateData::NoAggregateData),
             Node::KVValueHashFeatureType(key, _, _, feature_type) => {
-                let sum_value = match feature_type {
-                    SummedMerkNode(sum) => Some(*sum),
-                    _ => None,
-                };
-                (key.as_slice(), sum_value)
+                (key.as_slice(), (*feature_type).into())
             }
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
-            _ => (&[] as &[u8], None),
+            _ => (&[] as &[u8], AggregateData::NoAggregateData),
         };
 
         Link::Reference {
             hash: self.hash,
-            sum,
+            aggregate_data,
             child_heights: (
                 self.tree.child_heights.0 as u8,
                 self.tree.child_heights.1 as u8,
@@ -294,12 +292,9 @@ impl Tree {
     }
 
     #[cfg(feature = "full")]
-    pub(crate) fn sum(&self) -> Option<i64> {
+    pub(crate) fn aggregate_data(&self) -> AggregateData {
         match self.node {
-            Node::KVValueHashFeatureType(.., feature_type) => match feature_type {
-                SummedMerkNode(sum) => Some(sum),
-                _ => None,
-            },
+            Node::KVValueHashFeatureType(.., feature_type) => feature_type.into(),
             _ => panic!("Expected node to be type KVValueHashFeatureType"),
         }
     }
@@ -639,7 +634,7 @@ mod test {
             left_link,
             Link::Reference {
                 hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
-                sum: None,
+                aggregate_data: None,
                 child_heights: (0, 0),
                 key: vec![1]
             }
@@ -649,7 +644,7 @@ mod test {
             right_link,
             Link::Reference {
                 hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
-                sum: None,
+                aggregate_data: None,
                 child_heights: (0, 0),
                 key: vec![3]
             }
@@ -688,7 +683,7 @@ mod test {
             left_link,
             Link::Reference {
                 hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
-                sum: Some(3),
+                aggregate_data: Some(3),
                 child_heights: (0, 0),
                 key: vec![1]
             }
@@ -698,7 +693,7 @@ mod test {
             right_link,
             Link::Reference {
                 hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
-                sum: Some(1),
+                aggregate_data: Some(1),
                 child_heights: (0, 0),
                 key: vec![3]
             }

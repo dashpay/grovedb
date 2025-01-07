@@ -52,7 +52,7 @@ use grovedb_merk::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, NULL_HASH,
     },
-    CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndSum,
+    CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndAggregateData,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 use grovedb_path::SubtreePath;
@@ -695,7 +695,7 @@ trait TreeCache<G, SR> {
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
-    ) -> CostResult<RootHashKeyAndSum, Error>;
+    ) -> CostResult<RootHashKeyAndAggregateData, Error>;
 
     fn update_base_merk_root_key(
         &mut self,
@@ -1277,7 +1277,7 @@ where
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
-    ) -> CostResult<RootHashKeyAndSum, Error> {
+    ) -> CostResult<RootHashKeyAndAggregateData, Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
         let p = path.to_path();
@@ -1690,7 +1690,7 @@ where
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let r = merk
-            .root_hash_key_and_sum()
+            .root_hash_key_and_aggregate_data()
             .add_cost(cost)
             .map_err(Error::MerkError);
 

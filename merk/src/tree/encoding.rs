@@ -254,7 +254,7 @@ mod tests {
             [55; 32],
             Some(Link::Reference {
                 hash: [66; 32],
-                sum: None,
+                aggregate_data: None,
                 child_heights: (123, 124),
                 key: vec![2],
             }),
@@ -328,7 +328,7 @@ mod tests {
             key,
             child_heights,
             hash,
-            sum: _,
+            aggregate_data: _,
         }) = tree.link(true)
         {
             assert_eq!(*key, [2]);
