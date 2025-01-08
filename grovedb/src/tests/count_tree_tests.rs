@@ -15,7 +15,7 @@ mod tests {
         batch::QualifiedGroveDbOp,
         reference_path::ReferencePathType,
         tests::{make_test_grovedb, TEST_LEAF},
-        Element, Error, GroveDb, PathQuery,
+        Element, GroveDb, PathQuery,
     };
 
     #[test]
@@ -216,10 +216,10 @@ mod tests {
             .expect("node should exist")
             .expect("expected feature type");
 
-        assert_matches!(feature_type_node_1, CountedMerkNode(1));
-        assert_matches!(feature_type_node_2, CountedMerkNode(1));
-        assert_matches!(feature_type_node_3, CountedMerkNode(1));
-        assert_matches!(feature_type_node_4, CountedMerkNode(1));
+        assert_eq!(feature_type_node_1, CountedMerkNode(1));
+        assert_eq!(feature_type_node_2, CountedMerkNode(1));
+        assert_eq!(feature_type_node_3, CountedMerkNode(1));
+        assert_eq!(feature_type_node_4, CountedMerkNode(1));
 
         // Perform the same test on regular trees
         let db = make_test_grovedb(grove_version);

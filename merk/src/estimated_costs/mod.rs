@@ -28,6 +28,10 @@ pub const LAYER_COST_SIZE: u32 = 3;
 pub const SUM_VALUE_EXTRA_COST: u32 = 9;
 
 #[cfg(any(feature = "full", feature = "verify"))]
+/// The cost of a count value
+pub const COUNT_VALUE_EXTRA_COST: u32 = 9;
+
+#[cfg(any(feature = "full", feature = "verify"))]
 /// The cost of a big sum value
 pub const BIG_SUM_VALUE_EXTRA_COST: u32 = 16;
 
@@ -35,6 +39,11 @@ pub const BIG_SUM_VALUE_EXTRA_COST: u32 = 16;
 /// The cost of a summed subtree layer
 /// This is the layer size + 9 for the encoded value
 pub const SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST;
+
+#[cfg(feature = "full")]
+/// The cost of a summed subtree layer
+/// This is the layer size + 9 for the encoded value
+pub const SUM_AND_COUNT_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST + COUNT_VALUE_EXTRA_COST;
 
 #[cfg(feature = "full")]
 /// The cost of a summed subtree layer

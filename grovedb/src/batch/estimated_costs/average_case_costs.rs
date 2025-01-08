@@ -13,7 +13,6 @@ use grovedb_costs::{
 #[cfg(feature = "full")]
 use grovedb_merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
-    IsSumTree,
 };
 use grovedb_merk::{merk::TreeType, tree::AggregateData, RootHashKeyAndAggregateData};
 #[cfg(feature = "full")]

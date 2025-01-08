@@ -458,7 +458,7 @@ impl GroveDb {
                 Ok(Element::Tree(..))
                 | Ok(Element::SumTree(..))
                 | Ok(Element::BigSumTree(..))
-                | Ok(Element::CountTree(..)) => Ok(()).wrap_with_cost(cost),
+                | Ok(Element::CountTree(..)) | Ok(Element::CountSumTree(..)) => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),
                 Err(e) => Err(e).wrap_with_cost(cost),
             }

@@ -810,7 +810,7 @@ impl GroveDb {
             } else if let Element::SumTree(.., flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
                     maybe_root_key,
-                    aggregate_data.as_i64(),
+                    aggregate_data.as_sum_i64(),
                     flag,
                 );
                 tree.insert_subtree(
@@ -836,7 +836,7 @@ impl GroveDb {
             } else if let Element::CountTree(.., flag) = element {
                 let tree = Element::new_count_tree_with_flags_and_count_value(
                     maybe_root_key,
-                    aggregate_data.as_u64(),
+                    aggregate_data.as_count_u64(),
                     flag,
                 );
                 tree.insert_subtree(
@@ -891,7 +891,7 @@ impl GroveDb {
                 } else if let Element::SumTree(.., flag) = element {
                     let tree = Element::new_sum_tree_with_flags_and_sum_value(
                         maybe_root_key,
-                        aggregate_data.as_i64(),
+                        aggregate_data.as_sum_i64(),
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error!(
@@ -929,7 +929,7 @@ impl GroveDb {
                 } else if let Element::CountTree(.., flag) = element {
                     let tree = Element::new_count_tree_with_flags_and_count_value(
                         maybe_root_key,
-                        aggregate_data.as_u64(),
+                        aggregate_data.as_count_u64(),
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error!(
@@ -1177,7 +1177,8 @@ impl GroveDb {
                 Element::SumTree(..)
                 | Element::Tree(..)
                 | Element::BigSumTree(..)
-                | Element::CountTree(..) => {
+                | Element::CountTree(..)
+                | Element::CountSumTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1324,7 +1325,8 @@ impl GroveDb {
                 Element::SumTree(..)
                 | Element::Tree(..)
                 | Element::BigSumTree(..)
-                | Element::CountTree(..) => {
+                | Element::CountTree(..)
+                | Element::CountSumTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

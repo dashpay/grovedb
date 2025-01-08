@@ -289,7 +289,7 @@ impl Link {
                     //    sum_len for sum vale
                     key.len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
-                AggregateData::BigSum(_) => {
+                AggregateData::BigSum(_) | AggregateData::CountAndSum(_, _)  => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -316,7 +316,7 @@ impl Link {
                 AggregateData::Count(_) | AggregateData::Sum(_) => {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
-                AggregateData::BigSum(_) => {
+                AggregateData::BigSum(_) | AggregateData::CountAndSum(_, _) => {
                     tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
             },
@@ -376,6 +376,11 @@ impl Encode for Link {
                 out.write_all(&[3])?;
                 out.write_varint(*count_value)?;
             }
+            AggregateData::CountAndSum(count_value, sum_value) => {
+                out.write_all(&[4])?;
+                out.write_varint(*count_value)?;
+                out.write_varint(*sum_value)?;
+            }
         }
 
         Ok(())
@@ -416,7 +421,7 @@ impl Encode for Link {
                     key.len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
                 AggregateData::Count(count) => {
-                    let encoded_sum_value = count.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -425,7 +430,12 @@ impl Encode for Link {
                     //    if above is 1, then
                     //    1 for sum len
                     //    sum_len for sum vale
-                    key.len() + encoded_sum_value.len() + 36 // 1 + 32 + 2 + 1
+                    key.len() + encoded_count_value.len() + 36 // 1 + 32 + 2 + 1
+                }
+                AggregateData::CountAndSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
@@ -450,6 +460,11 @@ impl Encode for Link {
                 AggregateData::Count(count_value) => {
                     let encoded_count_value = count_value.encode_var_vec();
                     tree.key().len() + encoded_count_value.len() + 36 // 1 + 32 + 2 + 1
+                }
+                AggregateData::CountAndSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    tree.key().len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
             },
         })
@@ -518,7 +533,12 @@ impl Decode for Link {
                     let encoded_count: u64 = input.read_varint()?;
                     AggregateData::Count(encoded_count)
                 }
-                _ => return Err(ed::Error::UnexpectedByte(55)),
+                4 => {
+                    let encoded_count: u64 = input.read_varint()?;
+                    let encoded_sum: i64 = input.read_varint()?;
+                    AggregateData::CountAndSum(encoded_count, encoded_sum)
+                }
+                byte => return Err(ed::Error::UnexpectedByte(byte)),
             };
         } else {
             unreachable!()

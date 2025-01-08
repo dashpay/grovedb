@@ -75,7 +75,7 @@ use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
     element::{
-        MaxReferenceHop, BIG_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, SUM_ITEM_COST_SIZE,
+        MaxReferenceHop, BIG_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, SUM_ITEM_COST_SIZE,
         SUM_TREE_COST_SIZE, TREE_COST_SIZE,
     },
     operations::{get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
@@ -1022,7 +1022,7 @@ where
             Element::Tree(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
-            | Element::CountTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::CountTree(..) | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1143,7 +1143,7 @@ where
                         Element::Tree(..)
                         | Element::SumTree(..)
                         | Element::BigSumTree(..)
-                        | Element::CountTree(..) => Err(Error::InvalidBatchOperation(
+                        | Element::CountTree(..) | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
@@ -1173,7 +1173,7 @@ where
                     Element::Tree(..)
                     | Element::SumTree(..)
                     | Element::BigSumTree(..)
-                    | Element::CountTree(..) => Err(Error::InvalidBatchOperation(
+                    | Element::CountTree(..) | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
@@ -1348,7 +1348,7 @@ where
                     Element::Tree(..)
                     | Element::SumTree(..)
                     | Element::BigSumTree(..)
-                    | Element::CountTree(..) => {
+                    | Element::CountTree(..) | Element::CountSumTree(..) => {
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
@@ -1562,6 +1562,14 @@ where
                                 flags,
                             )
                         }
+                        AggregateData::CountAndSum(count_value, sum_value) => {
+                            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
                     };
                     let merk_feature_type =
                         cost_return_on_error_no_add!(&cost, element.get_feature_type(in_tree_type));
@@ -1650,13 +1658,14 @@ where
                                     Element::Tree(..)
                                     | Element::SumTree(..)
                                     | Element::BigSumTree(..)
-                                    | Element::CountTree(..) => {
+                                    | Element::CountTree(..) | Element::CountSumTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
                                         let tree_cost_size = match tree_type {
                                             TreeType::NormalTree => TREE_COST_SIZE,
                                             TreeType::SumTree => SUM_TREE_COST_SIZE,
                                             TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
                                             TreeType::CountTree => COUNT_TREE_COST_SIZE,
+                                            TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
                                         };
                                         let tree_value_cost = tree_cost_size
                                             + flags_len

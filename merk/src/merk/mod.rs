@@ -250,6 +250,7 @@ pub enum TreeType {
     SumTree = 1,
     BigSumTree = 2,
     CountTree = 3,
+    CountSumTree = 4,
 }
 
 impl TryFrom<u8> for TreeType {
@@ -261,6 +262,7 @@ impl TryFrom<u8> for TreeType {
             1 => Ok(TreeType::SumTree),
             2 => Ok(TreeType::BigSumTree),
             3 => Ok(TreeType::CountTree),
+            3 => Ok(TreeType::CountSumTree),
             n => Err(Error::UnknownTreeType(format!("got {}, max is 3", n))), // Error handling
         }
     }
@@ -273,6 +275,7 @@ impl fmt::Display for TreeType {
             TreeType::SumTree => "Sum Tree",
             TreeType::BigSumTree => "Big Sum Tree",
             TreeType::CountTree => "Count Tree",
+            TreeType::CountSumTree => "Count Sum Tree",
         };
         write!(f, "{}", s)
     }
@@ -285,6 +288,7 @@ impl TreeType {
             TreeType::SumTree => true,
             TreeType::BigSumTree => true,
             TreeType::CountTree => false,
+            TreeType::CountSumTree => true,
         }
     }
 
@@ -294,6 +298,7 @@ impl TreeType {
             TreeType::SumTree => NodeType::SumNode,
             TreeType::BigSumTree => NodeType::BigSumNode,
             TreeType::CountTree => NodeType::CountNode,
+            TreeType::CountSumTree => NodeType::CountSumNode,
         }
     }
 
@@ -303,6 +308,7 @@ impl TreeType {
             TreeType::SumTree => TreeFeatureType::SummedMerkNode(0),
             TreeType::BigSumTree => TreeFeatureType::BigSummedMerkNode(0),
             TreeType::CountTree => TreeFeatureType::CountedMerkNode(0),
+            TreeType::CountSumTree => TreeFeatureType::CountedSummedMerkNode(0, 0),
         }
     }
 }
@@ -314,6 +320,7 @@ pub enum NodeType {
     SumNode,
     BigSumNode,
     CountNode,
+    CountSumNode,
 }
 
 impl NodeType {
@@ -323,6 +330,7 @@ impl NodeType {
             NodeType::SumNode => 9,
             NodeType::BigSumNode => 17,
             NodeType::CountNode => 9,
+            NodeType::CountSumNode => 17,
         }
     }
 
@@ -332,6 +340,7 @@ impl NodeType {
             NodeType::SumNode => 8,
             NodeType::BigSumNode => 16,
             NodeType::CountNode => 8,
+            NodeType::CountSumNode => 16,
         }
     }
 }

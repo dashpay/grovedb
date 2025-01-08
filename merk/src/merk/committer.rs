@@ -44,7 +44,7 @@ impl Commit for MerkCommitter {
         let right_child_sizes = tree.child_ref_and_sum_size(false);
         self.batch.push((
             tree.key().to_vec(),
-            tree.feature_type().sum_length(),
+            tree.feature_type().tree_feature_length(),
             Some((buf, left_child_sizes, right_child_sizes)),
             storage_costs,
         ));

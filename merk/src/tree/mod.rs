@@ -460,6 +460,7 @@ impl TreeNode {
                     AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
                     AggregateData::BigSum(_) => 16 as u32,
                     AggregateData::Count(c) => c.encode_var_vec().len() as u32,
+                    AggregateData::CountAndSum(c, s) => s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32,
                 },
             )
         })
@@ -501,7 +502,7 @@ impl TreeNode {
     /// Returns the sum of the root node's child on the given side, if any. If
     /// there is no child, returns 0.
     #[inline]
-    pub fn child_aggregate_data_as_i64(&self, left: bool) -> Result<i64, Error> {
+    pub fn child_aggregate_sum_data_as_i64(&self, left: bool) -> Result<i64, Error> {
         match self.link(left) {
             Some(link) => match link.aggregateData() {
                 AggregateData::NoAggregateData => Ok(0),
@@ -509,13 +510,8 @@ impl TreeNode {
                 AggregateData::BigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
                     "for aggregate data as i64".to_string(),
                 )),
-                AggregateData::Count(c) => {
-                    if c > i64::MAX as u64 {
-                        Err(Overflow("count overflow when below sum tree"))
-                    } else {
-                        Ok(c as i64)
-                    }
-                }
+                AggregateData::Count(_) => Ok(0),
+                AggregateData::CountAndSum(_, s) => Ok(s),
             },
             _ => Ok(0),
         }
@@ -524,21 +520,14 @@ impl TreeNode {
     /// Returns the sum of the root node's child on the given side, if any. If
     /// there is no child, returns 0.
     #[inline]
-    pub fn child_aggregate_data_as_u64(&self, left: bool) -> Result<u64, Error> {
+    pub fn child_aggregate_count_data_as_u64(&self, left: bool) -> Result<u64, Error> {
         match self.link(left) {
             Some(link) => match link.aggregateData() {
                 AggregateData::NoAggregateData => Ok(0),
-                AggregateData::Sum(s) => {
-                    if s < 0 {
-                        Err(Error::Overflow("negative sum tree under count tree"))
-                    } else {
-                        Ok(s as u64)
-                    }
-                }
-                AggregateData::BigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
-                    "for aggregate data as u64".to_string(),
-                )),
+                AggregateData::Sum(s) => Ok(0),
+                AggregateData::BigSum(_) =>  Ok(0),
                 AggregateData::Count(c) => Ok(c),
+                AggregateData::CountAndSum(c, _) => Ok(c),
             },
             _ => Ok(0),
         }
@@ -547,13 +536,14 @@ impl TreeNode {
     /// Returns the sum of the root node's child on the given side, if any. If
     /// there is no child, returns 0.
     #[inline]
-    pub fn child_aggregate_data_as_i128(&self, left: bool) -> i128 {
+    pub fn child_aggregate_sum_data_as_i128(&self, left: bool) -> i128 {
         match self.link(left) {
             Some(link) => match link.aggregateData() {
                 AggregateData::NoAggregateData => 0,
                 AggregateData::Sum(s) => s as i128,
                 AggregateData::BigSum(s) => s,
-                AggregateData::Count(c) => c as i128,
+                AggregateData::Count(_) => 0,
+                AggregateData::CountAndSum(_, s) => s as i128,
             },
             _ => 0,
         }
@@ -576,8 +566,8 @@ impl TreeNode {
         match self.inner.kv.feature_type {
             TreeFeatureType::BasicMerkNode => Ok(AggregateData::NoAggregateData),
             TreeFeatureType::SummedMerkNode(value) => {
-                let left = self.child_aggregate_data_as_i64(true)?;
-                let right = self.child_aggregate_data_as_i64(false)?;
+                let left = self.child_aggregate_sum_data_as_i64(true)?;
+                let right = self.child_aggregate_sum_data_as_i64(false)?;
                 value
                     .checked_add(left)
                     .and_then(|a| a.checked_add(right))
@@ -585,18 +575,35 @@ impl TreeNode {
                     .map(AggregateData::Sum)
             }
             TreeFeatureType::BigSummedMerkNode(value) => value
-                .checked_add(self.child_aggregate_data_as_i128(true))
-                .and_then(|a| a.checked_add(self.child_aggregate_data_as_i128(false)))
+                .checked_add(self.child_aggregate_sum_data_as_i128(true))
+                .and_then(|a| a.checked_add(self.child_aggregate_sum_data_as_i128(false)))
                 .ok_or(Overflow("big sum is overflowing"))
                 .map(AggregateData::BigSum),
             TreeFeatureType::CountedMerkNode(value) => {
-                let left = self.child_aggregate_data_as_u64(true)?;
-                let right = self.child_aggregate_data_as_u64(false)?;
+                let left = self.child_aggregate_count_data_as_u64(true)?;
+                let right = self.child_aggregate_count_data_as_u64(false)?;
                 value
                     .checked_add(left)
                     .and_then(|a| a.checked_add(right))
                     .ok_or(Overflow("count is overflowing"))
                     .map(AggregateData::Count)
+            }
+            TreeFeatureType::CountedSummedMerkNode(count_value, sum_value) => {
+                let left_count = self.child_aggregate_count_data_as_u64(true)?;
+                let right_count = self.child_aggregate_count_data_as_u64(false)?;
+                let left_sum = self.child_aggregate_sum_data_as_i64(true)?;
+                let right_sum = self.child_aggregate_sum_data_as_i64(false)?;
+                let aggregated_count_value = count_value
+                    .checked_add(left_count)
+                    .and_then(|a| a.checked_add(right_count))
+                    .ok_or(Overflow("count is overflowing"))?;
+
+                let aggregated_sum_value = sum_value
+                    .checked_add(left_sum)
+                    .and_then(|a| a.checked_add(right_sum))
+                    .ok_or(Overflow("count is overflowing"))?;
+
+                Ok(AggregateData::CountAndSum(aggregated_count_value, aggregated_sum_value))
             }
         }
     }

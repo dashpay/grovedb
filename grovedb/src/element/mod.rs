@@ -30,6 +30,7 @@ use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 use grovedb_merk::estimated_costs::{
     BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
 };
+use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
 #[cfg(feature = "full")]
 use grovedb_merk::merk::TreeType;
 #[cfg(feature = "full")]
@@ -72,6 +73,10 @@ pub const BIG_SUM_TREE_COST_SIZE: u32 = BIG_SUM_LAYER_COST_SIZE; // 19
 /// The cost of a count tree
 pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 
+#[cfg(feature = "full")]
+/// The cost of a count tree
+pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
+
 #[cfg(any(feature = "full", feature = "verify"))]
 /// int 64 sum value
 pub type SumValue = i64;
@@ -95,6 +100,7 @@ impl CostSize for TreeType {
             TreeType::SumTree => SUM_TREE_COST_SIZE,
             TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
             TreeType::CountTree => COUNT_TREE_COST_SIZE,
+            TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
         }
     }
 }
@@ -127,6 +133,8 @@ pub enum Element {
     /// Same as Element::Tree but underlying Merk counts value of its countable
     /// nodes
     CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
+    /// Combines Element::SumTree and Element::CountTree
+    CountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Display for Element {
@@ -206,6 +214,18 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::CountSumTree(root_key, count_value, sum_value, flags) => {
+                write!(
+                    f,
+                    "CountSumTree({}, {}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -220,6 +240,7 @@ impl Element {
             Element::SumTree(..) => "sum tree",
             Element::BigSumTree(..) => "big sum tree",
             Element::CountTree(..) => "count tree",
+            Element::CountSumTree(..) => "count sum tree",
         }
     }
 

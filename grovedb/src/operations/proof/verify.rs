@@ -311,7 +311,8 @@ impl GroveDb {
                             Element::Tree(Some(_), _)
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)
-                            | Element::CountTree(Some(_), ..) => {
+                            | Element::CountTree(Some(_), ..)
+                            | Element::CountSumTree(Some(_), ..) => {
                                 path.push(key);
                                 let lower_hash = Self::verify_layer_proof(
                                     lower_layer,
@@ -342,6 +343,7 @@ impl GroveDb {
                             | Element::SumTree(None, ..)
                             | Element::BigSumTree(None, ..)
                             | Element::CountTree(None, ..)
+                            | Element::CountSumTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::Reference(..) => {

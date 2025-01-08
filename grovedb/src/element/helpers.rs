@@ -20,8 +20,8 @@ use grovedb_merk::{
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-
-use crate::element::{BIG_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE};
+use grovedb_merk::TreeFeatureType::CountedSummedMerkNode;
+use crate::element::{BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -183,6 +183,7 @@ impl Element {
             Element::SumTree(..) => Some(TreeType::SumTree),
             Element::BigSumTree(..) => Some(TreeType::BigSumTree),
             Element::CountTree(..) => Some(TreeType::CountTree),
+            Element::CountSumTree(..) => Some(TreeType::CountSumTree),
             _ => None,
         }
     }
@@ -208,6 +209,7 @@ impl Element {
                 | Element::Tree(..)
                 | Element::BigSumTree(..)
                 | Element::CountTree(..)
+                | Element::CountSumTree(..)
         )
     }
 
@@ -243,6 +245,7 @@ impl Element {
             TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
             TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
             TreeType::CountTree => Ok(CountedMerkNode(self.count_value_or_default())),
+            TreeType::CountSumTree => Ok(CountedSummedMerkNode(self.count_value_or_default(), self.sum_value_or_default())),
         }
     }
 
@@ -256,7 +259,8 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
-            | Element::SumItem(_, flags) => flags,
+            | Element::SumItem(_, flags)
+            | Element::CountSumTree(.., flags) => flags,
         }
     }
 
@@ -270,7 +274,8 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
-            | Element::SumItem(_, flags) => flags,
+            | Element::SumItem(_, flags)
+            | Element::CountSumTree(.., flags) => flags,
         }
     }
 
@@ -284,7 +289,8 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
-            | Element::SumItem(_, flags) => flags,
+            | Element::SumItem(_, flags)
+            | Element::CountSumTree(.., flags) => flags,
         }
     }
 
@@ -298,7 +304,8 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
-            | Element::SumItem(_, flags) => *flags = new_flags,
+            | Element::SumItem(_, flags)
+            | Element::CountSumTree(.., flags) => *flags = new_flags,
         }
     }
 
@@ -409,6 +416,17 @@ impl Element {
                     key_len, value_len, node_type,
                 )
             }
+            Element::CountSumTree(.. , flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_SUM_TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -436,6 +454,7 @@ impl Element {
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
             Element::SumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             Element::CountTree(..) => Ok(COUNT_TREE_COST_SIZE),
+            Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
@@ -459,6 +478,7 @@ impl Element {
             Element::SumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::BigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::CountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             _ => None,
         }

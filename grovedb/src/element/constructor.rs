@@ -194,4 +194,30 @@ impl Element {
     ) -> Self {
         Element::CountTree(maybe_root_key, count_value, flags)
     }
+
+    #[cfg(feature = "full")]
+    /// Set element to a count sum tree without flags
+    pub fn new_count_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::CountSumTree(maybe_root_key, 0, 0, None)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a count sum tree with flags
+    pub fn new_count_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountSumTree(maybe_root_key, 0, 0, flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to a count sum tree with flags and sum value
+    pub fn new_count_sum_tree_with_flags_and_sum_and_count_value(
+        maybe_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountSumTree(maybe_root_key, count_value, sum_value, flags)
+    }
 }

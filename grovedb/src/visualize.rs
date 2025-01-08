@@ -123,6 +123,17 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::CountSumTree(root_key, count_value, sum_value, flags) => {
+                drawer.write(b"count_sum_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!("count: {count_value}, sum {sum_value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

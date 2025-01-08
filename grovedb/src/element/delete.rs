@@ -37,10 +37,12 @@ impl Element {
             (TreeType::NormalTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
-            | (TreeType::CountTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::CountTree, true)
+            | (TreeType::CountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
-            | (TreeType::CountTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::CountTree, false)
+            | (TreeType::CountSumTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -94,10 +96,12 @@ impl Element {
             (TreeType::NormalTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
-            | (TreeType::CountTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::CountTree, true)
+            | (TreeType::CountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
-            | (TreeType::CountTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::CountTree, false)
+            | (TreeType::CountSumTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -145,10 +149,12 @@ impl Element {
             (TreeType::NormalTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
-            | (TreeType::CountTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::CountTree, true)
+            | (TreeType::CountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
-            | (TreeType::CountTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::CountTree, false)
+            | (TreeType::CountSumTree, false) => Op::DeleteMaybeSpecialized,
         };
         let entry = (key, op);
         batch_operations.push(entry);
