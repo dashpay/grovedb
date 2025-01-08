@@ -2,8 +2,7 @@ mod state_sync_session;
 
 use std::pin::Pin;
 
-use grovedb_merk::{tree::hash::CryptoHash, ChunkProducer};
-use grovedb_merk::merk::TreeType;
+use grovedb_merk::{merk::TreeType, tree::hash::CryptoHash, ChunkProducer};
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
@@ -257,9 +256,10 @@ impl GroveDb {
 pub(crate) mod utils {
     use grovedb_merk::{
         ed::Encode,
+        merk::TreeType,
         proofs::{Decoder, Op},
     };
-    use grovedb_merk::merk::TreeType;
+
     use crate::{replication::ChunkIdentifier, Error};
 
     /// Converts a path, represented as a slice of byte vectors (`&[Vec<u8>]`),

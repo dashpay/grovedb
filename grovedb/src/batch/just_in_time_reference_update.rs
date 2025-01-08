@@ -9,10 +9,10 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
+    merk::TreeType,
     tree::{kv::KV, value_hash, TreeNode},
     CryptoHash, Merk,
 };
-use grovedb_merk::merk::TreeType;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
@@ -103,7 +103,11 @@ where
                 in_tree_type.inner_node_type(),
             )
         } else {
-            KV::node_value_byte_cost_size(key.len() as u32, serialized.len() as u32, in_tree_type.inner_node_type())
+            KV::node_value_byte_cost_size(
+                key.len() as u32,
+                serialized.len() as u32,
+                in_tree_type.inner_node_type(),
+            )
         };
 
         let mut i = 0;

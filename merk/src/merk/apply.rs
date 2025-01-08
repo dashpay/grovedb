@@ -11,13 +11,13 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    merk::NodeType,
     tree::{
         kv::{ValueDefinedCostType, KV},
         AuxMerkBatch, Walker,
     },
     Error, Merk, MerkBatch, MerkOptions,
 };
-use crate::merk::NodeType;
 
 impl<'db, S> Merk<S>
 where
@@ -65,7 +65,7 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
     {
-        let node_type : NodeType = self.tree_type.inner_node_type();
+        let node_type: NodeType = self.tree_type.inner_node_type();
         self.apply_with_costs_just_in_time_value_update(
             batch,
             aux,

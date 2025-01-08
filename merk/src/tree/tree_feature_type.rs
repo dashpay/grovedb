@@ -2,6 +2,7 @@
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::io::{Read, Write};
+
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 #[cfg(feature = "full")]
 use ed::Terminated;
@@ -9,10 +10,13 @@ use ed::Terminated;
 use ed::{Decode, Encode};
 #[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
-use crate::merk::NodeType;
+
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
-use crate::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
+use crate::{
+    merk::{NodeType, TreeType},
+    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode},
+};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -49,28 +53,37 @@ pub enum AggregateData {
 }
 
 impl AggregateData {
-    pub fn as_i64(&self) -> i64 {
-    match self {
-        AggregateData::NoAggregateData => 0,
-        AggregateData::Sum(s) => *s,
-        AggregateData::BigSum(i) => {
-            let max = i64::MAX as i128;
-            if *i > max {
-                i64::MAX
-            } else {
-                *i as i64
-            }
+    pub fn parent_tree_type(&self) -> TreeType {
+        match self {
+            AggregateData::NoAggregateData => TreeType::NormalTree,
+            AggregateData::Sum(_) => TreeType::SumTree,
+            AggregateData::BigSum(_) => TreeType::BigSumTree,
+            AggregateData::Count(_) => TreeType::CountTree,
         }
-        AggregateData::Count(c) => {
-            let max = i64::MAX as u64;
-            if *c > max {
-                i64::MAX
-            } else {
-                *c as i64
+    }
+
+    pub fn as_i64(&self) -> i64 {
+        match self {
+            AggregateData::NoAggregateData => 0,
+            AggregateData::Sum(s) => *s,
+            AggregateData::BigSum(i) => {
+                let max = i64::MAX as i128;
+                if *i > max {
+                    i64::MAX
+                } else {
+                    *i as i64
+                }
+            }
+            AggregateData::Count(c) => {
+                let max = i64::MAX as u64;
+                if *c > max {
+                    i64::MAX
+                } else {
+                    *c as i64
+                }
             }
         }
     }
-}
 
     pub fn as_u64(&self) -> u64 {
         match self {
@@ -81,7 +94,7 @@ impl AggregateData {
                 } else {
                     *s as u64
                 }
-            },
+            }
             AggregateData::BigSum(i) => {
                 let max = u64::MAX as i128;
                 if *i > max {
@@ -92,24 +105,16 @@ impl AggregateData {
                     *i as u64
                 }
             }
-            AggregateData::Count(c) => {
-                *c
-            }
+            AggregateData::Count(c) => *c,
         }
     }
 
     pub fn as_i128(&self) -> i128 {
         match self {
             AggregateData::NoAggregateData => 0,
-            AggregateData::Sum(s) => {
-                    *s as i128
-            },
-            AggregateData::BigSum(i) => {
-                *i
-            }
-            AggregateData::Count(c) => {
-                *c as i128
-            }
+            AggregateData::Sum(s) => *s as i128,
+            AggregateData::BigSum(i) => *i,
+            AggregateData::Count(c) => *c as i128,
         }
     }
 }
@@ -189,9 +194,7 @@ impl Encode for TreeFeatureType {
                 // encoded_sum.len() for the length of the encoded vector
                 Ok(1 + encoded_sum.len())
             }
-            BigSummedMerkNode(_) => {
-                Ok(17)
-            }
+            BigSummedMerkNode(_) => Ok(17),
             CountedMerkNode(count) => {
                 let encoded_sum = count.encode_var_vec();
                 // 1 for the enum type

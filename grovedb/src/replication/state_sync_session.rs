@@ -6,10 +6,10 @@ use std::{
 };
 
 use grovedb_merk::{
+    merk::TreeType,
     tree::{kv::ValueDefinedCostType, value_hash},
     CryptoHash, Restorer,
 };
-use grovedb_merk::merk::TreeType;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbImmediateStorageContext, RocksDbStorage},

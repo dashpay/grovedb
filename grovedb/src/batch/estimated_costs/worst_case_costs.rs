@@ -14,13 +14,13 @@ use grovedb_costs::{
 use grovedb_merk::estimated_costs::worst_case_costs::{
     worst_case_merk_propagate, WorstCaseLayerInformation,
 };
-use grovedb_merk::RootHashKeyAndAggregateData;
+use grovedb_merk::{merk::TreeType, tree::AggregateData, RootHashKeyAndAggregateData};
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
-use grovedb_merk::merk::TreeType;
+
 use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
@@ -49,24 +49,28 @@ impl GroveOp {
             }
         };
         match self {
-            GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => GroveDb::worst_case_merk_replace_tree(
-                key,
-                aggregate_data,
-                in_parent_tree_type,
-                worst_case_layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
-            GroveOp::InsertTreeWithRootHash { flags, aggregate_data, .. } => {
-                GroveDb::worst_case_merk_insert_tree(
+            GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => {
+                GroveDb::worst_case_merk_replace_tree(
                     key,
-                    flags,
-                    aggregate_data,
+                    aggregate_data.parent_tree_type(),
                     in_parent_tree_type,
-                    propagate_if_input(),
+                    worst_case_layer_element_estimates,
+                    propagate,
                     grove_version,
                 )
             }
+            GroveOp::InsertTreeWithRootHash {
+                flags,
+                aggregate_data,
+                ..
+            } => GroveDb::worst_case_merk_insert_tree(
+                key,
+                flags,
+                aggregate_data.parent_tree_type(),
+                in_parent_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
             GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
                 GroveDb::worst_case_merk_insert_element(
                     key,
@@ -117,7 +121,7 @@ impl GroveOp {
             ),
             GroveOp::DeleteTree(tree_type) => GroveDb::worst_case_merk_delete_tree(
                 key,
-                tree_type,
+                *tree_type,
                 worst_case_layer_element_estimates,
                 propagate,
                 grove_version,
@@ -156,7 +160,7 @@ impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
 
 #[cfg(feature = "full")]
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
-    fn insert(&mut self, op: &QualifiedGroveDbOp, _is_sum_tree: bool) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &QualifiedGroveDbOp, _tree_type: TreeType) -> CostResult<(), Error> {
         let mut worst_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -201,7 +205,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                 GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
                     &mut cost,
                     path,
-                    false,
+                    TreeType::NormalTree,
                     grove_version,
                 )
             );
@@ -213,7 +217,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                 &mut cost,
                 op.worst_case_cost(
                     &key,
-                    false,
+                    TreeType::NormalTree,
                     worst_case_layer_element_estimates,
                     false,
                     grove_version
@@ -225,7 +229,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             &mut cost,
             worst_case_merk_propagate(worst_case_layer_element_estimates).map_err(Error::MerkError)
         );
-        Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
+        Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
     }
 
     fn update_base_merk_root_key(
@@ -244,7 +248,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                     GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
                         &mut cost,
                         &base_path,
-                        false,
+                        TreeType::NormalTree,
                         grove_version,
                     )
                 );

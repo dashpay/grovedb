@@ -12,7 +12,10 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "full")]
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
-use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
+use crate::{
+    merk::NodeType,
+    tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+};
 #[cfg(feature = "full")]
 use crate::{
     tree::{
@@ -21,7 +24,6 @@ use crate::{
     },
     Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
-use crate::merk::NodeType;
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
 //       field to save even more. also might be possible to combine key
@@ -418,11 +420,7 @@ impl KV {
         let key_len = self.key.len() as u32;
         let node_type = self.feature_type.node_type();
 
-        Self::layered_value_byte_cost_size_for_key_and_value_lengths(
-            key_len,
-            value_cost,
-            node_type,
-        )
+        Self::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_cost, node_type)
     }
 
     /// This function is used to calculate the cost of groveDB sum item nodes

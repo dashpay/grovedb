@@ -5,11 +5,11 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    merk::TreeType,
     tree::kv::ValueDefinedCostType,
     Error, Merk, MerkType,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
-use crate::merk::TreeType;
 
 impl<'db, S> Merk<S>
 where
@@ -102,8 +102,9 @@ mod test {
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
-    use crate::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType::BasicMerkNode};
-    use crate::merk::TreeType;
+    use crate::{
+        merk::TreeType, tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType::BasicMerkNode,
+    };
 
     #[test]
     fn test_reopen_root_hash() {

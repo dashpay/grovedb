@@ -54,7 +54,8 @@ macro_rules! storage_context_with_parent_optional_tx {
                             )
                         })
                     );
-                    let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                    let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else
+                    {
                         return Err(Error::CorruptedData(
                                 "parent is not a tree"
                                     .to_owned(),
@@ -84,7 +85,8 @@ macro_rules! storage_context_with_parent_optional_tx {
                             )
                         })
                     );
-                    let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                    let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else
+                    {
                         return Err(Error::CorruptedData(
                                 "parent is not a tree"
                                     .to_owned(),
@@ -140,7 +142,9 @@ macro_rules! storage_context_with_parent_optional_tx_internal_error {
                         }).unwrap_add_cost(&mut $cost);
                     match result {
                         Ok(element) => {
-                            let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                            let Some(($root_key, $tree_type))
+                                = element.root_key_and_tree_type_owned() else
+                            {
                                 return Err(Error::CorruptedData(
                                         "parent is not a tree"
                                             .to_owned(),
@@ -177,7 +181,9 @@ macro_rules! storage_context_with_parent_optional_tx_internal_error {
                         }).unwrap_add_cost(&mut $cost);
                     match result {
                         Ok(element) => {
-                            let Some(($root_key, $tree_type)) = element.root_key_and_tree_type_owned() else {
+                            let Some(($root_key, $tree_type))
+                                = element.root_key_and_tree_type_owned() else
+                            {
                                 return Err(Error::CorruptedData(
                                         "parent is not a tree"
                                             .to_owned(),

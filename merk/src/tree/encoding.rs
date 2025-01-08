@@ -146,9 +146,11 @@ impl TreeNode {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use crate::tree::AggregateData;
     use super::{super::Link, *};
-    use crate::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
+    use crate::{
+        tree::AggregateData,
+        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
+    };
 
     #[test]
     fn encode_leaf_tree() {

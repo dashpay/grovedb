@@ -10,18 +10,18 @@ use std::{
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::RootHashKeyAndAggregateData;
 #[cfg(feature = "full")]
 use grovedb_merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
     IsSumTree,
 };
+use grovedb_merk::{merk::TreeType, tree::AggregateData, RootHashKeyAndAggregateData};
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "full")]
 use itertools::Itertools;
-use grovedb_merk::merk::TreeType;
+
 use crate::Element;
 #[cfg(feature = "full")]
 use crate::{
@@ -53,28 +53,32 @@ impl GroveOp {
             }
         };
         match self {
-            GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => GroveDb::average_case_merk_replace_tree(
-                key,
-                layer_element_estimates,
-                aggregate_data,
-                propagate,
-                grove_version,
-            ),
-            GroveOp::InsertTreeWithRootHash { flags, sum, .. } => {
-                GroveDb::average_case_merk_insert_tree(
+            GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => {
+                GroveDb::average_case_merk_replace_tree(
                     key,
-                    flags,
-                    sum.is_some(),
-                    in_tree_using_sums,
-                    propagate_if_input(),
+                    layer_element_estimates,
+                    aggregate_data.parent_tree_type(),
+                    propagate,
                     grove_version,
                 )
             }
+            GroveOp::InsertTreeWithRootHash {
+                flags,
+                aggregate_data,
+                ..
+            } => GroveDb::average_case_merk_insert_tree(
+                key,
+                flags,
+                aggregate_data.parent_tree_type(),
+                in_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
             GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
                 GroveDb::average_case_merk_insert_element(
                     key,
                     element,
-                    in_tree_using_sums,
+                    in_tree_type,
                     propagate_if_input(),
                     grove_version,
                 )
@@ -91,14 +95,14 @@ impl GroveOp {
                     *max_reference_hop,
                     flags.clone(),
                 ),
-                in_tree_using_sums,
+                in_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
             GroveOp::Replace { element } => GroveDb::average_case_merk_replace_element(
                 key,
                 element,
-                in_tree_using_sums,
+                in_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
@@ -109,7 +113,7 @@ impl GroveOp {
                 key,
                 element,
                 *change_in_bytes,
-                in_tree_using_sums,
+                in_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
@@ -121,7 +125,7 @@ impl GroveOp {
             ),
             GroveOp::DeleteTree(tree_type) => GroveDb::average_case_merk_delete_tree(
                 key,
-                tree_type,
+                *tree_type,
                 layer_element_estimates,
                 propagate,
                 grove_version,
@@ -231,12 +235,11 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                     &mut cost,
                     path,
                     layer_should_be_empty,
-                    layer_info.is_sum_tree,
+                    layer_info.tree_type,
                     grove_version,
                 )
             );
-            self.cached_merks
-                .insert(path.clone(), layer_info.is_sum_tree);
+            self.cached_merks.insert(path.clone(), layer_info.tree_type);
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
@@ -248,9 +251,10 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
 
         cost_return_on_error!(
             &mut cost,
-            average_case_merk_propagate(layer_element_estimates).map_err(Error::MerkError)
+            average_case_merk_propagate(layer_element_estimates, grove_version)
+                .map_err(Error::MerkError)
         );
-        Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
+        Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
     }
 
     fn update_base_merk_root_key(
@@ -272,12 +276,12 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                         estimated_layer_info
                             .estimated_layer_count
                             .estimated_to_be_empty(),
-                        estimated_layer_info.is_sum_tree,
+                        estimated_layer_info.tree_type,
                         grove_version
                     )
                 );
                 self.cached_merks
-                    .insert(base_path, estimated_layer_info.is_sum_tree);
+                    .insert(base_path, estimated_layer_info.tree_type);
             }
         }
         Ok(()).wrap_with_cost(cost)
@@ -293,11 +297,14 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
-    use grovedb_merk::estimated_costs::average_case_costs::{
-        EstimatedLayerCount::{ApproximateElements, EstimatedLevel, PotentiallyAtMaxElements},
-        EstimatedLayerInformation,
-        EstimatedLayerSizes::{AllItems, AllSubtrees},
-        EstimatedSumTrees::{NoSumTrees, SomeSumTrees},
+    use grovedb_merk::{
+        estimated_costs::average_case_costs::{
+            EstimatedLayerCount::{ApproximateElements, EstimatedLevel, PotentiallyAtMaxElements},
+            EstimatedLayerInformation,
+            EstimatedLayerSizes::{AllItems, AllSubtrees},
+            EstimatedSumTrees::{NoSumTrees, SomeSumTrees},
+        },
+        merk::TreeType,
     };
     use grovedb_version::version::GroveVersion;
 
@@ -325,7 +332,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: ApproximateElements(0),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -394,7 +401,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, Some(3)),
             },
@@ -402,7 +409,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -461,7 +468,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllItems(4, 3, None),
             },
@@ -534,7 +541,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -620,7 +627,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(0, false),
                 estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
             },
@@ -629,7 +636,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -700,7 +707,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(
                     1,
@@ -715,7 +722,7 @@ mod tests {
         paths.insert(
             KeyInfoPath::from_known_owned_path(vec![vec![7]]),
             EstimatedLayerInformation {
-                is_sum_tree: true,
+                tree_type: TreeType::SumTree,
                 estimated_layer_count: PotentiallyAtMaxElements,
                 estimated_layer_sizes: AllItems(32, 8, None),
             },
@@ -778,7 +785,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(1, false),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },
@@ -787,7 +794,7 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
             EstimatedLayerInformation {
-                is_sum_tree: false,
+                tree_type: TreeType::NormalTree,
                 estimated_layer_count: EstimatedLevel(0, true),
                 estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
             },

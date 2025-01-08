@@ -5,9 +5,9 @@ use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
+use crate::merk::{NodeType, TreeType};
 #[cfg(feature = "full")]
 use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
-use crate::merk::{NodeType, TreeType};
 
 #[cfg(feature = "full")]
 pub mod average_case_costs;

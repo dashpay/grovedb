@@ -5,19 +5,19 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::tree::kv::KV;
 #[cfg(feature = "full")]
 use grovedb_merk::Merk;
 #[cfg(feature = "full")]
 use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
+use grovedb_merk::{merk::NodeType, tree::kv::KV};
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 use integer_encoding::VarInt;
-use grovedb_merk::merk::NodeType;
-use crate::element::{CostSize, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
+
+use crate::element::{CostSize, SUM_ITEM_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::{Element, Error, Hash};
 
@@ -121,14 +121,18 @@ impl Element {
         match grove_version
             .grovedb_versions
             .element
-            .get_optional_from_storage {
+            .get_optional_from_storage
+        {
             0 => Self::get_optional_from_storage_v0(storage, key, grove_version),
             1 => Self::get_optional_from_storage_v1(storage, key, grove_version),
-            version => Err(Error::VersionError(GroveVersionError::UnknownVersionMismatch {
-                method: "get_optional_from_storage".to_string(),
-                known_versions: vec![0, 1],
-                received: version,
-            })).wrap_with_cost(OperationCost::default())
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "get_optional_from_storage".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
         }
     }
 
@@ -187,10 +191,16 @@ impl Element {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = cost_size + flags_len;
-                cost.storage_loaded_bytes =
-                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, NodeType::NormalNode) as u64
+                cost.storage_loaded_bytes = KV::node_value_byte_cost_size(
+                    key_ref.len() as u32,
+                    value_len,
+                    NodeType::NormalNode,
+                ) as u64
             }
-            Some(Element::Tree(_, flags)) | Some(Element::SumTree(_, _, flags )) | Some(Element::BigSumTree(_, _, flags )) | Some(Element::CountTree(_, _, flags )) => {
+            Some(Element::Tree(_, flags))
+            | Some(Element::SumTree(_, _, flags))
+            | Some(Element::BigSumTree(_, _, flags))
+            | Some(Element::CountTree(_, _, flags)) => {
                 let tree_cost_size = element.as_ref().unwrap().tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -208,7 +218,6 @@ impl Element {
         }
         Ok(element).wrap_with_cost(cost)
     }
-
 
     #[cfg(feature = "full")]
     /// Get an element directly from storage under a key
@@ -236,15 +245,17 @@ impl Element {
                 .transpose()
         );
 
-        let Some((value, tree_feature_type)) = maybe_tree_inner.map(|tree_inner| tree_inner.value_as_owned_with_feature()) else {
-            return Ok(None).wrap_with_cost(cost)
+        let Some((value, tree_feature_type)) =
+            maybe_tree_inner.map(|tree_inner| tree_inner.value_as_owned_with_feature())
+        else {
+            return Ok(None).wrap_with_cost(cost);
         };
         let node_type = tree_feature_type.node_type();
         let element = cost_return_on_error_no_add!(
             &cost,
             Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to deserialize element"))
-                    })
+                Error::CorruptedData(String::from("unable to deserialize element"))
+            })
         );
         match &element {
             Element::Item(..) | Element::Reference(..) => {
@@ -264,9 +275,13 @@ impl Element {
                 });
                 let value_len = cost_size + flags_len;
                 cost.storage_loaded_bytes =
-                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, node_type) as u64 // this is changed to sum node in v1
+                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, node_type) as u64
+                // this is changed to sum node in v1
             }
-            Element::Tree(_, flags) | Element::SumTree(_, _, flags ) | Element::BigSumTree(_, _, flags ) | Element::CountTree(_, _, flags ) => {
+            Element::Tree(_, flags)
+            | Element::SumTree(_, _, flags)
+            | Element::BigSumTree(_, _, flags)
+            | Element::CountTree(_, _, flags) => {
                 let tree_cost_size = element.tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;

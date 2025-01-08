@@ -14,7 +14,8 @@ use integer_encoding::VarInt;
 #[cfg(feature = "full")]
 use crate::element::SumValue;
 use crate::{
-    element::QueryOptions, operations::proof::ProveOptions,
+    element::{BigSumValue, CountValue, QueryOptions},
+    operations::proof::ProveOptions,
     query_result_type::PathKeyOptionalElementTrio,
 };
 #[cfg(feature = "full")]
@@ -23,7 +24,6 @@ use crate::{
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
-use crate::element::{BigSumValue, CountValue};
 
 #[cfg(feature = "full")]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -227,7 +227,11 @@ where {
                     )),
                 }
             }
-            Element::Item(..) | Element::SumItem(..) | Element::SumTree(..) | Element::BigSumTree(..) | Element::CountTree(..) => Ok(element),
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountTree(..) => Ok(element),
             Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
         }
     }
@@ -346,7 +350,10 @@ where {
                         }
                         Element::Item(item, _) => Ok(item),
                         Element::SumItem(item, _) => Ok(item.encode_var_vec()),
-                        Element::Tree(..) | Element::SumTree(..) | Element::BigSumTree(..) | Element::CountTree(..) => Err(Error::InvalidQuery(
+                        Element::Tree(..)
+                        | Element::SumTree(..)
+                        | Element::BigSumTree(..)
+                        | Element::CountTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
                     }
@@ -537,12 +544,14 @@ where {
                             }
                         }
                         Element::SumItem(item, _) => Ok(item),
-                        Element::Tree(..) | Element::SumTree(..) | Element::BigSumTree(..) | Element::CountTree(..) | Element::Item(..) => {
-                            Err(Error::InvalidQuery(
-                                "path_queries over sum items can only refer to sum items and \
-                                 references",
-                            ))
-                        }
+                        Element::Tree(..)
+                        | Element::SumTree(..)
+                        | Element::BigSumTree(..)
+                        | Element::CountTree(..)
+                        | Element::Item(..) => Err(Error::InvalidQuery(
+                            "path_queries over sum items can only refer to sum items and \
+                             references",
+                        )),
                     }
                 }
                 _ => Err(Error::CorruptedCodeExecution(

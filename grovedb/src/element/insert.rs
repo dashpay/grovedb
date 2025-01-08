@@ -62,8 +62,13 @@ impl Element {
             options,
             &|key, value| {
                 // it is possible that a normal item was being replaced with a
-                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -320,8 +325,13 @@ impl Element {
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -407,8 +417,13 @@ impl Element {
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,

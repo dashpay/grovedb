@@ -18,10 +18,9 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{proofs::Query, KVIterator};
+use grovedb_merk::{merk::TreeType, proofs::Query, KVIterator};
 #[cfg(feature = "full")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
-use grovedb_merk::merk::TreeType;
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_storage::{
@@ -592,7 +591,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    GroveOp::Delete | GroveOp::DeleteTree(_)  => false,
+                    GroveOp::Delete | GroveOp::DeleteTree(_) => false,
                     // todo: fix for to_path (it clones)
                     _ => op.path.to_path() == subtree_merk_path_vec,
                 });

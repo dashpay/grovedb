@@ -1,13 +1,13 @@
 //! Constructor
 //! Functions for setting an element's type
 
+use crate::element::{BigSumValue, CountValue};
 #[cfg(feature = "full")]
 use crate::{
     element::{MaxReferenceHop, SumValue},
     reference_path::ReferencePathType,
     Element, ElementFlags,
 };
-use crate::element::{BigSumValue, CountValue};
 
 impl Element {
     #[cfg(feature = "full")]

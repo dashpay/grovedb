@@ -4,7 +4,8 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
-    estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, tree::kv::KV,
+    estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except,
+    merk::TreeType, tree::kv::KV,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use grovedb_version::{
@@ -26,7 +27,7 @@ impl GroveDb {
         key: &KeyInfo,
         stop_path_height: Option<u16>,
         validate: bool,
-        intermediate_tree_info: IntMap<(bool, u32)>,
+        intermediate_tree_info: IntMap<(TreeType, u32)>,
         max_element_size: u32,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
@@ -59,13 +60,12 @@ impl GroveDb {
                     check_if_tree,
                     except_keys_count,
                     max_element_size,
-                    is_sum_tree,
+                    tree_type,
                 ) = cost_return_on_error_no_add!(
                     &cost,
                     if height == path_len {
-                        if let Some((is_in_sum_tree, _)) = intermediate_tree_info.get(height as u64)
-                        {
-                            Ok((used_path, key, true, 0, max_element_size, *is_in_sum_tree))
+                        if let Some((tree_type, _)) = intermediate_tree_info.get(height as u64) {
+                            Ok((used_path, key, true, 0, max_element_size, *tree_type))
                         } else {
                             Err(Error::InvalidParameter(
                                 "intermediate flag size missing for height at path length",
@@ -74,25 +74,19 @@ impl GroveDb {
                     } else {
                         let (last_key, smaller_path) = used_path.split_last().unwrap();
                         used_path = smaller_path;
-                        if let Some((is_in_sum_tree, flags_size_at_level)) =
+                        if let Some((tree_type, flags_size_at_level)) =
                             intermediate_tree_info.get(height as u64)
                         {
                             // the worst case is that we are only in sum trees
+                            // Todo the worst case is actually now big sum trees
                             let value_len = SUM_TREE_COST_SIZE + flags_size_at_level;
                             let max_tree_size =
                                 KV::layered_node_byte_cost_size_for_key_and_value_lengths(
                                     last_key.max_length() as u32,
                                     value_len,
-                                    *is_in_sum_tree,
+                                    tree_type.inner_node_type(),
                                 );
-                            Ok((
-                                used_path,
-                                last_key,
-                                false,
-                                1,
-                                max_tree_size,
-                                *is_in_sum_tree,
-                            ))
+                            Ok((used_path, last_key, false, 1, max_tree_size, *tree_type))
                         } else {
                             Err(Error::InvalidParameter("intermediate flag size missing"))
                         }
@@ -103,7 +97,7 @@ impl GroveDb {
                     Self::worst_case_delete_operation_for_delete::<S>(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
-                        is_sum_tree,
+                        tree_type,
                         validate,
                         check_if_tree,
                         except_keys_count,
@@ -121,7 +115,7 @@ impl GroveDb {
     pub fn worst_case_delete_operation_for_delete<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
-        parent_tree_is_sum_tree: bool,
+        in_parent_tree_type: TreeType,
         validate: bool,
         check_if_tree: bool,
         except_keys_count: u16,
@@ -144,7 +138,7 @@ impl GroveDb {
                 GroveDb::add_worst_case_get_merk_at_path::<S>(
                     &mut cost,
                     path,
-                    parent_tree_is_sum_tree,
+                    in_parent_tree_type,
                     grove_version,
                 )
             );
@@ -157,7 +151,7 @@ impl GroveDb {
                     path,
                     key,
                     max_element_size,
-                    parent_tree_is_sum_tree,
+                    in_parent_tree_type,
                     grove_version,
                 )
             );

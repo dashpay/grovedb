@@ -2,6 +2,7 @@
 
 #[cfg(feature = "full")]
 use std::io::{Read, Write};
+
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 #[cfg(feature = "full")]
 use ed::{Decode, Encode, Result, Terminated};
@@ -10,11 +11,11 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 #[cfg(feature = "full")]
 use super::{hash::CryptoHash, TreeNode};
-#[cfg(feature = "full")]
-use crate::HASH_LENGTH_U32;
 use crate::merk::NodeType;
 #[cfg(feature = "full")]
 use crate::tree::tree_feature_type::AggregateData;
+#[cfg(feature = "full")]
+use crate::HASH_LENGTH_U32;
 // TODO: optimize memory footprint
 
 #[cfg(feature = "full")]
@@ -271,7 +272,11 @@ impl Link {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
         Ok(match self {
-            Link::Reference { key, aggregate_data, .. } => match aggregate_data {
+            Link::Reference {
+                key,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
                 AggregateData::NoAggregateData => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
                 AggregateData::Count(_) | AggregateData::Sum(_) => {
                     // 1 for key len
@@ -297,7 +302,16 @@ impl Link {
                 }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, aggregate_data, .. } | Link::Loaded { tree, aggregate_data, .. } => match aggregate_data {
+            Link::Uncommitted {
+                tree,
+                aggregate_data,
+                ..
+            }
+            | Link::Loaded {
+                tree,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
                 AggregateData::NoAggregateData => tree.key().len() + 36, // 1 + 32 + 2 + 1,
                 AggregateData::Count(_) | AggregateData::Sum(_) => {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
@@ -359,7 +373,7 @@ impl Encode for Link {
                 out.write_i128::<BigEndian>(*big_sum_value)?;
             }
             AggregateData::Count(count_value) => {
-                out.write_all(&[2])?;
+                out.write_all(&[3])?;
                 out.write_varint(*count_value)?;
             }
         }
@@ -372,7 +386,11 @@ impl Encode for Link {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
         Ok(match self {
-            Link::Reference { key, aggregate_data, .. } => match aggregate_data {
+            Link::Reference {
+                key,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
                 AggregateData::NoAggregateData => key.len() + 36, // 1 + 32 + 2 + 1
                 AggregateData::Sum(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
@@ -411,7 +429,16 @@ impl Encode for Link {
                 }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, aggregate_data, .. } | Link::Loaded { tree, aggregate_data, .. } => match aggregate_data {
+            Link::Uncommitted {
+                tree,
+                aggregate_data,
+                ..
+            }
+            | Link::Loaded {
+                tree,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
                 AggregateData::NoAggregateData => tree.key().len() + 36, // 1 + 32 + 2 + 1
                 AggregateData::Sum(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
@@ -708,7 +735,7 @@ mod test {
             bytes,
             vec![
                 3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 1, 100,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 3, 50,
             ]
         );
     }
@@ -721,7 +748,7 @@ mod test {
             child_heights: (123, 124),
             hash: [55; 32],
         };
-        assert_eq!(link.encoding_length().unwrap(), 40);
+        assert_eq!(link.encoding_length().unwrap(), 55);
 
         let mut bytes = vec![];
         link.encode_into(&mut bytes).unwrap();
@@ -731,7 +758,8 @@ mod test {
             bytes,
             vec![
                 3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 1, 100,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 2, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50
             ]
         );
     }

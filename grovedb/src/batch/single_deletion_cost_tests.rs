@@ -7,9 +7,10 @@ mod tests {
         Identifier, StorageRemovalPerEpochByIdentifier,
         StorageRemovedBytes::SectionedStorageRemoval,
     };
+    use grovedb_merk::merk::TreeType;
     use grovedb_version::version::GroveVersion;
     use intmap::IntMap;
-    use grovedb_merk::merk::TreeType;
+
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},

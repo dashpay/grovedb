@@ -12,6 +12,7 @@ use grovedb_merk::{
             add_average_case_merk_replace_layered, EstimatedLayerInformation,
         },
     },
+    merk::TreeType,
     tree::TreeNode,
     HASH_LENGTH,
 };
@@ -20,13 +21,12 @@ use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 use integer_encoding::VarInt;
-use grovedb_merk::merk::TreeType;
+
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    element::{CostSize, SUM_ITEM_COST_SIZE},
     Element, ElementFlags, Error, GroveDb,
 };
-use crate::element::CostSize;
 
 impl GroveDb {
     /// Add average case for getting a merk tree
@@ -78,14 +78,30 @@ impl GroveDb {
             .grovedb_versions
             .operations
             .average_case
-            .average_case_merk_replace_tree {
-            0 => Self::average_case_merk_replace_tree_v0(key, estimated_layer_information, replacing_tree_type, propagate),
-            1 => Self::average_case_merk_replace_tree_v1(key, estimated_layer_information, replacing_tree_type, propagate),
-            version => Err(Error::VersionError(GroveVersionError::UnknownVersionMismatch {
-                method: "average_case_merk_replace_tree".to_string(),
-                known_versions: vec![0, 1],
-                received: version,
-            })).wrap_with_cost(OperationCost::default())
+            .average_case_merk_replace_tree
+        {
+            0 => Self::average_case_merk_replace_tree_v0(
+                key,
+                estimated_layer_information,
+                replacing_tree_type,
+                propagate,
+                grove_version,
+            ),
+            1 => Self::average_case_merk_replace_tree_v1(
+                key,
+                estimated_layer_information,
+                replacing_tree_type,
+                propagate,
+                grove_version,
+            ),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "average_case_merk_replace_tree".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
         }
     }
 
@@ -95,9 +111,10 @@ impl GroveDb {
         estimated_layer_information: &EstimatedLayerInformation,
         _replacing_tree_type: TreeType,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        // In v0 we used the estimated layer information tree type (which is the parent) in order
-        // to figure out the cost
+        // In v0 we used the estimated layer information tree type (which is the parent)
+        // in order to figure out the cost
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         let flags_size = cost_return_on_error_no_add!(
@@ -109,7 +126,7 @@ impl GroveDb {
         )
         .map(|f| f + f.required_space() as u32)
         .unwrap_or_default();
-        let tree_cost_size = estimated_layer_information.tree_type.cost_size(); //this was wrong
+        let tree_cost_size = estimated_layer_information.tree_type.cost_size(); // this was wrong
         let layer_extra_size = tree_cost_size + flags_size;
         add_average_case_merk_replace_layered(
             &mut cost,
@@ -118,7 +135,7 @@ impl GroveDb {
             estimated_layer_information.tree_type.inner_node_type(),
         );
         if propagate {
-            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
                 .map_err(Error::MerkError)
         } else {
             Ok(())
@@ -132,6 +149,7 @@ impl GroveDb {
         estimated_layer_information: &EstimatedLayerInformation,
         replacing_tree_type: TreeType,
         propagate: bool,
+        grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
@@ -142,8 +160,8 @@ impl GroveDb {
                 .layered_flags_size()
                 .map_err(Error::MerkError)
         )
-            .map(|f| f + f.required_space() as u32)
-            .unwrap_or_default();
+        .map(|f| f + f.required_space() as u32)
+        .unwrap_or_default();
         let tree_cost_size = replacing_tree_type.cost_size();
         let layer_extra_size = tree_cost_size + flags_size;
         add_average_case_merk_replace_layered(
@@ -153,12 +171,12 @@ impl GroveDb {
             estimated_layer_information.tree_type.inner_node_type(),
         );
         if propagate {
-            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
                 .map_err(Error::MerkError)
         } else {
             Ok(())
         }
-            .wrap_with_cost(cost)
+        .wrap_with_cost(cost)
     }
 
     /// Add average case for insertion into merk
@@ -189,7 +207,8 @@ impl GroveDb {
         let value_len = tree_cost_size + flags_len;
         add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_parent_tree_type);
         if let Some(input) = propagate_if_input {
-            add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, input, grove_version)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -228,7 +247,7 @@ impl GroveDb {
         let layer_extra_size = tree_cost_size + flags_size;
         add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
-            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
                 .map_err(Error::MerkError)
         } else {
             Ok(())
@@ -274,7 +293,8 @@ impl GroveDb {
             )
         }
         if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, level, grove_version)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -303,19 +323,17 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
-            Element::Tree(_, flags) | Element::SumTree(_, _, flags) | Element::BigSumTree(_, _, flags) | Element::CountTree(_, _, flags) => {
+            Element::Tree(_, flags)
+            | Element::SumTree(_, _, flags)
+            | Element::BigSumTree(_, _, flags)
+            | Element::CountTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
                 let tree_cost_size = value.tree_type().unwrap().cost_size();
                 let value_len = tree_cost_size + flags_len;
-                add_cost_case_merk_replace_layered(
-                    &mut cost,
-                    key_len,
-                    value_len,
-                    in_tree_type,
-                )
+                add_cost_case_merk_replace_layered(&mut cost, key_len, value_len, in_tree_type)
             }
             Element::Item(_, flags) | Element::SumItem(_, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
@@ -329,12 +347,7 @@ impl GroveDb {
                     cost_return_on_error_no_add!(&cost, value.serialized_size(grove_version)) as u32
                 };
                 let value_len = sum_item_cost_size + flags_len;
-                add_cost_case_merk_replace_same_size(
-                    &mut cost,
-                    key_len,
-                    value_len,
-                    in_tree_type,
-                )
+                add_cost_case_merk_replace_same_size(&mut cost, key_len, value_len, in_tree_type)
             }
             _ => add_cost_case_merk_replace_same_size(
                 &mut cost,
@@ -344,7 +357,8 @@ impl GroveDb {
             ),
         };
         if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, level, grove_version)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -398,7 +412,8 @@ impl GroveDb {
             }
         };
         if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, level, grove_version)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -432,7 +447,7 @@ impl GroveDb {
         );
         add_average_case_merk_delete(&mut cost, key_len, value_size);
         if propagate {
-            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
                 .map_err(Error::MerkError)
         } else {
             Ok(())
@@ -600,7 +615,7 @@ mod test {
 
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
-        estimated_costs::average_case_costs::add_average_case_get_merk_node,
+        estimated_costs::average_case_costs::add_average_case_get_merk_node, merk::TreeType,
         test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, Merk,
     };
     use grovedb_storage::{
@@ -608,7 +623,7 @@ mod test {
     };
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
-    use grovedb_merk::merk::TreeType;
+
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
         tests::{common::EMPTY_PATH, TEST_LEAF},
@@ -672,8 +687,13 @@ mod test {
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
         let key = KnownKey(8_u64.to_be_bytes().to_vec());
-        add_average_case_get_merk_node(&mut cost, key.max_length() as u32, 60, TreeType::NormalTree.inner_node_type())
-            .expect("expected to add cost");
+        add_average_case_get_merk_node(
+            &mut cost,
+            key.max_length() as u32,
+            60,
+            TreeType::NormalTree.inner_node_type(),
+        )
+        .expect("expected to add cost");
         assert_eq!(cost, node_result.cost);
     }
 

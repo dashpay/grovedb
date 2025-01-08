@@ -6,7 +6,7 @@ pub mod v2;
 pub use versioned_feature_core::*;
 
 use crate::version::{
-    grovedb_versions::GroveDBVersions, merk_versions::MerkVersions, v1::GROVE_V1, v2::GROVE_V2
+    grovedb_versions::GroveDBVersions, merk_versions::MerkVersions, v1::GROVE_V1, v2::GROVE_V2,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -17,6 +17,12 @@ pub struct GroveVersion {
 }
 
 impl GroveVersion {
+    pub fn first<'a>() -> &'a Self {
+        GROVE_VERSIONS
+            .first()
+            .expect("expected to have a platform version")
+    }
+
     pub fn latest<'a>() -> &'a Self {
         GROVE_VERSIONS
             .last()

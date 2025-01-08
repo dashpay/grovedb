@@ -5,9 +5,9 @@
 use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
+use grovedb_merk::merk::TreeType;
 #[cfg(feature = "full")]
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
-use grovedb_merk::merk::TreeType;
 #[cfg(feature = "full")]
 use grovedb_storage::StorageContext;
 #[cfg(feature = "full")]
@@ -43,14 +43,20 @@ impl Element {
             | (TreeType::CountTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
-        let tree_type = merk.tree_type; //todo not sure we get it again, we need to see if this is necessary
+        // todo not sure we get it again, we need to see if this is necessary
+        let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch,
             &[],
             merk_options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -94,14 +100,20 @@ impl Element {
             | (TreeType::CountTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
-        let tree_type = merk.tree_type; //todo not sure we get it again, we need to see if this is necessary
+        // todo not sure we get it again, we need to see if this is necessary
+        let tree_type = merk.tree_type;
         merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
             &batch,
             &[],
             merk_options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, tree_type.inner_node_type(), grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             &|_, _| Ok(None),

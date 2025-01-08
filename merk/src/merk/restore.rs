@@ -36,7 +36,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     merk,
-    merk::MerkSource,
+    merk::{MerkSource, TreeType},
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
@@ -52,7 +52,6 @@ use crate::{
     Error::{CostsError, StorageError},
     Link, Merk,
 };
-use crate::merk::TreeType;
 
 /// Restorer handles verification of chunks and replication of Merk trees.
 /// Chunks can be processed randomly as long as their parent has been processed
@@ -318,7 +317,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let updated_key = chunk_tree.key();
         let updated_sum = chunk_tree.aggregate_data();
 
-        if let Some(Link::Reference { key, aggregate_data, .. }) = parent.link_mut(*is_left) {
+        if let Some(Link::Reference {
+            key,
+            aggregate_data,
+            ..
+        }) = parent.link_mut(*is_left)
+        {
             *key = updated_key.to_vec();
             *aggregate_data = updated_sum;
         }
@@ -557,7 +561,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        merk::chunks::ChunkProducer,
+        merk::{chunks::ChunkProducer, TreeType},
         proofs::chunk::{
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
@@ -565,7 +569,6 @@ mod tests {
         Error::ChunkRestoringError,
         Merk, PanicSource,
     };
-    use crate::merk::TreeType;
 
     #[test]
     fn test_chunk_verification_non_avl_tree() {

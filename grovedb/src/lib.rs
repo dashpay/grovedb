@@ -186,6 +186,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+use grovedb_merk::{merk::TreeType, tree::AggregateData};
 #[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
@@ -209,8 +210,7 @@ pub use query::{PathQuery, SizedQuery};
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
-use grovedb_merk::merk::TreeType;
-use grovedb_merk::tree::AggregateData;
+
 #[cfg(feature = "full")]
 use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -422,7 +422,10 @@ impl GroveDb {
                 })
                 .unwrap()?;
             let tree_type = element.tree_type();
-            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) | Element::BigSumTree(root_key, ..) = element {
+            if let Element::Tree(root_key, _)
+            | Element::SumTree(root_key, ..)
+            | Element::BigSumTree(root_key, ..) = element
+            {
                 let tree_type = tree_type.expect("expected tree type");
                 Ok((
                     Merk::open_layered_with_root_key(
@@ -496,7 +499,10 @@ impl GroveDb {
                 )
             );
             let tree_type = element.tree_type();
-            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) | Element::BigSumTree(root_key, ..) = element {
+            if let Element::Tree(root_key, _)
+            | Element::SumTree(root_key, ..)
+            | Element::BigSumTree(root_key, ..) = element
+            {
                 let tree_type = tree_type.expect("expected tree type");
                 Merk::open_layered_with_root_key(
                     storage,
@@ -655,7 +661,9 @@ impl GroveDb {
             );
             let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_aggregate_data().map_err(Error::MerkError)
+                child_tree
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -709,7 +717,9 @@ impl GroveDb {
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_aggregate_data().map_err(Error::MerkError)
+                child_tree
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -760,7 +770,9 @@ impl GroveDb {
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_aggregate_data().map_err(Error::MerkError)
+                child_tree
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -1129,7 +1141,10 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
             match element {
-                Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..) | Element::CountTree(..) => {
+                Element::SumTree(..)
+                | Element::Tree(..)
+                | Element::BigSumTree(..)
+                | Element::CountTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1273,7 +1288,10 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
             match element {
-                Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..) | Element::CountTree(..) => {
+                Element::SumTree(..)
+                | Element::Tree(..)
+                | Element::BigSumTree(..)
+                | Element::CountTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

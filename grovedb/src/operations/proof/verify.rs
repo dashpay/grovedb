@@ -308,7 +308,10 @@ impl GroveDb {
                             println!("lower layer had key {}", hex_to_ascii(key));
                         }
                         match element {
-                            Element::Tree(Some(_), _) | Element::SumTree(Some(_), ..) | Element::BigSumTree(Some(_), ..) | Element::CountTree(Some(_), ..) => {
+                            Element::Tree(Some(_), _)
+                            | Element::SumTree(Some(_), ..)
+                            | Element::BigSumTree(Some(_), ..)
+                            | Element::CountTree(Some(_), ..) => {
                                 path.push(key);
                                 let lower_hash = Self::verify_layer_proof(
                                     lower_layer,

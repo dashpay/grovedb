@@ -8,7 +8,7 @@ use crate::version::{
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions,
         GroveDBReplicationVersions, GroveDBVersions,
     },
-    merk_versions::MerkVersions,
+    merk_versions::{MerkAverageCaseCostsVersions, MerkVersions},
     GroveVersion,
 };
 
@@ -184,5 +184,9 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             apply_chunk: 0,
         },
     },
-    merk_versions: MerkVersions {},
+    merk_versions: MerkVersions {
+        average_case_costs: MerkAverageCaseCostsVersions {
+            add_average_case_merk_propagate: 0,
+        },
+    },
 };

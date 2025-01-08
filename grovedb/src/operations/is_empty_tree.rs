@@ -2,11 +2,12 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_merk::merk::TreeType;
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
 use grovedb_version::error::GroveVersionError;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
-use grovedb_merk::merk::TreeType;
+
 #[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 

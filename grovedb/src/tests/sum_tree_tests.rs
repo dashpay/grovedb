@@ -2,10 +2,9 @@
 
 use grovedb_merk::{
     proofs::Query,
-    tree::kv::ValueDefinedCostType,
+    tree::{kv::ValueDefinedCostType, AggregateData},
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
-use grovedb_merk::tree::AggregateData;
 use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
@@ -319,7 +318,10 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         .expect("node should exist"),
         Some(SummedMerkNode(0))
     ));
-    assert_eq!(merk.aggregate_data().expect("expected to get sum").as_i64(), 40);
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum").as_i64(),
+        40
+    );
 
     // Perform the same test on regular trees
     let db = make_test_grovedb(grove_version);
@@ -384,7 +386,10 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         .expect("node should exist"),
         Some(BasicMerkNode)
     ));
-    assert_eq!(merk.aggregate_data().expect("expected to get sum"), AggregateData::NoAggregateData);
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum"),
+        AggregateData::NoAggregateData
+    );
 }
 
 #[test]
@@ -414,7 +419,10 @@ fn test_sum_tree_feature() {
         )
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.aggregate_data().expect("expected to get sum"), AggregateData::NoAggregateData);
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum"),
+        AggregateData::NoAggregateData
+    );
 
     // Add sum tree
     db.insert(
@@ -453,7 +461,10 @@ fn test_sum_tree_feature() {
         )
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.aggregate_data().expect("expected to get sum"), AggregateData::Sum(30));
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum"),
+        AggregateData::Sum(30)
+    );
 
     // Add more sum items
     db.insert(
@@ -484,7 +495,10 @@ fn test_sum_tree_feature() {
         )
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.aggregate_data().expect("expected to get sum"), AggregateData::Sum(70)); // 30 - 10 + 50 = 70
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum"),
+        AggregateData::Sum(70)
+    ); // 30 - 10 + 50 = 70
 
     // Add non sum items, result should remain the same
     db.insert(
@@ -505,7 +519,10 @@ fn test_sum_tree_feature() {
         )
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.aggregate_data().expect("expected to get sum"), AggregateData::Sum(70));
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum"),
+        AggregateData::Sum(70)
+    );
 
     // Update existing sum items
     db.insert(
@@ -536,7 +553,10 @@ fn test_sum_tree_feature() {
         )
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.aggregate_data().expect("expected to get sum"), AggregateData::Sum(-60)); // 30 + 10 - 100 = -60
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum"),
+        AggregateData::Sum(-60)
+    ); // 30 + 10 - 100 = -60
 
     // We can not replace a normal item with a sum item, so let's delete it first
     db.delete(
@@ -567,10 +587,13 @@ fn test_sum_tree_feature() {
         )
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.aggregate_data().expect("expected to get sum"), AggregateData::Sum(9999940)); // 30 +
-                                                                         // 10 -
-                                                                         // 100 +
-                                                                         // 10000000
+    assert_eq!(
+        merk.aggregate_data().expect("expected to get sum"),
+        AggregateData::Sum(9999940)
+    ); // 30 +
+       // 10 -
+       // 100 +
+       // 10000000
 
     // TODO: Test out overflows
 }
@@ -866,7 +889,10 @@ fn test_sum_tree_with_batches() {
             .expect("node should exist"),
         Some(SummedMerkNode(10))
     ));
-    assert_eq!(sum_tree.aggregate_data().expect("expected to get sum"), AggregateData::Sum(20));
+    assert_eq!(
+        sum_tree.aggregate_data().expect("expected to get sum"),
+        AggregateData::Sum(20)
+    );
 
     // Test propagation
     // Add a new sum tree with its own sum items, should affect sum of original
@@ -941,5 +967,8 @@ fn test_sum_tree_with_batches() {
         )
         .unwrap()
         .expect("should open tree");
-    assert_eq!(sum_tree.aggregate_data().expect("expected to get sum"), AggregateData::Sum(41));
+    assert_eq!(
+        sum_tree.aggregate_data().expect("expected to get sum"),
+        AggregateData::Sum(41)
+    );
 }

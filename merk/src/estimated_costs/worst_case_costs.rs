@@ -33,6 +33,7 @@ use std::cmp::Ordering;
 #[cfg(feature = "full")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
+use crate::merk::NodeType;
 #[cfg(feature = "full")]
 use crate::{
     error::Error,
@@ -40,7 +41,6 @@ use crate::{
     tree::{kv::KV, Link, TreeNode},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH,
 };
-use crate::merk::NodeType;
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]

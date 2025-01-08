@@ -27,7 +27,9 @@ use bincode::{Decode, Encode};
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
-use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE, BIG_SUM_LAYER_COST_SIZE, BIG_SUM_VALUE_EXTRA_COST};
+use grovedb_merk::estimated_costs::{
+    BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
+};
 #[cfg(feature = "full")]
 use grovedb_merk::merk::TreeType;
 #[cfg(feature = "full")]
@@ -96,7 +98,6 @@ impl CostSize for TreeType {
         }
     }
 }
-
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Variants of GroveDB stored entities

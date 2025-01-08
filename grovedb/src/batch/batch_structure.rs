@@ -129,9 +129,9 @@ where
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. }
-                | GroveOp::Delete
-                | GroveOp::DeleteTree(_) => Ok(()),
+                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(_) => {
+                    Ok(())
+                }
                 GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
                     Err(Error::InvalidBatchOperation(
                         "replace and insert tree hash are internal operations only",

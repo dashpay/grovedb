@@ -21,8 +21,10 @@ use crate::{
     Link,
     TreeFeatureType::SummedMerkNode,
 };
-use crate::tree::AggregateData;
-use crate::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
+use crate::{
+    tree::AggregateData,
+    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode},
+};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Contains a tree's child node and its hash. The hash can always be assumed to
@@ -39,7 +41,9 @@ impl Child {
     #[cfg(feature = "full")]
     pub fn as_link(&self) -> Link {
         let (key, aggregate_data) = match &self.tree.node {
-            Node::KV(key, _) | Node::KVValueHash(key, ..) => (key.as_slice(), AggregateData::NoAggregateData),
+            Node::KV(key, _) | Node::KVValueHash(key, ..) => {
+                (key.as_slice(), AggregateData::NoAggregateData)
+            }
             Node::KVValueHashFeatureType(key, _, _, feature_type) => {
                 (key.as_slice(), (*feature_type).into())
             }
@@ -634,7 +638,7 @@ mod test {
             left_link,
             Link::Reference {
                 hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
-                aggregate_data: None,
+                aggregate_data: AggregateData::NoAggregateData,
                 child_heights: (0, 0),
                 key: vec![1]
             }
@@ -644,7 +648,7 @@ mod test {
             right_link,
             Link::Reference {
                 hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
-                aggregate_data: None,
+                aggregate_data: AggregateData::NoAggregateData,
                 child_heights: (0, 0),
                 key: vec![3]
             }
@@ -683,7 +687,7 @@ mod test {
             left_link,
             Link::Reference {
                 hash: tree.left.as_ref().map(|node| node.hash).unwrap(),
-                aggregate_data: Some(3),
+                aggregate_data: AggregateData::Sum(3),
                 child_heights: (0, 0),
                 key: vec![1]
             }
@@ -693,7 +697,7 @@ mod test {
             right_link,
             Link::Reference {
                 hash: tree.right.as_ref().map(|node| node.hash).unwrap(),
-                aggregate_data: Some(1),
+                aggregate_data: AggregateData::Sum(1),
                 child_heights: (0, 0),
                 key: vec![3]
             }

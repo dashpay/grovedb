@@ -2,6 +2,7 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::OperationCost;
+use grovedb_merk::merk::TreeType;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
@@ -21,7 +22,7 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -38,7 +39,7 @@ impl GroveDb {
             path,
             key,
             estimated_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)
@@ -50,8 +51,8 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_flags_size: u32,
-        is_sum_tree: bool,
-        in_parent_tree_using_sums: bool,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -68,8 +69,8 @@ impl GroveDb {
             path,
             key,
             estimated_flags_size,
-            is_sum_tree,
-            in_parent_tree_using_sums,
+            tree_type,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)
@@ -81,7 +82,7 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -98,7 +99,7 @@ impl GroveDb {
             path,
             key,
             estimated_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)
@@ -108,7 +109,7 @@ impl GroveDb {
     pub fn average_case_for_get(
         path: &KeyInfoPath,
         key: &KeyInfo,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         estimated_element_size: u32,
         estimated_references_sizes: Vec<u32>,
         grove_version: &GroveVersion,
@@ -126,7 +127,7 @@ impl GroveDb {
             &mut cost,
             path,
             key,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             estimated_element_size,
             estimated_references_sizes,
             grove_version,
@@ -139,8 +140,8 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_flags_size: u32,
-        is_sum_tree: bool,
-        in_parent_tree_using_sums: bool,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -157,8 +158,8 @@ impl GroveDb {
             path,
             key,
             estimated_flags_size,
-            is_sum_tree,
-            in_parent_tree_using_sums,
+            tree_type,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)

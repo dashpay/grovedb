@@ -3,10 +3,10 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    merk::TreeType,
     tree::{kv::ValueDefinedCostType, Fetch, TreeNode},
     Error, Link, Merk,
 };
-use crate::merk::TreeType;
 
 impl<'db, S> Merk<S>
 where

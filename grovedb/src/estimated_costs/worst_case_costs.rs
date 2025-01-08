@@ -14,6 +14,7 @@ use grovedb_merk::{
             MERK_BIGGEST_VALUE_SIZE,
         },
     },
+    merk::TreeType,
     tree::TreeNode,
     HASH_LENGTH,
 };
@@ -22,13 +23,12 @@ use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 use integer_encoding::VarInt;
-use grovedb_merk::merk::TreeType;
+
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    element::{CostSize, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     Element, ElementFlags, Error, GroveDb,
 };
-use crate::element::CostSize;
 
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
 
@@ -56,7 +56,7 @@ impl GroveDb {
                 cost.storage_loaded_bytes += TreeNode::worst_case_encoded_tree_size(
                     key.max_length() as u32,
                     HASH_LENGTH as u32,
-                    tree_type.inner_node_type(), //todo This is probably wrong
+                    tree_type.inner_node_type(), // todo This is probably wrong
                 ) as u64;
             }
         }
@@ -189,7 +189,10 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
         match value {
-            Element::Tree(_, flags) | Element::SumTree(_, _, flags) | Element::BigSumTree(_, _, flags) | Element::CountTree(_, _, flags) => {
+            Element::Tree(_, flags)
+            | Element::SumTree(_, _, flags)
+            | Element::BigSumTree(_, _, flags)
+            | Element::CountTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -494,6 +497,7 @@ mod test {
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
+        merk::{NodeType, TreeType},
         test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
         tree::kv::ValueDefinedCostType,
     };
@@ -504,7 +508,7 @@ mod test {
     };
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
-    use grovedb_merk::merk::{NodeType, TreeType};
+
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
         tests::{common::EMPTY_PATH, TEST_LEAF},

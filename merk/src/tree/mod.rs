@@ -60,12 +60,13 @@ pub use link::Link;
 #[cfg(feature = "full")]
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
 #[cfg(any(feature = "full", feature = "verify"))]
-pub use tree_feature_type::TreeFeatureType;
-#[cfg(any(feature = "full", feature = "verify"))]
 pub use tree_feature_type::AggregateData;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use tree_feature_type::TreeFeatureType;
 #[cfg(feature = "full")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+use crate::merk::NodeType;
 #[cfg(feature = "full")]
 use crate::tree::hash::HASH_LENGTH_X2;
 #[cfg(feature = "full")]
@@ -74,7 +75,6 @@ use crate::tree::kv::ValueDefinedCostType;
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
-use crate::merk::NodeType;
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
@@ -98,7 +98,6 @@ impl TreeNodeInner {
     pub fn value_as_owned_with_feature(self) -> (Vec<u8>, TreeFeatureType) {
         (self.kv.value, self.kv.feature_type)
     }
-
 
     /// Get the value as slice of the key value struct
     pub fn value_as_slice(&self) -> &[u8] {
@@ -461,7 +460,7 @@ impl TreeNode {
                     AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
                     AggregateData::BigSum(s) => 16 as u32,
                     AggregateData::Count(c) => c.encode_var_vec().len() as u32,
-                }
+                },
             )
         })
     }
@@ -507,7 +506,9 @@ impl TreeNode {
             Some(link) => match link.aggregateData() {
                 AggregateData::NoAggregateData => Ok(0),
                 AggregateData::Sum(s) => Ok(s),
-                AggregateData::BigSum(s) => Err(Error::BigSumTreeUnderNormalSumTree("for aggregate data as i64".to_string())),
+                AggregateData::BigSum(s) => Err(Error::BigSumTreeUnderNormalSumTree(
+                    "for aggregate data as i64".to_string(),
+                )),
                 AggregateData::Count(c) => {
                     if c > i64::MAX as u64 {
                         Err(Overflow("count overflow when below sum tree"))
@@ -515,7 +516,7 @@ impl TreeNode {
                         Ok(c as i64)
                     }
                 }
-            }
+            },
             _ => Ok(0),
         }
     }
@@ -533,10 +534,12 @@ impl TreeNode {
                     } else {
                         Ok(s as u64)
                     }
-                },
-                AggregateData::BigSum(s) => Err(Error::BigSumTreeUnderNormalSumTree("for aggregate data as u64".to_string())),
-                AggregateData::Count(c) => Ok(c)
-            }
+                }
+                AggregateData::BigSum(s) => Err(Error::BigSumTreeUnderNormalSumTree(
+                    "for aggregate data as u64".to_string(),
+                )),
+                AggregateData::Count(c) => Ok(c),
+            },
             _ => Ok(0),
         }
     }
@@ -551,7 +554,7 @@ impl TreeNode {
                 AggregateData::Sum(s) => s as i128,
                 AggregateData::BigSum(s) => s,
                 AggregateData::Count(c) => c as i128,
-            }
+            },
             _ => 0,
         }
     }
@@ -580,7 +583,7 @@ impl TreeNode {
                     .and_then(|a| a.checked_add(right))
                     .ok_or(Overflow("sum is overflowing"))
                     .map(AggregateData::Sum)
-            },
+            }
             TreeFeatureType::BigSummedMerkNode(value) => value
                 .checked_add(self.child_aggregate_data_as_i128(true))
                 .and_then(|a| a.checked_add(self.child_aggregate_data_as_i128(false)))
@@ -594,7 +597,7 @@ impl TreeNode {
                     .and_then(|a| a.checked_add(right))
                     .ok_or(Overflow("count is overflowing"))
                     .map(AggregateData::Count)
-            },
+            }
         }
     }
 
@@ -1118,7 +1121,7 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(test)]
 mod test {
 
-    use super::{commit::NoopCommit, hash::NULL_HASH, TreeNode};
+    use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, TreeNode};
     use crate::tree::{
         tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
     };
@@ -1327,6 +1330,10 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        assert_eq!(Some(8), tree.sum().expect("expected to get sum from tree"));
+        assert_eq!(
+            AggregateData::Sum(8),
+            tree.aggregate_data()
+                .expect("expected to get sum from tree")
+        );
     }
 }

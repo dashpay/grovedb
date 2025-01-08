@@ -6,6 +6,10 @@ use grovedb_merk::tree::kv::{
     ValueDefinedCostType,
     ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
+use grovedb_merk::{
+    merk::{NodeType, TreeType},
+    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode},
+};
 #[cfg(feature = "full")]
 use grovedb_merk::{
     tree::{kv::KV, TreeNode},
@@ -16,8 +20,8 @@ use grovedb_merk::{
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_merk::merk::{NodeType, TreeType};
-use grovedb_merk::TreeFeatureType::{BigSummedMerkNode, CountedMerkNode};
+
+use crate::element::BIG_SUM_TREE_COST_SIZE;
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -29,7 +33,6 @@ use crate::{
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};
-use crate::element::BIG_SUM_TREE_COST_SIZE;
 
 impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -47,7 +50,9 @@ impl Element {
     /// everything else
     pub fn big_sum_value_or_default(&self) -> i128 {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => *sum_value as i128,
+            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => {
+                *sum_value as i128
+            }
             Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
@@ -123,25 +128,27 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    /// Check if the element is a tree and return the root_tree info and tree type
+    /// Check if the element is a tree and return the root_tree info and tree
+    /// type
     pub fn root_key_and_tree_type_owned(self) -> Option<(Option<Vec<u8>>, TreeType)> {
         match self {
             Element::Tree(root_key, _) => Some((root_key, TreeType::NormalTree)),
-            Element::SumTree(root_key, _, _) => Some((root_key, TreeType::SumTree)),
-            Element::BigSumTree(root_key, _, _) => Some((root_key, TreeType::BigSumTree)),
-            Element::CountTree(root_key, _, _) => Some((root_key, TreeType::CountTree)),
+            Element::SumTree(root_key, ..) => Some((root_key, TreeType::SumTree)),
+            Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
+            Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
             _ => None,
         }
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    /// Check if the element is a tree and return the root_tree info and the tree type
+    /// Check if the element is a tree and return the root_tree info and the
+    /// tree type
     pub fn root_key_and_tree_type(&self) -> Option<(&Option<Vec<u8>>, TreeType)> {
         match self {
             Element::Tree(root_key, _) => Some((root_key, TreeType::NormalTree)),
-            Element::SumTree(root_key, _, _) => Some((root_key, TreeType::SumTree)),
-            Element::BigSumTree(root_key, _, _) => Some((root_key, TreeType::BigSumTree)),
-            Element::CountTree(root_key, _, _) => Some((root_key, TreeType::CountTree)),
+            Element::SumTree(root_key, ..) => Some((root_key, TreeType::SumTree)),
+            Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
+            Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
             _ => None,
         }
     }
@@ -162,10 +169,10 @@ impl Element {
     /// Check if the element is a tree and return the tree type
     pub fn tree_type(&self) -> Option<TreeType> {
         match self {
-            Element::Tree(_, _) => Some(TreeType::NormalTree),
-            Element::SumTree(_, _, _) => Some(TreeType::SumTree),
-            Element::BigSumTree(_, _, _) => Some(TreeType::BigSumTree),
-            Element::CountTree(_, _, _) => Some(TreeType::CountTree),
+            Element::Tree(..) => Some(TreeType::NormalTree),
+            Element::SumTree(..) => Some(TreeType::SumTree),
+            Element::BigSumTree(..) => Some(TreeType::BigSumTree),
+            Element::CountTree(..) => Some(TreeType::CountTree),
             _ => None,
         }
     }
@@ -185,7 +192,13 @@ impl Element {
     #[cfg(any(feature = "full", feature = "verify"))]
     /// Check if the element is a tree
     pub fn is_any_tree(&self) -> bool {
-        matches!(self, Element::SumTree(..) | Element::Tree(..) | Element::BigSumTree(..) | Element::CountTree(..))
+        matches!(
+            self,
+            Element::SumTree(..)
+                | Element::Tree(..)
+                | Element::BigSumTree(..)
+                | Element::CountTree(..)
+        )
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
@@ -350,9 +363,7 @@ impl Element {
                 let value_len = TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len,
-                    value_len,
-                    node_type,
+                    key_len, value_len, node_type,
                 )
             }
             Element::SumTree(_, _sum_value, flags) => {
@@ -363,9 +374,7 @@ impl Element {
                 let value_len = SUM_TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len,
-                    value_len,
-                    node_type,
+                    key_len, value_len, node_type,
                 )
             }
             Element::BigSumTree(_, _sum_value, flags) => {
@@ -376,9 +385,7 @@ impl Element {
                 let value_len = BIG_SUM_TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len,
-                    value_len,
-                    node_type,
+                    key_len, value_len, node_type,
                 )
             }
             Element::SumItem(.., flags) => {
