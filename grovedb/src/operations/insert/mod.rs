@@ -317,7 +317,10 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
+            Element::Tree(ref value, _)
+            | Element::SumTree(ref value, ..)
+            | Element::BigSumTree(ref value, ..)
+            | Element::CountTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -450,7 +453,10 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
+            Element::Tree(ref value, _)
+            | Element::SumTree(ref value, ..)
+            | Element::BigSumTree(ref value, ..)
+            | Element::CountTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -1588,6 +1594,87 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 152, // todo: verify this
+                hash_node_calls: 8,        // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_item_cost_under_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"tree",
+            Element::empty_count_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let cost = db
+            .insert(
+                [b"tree".as_slice()].as_ref(),
+                b"key1",
+                Element::new_item(b"test".to_vec()),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .unwrap();
+
+        // Explanation for 152 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 81
+        //   1 for the enum type item
+        //   1 for size of test bytes
+        //   4 for test bytes
+        //   1 for the flag option (but no flags)
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for Count node
+        // 1 byte for the value_size (required space for 1)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Count Merk 9
+        // Child Heights 2
+
+        // Total 37 + 81 + 48 = 166
+
+        // Explanation for replaced bytes
+
+        // Replaced parent Value -> 86
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for an empty option
+        //   1 for the count merk
+        //   9 for the count
+        // 32 for node hash
+        // 40 for the parent hook
+        // 2 byte for the value_size
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 5, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 166,
+                    replaced_bytes: 87,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 162, // todo: verify this
                 hash_node_calls: 8,        // todo: verify this
             }
         );

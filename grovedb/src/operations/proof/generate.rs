@@ -314,7 +314,10 @@ impl GroveDb {
                                 }
                                 has_a_result_at_level |= true;
                             }
-                            Ok(Element::Tree(Some(_), _)) | Ok(Element::SumTree(Some(_), ..))
+                            Ok(Element::Tree(Some(_), _))
+                            | Ok(Element::SumTree(Some(_), ..))
+                            | Ok(Element::BigSumTree(Some(_), ..))
+                            | Ok(Element::CountTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {

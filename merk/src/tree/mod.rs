@@ -458,7 +458,7 @@ impl TreeNode {
                 match link.aggregateData() {
                     AggregateData::NoAggregateData => 0,
                     AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
-                    AggregateData::BigSum(s) => 16 as u32,
+                    AggregateData::BigSum(_) => 16 as u32,
                     AggregateData::Count(c) => c.encode_var_vec().len() as u32,
                 },
             )
@@ -506,7 +506,7 @@ impl TreeNode {
             Some(link) => match link.aggregateData() {
                 AggregateData::NoAggregateData => Ok(0),
                 AggregateData::Sum(s) => Ok(s),
-                AggregateData::BigSum(s) => Err(Error::BigSumTreeUnderNormalSumTree(
+                AggregateData::BigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
                     "for aggregate data as i64".to_string(),
                 )),
                 AggregateData::Count(c) => {
@@ -535,7 +535,7 @@ impl TreeNode {
                         Ok(s as u64)
                     }
                 }
-                AggregateData::BigSum(s) => Err(Error::BigSumTreeUnderNormalSumTree(
+                AggregateData::BigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
                     "for aggregate data as u64".to_string(),
                 )),
                 AggregateData::Count(c) => Ok(c),

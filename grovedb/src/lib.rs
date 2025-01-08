@@ -501,7 +501,8 @@ impl GroveDb {
             let tree_type = element.tree_type();
             if let Element::Tree(root_key, _)
             | Element::SumTree(root_key, ..)
-            | Element::BigSumTree(root_key, ..) = element
+            | Element::BigSumTree(root_key, ..)
+            | Element::CountTree(root_key, ..) = element
             {
                 let tree_type = tree_type.expect("expected tree type");
                 Merk::open_layered_with_root_key(
@@ -715,7 +716,7 @@ impl GroveDb {
                     grove_version
                 )
             );
-            let (root_hash, root_key, sum) = cost_return_on_error!(
+            let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
                 &mut cost,
                 child_tree
                     .root_hash_key_and_aggregate_data()
@@ -728,7 +729,7 @@ impl GroveDb {
                     parent_key,
                     root_key,
                     root_hash,
-                    sum,
+                    aggregate_data,
                     grove_version,
                 )
             );
@@ -832,6 +833,19 @@ impl GroveDb {
                     None,
                     grove_version,
                 )
+            } else if let Element::CountTree(.., flag) = element {
+                let tree = Element::new_count_tree_with_flags_and_count_value(
+                    maybe_root_key,
+                    aggregate_data.as_u64(),
+                    flag,
+                );
+                tree.insert_subtree(
+                    parent_tree,
+                    key.as_ref(),
+                    root_tree_hash,
+                    None,
+                    grove_version,
+                )
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -897,6 +911,25 @@ impl GroveDb {
                     let tree = Element::new_big_sum_tree_with_flags_and_sum_value(
                         maybe_root_key,
                         aggregate_data.as_i128(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else if let Element::CountTree(.., flag) = element {
+                    let tree = Element::new_count_tree_with_flags_and_count_value(
+                        maybe_root_key,
+                        aggregate_data.as_u64(),
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error!(

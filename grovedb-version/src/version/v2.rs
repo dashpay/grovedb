@@ -13,7 +13,7 @@ use crate::version::{
 };
 
 pub const GROVE_V2: GroveVersion = GroveVersion {
-    protocol_version: 0,
+    protocol_version: 1,
     grovedb_versions: GroveDBVersions {
         apply_batch: GroveDBApplyBatchVersions {
             apply_batch_structure: 0,
@@ -186,7 +186,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
     },
     merk_versions: MerkVersions {
         average_case_costs: MerkAverageCaseCostsVersions {
-            add_average_case_merk_propagate: 1,
+            add_average_case_merk_propagate: 1, // changed
         },
     },
 };

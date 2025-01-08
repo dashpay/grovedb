@@ -2,10 +2,7 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_version::{
-    error::GroveVersionError,
-    version::{FeatureVersion, GroveVersion},
-};
+use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
