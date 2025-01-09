@@ -1900,6 +1900,17 @@ impl GroveDb {
                                                                 aggregate_data,
                                                             }
                                                             .into();
+                                                    } else if let Element::CountSumTree(.., flags) =
+                                                        element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                            }
+                                                            .into();
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",

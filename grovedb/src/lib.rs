@@ -421,12 +421,7 @@ impl GroveDb {
                     ))
                 })
                 .unwrap()?;
-            let tree_type = element.tree_type();
-            if let Element::Tree(root_key, _)
-            | Element::SumTree(root_key, ..)
-            | Element::BigSumTree(root_key, ..) = element
-            {
-                let tree_type = tree_type.expect("expected tree type");
+            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
                 Ok((
                     Merk::open_layered_with_root_key(
                         storage,
@@ -498,13 +493,7 @@ impl GroveDb {
                     }
                 )
             );
-            let tree_type = element.tree_type();
-            if let Element::Tree(root_key, _)
-            | Element::SumTree(root_key, ..)
-            | Element::BigSumTree(root_key, ..)
-            | Element::CountTree(root_key, ..) = element
-            {
-                let tree_type = tree_type.expect("expected tree type");
+            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
                 Merk::open_layered_with_root_key(
                     storage,
                     root_key,
@@ -823,7 +812,7 @@ impl GroveDb {
             } else if let Element::BigSumTree(.., flag) = element {
                 let tree = Element::new_big_sum_tree_with_flags_and_sum_value(
                     maybe_root_key,
-                    aggregate_data.as_i128(),
+                    aggregate_data.as_summed_i128(),
                     flag,
                 );
                 tree.insert_subtree(
@@ -837,6 +826,20 @@ impl GroveDb {
                 let tree = Element::new_count_tree_with_flags_and_count_value(
                     maybe_root_key,
                     aggregate_data.as_count_u64(),
+                    flag,
+                );
+                tree.insert_subtree(
+                    parent_tree,
+                    key.as_ref(),
+                    root_tree_hash,
+                    None,
+                    grove_version,
+                )
+            } else if let Element::CountSumTree(.., flag) = element {
+                let tree = Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                    maybe_root_key,
+                    aggregate_data.as_count_u64(),
+                    aggregate_data.as_sum_i64(),
                     flag,
                 );
                 tree.insert_subtree(
@@ -910,7 +913,7 @@ impl GroveDb {
                 } else if let Element::BigSumTree(.., flag) = element {
                     let tree = Element::new_big_sum_tree_with_flags_and_sum_value(
                         maybe_root_key,
-                        aggregate_data.as_i128(),
+                        aggregate_data.as_summed_i128(),
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error!(
@@ -930,6 +933,26 @@ impl GroveDb {
                     let tree = Element::new_count_tree_with_flags_and_count_value(
                         maybe_root_key,
                         aggregate_data.as_count_u64(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else if let Element::CountSumTree(.., flag) = element {
+                    let tree = Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                        maybe_root_key,
+                        aggregate_data.as_count_u64(),
+                        aggregate_data.as_sum_i64(),
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error!(

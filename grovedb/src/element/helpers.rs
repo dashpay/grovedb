@@ -56,6 +56,18 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decoded the integer value in the CountTree element type, returns 1 for
+    /// everything else
+    pub fn count_sum_value_or_default(&self) -> (u64, i64) {
+        match self {
+            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => (1, *sum_value),
+            Element::CountTree(_, count_value, _) => (*count_value, 0),
+            Element::CountSumTree(_, count_value, sum_value, _) => (*count_value, *sum_value),
+            _ => (1, 0),
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else
     pub fn big_sum_value_or_default(&self) -> i128 {
@@ -146,6 +158,7 @@ impl Element {
             Element::SumTree(root_key, ..) => Some((root_key, TreeType::SumTree)),
             Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
             Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
+            Element::CountSumTree(root_key, ..) => Some((root_key, TreeType::CountSumTree)),
             _ => None,
         }
     }
@@ -159,6 +172,7 @@ impl Element {
             Element::SumTree(root_key, ..) => Some((root_key, TreeType::SumTree)),
             Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
             Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
+            Element::CountSumTree(root_key, ..) => Some((root_key, TreeType::CountSumTree)),
             _ => None,
         }
     }
@@ -171,6 +185,7 @@ impl Element {
             Element::SumTree(_, _, flags) => Some((flags, TreeType::SumTree)),
             Element::BigSumTree(_, _, flags) => Some((flags, TreeType::BigSumTree)),
             Element::CountTree(_, _, flags) => Some((flags, TreeType::CountTree)),
+            Element::CountSumTree(.., flags) => Some((flags, TreeType::CountSumTree)),
             _ => None,
         }
     }
@@ -245,10 +260,10 @@ impl Element {
             TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
             TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
             TreeType::CountTree => Ok(CountedMerkNode(self.count_value_or_default())),
-            TreeType::CountSumTree => Ok(CountedSummedMerkNode(
-                self.count_value_or_default(),
-                self.sum_value_or_default(),
-            )),
+            TreeType::CountSumTree => {
+                let v = self.count_sum_value_or_default();
+                Ok(CountedSummedMerkNode(v.0, v.1))
+            }
         }
     }
 

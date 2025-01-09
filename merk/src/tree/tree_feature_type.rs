@@ -80,14 +80,7 @@ impl AggregateData {
                     *i as i64
                 }
             }
-            AggregateData::Count(c) => {
-                let max = i64::MAX as u64;
-                if *c > max {
-                    i64::MAX
-                } else {
-                    *c as i64
-                }
-            }
+            AggregateData::Count(_) => 0,
             AggregateData::CountAndSum(_, s) => *s,
         }
     }
@@ -95,35 +88,20 @@ impl AggregateData {
     pub fn as_count_u64(&self) -> u64 {
         match self {
             AggregateData::NoAggregateData => 0,
-            AggregateData::Sum(s) => {
-                if *s < 0 {
-                    0
-                } else {
-                    *s as u64
-                }
-            }
-            AggregateData::BigSum(i) => {
-                let max = u64::MAX as i128;
-                if *i > max {
-                    u64::MAX
-                } else if *i < 0 {
-                    0
-                } else {
-                    *i as u64
-                }
-            }
+            AggregateData::Sum(_) => 0,
+            AggregateData::BigSum(_) => 0,
             AggregateData::Count(c) => *c,
             AggregateData::CountAndSum(c, _) => *c,
         }
     }
 
-    pub fn as_i128(&self) -> i128 {
+    pub fn as_summed_i128(&self) -> i128 {
         match self {
             AggregateData::NoAggregateData => 0,
             AggregateData::Sum(s) => *s as i128,
             AggregateData::BigSum(i) => *i,
-            AggregateData::Count(c) => *c as i128,
-            AggregateData::CountAndSum(c, _) => *c as i128,
+            AggregateData::Count(_) => 0,
+            AggregateData::CountAndSum(_, s) => *s as i128,
         }
     }
 }
