@@ -18,12 +18,8 @@ use crate::{error::Error, tree::CryptoHash};
 #[cfg(feature = "full")]
 use crate::{
     proofs::chunk::chunk::{LEFT, RIGHT},
-    Link,
-    TreeFeatureType::SummedMerkNode,
-};
-use crate::{
     tree::AggregateData,
-    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode},
+    Link,
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -526,6 +522,7 @@ where
 #[cfg(test)]
 mod test {
     use super::{super::*, Tree as ProofTree, *};
+    use crate::TreeFeatureType::SummedMerkNode;
 
     fn make_7_node_prooftree() -> ProofTree {
         let make_node = |i| -> super::super::tree::Tree { Node::KV(vec![i], vec![]).into() };
