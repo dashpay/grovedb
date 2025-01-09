@@ -2,7 +2,7 @@
 
 #[cfg(feature = "full")]
 mod tests {
-    use grovedb_merk::merk::TreeType;
+    use grovedb_merk::merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
 
     use crate::{

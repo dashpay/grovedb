@@ -2,7 +2,7 @@
 
 #[cfg(feature = "full")]
 use grovedb_costs::OperationCost;
-use grovedb_merk::merk::TreeType;
+use grovedb_merk::merk::tree_type::TreeType;
 #[cfg(feature = "full")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};

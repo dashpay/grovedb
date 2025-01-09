@@ -32,7 +32,7 @@ use grovedb_merk::estimated_costs::{
     BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
 };
 #[cfg(feature = "full")]
-use grovedb_merk::merk::TreeType;
+use grovedb_merk::merk::tree_type::TreeType;
 #[cfg(feature = "full")]
 use grovedb_visualize::visualize_to_vec;
 

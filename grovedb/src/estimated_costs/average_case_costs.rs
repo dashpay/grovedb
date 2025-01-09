@@ -12,7 +12,7 @@ use grovedb_merk::{
             add_average_case_merk_replace_layered, EstimatedLayerInformation,
         },
     },
-    merk::TreeType,
+    merk::tree_type::TreeType,
     tree::TreeNode,
     HASH_LENGTH,
 };
@@ -615,8 +615,9 @@ mod test {
 
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
-        estimated_costs::average_case_costs::add_average_case_get_merk_node, merk::TreeType,
-        test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, Merk,
+        estimated_costs::average_case_costs::add_average_case_get_merk_node,
+        merk::tree_type::TreeType, test_utils::make_batch_seq, tree::kv::ValueDefinedCostType,
+        Merk,
     };
     use grovedb_storage::{
         rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,

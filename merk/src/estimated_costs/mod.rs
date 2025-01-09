@@ -5,7 +5,7 @@ use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
-use crate::merk::{NodeType, TreeType};
+use crate::merk::{tree_type::TreeType, NodeType};
 #[cfg(feature = "full")]
 use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
 

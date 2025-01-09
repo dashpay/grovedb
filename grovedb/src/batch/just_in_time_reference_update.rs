@@ -9,7 +9,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
-    merk::TreeType,
+    merk::tree_type::TreeType,
     tree::{kv::KV, value_hash, TreeNode},
     CryptoHash, Merk,
 };

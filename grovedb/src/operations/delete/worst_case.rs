@@ -5,7 +5,7 @@ use grovedb_costs::{
 };
 use grovedb_merk::{
     estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except,
-    merk::TreeType, tree::kv::KV,
+    merk::tree_type::TreeType, tree::kv::KV,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
 use grovedb_version::{

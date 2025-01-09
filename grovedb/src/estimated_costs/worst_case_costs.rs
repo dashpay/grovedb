@@ -14,7 +14,7 @@ use grovedb_merk::{
             MERK_BIGGEST_VALUE_SIZE,
         },
     },
-    merk::TreeType,
+    merk::tree_type::TreeType,
     tree::TreeNode,
     HASH_LENGTH,
 };
@@ -497,7 +497,7 @@ mod test {
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
-        merk::{NodeType, TreeType},
+        merk::{tree_type::TreeType, NodeType},
         test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
         tree::kv::ValueDefinedCostType,
     };

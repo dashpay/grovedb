@@ -48,7 +48,7 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
-    merk::TreeType,
+    merk::tree_type::TreeType,
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, AggregateData, NULL_HASH,

@@ -6,7 +6,7 @@ use std::{
 };
 
 use grovedb_merk::{
-    merk::TreeType,
+    merk::tree_type::TreeType,
     tree::{kv::ValueDefinedCostType, value_hash},
     CryptoHash, Restorer,
 };

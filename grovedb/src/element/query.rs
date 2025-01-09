@@ -9,7 +9,7 @@ use grovedb_costs::{
     OperationCost,
 };
 #[cfg(feature = "full")]
-use grovedb_merk::merk::TreeType;
+use grovedb_merk::merk::tree_type::TreeType;
 #[cfg(feature = "full")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(feature = "full")]

@@ -6,7 +6,7 @@ use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
-use crate::merk::{NodeType, TreeType};
+use crate::merk::{tree_type::TreeType, NodeType};
 #[cfg(feature = "full")]
 use crate::{
     error::Error,

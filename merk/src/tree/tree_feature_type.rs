@@ -15,7 +15,7 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
 use crate::{
-    merk::{NodeType, TreeType},
+    merk::{tree_type::TreeType, NodeType},
     TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
 };
 

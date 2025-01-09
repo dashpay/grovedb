@@ -41,6 +41,7 @@ pub mod open;
 pub mod prove;
 pub mod restore;
 pub mod source;
+pub mod tree_type;
 
 use std::{
     cell::Cell,
@@ -57,6 +58,7 @@ use grovedb_costs::{
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use grovedb_version::version::GroveVersion;
 use source::MerkSource;
+use tree_type::TreeType;
 
 use crate::{
     error::Error,
@@ -76,7 +78,6 @@ use crate::{
     Error::{CostsError, EdError, StorageError},
     Link,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
-    TreeFeatureType,
 };
 
 /// Key update types
@@ -111,9 +112,6 @@ pub type BatchValue = (
     ChildrenSizesWithValue,
     KeyValueStorageCost,
 );
-
-/// A bool type
-pub type IsSumTree = bool;
 
 /// Root hash key and sum
 pub type RootHashKeyAndAggregateData = (CryptoHash, Option<Vec<u8>>, AggregateData);
@@ -241,74 +239,6 @@ impl MerkType {
             StandaloneMerk => true,
             BaseMerk => true,
             LayeredMerk => false,
-        }
-    }
-}
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum TreeType {
-    NormalTree = 0,
-    SumTree = 1,
-    BigSumTree = 2,
-    CountTree = 3,
-    CountSumTree = 4,
-}
-
-impl TryFrom<u8> for TreeType {
-    type Error = Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(TreeType::NormalTree),
-            1 => Ok(TreeType::SumTree),
-            2 => Ok(TreeType::BigSumTree),
-            3 => Ok(TreeType::CountTree),
-            3 => Ok(TreeType::CountSumTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 3", n))), // Error handling
-        }
-    }
-}
-
-impl fmt::Display for TreeType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match *self {
-            TreeType::NormalTree => "Normal Tree",
-            TreeType::SumTree => "Sum Tree",
-            TreeType::BigSumTree => "Big Sum Tree",
-            TreeType::CountTree => "Count Tree",
-            TreeType::CountSumTree => "Count Sum Tree",
-        };
-        write!(f, "{}", s)
-    }
-}
-
-impl TreeType {
-    pub fn allows_sum_item(&self) -> bool {
-        match self {
-            TreeType::NormalTree => false,
-            TreeType::SumTree => true,
-            TreeType::BigSumTree => true,
-            TreeType::CountTree => false,
-            TreeType::CountSumTree => true,
-        }
-    }
-
-    pub fn inner_node_type(&self) -> NodeType {
-        match self {
-            TreeType::NormalTree => NodeType::NormalNode,
-            TreeType::SumTree => NodeType::SumNode,
-            TreeType::BigSumTree => NodeType::BigSumNode,
-            TreeType::CountTree => NodeType::CountNode,
-            TreeType::CountSumTree => NodeType::CountSumNode,
-        }
-    }
-
-    pub fn empty_tree_feature_type(&self) -> TreeFeatureType {
-        match self {
-            TreeType::NormalTree => TreeFeatureType::BasicMerkNode,
-            TreeType::SumTree => TreeFeatureType::SummedMerkNode(0),
-            TreeType::BigSumTree => TreeFeatureType::BigSummedMerkNode(0),
-            TreeType::CountTree => TreeFeatureType::CountedMerkNode(0),
-            TreeType::CountSumTree => TreeFeatureType::CountedSummedMerkNode(0, 0),
         }
     }
 }
@@ -872,12 +802,14 @@ mod test {
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
-    use super::{Merk, RefWalker, TreeType};
+    use super::{Merk, RefWalker};
     use crate::{
-        merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType, Op,
+        merk::{source::MerkSource, tree_type::TreeType},
+        test_utils::*,
+        tree::kv::ValueDefinedCostType,
+        Op,
         TreeFeatureType::BasicMerkNode,
     };
-
     // TODO: Close and then reopen test
 
     fn assert_invariants(merk: &TempMerk) {

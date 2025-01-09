@@ -40,7 +40,7 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
-    merk::TreeType,
+    merk::tree_type::TreeType,
     tree::{
         kv::{ValueDefinedCostType, KV},
         BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, TreeNode, Walker,

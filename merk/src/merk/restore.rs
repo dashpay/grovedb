@@ -36,7 +36,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     merk,
-    merk::{MerkSource, TreeType},
+    merk::{tree_type::TreeType, MerkSource},
     proofs::{
         chunk::{
             chunk::{LEFT, RIGHT},
@@ -561,7 +561,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        merk::{chunks::ChunkProducer, TreeType},
+        merk::{chunks::ChunkProducer, tree_type::TreeType},
         proofs::chunk::{
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },

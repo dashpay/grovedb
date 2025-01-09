@@ -5,7 +5,7 @@
 use grovedb_costs::OperationCost;
 #[cfg(feature = "full")]
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
-use grovedb_merk::merk::TreeType;
+use grovedb_merk::merk::tree_type::TreeType;
 #[cfg(feature = "full")]
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
 #[cfg(feature = "full")]
