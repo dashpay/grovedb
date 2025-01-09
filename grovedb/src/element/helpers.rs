@@ -6,7 +6,11 @@ use grovedb_merk::tree::kv::{
     ValueDefinedCostType,
     ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
-use grovedb_merk::{MaybeTree, merk::{tree_type::TreeType, NodeType}, TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode}};
+use grovedb_merk::{
+    merk::{tree_type::TreeType, NodeType},
+    MaybeTree,
+    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
+};
 #[cfg(feature = "full")]
 use grovedb_merk::{
     tree::{kv::KV, TreeNode},

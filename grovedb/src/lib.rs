@@ -187,7 +187,10 @@ use grovedb_merk::{
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
-pub use grovedb_merk::{merk::tree_type::{TreeType, MaybeTree}, tree::AggregateData};
+pub use grovedb_merk::{
+    merk::tree_type::{MaybeTree, TreeType},
+    tree::AggregateData,
+};
 #[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
