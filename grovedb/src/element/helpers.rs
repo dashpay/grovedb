@@ -6,10 +6,7 @@ use grovedb_merk::tree::kv::{
     ValueDefinedCostType,
     ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
-use grovedb_merk::{
-    merk::{tree_type::TreeType, NodeType},
-    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
-};
+use grovedb_merk::{MaybeTree, merk::{tree_type::TreeType, NodeType}, TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode}};
 #[cfg(feature = "full")]
 use grovedb_merk::{
     tree::{kv::KV, TreeNode},
@@ -200,6 +197,19 @@ impl Element {
             Element::CountTree(..) => Some(TreeType::CountTree),
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
             _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "full", feature = "verify"))]
+    /// Check if the element is a tree and return the tree type
+    pub fn maybe_tree_type(&self) -> MaybeTree {
+        match self {
+            Element::Tree(..) => MaybeTree::Tree(TreeType::NormalTree),
+            Element::SumTree(..) => MaybeTree::Tree(TreeType::SumTree),
+            Element::BigSumTree(..) => MaybeTree::Tree(TreeType::BigSumTree),
+            Element::CountTree(..) => MaybeTree::Tree(TreeType::CountTree),
+            Element::CountSumTree(..) => MaybeTree::Tree(TreeType::CountSumTree),
+            _ => MaybeTree::NotTree,
         }
     }
 

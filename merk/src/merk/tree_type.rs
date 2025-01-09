@@ -3,6 +3,12 @@ use std::fmt;
 use crate::{merk::NodeType, Error, TreeFeatureType};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum MaybeTree {
+    Tree(TreeType),
+    NotTree,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum TreeType {
     NormalTree = 0,
     SumTree = 1,

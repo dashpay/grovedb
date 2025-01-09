@@ -18,7 +18,7 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{merk::tree_type::TreeType, proofs::Query, KVIterator};
+use grovedb_merk::{merk::tree_type::TreeType, proofs::Query, KVIterator, MaybeTree};
 #[cfg(feature = "full")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
@@ -511,7 +511,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        is_known_to_be_subtree: Option<TreeType>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &[QualifiedGroveDbOp],
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -550,12 +550,12 @@ impl GroveDb {
                         &mut cost,
                         self.get_raw(path.clone(), key.as_ref(), transaction, grove_version)
                     );
-                    element.tree_type()
+                    element.maybe_tree_type()
                 }
-                Some(x) => Some(x),
+                Some(x) => x,
             };
 
-            if let Some(tree_type) = tree_type {
+            if let MaybeTree::Tree(tree_type) = tree_type {
                 let subtree_merk_path = path.derive_owned_with_child(key);
                 let subtree_merk_path_vec = subtree_merk_path.to_vec();
                 let batch_deleted_keys = current_batch_operations

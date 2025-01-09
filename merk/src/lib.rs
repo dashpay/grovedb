@@ -84,7 +84,7 @@ pub use tree::{CryptoHash, TreeFeatureType};
 pub use crate::merk::{
     defaults::ROOT_KEY_KEY,
     prove::{ProofConstructionResult, ProofWithoutEncodingResult},
-    tree_type::TreeType,
+    tree_type::TreeType, tree_type::MaybeTree,
     KVIterator, Merk, MerkType, RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "full")]

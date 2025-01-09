@@ -5,7 +5,7 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::merk::tree_type::TreeType;
+use grovedb_merk::MaybeTree;
 use grovedb_path::SubtreePath;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
@@ -170,7 +170,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree: Option<TreeType>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         mut current_batch_operations: Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -202,7 +202,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree: Option<TreeType>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &mut Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
