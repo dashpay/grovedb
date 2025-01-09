@@ -24,13 +24,13 @@ mod serialize;
 use std::fmt;
 
 use bincode::{Decode, Encode};
+use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
 #[cfg(any(feature = "full", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "full")]
 use grovedb_merk::estimated_costs::{
     BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
 };
-use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
 #[cfg(feature = "full")]
 use grovedb_merk::merk::TreeType;
 #[cfg(feature = "full")]

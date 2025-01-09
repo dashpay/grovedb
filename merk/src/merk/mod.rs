@@ -52,7 +52,7 @@ use committer::MerkCommitter;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithValue, CostContext,
-    CostResult, CostsExt, FeatureSumLength, OperationCost,
+    CostResult, CostsExt, FeatureSumLength, OperationCost, TreeCostType,
 };
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use grovedb_version::version::GroveVersion;
@@ -107,7 +107,7 @@ impl KeyUpdates {
 /// Type alias for simple function signature
 pub type BatchValue = (
     Vec<u8>,
-    Option<FeatureSumLength>,
+    Option<(TreeCostType, FeatureSumLength)>,
     ChildrenSizesWithValue,
     KeyValueStorageCost,
 );
@@ -367,7 +367,7 @@ impl<S> fmt::Debug for Merk<S> {
 pub type UseTreeMutResult = CostResult<
     Vec<(
         Vec<u8>,
-        Option<FeatureSumLength>,
+        Option<(TreeCostType, FeatureSumLength)>,
         ChildrenSizesWithValue,
         KeyValueStorageCost,
     )>,

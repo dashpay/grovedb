@@ -8,6 +8,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use ed::Terminated;
 #[cfg(any(feature = "full", feature = "verify"))]
 use ed::{Decode, Encode};
+use grovedb_costs::TreeCostType;
 #[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
@@ -15,9 +16,8 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
 use crate::{
     merk::{NodeType, TreeType},
-    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode},
+    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
 };
-use crate::TreeFeatureType::CountedSummedMerkNode;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -42,7 +42,7 @@ impl TreeFeatureType {
             SummedMerkNode(_) => NodeType::SumNode,
             BigSummedMerkNode(_) => NodeType::BigSumNode,
             CountedMerkNode(_) => NodeType::CountNode,
-            CountedSummedMerkNode(_, _) => NodeType::CountSumNode,
+            CountedSummedMerkNode(..) => NodeType::CountSumNode,
         }
     }
 }
@@ -54,7 +54,7 @@ pub enum AggregateData {
     Sum(i64),
     BigSum(i128),
     Count(u64),
-    CountAndSum(u64, i64)
+    CountAndSum(u64, i64),
 }
 
 impl AggregateData {
@@ -64,7 +64,7 @@ impl AggregateData {
             AggregateData::Sum(_) => TreeType::SumTree,
             AggregateData::BigSum(_) => TreeType::BigSumTree,
             AggregateData::Count(_) => TreeType::CountTree,
-            AggregateData::CountAndSum(_, _) => TreeType::CountSumTree,
+            AggregateData::CountAndSum(..) => TreeType::CountSumTree,
         }
     }
 
@@ -144,13 +144,22 @@ impl From<TreeFeatureType> for AggregateData {
 impl TreeFeatureType {
     #[inline]
     /// Get length of encoded SummedMerk
-    pub fn tree_feature_length(&self) -> Option<u32> {
+    pub fn tree_feature_specialized_type_and_length(&self) -> Option<(TreeCostType, u32)> {
         match self {
             BasicMerkNode => None,
-            SummedMerkNode(m) => Some(m.encode_var_vec().len() as u32),
-            BigSummedMerkNode(_) => Some(16),
-            CountedMerkNode(m) => Some(m.encode_var_vec().len() as u32),
-            CountedSummedMerkNode(count, sum) => Some(count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32),
+            SummedMerkNode(m) => Some((
+                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
+                m.encode_var_vec().len() as u32,
+            )),
+            BigSummedMerkNode(_) => Some((TreeCostType::TreeFeatureUses16Bytes, 16)),
+            CountedMerkNode(m) => Some((
+                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
+                m.encode_var_vec().len() as u32,
+            )),
+            CountedSummedMerkNode(count, sum) => Some((
+                TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
+                count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32,
+            )),
         }
     }
 

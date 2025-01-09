@@ -5,9 +5,8 @@ mod tests {
     use grovedb_merk::{
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
-        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
+        TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
     };
-    use grovedb_merk::TreeFeatureType::BigSummedMerkNode;
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
@@ -324,7 +323,9 @@ mod tests {
             Some(SummedMerkNode(0))
         ));
         assert_eq!(
-            merk.aggregate_data().expect("expected to get sum").as_sum_i64(),
+            merk.aggregate_data()
+                .expect("expected to get sum")
+                .as_sum_i64(),
             40
         );
 
@@ -1063,8 +1064,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert tree");
+        .unwrap()
+        .expect("should insert tree");
         db.insert(
             [TEST_LEAF, b"big_sum_tree"].as_ref(),
             b"sum_tree_1",
@@ -1073,8 +1074,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert tree");
+        .unwrap()
+        .expect("should insert tree");
         db.insert(
             [TEST_LEAF, b"big_sum_tree"].as_ref(),
             b"sum_tree_2",
@@ -1083,8 +1084,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert tree");
+        .unwrap()
+        .expect("should insert tree");
         db.insert(
             [TEST_LEAF, b"big_sum_tree", b"sum_tree_1"].as_ref(),
             b"item1",
@@ -1093,8 +1094,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert item");
+        .unwrap()
+        .expect("should insert item");
         db.insert(
             [TEST_LEAF, b"big_sum_tree", b"sum_tree_1"].as_ref(),
             b"sum_item_1",
@@ -1103,8 +1104,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert item");
+        .unwrap()
+        .expect("should insert item");
         db.insert(
             [TEST_LEAF, b"big_sum_tree", b"sum_tree_1"].as_ref(),
             b"sum_item_2",
@@ -1113,8 +1114,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert item");
+        .unwrap()
+        .expect("should insert item");
         db.insert(
             [TEST_LEAF, b"big_sum_tree", b"sum_tree_1"].as_ref(),
             b"ref_1",
@@ -1128,8 +1129,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert item");
+        .unwrap()
+        .expect("should insert item");
 
         db.insert(
             [TEST_LEAF, b"big_sum_tree", b"sum_tree_2"].as_ref(),
@@ -1139,14 +1140,17 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert item");
+        .unwrap()
+        .expect("should insert item");
 
         let sum_tree = db
             .get([TEST_LEAF].as_ref(), b"big_sum_tree", None, grove_version)
             .unwrap()
             .expect("should fetch tree");
-        assert_eq!(sum_tree.big_sum_value_or_default(), (SumValue::MAX - 10) as i128 + (SumValue::MAX - 50) as i128);
+        assert_eq!(
+            sum_tree.big_sum_value_or_default(),
+            (SumValue::MAX - 10) as i128 + (SumValue::MAX - 50) as i128
+        );
 
         db.insert(
             [TEST_LEAF, b"big_sum_tree"].as_ref(),
@@ -1156,14 +1160,19 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("should insert item");
+        .unwrap()
+        .expect("should insert item");
 
         let sum_tree = db
             .get([TEST_LEAF].as_ref(), b"big_sum_tree", None, grove_version)
             .unwrap()
             .expect("should fetch tree");
-        assert_eq!(sum_tree.big_sum_value_or_default(), (SumValue::MAX - 10) as i128 + (SumValue::MAX - 50) as i128  + (SumValue::MAX - 70) as i128 );
+        assert_eq!(
+            sum_tree.big_sum_value_or_default(),
+            (SumValue::MAX - 10) as i128
+                + (SumValue::MAX - 50) as i128
+                + (SumValue::MAX - 70) as i128
+        );
 
         let batch = StorageBatch::new();
 
@@ -1202,10 +1211,11 @@ mod tests {
                 b"sum_tree_1",
                 true,
                 Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version
+                grove_version,
             )
             .unwrap()
-            .expect("node should exist").expect("expected feature type");
+            .expect("node should exist")
+            .expect("expected feature type");
         assert_eq!(
             feature_type,
             BigSummedMerkNode((SumValue::MAX - 10) as i128)
@@ -1216,10 +1226,11 @@ mod tests {
                 b"sum_item_4",
                 true,
                 Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version
+                grove_version,
             )
             .unwrap()
-            .expect("node should exist").expect("expected feature type");
+            .expect("node should exist")
+            .expect("expected feature type");
         assert_eq!(
             feature_type,
             BigSummedMerkNode((SumValue::MAX - 70) as i128)
@@ -1570,11 +1581,11 @@ mod tests {
                 )
                 .unwrap()
                 .expect("node should exist"),
-            Some(SummedMerkNode(10))
+            Some(BigSummedMerkNode(10))
         );
         assert_eq!(
             sum_tree.aggregate_data().expect("expected to get sum"),
-            AggregateData::Sum(20)
+            AggregateData::BigSum(20)
         );
 
         // Test propagation
@@ -1652,7 +1663,7 @@ mod tests {
             .expect("should open tree");
         assert_eq!(
             sum_tree.aggregate_data().expect("expected to get sum"),
-            AggregateData::Sum(41)
+            AggregateData::BigSum(41)
         );
     }
 }

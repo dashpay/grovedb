@@ -289,7 +289,7 @@ impl Link {
                     //    sum_len for sum vale
                     key.len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
-                AggregateData::BigSum(_) | AggregateData::CountAndSum(_, _)  => {
+                AggregateData::BigSum(_) | AggregateData::CountAndSum(..) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -316,7 +316,7 @@ impl Link {
                 AggregateData::Count(_) | AggregateData::Sum(_) => {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
-                AggregateData::BigSum(_) | AggregateData::CountAndSum(_, _) => {
+                AggregateData::BigSum(_) | AggregateData::CountAndSum(..) => {
                     tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
             },

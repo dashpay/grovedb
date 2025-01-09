@@ -8,7 +8,7 @@ use grovedb_merk::tree::kv::{
 };
 use grovedb_merk::{
     merk::{NodeType, TreeType},
-    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode},
+    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
 };
 #[cfg(feature = "full")]
 use grovedb_merk::{
@@ -20,7 +20,7 @@ use grovedb_merk::{
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use grovedb_merk::TreeFeatureType::CountedSummedMerkNode;
+
 use crate::element::{BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE};
 #[cfg(feature = "full")]
 use crate::reference_path::path_from_reference_path_type;
@@ -245,7 +245,10 @@ impl Element {
             TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
             TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
             TreeType::CountTree => Ok(CountedMerkNode(self.count_value_or_default())),
-            TreeType::CountSumTree => Ok(CountedSummedMerkNode(self.count_value_or_default(), self.sum_value_or_default())),
+            TreeType::CountSumTree => Ok(CountedSummedMerkNode(
+                self.count_value_or_default(),
+                self.sum_value_or_default(),
+            )),
         }
     }
 
@@ -416,7 +419,7 @@ impl Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::CountSumTree(.. , flags) => {
+            Element::CountSumTree(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32

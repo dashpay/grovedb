@@ -75,8 +75,8 @@ use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
     element::{
-        MaxReferenceHop, BIG_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, SUM_ITEM_COST_SIZE,
-        SUM_TREE_COST_SIZE, TREE_COST_SIZE,
+        MaxReferenceHop, BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE,
+        SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
     },
     operations::{get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
@@ -1022,7 +1022,8 @@ where
             Element::Tree(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
-            | Element::CountTree(..) | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::CountTree(..)
+            | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1143,7 +1144,8 @@ where
                         Element::Tree(..)
                         | Element::SumTree(..)
                         | Element::BigSumTree(..)
-                        | Element::CountTree(..) | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
+                        | Element::CountTree(..)
+                        | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
@@ -1173,7 +1175,8 @@ where
                     Element::Tree(..)
                     | Element::SumTree(..)
                     | Element::BigSumTree(..)
-                    | Element::CountTree(..) | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
+                    | Element::CountTree(..)
+                    | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
@@ -1348,7 +1351,8 @@ where
                     Element::Tree(..)
                     | Element::SumTree(..)
                     | Element::BigSumTree(..)
-                    | Element::CountTree(..) | Element::CountSumTree(..) => {
+                    | Element::CountTree(..)
+                    | Element::CountSumTree(..) => {
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
@@ -1658,7 +1662,8 @@ where
                                     Element::Tree(..)
                                     | Element::SumTree(..)
                                     | Element::BigSumTree(..)
-                                    | Element::CountTree(..) | Element::CountSumTree(..) => {
+                                    | Element::CountTree(..)
+                                    | Element::CountSumTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
                                         let tree_cost_size = match tree_type {
                                             TreeType::NormalTree => TREE_COST_SIZE,

@@ -460,7 +460,9 @@ impl TreeNode {
                     AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
                     AggregateData::BigSum(_) => 16 as u32,
                     AggregateData::Count(c) => c.encode_var_vec().len() as u32,
-                    AggregateData::CountAndSum(c, s) => s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32,
+                    AggregateData::CountAndSum(c, s) => {
+                        s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32
+                    }
                 },
             )
         })
@@ -525,7 +527,7 @@ impl TreeNode {
             Some(link) => match link.aggregateData() {
                 AggregateData::NoAggregateData => Ok(0),
                 AggregateData::Sum(s) => Ok(0),
-                AggregateData::BigSum(_) =>  Ok(0),
+                AggregateData::BigSum(_) => Ok(0),
                 AggregateData::Count(c) => Ok(c),
                 AggregateData::CountAndSum(c, _) => Ok(c),
             },
@@ -603,7 +605,10 @@ impl TreeNode {
                     .and_then(|a| a.checked_add(right_sum))
                     .ok_or(Overflow("count is overflowing"))?;
 
-                Ok(AggregateData::CountAndSum(aggregated_count_value, aggregated_sum_value))
+                Ok(AggregateData::CountAndSum(
+                    aggregated_count_value,
+                    aggregated_sum_value,
+                ))
             }
         }
     }
