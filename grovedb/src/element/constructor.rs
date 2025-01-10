@@ -42,9 +42,33 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Set element to default empty count sum tree without flags
+    pub fn empty_count_sum_tree() -> Self {
+        Element::new_count_sum_tree(Default::default())
+    }
+
+    #[cfg(feature = "full")]
     /// Set element to default empty sum tree with flags
     pub fn empty_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to default empty sum tree with flags
+    pub fn empty_big_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_big_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to default empty count tree with flags
+    pub fn empty_count_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_count_tree_with_flags(Default::default(), flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Set element to default empty count sum tree with flags
+    pub fn empty_count_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_count_sum_tree_with_flags(Default::default(), flags)
     }
 
     #[cfg(feature = "full")]
