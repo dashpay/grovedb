@@ -526,7 +526,7 @@ impl TreeNode {
         match self.link(left) {
             Some(link) => match link.aggregateData() {
                 AggregateData::NoAggregateData => Ok(0),
-                AggregateData::Sum(s) => Ok(0),
+                AggregateData::Sum(_) => Ok(0),
                 AggregateData::BigSum(_) => Ok(0),
                 AggregateData::Count(c) => Ok(c),
                 AggregateData::CountAndSum(c, _) => Ok(c),

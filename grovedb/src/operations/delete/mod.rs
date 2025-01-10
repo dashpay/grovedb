@@ -18,7 +18,7 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{merk::tree_type::TreeType, proofs::Query, KVIterator, MaybeTree};
+use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
 #[cfg(feature = "full")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;

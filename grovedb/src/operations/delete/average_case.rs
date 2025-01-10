@@ -75,7 +75,7 @@ impl GroveDb {
                                 &cost,
                                 layer_info
                                     .estimated_layer_sizes
-                                    .value_with_feature_and_flags_size()
+                                    .value_with_feature_and_flags_size(grove_version)
                                     .map_err(Error::MerkError)
                             );
                             Ok((
@@ -100,7 +100,7 @@ impl GroveDb {
                                 &cost,
                                 layer_info
                                     .estimated_layer_sizes
-                                    .subtree_with_feature_and_flags_size()
+                                    .subtree_with_feature_and_flags_size(grove_version)
                                     .map_err(Error::MerkError)
                             );
                             Ok((

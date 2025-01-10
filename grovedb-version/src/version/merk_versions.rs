@@ -8,4 +8,5 @@ pub struct MerkVersions {
 #[derive(Clone, Debug, Default)]
 pub struct MerkAverageCaseCostsVersions {
     pub add_average_case_merk_propagate: FeatureVersion,
+    pub sum_tree_estimated_size: FeatureVersion,
 }

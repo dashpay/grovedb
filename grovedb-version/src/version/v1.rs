@@ -187,6 +187,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
     merk_versions: MerkVersions {
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 0,
+            sum_tree_estimated_size: 0,
         },
     },
 };

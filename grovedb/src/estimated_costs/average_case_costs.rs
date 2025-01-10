@@ -442,7 +442,7 @@ impl GroveDb {
             &cost,
             estimated_layer_information
                 .estimated_layer_sizes
-                .value_with_feature_and_flags_size()
+                .value_with_feature_and_flags_size(grove_version)
                 .map_err(Error::MerkError)
         );
         add_average_case_merk_delete(&mut cost, key_len, value_size);

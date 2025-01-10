@@ -56,7 +56,7 @@ impl TreeType {
         }
     }
 
-    pub fn inner_node_type(&self) -> NodeType {
+    pub const fn inner_node_type(&self) -> NodeType {
         match self {
             TreeType::NormalTree => NodeType::NormalNode,
             TreeType::SumTree => NodeType::SumNode,
