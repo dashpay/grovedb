@@ -3326,9 +3326,15 @@ mod tests {
             )
             .unwrap()
             .expect("cannot open merk");
-            let result_element = Element::get(&subtree, b"key3", true, grove_version)
-                .unwrap()
-                .unwrap();
+            let result_element = Element::get(
+                &subtree,
+                b"key3",
+                true,
+                None::<fn() -> String>,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
         }
         // Insert a new tree with transaction
@@ -3375,9 +3381,15 @@ mod tests {
         )
         .unwrap()
         .expect("cannot open merk");
-        let result_element = Element::get(&subtree, b"key4", true, grove_version)
-            .unwrap()
-            .unwrap();
+        let result_element = Element::get(
+            &subtree,
+            b"key4",
+            true,
+            None::<fn() -> String>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
         // Should be able to retrieve instances created before transaction
@@ -3395,9 +3407,15 @@ mod tests {
         )
         .unwrap()
         .expect("cannot open merk");
-        let result_element = Element::get(&subtree, b"key3", true, grove_version)
-            .unwrap()
-            .unwrap();
+        let result_element = Element::get(
+            &subtree,
+            b"key3",
+            true,
+            None::<fn() -> String>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
 

@@ -27,6 +27,7 @@ use grovedb_version::{
 
 #[cfg(feature = "full")]
 use crate::operations::proof::util::hex_to_ascii;
+use crate::operations::proof::util::path_as_slices_hex_to_ascii;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::Element;
 #[cfg(feature = "full")]
@@ -764,8 +765,14 @@ impl Element {
                     subtree,
                     grove_version,
                     {
-                        Element::get(&subtree, key, query_options.allow_cache, grove_version)
-                            .unwrap_add_cost(&mut cost)
+                        Element::get(
+                            &subtree,
+                            key,
+                            query_options.allow_cache,
+                            Some(|| format!("path is {}", path_as_slices_hex_to_ascii(path))),
+                            grove_version,
+                        )
+                        .unwrap_add_cost(&mut cost)
                     }
                 );
                 match element_res {

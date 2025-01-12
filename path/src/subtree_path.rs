@@ -34,7 +34,10 @@
 //! combined with it's various `From` implementations it can cover slices, owned
 //! subtree paths and other path references if use as generic [Into].
 
-use std::hash::{Hash, Hasher};
+use std::{
+    fmt::{Display, Formatter},
+    hash::{Hash, Hasher},
+};
 
 use crate::{
     subtree_path_builder::{SubtreePathBuilder, SubtreePathRelative},
@@ -46,6 +49,51 @@ use crate::{
 #[derive(Debug)]
 pub struct SubtreePath<'b, B> {
     pub(crate) ref_variant: SubtreePathInner<'b, B>,
+}
+
+fn hex_to_ascii(hex_value: &[u8]) -> String {
+    // Define the set of allowed characters
+    const ALLOWED_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                                  abcdefghijklmnopqrstuvwxyz\
+                                  0123456789_-/\\[]@";
+
+    // Check if all characters in hex_value are allowed
+    if hex_value.iter().all(|&c| ALLOWED_CHARS.contains(&c)) {
+        // Try to convert to UTF-8
+        String::from_utf8(hex_value.to_vec())
+            .unwrap_or_else(|_| format!("0x{}", hex::encode(hex_value)))
+    } else {
+        // Hex encode and prepend "0x"
+        format!("0x{}", hex::encode(hex_value))
+    }
+}
+
+impl<'b, B: AsRef<[u8]>> Display for SubtreePath<'b, B> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self.ref_variant {
+            SubtreePathInner::Slice(slice) => {
+                let ascii_path = slice
+                    .iter()
+                    .map(|e| hex_to_ascii(e.as_ref()))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                write!(f, "{}", ascii_path)
+            }
+            SubtreePathInner::SubtreePath(subtree_path) => {
+                let ascii_path = subtree_path
+                    .to_vec()
+                    .into_iter()
+                    .map(|a| hex_to_ascii(a.as_slice()))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                write!(f, "{}", ascii_path)
+            }
+            SubtreePathInner::SubtreePathIter(iter) => {
+                let ascii_path = iter.clone().map(hex_to_ascii).collect::<Vec<_>>().join("/");
+                write!(f, "{}", ascii_path)
+            }
+        }
+    }
 }
 
 /// Wrapped inner representation of subtree path ref.
