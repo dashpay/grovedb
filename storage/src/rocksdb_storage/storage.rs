@@ -51,11 +51,10 @@ use super::{
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
-    storage::AbstractBatchOperation,
+    storage::{AbstractBatchOperation, SubtreePrefix},
     worst_case_costs::WorstKeyLength,
     Storage, StorageBatch,
 };
-use crate::storage::SubtreePrefix;
 
 const BLAKE_BLOCK_LEN: usize = 64;
 
