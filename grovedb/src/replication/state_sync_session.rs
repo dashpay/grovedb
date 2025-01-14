@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{replication, Element, Error, GroveDb, Transaction};
 
-pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
+pub(crate) type SubtreePrefix = [u8; 32];
 
 /// Struct governing the state synchronization of one subtree.
 struct SubtreeStateSyncInfo<'db> {

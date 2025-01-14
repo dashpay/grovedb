@@ -57,8 +57,7 @@ use crate::{
 };
 
 const BLAKE_BLOCK_LEN: usize = 64;
-
-pub type SubtreePrefix = [u8; blake3::OUT_LEN];
+pub type SubtreePrefix = [u8; 32];
 
 fn blake_block_count(len: usize) -> usize {
     if len == 0 {
