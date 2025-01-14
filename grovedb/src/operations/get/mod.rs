@@ -22,9 +22,7 @@ use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 
-use crate::{
-    operations::proof::util::path_as_slices_hex_to_ascii, replication::utils::path_to_string,
-};
+use crate::error::GroveDbErrorExt;
 #[cfg(feature = "full")]
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
@@ -307,14 +305,9 @@ impl GroveDb {
                 })
         );
 
-        Element::get(
-            &merk_to_get_from,
-            key,
-            allow_cache,
-            Some(|| format!("path is {}", path)),
-            grove_version,
-        )
-        .add_cost(cost)
+        Element::get(&merk_to_get_from, key, allow_cache, grove_version)
+            .add_context(format!("path is {}", path))
+            .add_cost(cost)
     }
 
     /// Get tree item without following references
@@ -372,14 +365,9 @@ impl GroveDb {
                 })
         );
 
-        Element::get(
-            &merk_to_get_from,
-            key,
-            allow_cache,
-            Some(|| format!("path is {}", path)),
-            grove_version,
-        )
-        .add_cost(cost)
+        Element::get(&merk_to_get_from, key, allow_cache, grove_version)
+            .add_context(format!("path is {}", path))
+            .add_cost(cost)
     }
 
     /// Get tree item without following references
@@ -461,26 +449,16 @@ impl GroveDb {
                     )
                 );
 
-                Element::get(
-                    &merk_to_get_from,
-                    parent_key,
-                    true,
-                    Some(|| format!("path is {}", path)),
-                    grove_version,
-                )
+                Element::get(&merk_to_get_from, parent_key, true, grove_version)
+                    .add_context(format!("path is {}", path))
             } else {
                 let merk_to_get_from = cost_return_on_error!(
                     &mut cost,
                     self.open_non_transactional_merk_at_path(parent_path, None, grove_version)
                 );
 
-                Element::get(
-                    &merk_to_get_from,
-                    parent_key,
-                    true,
-                    Some(|| format!("path is {}", path)),
-                    grove_version,
-                )
+                Element::get(&merk_to_get_from, parent_key, true, grove_version)
+                    .add_context(format!("path is {}", path))
             }
             .unwrap_add_cost(&mut cost);
             match element {
