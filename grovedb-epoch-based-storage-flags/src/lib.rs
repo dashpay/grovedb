@@ -244,7 +244,8 @@ impl StorageFlags {
                     "can not remove bytes when there is no epoch".to_string(),
                 ));
             }
-            let identifier = owner_id.copied().unwrap_or_default();
+            // we must use our owner id, because we would be removing bytes from it
+            let identifier = self.owner_id().copied().unwrap_or_default();
             let sectioned_bytes = sectioned_bytes_by_identifier.get(&identifier).ok_or(
                 StorageFlagsError::MergingStorageFlagsFromDifferentOwners(
                     "can not remove bytes when there is no epoch".to_string(),
