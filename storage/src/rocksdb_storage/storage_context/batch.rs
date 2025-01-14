@@ -7,9 +7,8 @@ use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
-use crate::{Batch, StorageBatch};
-
 pub use crate::rocksdb_storage::storage::SubtreePrefix;
+use crate::{Batch, StorageBatch};
 
 /// Wrapper to RocksDB batch.
 /// All calls go to RocksDB batch, but wrapper handles prefixes and column
