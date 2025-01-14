@@ -1,11 +1,11 @@
 //! Merk tree commit
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::TreeNode;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::error::Error;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// To be used when committing a tree (writing it to a store after applying the
 /// changes).
 pub trait Commit {
@@ -26,12 +26,12 @@ pub trait Commit {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// A `Commit` implementation which does not write to a store and does not prune
 /// any nodes from the Tree. Useful when only keeping a tree in memory.
 pub struct NoopCommit {}
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Commit for NoopCommit {
     fn write(
         &mut self,

@@ -32,7 +32,7 @@ impl GroveDb {
         key: &KeyInfo,
         stop_path_height: Option<u16>,
         validate: bool,
-        estimated_layer_info: IntMap<EstimatedLayerInformation>,
+        estimated_layer_info: IntMap<u16, EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
@@ -69,7 +69,7 @@ impl GroveDb {
                 ) = cost_return_on_error_no_add!(
                     &cost,
                     if height == path_len - 1 {
-                        if let Some(layer_info) = estimated_layer_info.get(height as u64) {
+                        if let Some(layer_info) = estimated_layer_info.get(height) {
                             let estimated_value_len = cost_return_on_error_no_add!(
                                 &cost,
                                 layer_info
@@ -94,7 +94,7 @@ impl GroveDb {
                     } else {
                         let (last_key, smaller_path) = used_path.split_last().unwrap();
                         used_path = smaller_path;
-                        if let Some(layer_info) = estimated_layer_info.get(height as u64) {
+                        if let Some(layer_info) = estimated_layer_info.get(height) {
                             let estimated_value_len = cost_return_on_error_no_add!(
                                 &cost,
                                 layer_info

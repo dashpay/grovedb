@@ -3,31 +3,31 @@
 
 use std::fmt;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::SubqueryBranch;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::proofs::Query;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::operations::proof::util::hex_to_ascii;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::Element;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     element::helpers::raw_decode,
     query_result_type::{
@@ -40,10 +40,10 @@ use crate::{
     util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{query_result_type::Path, SizedQuery};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Copy, Clone, Debug)]
 pub struct QueryOptions {
     pub allow_get_raw: bool,
@@ -58,7 +58,7 @@ pub struct QueryOptions {
     pub error_if_intermediate_path_tree_not_present: bool,
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for QueryOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "QueryOptions {{")?;
@@ -78,7 +78,7 @@ impl fmt::Display for QueryOptions {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Default for QueryOptions {
     fn default() -> Self {
         QueryOptions {
@@ -90,7 +90,7 @@ impl Default for QueryOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Path query push arguments
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
@@ -111,7 +111,7 @@ where
     pub offset: &'a mut Option<u16>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn format_query(query: &Query, indent: usize) -> String {
     let indent_str = " ".repeat(indent);
     let mut output = format!("{}Query {{\n", indent_str);
@@ -147,7 +147,7 @@ fn format_query(query: &Query, indent: usize) -> String {
     output
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
     let indent_str = " ".repeat(indent);
     let mut output = "SubqueryBranch {{\n".to_string();
@@ -169,7 +169,7 @@ fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
     output
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<'db, 'ctx, 'a> fmt::Display for PathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
@@ -230,7 +230,7 @@ where
 }
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of result elements based on given query
     pub fn get_query(
         storage: &RocksDbStorage,
@@ -259,7 +259,7 @@ impl Element {
         .map_ok(|(elements, _)| elements)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get values of result elements coming from given query
     pub fn get_query_values(
         storage: &RocksDbStorage,
@@ -297,7 +297,7 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of result elements and the number of skipped items
     /// based on given query
     pub fn get_query_apply_function(
@@ -382,7 +382,7 @@ impl Element {
         Ok((QueryResultElements::from_elements(results), skipped)).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of elements excluding trees, and the number of skipped
     /// elements
     pub fn get_path_query(
@@ -415,7 +415,7 @@ impl Element {
         )
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of elements, and the number of skipped elements
     pub fn get_sized_query(
         storage: &RocksDbStorage,
@@ -443,7 +443,7 @@ impl Element {
         )
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Push arguments to path query
     fn path_query_push(
         args: PathQueryPushArgs,
@@ -684,7 +684,7 @@ impl Element {
         Ok(()).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Takes a sized query and a key and returns subquery key and subquery as
     /// tuple
     fn subquery_paths_and_value_for_sized_query(
@@ -725,7 +725,7 @@ impl Element {
     /// trees where the sub elements have no matches, hence the limit would
     /// not decrease and hence we would continue on the increasingly
     /// expensive query.
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     // TODO: refactor
     fn query_item(
         storage: &RocksDbStorage,
@@ -894,7 +894,7 @@ impl Element {
         .wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
         check_grovedb_v0!(
             "basic_push",
@@ -950,7 +950,7 @@ impl Element {
         Ok(())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Iterator
     pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         let mut cost = OperationCost::default();
@@ -959,7 +959,7 @@ impl Element {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::Query;
@@ -1687,12 +1687,12 @@ mod tests {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub struct ElementsIterator<I: RawIterator> {
     raw_iter: I,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<I: RawIterator> ElementsIterator<I> {
     pub fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }

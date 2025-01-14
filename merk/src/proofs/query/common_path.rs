@@ -1,6 +1,6 @@
 use crate::proofs::query::Path;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// CommonPathResult is the result of trying to find the common path between two
 /// paths
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

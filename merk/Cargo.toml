@@ -18,27 +18,19 @@ grovedb-version = { version = "2.1.0", path = "../grovedb-version" }
 grovedb-visualize = { version = "2.1.0", path = "../visualize" }
 
 bincode = { version = "2.0.0-rc.3" }
-failure = "0.1.8"
 hex = "0.4.3"
 indexmap = "2.2.6"
 integer-encoding = "4.0.0"
-thiserror = "1.0.58"
+thiserror = "2.0.11"
 serde = { version = "1.0.210", features = ["derive"], optional = true }
-
-[dependencies.time]
-version = "0.3.34"
-optional = true
+rand = { version = "0.8.5", features = ["small_rng"], optional = true }
 
 [dependencies.colored]
-version = "2.1.0"
+version = "3.0.0"
 optional = true
 
 [dependencies.num_cpus]
 version = "1.16.0"
-optional = true
-
-[dependencies.byteorder]
-version = "1.5.0"
 optional = true
 
 [dependencies.ed]
@@ -46,28 +38,25 @@ version = "0.2.2"
 optional = true
 
 [dependencies.blake3]
-version = "1.5.1"
-optional = true
-
-[dependencies.rand]
-version = "0.8.5"
-features = ["small_rng"]
+version = "1.5.5"
 optional = true
 
 [features]
 default = ["full"]
 proof_debug = []
 serde = ["dep:serde", "indexmap/serde"]
-full = ["rand",
-        "time",
-        "colored",
-        "num_cpus",
-        "byteorder",
+minimal = ["num_cpus",
         "ed",
         "blake3",
         "grovedb-storage",
         "grovedb-storage/rocksdb_storage"
 ]
+full = ["minimal",
+        "test_utils",
+        "colored_debug",
+]
+test_utils = ["rand"]
+colored_debug = ["colored"]
 verify = [
         "ed",
         "blake3"

@@ -1,33 +1,33 @@
 //! Batch structure
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{collections::BTreeMap, fmt};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_visualize::{DebugByteVectors, DebugBytes};
-#[cfg(feature = "full")]
-use nohash_hasher::IntMap;
+#[cfg(feature = "minimal")]
+use intmap::IntMap;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache},
     Element, ElementFlags, Error,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>>;
 /// Level, path, key, op
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub type OpsByLevelPath = IntMap<u32, OpsByPath>;
 
 /// Batch structure
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub(super) struct BatchStructure<C, F, SR> {
     /// Operations by level path
     pub(super) ops_by_level_paths: OpsByLevelPath,
@@ -45,7 +45,7 @@ pub(super) struct BatchStructure<C, F, SR> {
     pub(super) last_level: u32,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut fmt_int_map = IntMap::default();
@@ -60,7 +60,7 @@ impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
                 }
                 fmt_path_map.insert(DebugByteVectors(path.to_path()), fmt_key_map);
             }
-            fmt_int_map.insert(*level, fmt_path_map);
+            fmt_int_map.insert(level, fmt_path_map);
         }
 
         f.debug_struct("BatchStructure")
@@ -71,7 +71,7 @@ impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<C, F, SR> BatchStructure<C, F, SR>
 where
     C: TreeCache<F, SR>,
@@ -146,7 +146,7 @@ where
             }
 
             let level = op.path.len();
-            if let Some(ops_on_level) = ops_by_level_paths.get_mut(&level) {
+            if let Some(ops_on_level) = ops_by_level_paths.get_mut(level) {
                 if let Some(ops_on_path) = ops_on_level.get_mut(&op.path) {
                     ops_on_path.insert(op.key, op.op);
                 } else {

@@ -1,29 +1,29 @@
 //! Merk tree walk
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod fetch;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod ref_walker;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use fetch::Fetch;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_costs::{
     cost_return_on_error_no_add,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
 };
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use ref_walker::RefWalker;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::{Link, TreeNode};
 use crate::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash, Error};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
 pub struct Walker<S>
@@ -34,7 +34,7 @@ where
     source: S,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<S> Walker<S>
 where
     S: Fetch + Sized + Clone,
@@ -386,7 +386,7 @@ where
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<S> From<Walker<S>> for TreeNode
 where
     S: Fetch + Sized + Clone,
@@ -396,7 +396,7 @@ where
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
     use grovedb_costs::CostsExt;

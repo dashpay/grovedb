@@ -2,75 +2,75 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod constructor;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod delete;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod exists;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod get;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub(crate) mod helpers;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod insert;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod query;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::QueryOptions;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod serialize;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::fmt;
 
 use bincode::{Decode, Encode};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_visualize::visualize_to_vec;
 
 use crate::operations::proof::util::hex_to_ascii;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::OperationCost;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
 pub type MaxReferenceHop = Option<u8>;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// The cost of a sum item
 ///
 /// It is 11 because we have 9 bytes for the sum value
 /// 1 byte for the item type
 /// 1 byte for the flags option
 pub const SUM_ITEM_COST_SIZE: u32 = SUM_VALUE_EXTRA_COST + 2; // 11
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// int 64 sum value
 pub type SumValue = i64;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Variants of GroveDB stored entities
 ///
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
 #[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
-#[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
+#[cfg_attr(not(any(feature = "minimal", feature = "visualize")), derive(Debug))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Element {
     /// An ordinary value
@@ -157,7 +157,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     pub(crate) fn value_hash(
         &self,
         grove_version: &grovedb_version::version::GroveVersion,
@@ -167,7 +167,7 @@ impl Element {
     }
 }
 
-#[cfg(any(feature = "full", feature = "visualize"))]
+#[cfg(any(feature = "minimal", feature = "visualize"))]
 impl fmt::Debug for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();

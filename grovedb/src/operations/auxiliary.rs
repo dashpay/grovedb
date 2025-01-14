@@ -28,22 +28,22 @@
 
 //! Auxiliary operations
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::util::storage_context_optional_tx;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{util::meta_storage_context_optional_tx, Element, Error, GroveDb, TransactionArg};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Put op for aux storage
     pub fn put_aux<K: AsRef<[u8]>>(

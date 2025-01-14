@@ -1741,7 +1741,7 @@ impl GroveDb {
         let stop_level = batch_apply_options.batch_pause_height.unwrap_or_default() as u32;
 
         // We will update up the tree
-        while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
+        while let Some(ops_at_level) = ops_by_level_paths.remove(current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
                 if current_level == 0 {
                     // execute the ops at this path
@@ -1794,7 +1794,7 @@ impl GroveDb {
                         // operations up for the level above
                         if let Some((key, parent_path)) = path.split_last() {
                             if let Some(ops_at_level_above) =
-                                ops_by_level_paths.get_mut(&(current_level - 1))
+                                ops_by_level_paths.get_mut(current_level - 1)
                             {
                                 // todo: fix this hack
                                 let parent_path = KeyInfoPath(parent_path.to_vec());

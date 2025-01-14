@@ -1,19 +1,19 @@
 //! Space efficient methods for referencing other elements in GroveDB
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::fmt;
 
 use bincode::{Decode, Encode};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_visualize::visualize_to_vec;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::Error;
 
-#[cfg(any(feature = "full", feature = "verify"))]
-#[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg_attr(not(any(feature = "minimal", feature = "visualize")), derive(Debug))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Reference path variants
 #[derive(Hash, Eq, PartialEq, Encode, Decode, Clone)]
@@ -110,7 +110,7 @@ impl fmt::Display for ReferencePathType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl ReferencePathType {
     /// Given the reference path type and the current qualified path (path+key),
     /// this computes the absolute path of the item the reference is pointing
@@ -134,7 +134,7 @@ impl ReferencePathType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "visualize"))]
+#[cfg(any(feature = "minimal", feature = "visualize"))]
 impl fmt::Debug for ReferencePathType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -144,7 +144,7 @@ impl fmt::Debug for ReferencePathType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
@@ -161,7 +161,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
@@ -285,7 +285,7 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl ReferencePathType {
     /// Serialized size
     pub fn serialized_size(&self) -> usize {
@@ -320,7 +320,7 @@ impl ReferencePathType {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::Query;

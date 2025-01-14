@@ -1,26 +1,26 @@
 //! Merk tree encoding
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use ed::{Decode, Encode};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::TreeNode;
 use crate::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     error::{Error, Error::EdError},
     tree::TreeNodeInner,
     Error::StorageError,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TreeNode {
     /// Decode given bytes and set as Tree fields. Set key to value of given
     /// key.
@@ -67,7 +67,7 @@ impl TreeNode {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TreeNode {
     #[inline]
     /// Encode
@@ -143,7 +143,7 @@ impl TreeNode {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use super::{super::Link, *};

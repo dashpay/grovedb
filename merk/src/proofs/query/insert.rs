@@ -2,7 +2,7 @@ use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToIncl
 
 use crate::proofs::{query::query_item::QueryItem, Query};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Query {
     /// Adds an individual key to the query, so that its value (or its absence)
     /// in the tree will be included in the resulting proof.
