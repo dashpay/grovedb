@@ -51,12 +51,13 @@ use super::{
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
-    storage::{AbstractBatchOperation, SubtreePrefix},
+    storage::AbstractBatchOperation,
     worst_case_costs::WorstKeyLength,
     Storage, StorageBatch,
 };
 
 const BLAKE_BLOCK_LEN: usize = 64;
+pub type SubtreePrefix = [u8; 32];
 
 fn blake_block_count(len: usize) -> usize {
     if len == 0 {
