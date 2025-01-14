@@ -32,7 +32,6 @@ impl Element {
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
-        extra_error_info: Option<impl FnOnce() -> String>,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         check_grovedb_v0_with_cost!("get", grove_version.grovedb_versions.element.get);
@@ -44,19 +43,14 @@ impl Element {
                 } else {
                     String::new()
                 };
-                let extra_error_info_string = extra_error_info
-                    .map(|callback| format!(" {}", callback()))
-                    .unwrap_or(String::new());
                 Error::PathKeyNotFound(format!(
-                    "get: key 0x{} {}not found in Merk that has a root key [{}] and is of type \
-                     {}{}",
+                    "get: key 0x{} {}not found in Merk that has a root key [{}] and is of type {}",
                     hex::encode(key),
                     key_single_byte,
                     merk.root_key()
                         .map(hex::encode)
                         .unwrap_or("None".to_string()),
                     merk.merk_type,
-                    extra_error_info_string,
                 ))
             })
         })
@@ -326,6 +320,8 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
+        use crate::error::GroveDbErrorExt;
+
         check_grovedb_v0_with_cost!(
             "get_with_absolute_refs",
             grove_version
@@ -337,13 +333,8 @@ impl Element {
 
         let element = cost_return_on_error!(
             &mut cost,
-            Self::get(
-                merk,
-                key.as_ref(),
-                allow_cache,
-                Some(|| { format!("path is {}", path_as_slices_hex_to_ascii(path)) }),
-                grove_version
-            )
+            Self::get(merk, key.as_ref(), allow_cache, grove_version)
+                .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
         );
 
         let absolute_element = cost_return_on_error_no_add!(
@@ -435,15 +426,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            Element::get(
-                &merk,
-                b"another-key",
-                true,
-                None::<fn() -> String>,
-                grove_version
-            )
-            .unwrap()
-            .expect("expected successful get"),
+            Element::get(&merk, b"another-key", true, grove_version)
+                .unwrap()
+                .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
         );
 
@@ -453,24 +438,12 @@ mod tests {
             .unwrap()
             .expect("expected successful insertion 2");
 
-        let cost_with_cache = Element::get(
-            &merk,
-            b"another-key",
-            true,
-            None::<fn() -> String>,
-            grove_version,
-        )
-        .cost_as_result()
-        .expect("expected to get cost");
-        let cost_without_cache = Element::get(
-            &merk,
-            b"another-key",
-            false,
-            None::<fn() -> String>,
-            grove_version,
-        )
-        .cost_as_result()
-        .expect("expected to get cost");
+        let cost_with_cache = Element::get(&merk, b"another-key", true, grove_version)
+            .cost_as_result()
+            .expect("expected to get cost");
+        let cost_without_cache = Element::get(&merk, b"another-key", false, grove_version)
+            .cost_as_result()
+            .expect("expected to get cost");
         assert_ne!(cost_with_cache, cost_without_cache);
 
         assert_eq!(
