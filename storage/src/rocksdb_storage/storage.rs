@@ -55,10 +55,9 @@ use crate::{
     worst_case_costs::WorstKeyLength,
     Storage, StorageBatch,
 };
+use crate::storage::SubtreePrefix;
 
 const BLAKE_BLOCK_LEN: usize = 64;
-
-pub type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 fn blake_block_count(len: usize) -> usize {
     if len == 0 {

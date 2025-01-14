@@ -42,8 +42,7 @@ use grovedb_path::SubtreePath;
 use grovedb_visualize::visualize_to_vec;
 
 use crate::{worst_case_costs::WorstKeyLength, Error};
-
-pub type SubtreePrefix = [u8; blake3::OUT_LEN];
+pub type SubtreePrefix = [u8; 32];
 
 /// Top-level storage_cost abstraction.
 /// Should be able to hold storage_cost connection and to start transaction when

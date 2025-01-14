@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-storage"
-version = "2.2.0"
+version = "2.2.1"
 edition = "2021"
 license = "MIT"
 description = "Storage extension crate for GroveDB"
@@ -9,9 +9,9 @@ documentation = "https://docs.rs/grovedb-storage"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
-grovedb-costs = { version = "2.2.0", path = "../costs" }
-grovedb-path = { version = "2.2.0", path = "../path" }
-grovedb-visualize = { version = "2.2.0", path = "../visualize" }
+grovedb-costs = { version = "2.2.1", path = "../costs" }
+grovedb-path = { version = "2.2.1", path = "../path" }
+grovedb-visualize = { version = "2.2.1", path = "../visualize" }
 
 blake3 = { version = "1.5.1", optional = true }
 hex = "0.4.3"
