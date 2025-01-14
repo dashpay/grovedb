@@ -1,16 +1,16 @@
 //! Check if empty tree operations
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::error::GroveVersionError;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Check if it's an empty tree
     pub fn is_empty_tree<'b, B, P>(

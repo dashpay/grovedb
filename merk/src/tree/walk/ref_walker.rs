@@ -1,19 +1,19 @@
 //! Merk reference walker
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::{
     super::{Link, TreeNode},
     Fetch,
 };
 use crate::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::Error;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Allows read-only traversal of a `Tree`, fetching from the given source when
 /// traversing to a pruned node. The fetched nodes are then retained in memory
 /// until they (possibly) get pruned on the next commit.
@@ -28,7 +28,7 @@ where
     source: S,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,

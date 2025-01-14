@@ -1,12 +1,12 @@
 //! Merk tree ops
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{
     collections::{BTreeSet, LinkedList},
     fmt,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -17,21 +17,21 @@ use grovedb_costs::{
     CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use Op::*;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::{Fetch, Link, TreeNode, Walker};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
 use crate::{
     merk::KeyUpdates,
     tree::kv::{ValueDefinedCostType, ValueDefinedCostType::SpecializedValueDefinedCost},
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// An operation to be applied to a key in the store.
 #[derive(PartialEq, Clone, Eq)]
 pub enum Op {
@@ -70,7 +70,7 @@ pub enum Op {
     DeleteLayeredMaybeSpecialized,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl fmt::Debug for Op {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(
@@ -115,13 +115,13 @@ pub type MerkBatch<K> = [BatchEntry<K>];
 /// and unique.
 pub type AuxMerkBatch<K> = [AuxBatchEntry<K>];
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// A source of data which panics when called. Useful when creating a store
 /// which always keeps the state in memory.
 #[derive(Clone)]
 pub struct PanicSource {}
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Fetch for PanicSource {
     fn fetch(
         &self,
@@ -135,7 +135,7 @@ impl Fetch for PanicSource {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<S> Walker<S>
 where
     S: Fetch + Sized + Clone,
@@ -1045,7 +1045,7 @@ where
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
     use super::*;

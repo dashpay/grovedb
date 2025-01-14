@@ -1,18 +1,18 @@
 //! Operations for the manipulation of GroveDB state
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub(crate) mod auxiliary;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod delete;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub(crate) mod get;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod insert;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub(crate) mod is_empty_tree;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod proof;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};

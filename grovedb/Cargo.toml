@@ -19,23 +19,20 @@ grovedb-storage = { version = "2.1.0", path = "../storage", optional = true }
 grovedb-version = { version = "2.1.0", path = "../grovedb-version" }
 grovedb-visualize = { version = "2.1.0", path = "../visualize", optional = true }
 
-axum = { version = "0.7.5", features = ["macros"], optional = true }
+axum = { version = "0.8.1", features = ["macros"], optional = true }
 bincode = { version = "2.0.0-rc.3" }
-bitvec = "1"
-blake3 = "1.4.0"
-derive_more = "0.99.18"
+blake3 = "1.5.5"
 hex = "0.4.3"
-indexmap = "2.2.6"
+indexmap = "2.7.0"
 integer-encoding = { version = "4.0.0", optional = true }
-intmap = { version = "2.0.0", optional = true }
-itertools = { version = "0.12.1", optional = true }
-nohash-hasher = { version = "0.2.0", optional = true }
+intmap = { version = "3.0.1", optional = true }
+itertools = { version = "0.14.0", optional = true }
 tempfile = { version = "3.10.1", optional = true }
-thiserror = { version = "1.0.59", optional = true }
+thiserror = { version = "2.0.11", optional = true }
 tokio-util = { version = "0.7.12", optional = true }
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "net"], optional = true }
 tower-http = { version = "0.5.2", features = ["fs"], optional = true }
-zip-extensions = { version ="0.6.2", optional = true }
+zip-extensions = { version = "0.8.1", optional = true }
 serde = { version = "1.0.210", features = ["derive"], optional = true }
 
 [dev-dependencies]
@@ -56,6 +53,10 @@ proof_debug = ["grovedb-merk/proof_debug"]
 serde = ["dep:serde", "grovedb-merk/serde", "indexmap/serde"]
 full = [
     "grovedb-merk/full",
+    "minimal",
+]
+minimal = [
+    "grovedb-merk/minimal",
     "thiserror",
     "tempfile",
     "grovedb-storage/rocksdb_storage",
@@ -63,7 +64,6 @@ full = [
     "itertools",
     "integer-encoding",
     "grovedb-costs",
-    "nohash-hasher",
     "intmap",
 ]
 visualize = [

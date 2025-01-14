@@ -32,7 +32,7 @@ impl GroveDb {
         key: &KeyInfo,
         stop_path_height: Option<u16>,
         validate: bool,
-        estimated_layer_info: IntMap<EstimatedLayerInformation>,
+        estimated_layer_info: IntMap<u64, EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(

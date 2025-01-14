@@ -1,6 +1,6 @@
 //! Proof operations
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod generate;
 pub mod util;
 mod verify;
@@ -8,7 +8,6 @@ mod verify;
 use std::{collections::BTreeMap, fmt};
 
 use bincode::{Decode, Encode};
-use derive_more::From;
 use grovedb_merk::{
     proofs::{
         query::{Key, VerifyOptions},
@@ -64,7 +63,7 @@ pub struct LayerProof {
     pub lower_layers: BTreeMap<Key, LayerProof>,
 }
 
-#[derive(Encode, Decode, From)]
+#[derive(Encode, Decode)]
 pub enum GroveDBProof {
     V0(GroveDBProofV0),
 }

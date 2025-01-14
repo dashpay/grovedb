@@ -1,29 +1,29 @@
 //! Average case costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::RootHashKeyAndSum;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
     IsSumTree,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use itertools::Itertools;
 
 use crate::Element;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
@@ -32,7 +32,7 @@ use crate::{
     Error, GroveDb,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveOp {
     /// Get the estimated average case cost of the op. Calls a lower level
     /// function to calculate the estimate based on the type of op. Returns
@@ -137,7 +137,7 @@ impl GroveOp {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
@@ -145,7 +145,7 @@ pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     cached_merks: HashMap<KeyInfoPath, IsSumTree>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl AverageCaseTreeCacheKnownPaths {
     /// Updates the cache to the default setting with the given subtree paths
     pub(in crate::batch) fn new_with_estimated_layer_information(
@@ -158,14 +158,14 @@ impl AverageCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &QualifiedGroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
@@ -291,7 +291,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

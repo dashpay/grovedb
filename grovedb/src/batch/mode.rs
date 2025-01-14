@@ -11,7 +11,7 @@ use grovedb_merk::estimated_costs::{
 #[cfg(feature = "estimated_costs")]
 use crate::batch::KeyInfoPath;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Batch Running Mode
 #[derive(Clone, PartialEq, Eq)]
 pub enum BatchRunMode {

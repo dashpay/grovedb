@@ -1,28 +1,28 @@
 //! Worst case costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
     worst_case_merk_propagate, WorstCaseLayerInformation,
 };
 use grovedb_merk::RootHashKeyAndSum;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use itertools::Itertools;
 
 use crate::Element;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
@@ -31,7 +31,7 @@ use crate::{
     Error, GroveDb,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveOp {
     fn worst_case_cost(
         &self,
@@ -133,7 +133,7 @@ impl GroveOp {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -141,7 +141,7 @@ pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     cached_merks: HashSet<KeyInfoPath>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl WorstCaseTreeCacheKnownPaths {
     /// Updates the cache with the default settings and the given paths
     pub(in crate::batch) fn new_with_worst_case_layer_information(
@@ -154,14 +154,14 @@ impl WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &QualifiedGroveDbOp, _is_sum_tree: bool) -> CostResult<(), Error> {
         let mut worst_case_cost = OperationCost::default();
@@ -262,7 +262,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

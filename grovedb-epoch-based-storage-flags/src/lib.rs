@@ -255,13 +255,13 @@ impl StorageFlags {
             sectioned_bytes
                 .iter()
                 .try_for_each(|(epoch, removed_bytes)| {
-                    if *epoch == base_epoch as u64 {
+                    if epoch == base_epoch {
                         return Ok::<(), StorageFlagsError>(());
                     }
-                    let bytes_added_in_epoch = other_epoch_bytes.get_mut(&(*epoch as u16)).ok_or(
+                    let bytes_added_in_epoch = other_epoch_bytes.get_mut(&epoch).ok_or(
                         StorageFlagsError::RemovingAtEpochWithNoAssociatedStorage(format!(
                             "can not remove bytes when there is no epoch number [{}]",
-                            *epoch
+                            epoch
                         )),
                     )?;
 
@@ -273,7 +273,7 @@ impl StorageFlags {
 
                     if desired_bytes_in_epoch <= MINIMUM_NON_BASE_FLAGS_SIZE {
                         // Collect the key to remove later
-                        keys_to_remove.push(*epoch as u16);
+                        keys_to_remove.push(epoch);
                     } else {
                         *bytes_added_in_epoch = desired_bytes_in_epoch;
                     }
@@ -735,10 +735,10 @@ impl StorageFlags {
                 return NoStorageRemoval;
             }
             let bytes_left = removed_bytes;
-            let mut sectioned_storage_removal: IntMap<u32> = IntMap::default();
+            let mut sectioned_storage_removal: IntMap<u16, u32> = IntMap::default();
             if bytes_left > 0 {
                 // We need to take some from the base epoch
-                sectioned_storage_removal.insert(*base_epoch as u64, removed_bytes);
+                sectioned_storage_removal.insert(*base_epoch, removed_bytes);
             }
             let mut sectioned_storage_removal_by_identifier: StorageRemovalPerEpochByIdentifier =
                 BTreeMap::new();
@@ -763,19 +763,17 @@ impl StorageFlags {
             }
             let mut bytes_left = removed_bytes;
             let mut rev_iter = other_epoch_bytes.iter().rev();
-            let mut sectioned_storage_removal: IntMap<u32> = IntMap::default();
+            let mut sectioned_storage_removal: IntMap<u16, u32> = IntMap::default();
 
             while bytes_left > 0 {
                 if let Some((epoch_index, bytes_in_epoch)) = rev_iter.next() {
                     if *bytes_in_epoch <= bytes_left + MINIMUM_NON_BASE_FLAGS_SIZE {
-                        sectioned_storage_removal.insert(
-                            *epoch_index as u64,
-                            *bytes_in_epoch - MINIMUM_NON_BASE_FLAGS_SIZE,
-                        );
+                        sectioned_storage_removal
+                            .insert(*epoch_index, *bytes_in_epoch - MINIMUM_NON_BASE_FLAGS_SIZE);
                         bytes_left -= *bytes_in_epoch - MINIMUM_NON_BASE_FLAGS_SIZE;
                     } else {
                         // Correctly take only the required bytes_left from this epoch
-                        sectioned_storage_removal.insert(*epoch_index as u64, bytes_left);
+                        sectioned_storage_removal.insert(*epoch_index, bytes_left);
                         bytes_left = 0; // All required bytes have been removed, stop processing
                         break; // Exit the loop as there's no need to process
                                // further epochs
@@ -787,7 +785,7 @@ impl StorageFlags {
 
             if bytes_left > 0 {
                 // If there are still bytes left, take them from the base epoch
-                sectioned_storage_removal.insert(*base_epoch as u64, bytes_left);
+                sectioned_storage_removal.insert(*base_epoch, bytes_left);
             }
 
             let mut sectioned_storage_removal_by_identifier: StorageRemovalPerEpochByIdentifier =
@@ -1184,7 +1182,7 @@ mod storage_flags_tests {
 
     fn single_epoch_removed_bytes_map(
         owner_id: [u8; 32],
-        epoch_index: u64,
+        epoch_index: u16,
         bytes_removed: u32,
     ) -> StorageRemovalPerEpochByIdentifier {
         let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
@@ -1196,7 +1194,7 @@ mod storage_flags_tests {
 
     fn multi_epoch_removed_bytes_map(
         owner_id: [u8; 32],
-        removed_bytes_per_epoch: IntMap<u32>,
+        removed_bytes_per_epoch: IntMap<u16, u32>,
     ) -> StorageRemovalPerEpochByIdentifier {
         let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
         removed_bytes.insert(owner_id, removed_bytes_per_epoch);
@@ -1241,9 +1239,9 @@ mod storage_flags_tests {
         let mut removed_bytes = IntMap::new();
         for i in 1..200 {
             other_epochs.insert(i, MINIMUM_NON_BASE_FLAGS_SIZE + 1);
-            removed_bytes.insert(i as u64, 1); // anything between 1 and
-                                               // MINIMUM_NON_BASE_FLAGS_SIZE +
-                                               // 1 would be the same
+            removed_bytes.insert(i, 1); // anything between 1 and
+                                        // MINIMUM_NON_BASE_FLAGS_SIZE +
+                                        // 1 would be the same
         }
 
         let left_flag = StorageFlags::MultiEpochOwned(left_base_index, other_epochs, owner_id);
@@ -1280,7 +1278,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(default_owner_id(), IntMap::from_iter([(5u64, 100)]));
+                map.insert(default_owner_id(), IntMap::from_iter([(5u16, 100)]));
                 map
             })
         );
@@ -1288,7 +1286,7 @@ mod storage_flags_tests {
             value_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(default_owner_id(), IntMap::from_iter([(5u64, 200)]));
+                map.insert(default_owner_id(), IntMap::from_iter([(5u16, 200)]));
                 map
             })
         );
@@ -1305,7 +1303,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(owner_id, IntMap::from_iter([(5u64, 50)]));
+                map.insert(owner_id, IntMap::from_iter([(5u16, 50)]));
                 map
             })
         );
@@ -1313,7 +1311,7 @@ mod storage_flags_tests {
             value_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(owner_id, IntMap::from_iter([(5u64, 150)]));
+                map.insert(owner_id, IntMap::from_iter([(5u16, 150)]));
                 map
             })
         );
@@ -1335,7 +1333,7 @@ mod storage_flags_tests {
                 let mut map = BTreeMap::new();
                 map.insert(
                     default_owner_id(),
-                    IntMap::from_iter([(7u64, 197), (6u64, 53)]),
+                    IntMap::from_iter([(7u16, 197), (6u16, 53)]),
                 );
                 map
             })
@@ -1356,7 +1354,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(default_owner_id(), IntMap::from_iter([(5u64, 250)]));
+                map.insert(default_owner_id(), IntMap::from_iter([(5u16, 250)]));
                 map
             })
         );
@@ -1366,7 +1364,7 @@ mod storage_flags_tests {
                 let mut map = BTreeMap::new();
                 map.insert(
                     default_owner_id(),
-                    IntMap::from_iter([(7u64, 47), (6u64, 97), (5u64, 106)]),
+                    IntMap::from_iter([(7u16, 47), (6u16, 97), (5u16, 106)]),
                 );
                 map
             })
@@ -1387,7 +1385,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(owner_id, IntMap::from_iter([(5u64, 250)]));
+                map.insert(owner_id, IntMap::from_iter([(5u16, 250)]));
                 map
             })
         );
@@ -1397,7 +1395,7 @@ mod storage_flags_tests {
                 let mut map = BTreeMap::new();
                 map.insert(
                     owner_id,
-                    IntMap::from_iter([(7u64, 47), (6u64, 97), (5u64, 106)]),
+                    IntMap::from_iter([(7u16, 47), (6u16, 97), (5u16, 106)]),
                 );
                 map
             })
@@ -1426,7 +1424,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(owner_id, IntMap::from_iter([(5u64, 100)]));
+                map.insert(owner_id, IntMap::from_iter([(5u16, 100)]));
                 map
             })
         );
@@ -1434,7 +1432,7 @@ mod storage_flags_tests {
             value_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(owner_id, IntMap::from_iter([(5u64, 50)]));
+                map.insert(owner_id, IntMap::from_iter([(5u16, 50)]));
                 map
             })
         );
@@ -1455,7 +1453,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(default_owner_id(), IntMap::from_iter([(5u64, 400)]));
+                map.insert(default_owner_id(), IntMap::from_iter([(5u16, 400)]));
                 map
             })
         );
@@ -1465,7 +1463,7 @@ mod storage_flags_tests {
                 let mut map = BTreeMap::new();
                 map.insert(
                     default_owner_id(),
-                    IntMap::from_iter([(7u64, 197), (6u64, 97), (5u64, 6)]),
+                    IntMap::from_iter([(7u16, 197), (6u16, 97), (5u16, 6)]),
                 );
                 map
             })
@@ -1486,7 +1484,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(owner_id, IntMap::from_iter([(5u64, 450)]));
+                map.insert(owner_id, IntMap::from_iter([(5u16, 450)]));
                 map
             })
         );
@@ -1496,7 +1494,7 @@ mod storage_flags_tests {
                 let mut map = BTreeMap::new();
                 map.insert(
                     owner_id,
-                    IntMap::from_iter([(7u64, 197), (6u64, 97), (5u64, 56)]),
+                    IntMap::from_iter([(7u16, 197), (6u16, 97), (5u16, 56)]),
                 );
                 map
             })
@@ -1550,7 +1548,7 @@ mod storage_flags_tests {
                 let mut map = BTreeMap::new();
                 map.insert(
                     owner_id,
-                    IntMap::from_iter([(5u64, 6), (6u64, 297), (7u64, 397)]),
+                    IntMap::from_iter([(5u16, 6), (6u16, 297), (7u16, 397)]),
                 );
                 map
             })
@@ -1569,7 +1567,7 @@ mod storage_flags_tests {
             key_removal,
             StorageRemovedBytes::SectionedStorageRemoval({
                 let mut map = BTreeMap::new();
-                map.insert(default_owner_id(), IntMap::from_iter([(5u64, 400)]));
+                map.insert(default_owner_id(), IntMap::from_iter([(5u16, 400)]));
                 map
             })
         );
@@ -1579,7 +1577,7 @@ mod storage_flags_tests {
                 let mut map = BTreeMap::new();
                 map.insert(
                     default_owner_id(),
-                    IntMap::from_iter([(7u64, 97), (6u64, 297), (5u64, 106)]),
+                    IntMap::from_iter([(7u16, 97), (6u16, 297), (5u16, 106)]),
                 );
                 map
             })

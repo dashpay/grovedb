@@ -1,21 +1,21 @@
 //! Merk tree link
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::io::{Read, Write};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use ed::{Decode, Encode, Result, Terminated};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::{hash::CryptoHash, TreeNode};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::HASH_LENGTH_U32;
 
 // TODO: optimize memory footprint
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Represents a reference to a child tree node. Links may or may not contain
 /// the child's `Tree` instance (storing its key if not).
 #[derive(Clone, Debug, PartialEq)]
@@ -75,7 +75,7 @@ pub enum Link {
     },
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Link {
     /// Creates a `Link::Modified` from the given `Tree`.
     #[inline]
@@ -295,7 +295,7 @@ impl Link {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Encode for Link {
     #[inline]
     fn encode_into<W: Write>(&self, out: &mut W) -> Result<()> {
@@ -376,7 +376,7 @@ impl Encode for Link {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Link {
     #[inline]
     fn default_reference() -> Self {
@@ -389,7 +389,7 @@ impl Link {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Decode for Link {
     #[inline]
     fn decode<R: Read>(input: R) -> Result<Self> {
@@ -440,10 +440,10 @@ impl Decode for Link {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Terminated for Link {}
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[inline]
 fn read_u8<R: Read>(mut input: R) -> Result<u8> {
     let mut length = [0];
@@ -451,7 +451,7 @@ fn read_u8<R: Read>(mut input: R) -> Result<u8> {
     Ok(length[0])
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
     use super::{
