@@ -397,22 +397,28 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
             MerkProofNode::KVValueHash(key, element_to_grovedbg(element), hash)
         }
-        Node::KVValueHashFeatureType(key, value, hash, TreeFeatureType::BasicMerkNode) => {
+        Node::KVValueHashFeatureType(key, value, hash, feature_type) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            let node_feature_type = match feature_type {
+                TreeFeatureType::BasicMerkNode => grovedbg_types::TreeFeatureType::BasicMerkNode,
+                TreeFeatureType::SummedMerkNode(sum) => {
+                    grovedbg_types::TreeFeatureType::SummedMerkNode(sum)
+                }
+                TreeFeatureType::BigSummedMerkNode(sum) => {
+                    grovedbg_types::TreeFeatureType::BigSummedMerkNode(sum)
+                }
+                TreeFeatureType::CountedMerkNode(count) => {
+                    grovedbg_types::TreeFeatureType::CountedMerkNode(count)
+                }
+                TreeFeatureType::CountedSummedMerkNode(count, sum) => {
+                    grovedbg_types::TreeFeatureType::CountedSummedMerkNode(count, sum)
+                }
+            };
             MerkProofNode::KVValueHashFeatureType(
                 key,
                 element_to_grovedbg(element),
                 hash,
-                grovedbg_types::TreeFeatureType::BasicMerkNode,
-            )
-        }
-        Node::KVValueHashFeatureType(key, value, hash, TreeFeatureType::SummedMerkNode(sum)) => {
-            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
-            MerkProofNode::KVValueHashFeatureType(
-                key,
-                element_to_grovedbg(element),
-                hash,
-                grovedbg_types::TreeFeatureType::SummedMerkNode(sum),
+                node_feature_type,
             )
         }
         Node::KVRefValueHash(key, value, hash) => {
@@ -597,6 +603,28 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             sum,
             element_flags,
         },
+        crate::Element::BigSumTree(root_key, sum, element_flags) => {
+            grovedbg_types::Element::BigSumTree {
+                root_key,
+                sum,
+                element_flags,
+            }
+        }
+        crate::Element::CountTree(root_key, count, element_flags) => {
+            grovedbg_types::Element::CountTree {
+                root_key,
+                count,
+                element_flags,
+            }
+        }
+        crate::Element::CountSumTree(root_key, count, sum, element_flags) => {
+            grovedbg_types::Element::CountSumTree {
+                root_key,
+                count,
+                sum,
+                element_flags,
+            }
+        }
     }
 }
 
@@ -628,8 +656,17 @@ fn node_to_update(
         right_merk_hash,
         feature_type: match feature_type {
             TreeFeatureType::BasicMerkNode => grovedbg_types::TreeFeatureType::BasicMerkNode,
-            TreeFeatureType::SummedMerkNode(x) => {
-                grovedbg_types::TreeFeatureType::SummedMerkNode(x)
+            TreeFeatureType::SummedMerkNode(sum) => {
+                grovedbg_types::TreeFeatureType::SummedMerkNode(sum)
+            }
+            TreeFeatureType::BigSummedMerkNode(sum) => {
+                grovedbg_types::TreeFeatureType::BigSummedMerkNode(sum)
+            }
+            TreeFeatureType::CountedMerkNode(count) => {
+                grovedbg_types::TreeFeatureType::CountedMerkNode(count)
+            }
+            TreeFeatureType::CountedSummedMerkNode(count, sum) => {
+                grovedbg_types::TreeFeatureType::CountedSummedMerkNode(count, sum)
             }
         },
         value_hash,
