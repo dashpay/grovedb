@@ -29,9 +29,6 @@ use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "minimal")]
-use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
-#[cfg(feature = "minimal")]
-#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::{
     BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
 };

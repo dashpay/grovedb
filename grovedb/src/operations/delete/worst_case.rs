@@ -27,7 +27,7 @@ impl GroveDb {
         key: &KeyInfo,
         stop_path_height: Option<u16>,
         validate: bool,
-        intermediate_tree_info: IntMap<(TreeType, u32)>,
+        intermediate_tree_info: IntMap<u64, (TreeType, u32)>,
         max_element_size: u32,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {

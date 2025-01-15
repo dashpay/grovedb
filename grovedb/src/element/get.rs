@@ -5,7 +5,6 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::tree::kv::KV;
 #[cfg(feature = "minimal")]
 use grovedb_merk::Merk;
 #[cfg(feature = "minimal")]
@@ -19,13 +18,12 @@ use grovedb_version::{
 };
 use integer_encoding::VarInt;
 
-use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
 #[cfg(feature = "minimal")]
 use crate::{
     element::{CostSize, SUM_ITEM_COST_SIZE},
     operations::proof::util::path_as_slices_hex_to_ascii,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{Element, Error, Hash};
 
 impl Element {

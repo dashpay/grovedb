@@ -10,12 +10,6 @@ use std::{
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::RootHashKeyAndSum;
-#[cfg(feature = "minimal")]
-use grovedb_merk::{
-    estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
-    IsSumTree
-};
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::average_case_costs::{
     average_case_merk_propagate, EstimatedLayerInformation,

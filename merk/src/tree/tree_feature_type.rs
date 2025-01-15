@@ -3,7 +3,7 @@
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use std::io::{Read, Write};
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 #[cfg(feature = "minimal")]
 use ed::Terminated;
@@ -159,6 +159,7 @@ impl TreeFeatureType {
 #[cfg(feature = "minimal")]
 impl Terminated for TreeFeatureType {}
 
+#[cfg(feature = "minimal")]
 impl Encode for TreeFeatureType {
     #[inline]
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {

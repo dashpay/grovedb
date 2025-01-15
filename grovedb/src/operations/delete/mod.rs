@@ -18,7 +18,6 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{proofs::Query, KVIterator};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
 #[cfg(feature = "minimal")]

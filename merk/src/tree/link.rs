@@ -806,6 +806,6 @@ mod test {
             55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0,
         ];
         let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
-        assert_eq!(link.aggregateData(), AggregateData::NoAggregateData);
+        assert_eq!(link.aggregate_data(), AggregateData::NoAggregateData);
     }
 }

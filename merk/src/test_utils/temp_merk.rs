@@ -40,7 +40,6 @@ use grovedb_storage::{
 };
 use grovedb_version::version::GroveVersion;
 
-use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::Merk;
 use crate::{merk::tree_type::TreeType, tree::kv::ValueDefinedCostType};

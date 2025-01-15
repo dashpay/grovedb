@@ -12,7 +12,6 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "minimal")]
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
-use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "minimal")]
 use crate::{
     merk::NodeType,
