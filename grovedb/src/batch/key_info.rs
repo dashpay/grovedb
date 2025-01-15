@@ -1,21 +1,21 @@
 //! Key info
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_visualize::{Drawer, Visualize};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};
 
 /// Key info
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Clone, Eq, Debug)]
 pub enum KeyInfo {
     /// Known key
@@ -29,7 +29,7 @@ pub enum KeyInfo {
     },
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl PartialEq for KeyInfo {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -69,14 +69,14 @@ impl PartialEq<&[u8]> for KeyInfo {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl PartialOrd<Self> for KeyInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Ord for KeyInfo {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.as_slice().cmp(other.as_slice()) {
@@ -90,7 +90,7 @@ impl Ord for KeyInfo {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Hash for KeyInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -106,7 +106,7 @@ impl Hash for KeyInfo {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl WorstKeyLength for KeyInfo {
     fn max_length(&self) -> u8 {
         match self {
@@ -116,7 +116,7 @@ impl WorstKeyLength for KeyInfo {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl KeyInfo {
     /// Return self as slice
     pub fn as_slice(&self) -> &[u8] {
@@ -143,7 +143,7 @@ impl KeyInfo {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Visualize for KeyInfo {
     fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         match self {

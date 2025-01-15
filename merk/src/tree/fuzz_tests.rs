@@ -2,21 +2,21 @@
 
 #![cfg(tests)]
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{cell::RefCell, collections::BTreeMap};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use rand::prelude::*;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{test_utils::*, tree::*};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 const ITERATIONS: usize = 2_000;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 type Map = BTreeMap<Vec<u8>, Vec<u8>>;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[test]
 fn fuzz() {
     let mut rng = thread_rng();
@@ -27,19 +27,19 @@ fn fuzz() {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[test]
 fn fuzz_17391518417409062786() {
     fuzz_case(17391518417409062786);
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[test]
 fn fuzz_396148930387069749() {
     fuzz_case(396148930387069749);
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn fuzz_case(seed: u64, using_sum_trees: bool) {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let initial_size = (rng.gen::<u64>() % 10) + 1;
@@ -72,7 +72,7 @@ fn fuzz_case(seed: u64, using_sum_trees: bool) {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn make_batch(maybe_tree: Option<&TreeNode>, size: u64, seed: u64) -> Vec<BatchEntry> {
     let rng: RefCell<SmallRng> = RefCell::new(SeedableRng::seed_from_u64(seed));
     let mut batch = Vec::with_capacity(size as usize);
@@ -133,7 +133,7 @@ fn make_batch(maybe_tree: Option<&TreeNode>, size: u64, seed: u64) -> Vec<BatchE
     deduped_batch
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn apply_to_map(map: &mut Map, batch: &Batch) {
     for entry in batch.iter() {
         match entry {
@@ -147,7 +147,7 @@ fn apply_to_map(map: &mut Map, batch: &Batch) {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn assert_map(maybe_tree: Option<&TreeNode>, map: &Map) {
     if map.is_empty() {
         assert!(maybe_tree.is_none(), "expected tree to be None");

@@ -28,14 +28,14 @@
 
 //! Merk options
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Merk options
 pub struct MerkOptions {
     /// Base root storage is free?
     pub base_root_storage_is_free: bool,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Default for MerkOptions {
     fn default() -> Self {
         Self {

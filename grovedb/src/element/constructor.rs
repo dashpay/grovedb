@@ -1,8 +1,9 @@
 //! Constructor
 //! Functions for setting an element's type
 
+#[cfg(feature = "minimal")]
 use crate::element::{BigSumValue, CountValue};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     element::{MaxReferenceHop, SumValue},
     reference_path::ReferencePathType,
@@ -10,62 +11,62 @@ use crate::{
 };
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty tree without flags
     // TODO: improve API to avoid creation of Tree elements with uncertain state
     pub fn empty_tree() -> Self {
         Element::new_tree(Default::default())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty tree with flags
     pub fn empty_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_tree_with_flags(Default::default(), flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty sum tree without flags
     pub fn empty_sum_tree() -> Self {
         Element::new_sum_tree(Default::default())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty big sum tree without flags
     pub fn empty_big_sum_tree() -> Self {
         Element::new_big_sum_tree(Default::default())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty count tree without flags
     pub fn empty_count_tree() -> Self {
         Element::new_count_tree(Default::default())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty count sum tree without flags
     pub fn empty_count_sum_tree() -> Self {
         Element::new_count_sum_tree(Default::default())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty sum tree with flags
     pub fn empty_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_sum_tree_with_flags(Default::default(), flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty sum tree with flags
     pub fn empty_big_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_big_sum_tree_with_flags(Default::default(), flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty count tree with flags
     pub fn empty_count_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_count_tree_with_flags(Default::default(), flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to default empty count sum tree with flags
     pub fn empty_count_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_count_sum_tree_with_flags(Default::default(), flags)
@@ -77,31 +78,31 @@ impl Element {
         Element::Item(item_value, None)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to an item with flags
     pub fn new_item_with_flags(item_value: Vec<u8>, flags: Option<ElementFlags>) -> Self {
         Element::Item(item_value, flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a sum item without flags
     pub fn new_sum_item(value: i64) -> Self {
         Element::SumItem(value, None)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a sum item with flags
     pub fn new_sum_item_with_flags(value: i64, flags: Option<ElementFlags>) -> Self {
         Element::SumItem(value, flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a reference without flags
     pub fn new_reference(reference_path: ReferencePathType) -> Self {
         Element::Reference(reference_path, None, None)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a reference with flags
     pub fn new_reference_with_flags(
         reference_path: ReferencePathType,
@@ -110,7 +111,7 @@ impl Element {
         Element::Reference(reference_path, None, flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a reference with hops, no flags
     pub fn new_reference_with_hops(
         reference_path: ReferencePathType,
@@ -119,7 +120,7 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, None)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a reference with max hops and flags
     pub fn new_reference_with_max_hops_and_flags(
         reference_path: ReferencePathType,
@@ -129,13 +130,13 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a tree without flags
     pub fn new_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
         Element::Tree(maybe_root_key, None)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a tree with flags
     pub fn new_tree_with_flags(
         maybe_root_key: Option<Vec<u8>>,
@@ -144,13 +145,13 @@ impl Element {
         Element::Tree(maybe_root_key, flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a sum tree without flags
     pub fn new_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
         Element::SumTree(maybe_root_key, 0, None)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a sum tree with flags
     pub fn new_sum_tree_with_flags(
         maybe_root_key: Option<Vec<u8>>,
@@ -159,7 +160,7 @@ impl Element {
         Element::SumTree(maybe_root_key, 0, flags)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Set element to a sum tree with flags and sum value
     pub fn new_sum_tree_with_flags_and_sum_value(
         maybe_root_key: Option<Vec<u8>>,

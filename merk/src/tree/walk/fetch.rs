@@ -1,17 +1,17 @@
 //! Walk
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::CostResult;
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::super::{Link, TreeNode};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::error::Error;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// A source of data to be used by the tree when encountering a pruned node.
 /// This typically means fetching the tree node from a backing store by its key,
 /// but could also implement an in-memory cache for example.

@@ -1,9 +1,9 @@
 //! Chunk proofs
 
 mod binary_range;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod chunk;
 pub mod chunk_op;
 pub mod error;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod util;

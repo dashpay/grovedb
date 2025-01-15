@@ -1,19 +1,19 @@
 //! Proofs encoding
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::io::{Read, Write};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use ed::Terminated;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use ed::{Decode, Encode, Error as EdError};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use super::{Node, Op};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{error::Error, tree::HASH_LENGTH, TreeFeatureType};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
         match self {
@@ -178,7 +178,7 @@ impl Encode for Op {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Decode for Op {
     fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
         let variant: u8 = Decode::decode(&mut input)?;
@@ -352,11 +352,11 @@ impl Decode for Op {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Terminated for Op {}
 
 impl Op {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     fn encode_into<W: Write>(&self, dest: &mut W) -> Result<(), Error> {
         Encode::encode_into(self, dest).map_err(|e| match e {
             EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
@@ -368,12 +368,12 @@ impl Op {
         })
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     fn encoding_length(&self) -> usize {
         Encode::encoding_length(self).unwrap()
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decode
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         Decode::decode(bytes).map_err(|e| match e {
@@ -387,7 +387,7 @@ impl Op {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Encode into
 pub fn encode_into<'a, T: Iterator<Item = &'a Op>>(ops: T, output: &mut Vec<u8>) {
     for op in ops {
@@ -395,14 +395,14 @@ pub fn encode_into<'a, T: Iterator<Item = &'a Op>>(ops: T, output: &mut Vec<u8>)
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Decoder
 pub struct Decoder<'a> {
     offset: usize,
     bytes: &'a [u8],
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl<'a> Decoder<'a> {
     /// New decoder
     pub const fn new(proof_bytes: &'a [u8]) -> Self {
@@ -413,7 +413,7 @@ impl<'a> Decoder<'a> {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl<'a> Iterator for Decoder<'a> {
     type Item = Result<Op, Error>;
 
@@ -431,7 +431,7 @@ impl<'a> Iterator for Decoder<'a> {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
     use super::super::{Node, Op};

@@ -125,45 +125,45 @@
 //! [Architectural Decision Records](https://github.com/dashpay/grovedb/tree/master/adr) or
 //! [Tutorial](https://www.grovedb.org/tutorials.html)
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod batch;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod element;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod error;
 #[cfg(feature = "estimated_costs")]
 mod estimated_costs;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod operations;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod query;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod query_result_type;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod reference_path;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod replication;
-#[cfg(all(test, feature = "full"))]
+#[cfg(all(test, feature = "minimal"))]
 mod tests;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod util;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod visualize;
 
 #[cfg(feature = "grovedbg")]
 use std::sync::Arc;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::Element;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use element::ElementFlags;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
@@ -174,82 +174,83 @@ pub use grovedb_merk::estimated_costs::{
     },
     worst_case_costs::WorstCaseLayerInformation,
 };
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+#[cfg(feature = "minimal")]
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use grovedb_merk::{
     merk::tree_type::{MaybeTree, TreeType},
     tree::AggregateData,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     StorageBatch,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::{Storage, StorageContext};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::element::helpers::raw_decode;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use crate::error::Error;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::operations::proof::util::hex_to_ascii;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::Error::MerkError;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 type Hash = [u8; 32];
 
 /// GroveDb
 pub struct GroveDb {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     db: RocksDbStorage,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 /// Transaction
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 /// TransactionArg
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 /// Type alias for the return type of the `verify_merk_and_submerks` and
 /// `verify_grovedb` functions. It represents a mapping of paths (as vectors of
 /// vectors of bytes) to a tuple of three cryptographic hashes: the root hash,
 /// the combined value hash, and the expected value hash.
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>;
 
 /// Type alias for the return type of the `open_merk_for_replication` function.
@@ -257,14 +258,14 @@ type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoH
 /// - A `Merk` instance with a prefixed RocksDB immediate storage context.
 /// - An optional `root_key`, represented as a vector of bytes.
 /// - A boolean indicating whether the Merk is a sum tree.
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 type OpenedMerkForReplication<'tx> = (
     Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
     Option<Vec<u8>>,
     TreeType,
 );
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {

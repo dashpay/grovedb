@@ -1,20 +1,21 @@
 //! Worst case get costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
+#[cfg(feature = "minimal")]
 use grovedb_merk::merk::tree_type::TreeType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
 use crate::Error;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     GroveDb,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Worst case cost for has raw
     pub fn worst_case_for_has_raw(

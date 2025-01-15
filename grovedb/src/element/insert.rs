@@ -15,7 +15,7 @@ use integer_encoding::VarInt;
 use crate::{Element, Element::SumItem, Error, Hash};
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -76,7 +76,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Add to batch operations a "Put" op with key and serialized element.
     /// Return CostResult.
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
@@ -119,7 +119,7 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Insert an element in Merk under a key if it doesn't yet exist; path
     /// should be resolved and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -150,7 +150,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations with the element and key if it
     /// doesn't exist yet. Returns CostResult.
     pub fn insert_if_not_exists_into_batch_operations<
@@ -194,7 +194,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Insert an element in Merk under a key if the value is different from
     /// what already exists; path should be resolved and proper Merk should
     /// be loaded by this moment If transaction is not passed, the batch
@@ -234,7 +234,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations with the element and key if the
     /// value is different from what already exists; Returns CostResult.
     /// The bool represents if we indeed inserted.
@@ -284,7 +284,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Insert a reference element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -339,7 +339,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations with reference and key. Returns
     /// CostResult.
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
@@ -371,7 +371,7 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Insert a tree element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -431,7 +431,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations for a subtree and key
     pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
@@ -480,7 +480,7 @@ impl Element {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(all(feature = "minimal", feature = "test_utils"))]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};

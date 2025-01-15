@@ -1,20 +1,21 @@
 //! Average case get costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
+#[cfg(feature = "minimal")]
 use grovedb_merk::merk::tree_type::TreeType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
 use crate::Error;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     GroveDb,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Get the Operation Cost for a has query that doesn't follow
     /// references with the following parameters

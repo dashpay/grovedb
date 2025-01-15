@@ -462,7 +462,7 @@ impl fmt::Display for QueryResultElement {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl QueryResultElement {
     /// Map element
     pub fn map_element(
@@ -487,23 +487,23 @@ impl QueryResultElement {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Key, Element);
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for key optional_element common pattern.
 pub type KeyOptionalElementPair = (Key, Option<Element>);
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for path-key-element common pattern.
 pub type PathKeyElementTrio = (Path, Key, Element);
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for path - key - optional_element common pattern.
 pub type PathKeyOptionalElementTrio = (Path, Key, Option<Element>);
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl TryFromVersioned<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
     type Error = Error;
 
@@ -520,7 +520,7 @@ impl TryFromVersioned<ProvedPathKeyValue> for PathKeyOptionalElementTrio {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl TryFromVersioned<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio {
     type Error = Error;
 
@@ -540,7 +540,7 @@ impl TryFromVersioned<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_version::{version::GroveVersion, TryIntoVersioned};

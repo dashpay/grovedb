@@ -1,7 +1,7 @@
 //! This tests just in time costs
 //! Just in time costs modify the tree in the same batch
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod tests {
     use std::{collections::BTreeMap, option::Option::None};
 
@@ -24,7 +24,7 @@ mod tests {
 
     fn single_epoch_removed_bytes_map(
         owner_id: [u8; 32],
-        epoch_index: u64,
+        epoch_index: u16,
         bytes_removed: u32,
     ) -> StorageRemovalPerEpochByIdentifier {
         let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
@@ -346,7 +346,7 @@ mod tests {
                     let ops_by_root_path = left_over_ops
                         .as_ref()
                         .unwrap()
-                        .get(&0)
+                        .get(0)
                         .expect("expected to have root path");
                     assert_eq!(ops_by_root_path.len(), 1);
                     let new_ops = vec![QualifiedGroveDbOp::insert_or_replace_op(

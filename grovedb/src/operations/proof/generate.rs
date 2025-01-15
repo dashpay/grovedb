@@ -173,11 +173,10 @@ impl GroveDb {
             )
         );
 
-        Ok(GroveDBProofV0 {
+        Ok(GroveDBProof::V0(GroveDBProofV0 {
             root_layer,
             prove_options,
-        }
-        .into())
+        }))
         .wrap_with_cost(cost)
     }
 

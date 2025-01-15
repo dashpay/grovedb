@@ -20,7 +20,7 @@ pub type ChunkIdentifier = (crate::SubtreePrefix, Option<Vec<u8>>, TreeType, Vec
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     pub fn start_syncing_session(&self, app_hash: [u8; 32]) -> Pin<Box<MultiStateSyncSession>> {
         MultiStateSyncSession::new(self.start_transaction(), app_hash)

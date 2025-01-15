@@ -19,7 +19,7 @@ use crate::{
     Error, GroveDb,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Worst case costs for delete operations for delete up tree while empty
     pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(

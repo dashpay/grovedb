@@ -1,22 +1,24 @@
 //! Merk tree key-values
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::io::{Read, Write};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use ed::{Decode, Encode, Result, Terminated};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
+use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
+#[cfg(feature = "minimal")]
 use crate::{
     merk::NodeType,
     tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     tree::{
         hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
@@ -30,7 +32,7 @@ use crate::{
 //       field and value field.
 
 /// It is possible to predefine the value cost of specific types
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValueDefinedCostType {
     /// There is a predefined cost used to remove the root key from a sub tree
@@ -42,7 +44,7 @@ pub enum ValueDefinedCostType {
     SpecializedValueDefinedCost(u32),
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Contains a key/value pair, and the hash of the key/value pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KV {
@@ -56,7 +58,7 @@ pub struct KV {
     pub(super) value_hash: CryptoHash,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl KV {
     /// Creates a new `KV` with the given key and value and computes its hash.
     #[inline]
@@ -455,7 +457,7 @@ impl KV {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 // TODO: Fix encoding and decoding of kv
 impl Encode for KV {
     #[inline]
@@ -474,7 +476,7 @@ impl Encode for KV {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Decode for KV {
     #[inline]
     fn decode<R: Read>(input: R) -> Result<Self> {
@@ -505,10 +507,10 @@ impl Decode for KV {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Terminated for KV {}
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
     use super::*;

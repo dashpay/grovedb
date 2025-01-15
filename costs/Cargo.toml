@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-costs"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 license = "MIT"
 description = "Costs extension crate for GroveDB"
@@ -10,6 +10,6 @@ repository = "https://github.com/dashpay/grovedb"
 
 
 [dependencies]
-thiserror = "1.0.59"
-intmap = "2.0.0"
+thiserror = "2.0.11"
+intmap = "3.0.1"
 integer-encoding = "4.0.0"

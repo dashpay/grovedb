@@ -1,38 +1,38 @@
 //! Merk trees
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod commit;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod debug;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod encoding;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod fuzz_tests;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod hash;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod iter;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod just_in_time_value_update;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod kv;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod link;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod ops;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod tree_feature_type;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod walk;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::cmp::{max, Ordering};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use commit::{Commit, NoopCommit};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use ed::{Decode, Encode, Terminated};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
@@ -42,43 +42,44 @@ use grovedb_costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH,
     NULL_HASH,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use kv::KV;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use link::Link;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use tree_feature_type::AggregateData;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use tree_feature_type::TreeFeatureType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+#[cfg(feature = "minimal")]
 use crate::merk::NodeType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::tree::hash::HASH_LENGTH_X2;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{error::Error, Error::Overflow};
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The fields of the `Tree` type, stored on the heap.
 #[derive(Clone, Encode, Decode, Debug, PartialEq)]
 pub struct TreeNodeInner {
@@ -87,7 +88,7 @@ pub struct TreeNodeInner {
     pub(crate) kv: KV,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TreeNodeInner {
     /// Get the value as owned of the key value struct
     pub fn value_as_owned(self) -> Vec<u8> {
@@ -115,10 +116,10 @@ impl TreeNodeInner {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Terminated for Box<TreeNodeInner> {}
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// A binary AVL tree data structure, with Merkle hashes.
 ///
 /// Trees' inner fields are stored on the heap so that nodes can recursively
@@ -131,7 +132,7 @@ pub struct TreeNode {
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TreeNode {
     /// Creates a new `Tree` with the given key and value, and no children.
     ///
@@ -1119,7 +1120,7 @@ impl TreeNode {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Convert side (left or right) to string
 pub const fn side_to_str(left: bool) -> &'static str {
     if left {
@@ -1129,7 +1130,7 @@ pub const fn side_to_str(left: bool) -> &'static str {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
 

@@ -1,6 +1,6 @@
 //! Tests
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod tests {
     use grovedb_merk::merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;

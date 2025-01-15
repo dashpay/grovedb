@@ -16,7 +16,7 @@ use crate::{
     TransactionArg,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Clone)]
 /// Delete up tree options
 pub struct DeleteUpTreeOptions {
@@ -32,7 +32,7 @@ pub struct DeleteUpTreeOptions {
     pub stop_path_height: Option<u16>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Default for DeleteUpTreeOptions {
     fn default() -> Self {
         DeleteUpTreeOptions {
@@ -45,7 +45,7 @@ impl Default for DeleteUpTreeOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl DeleteUpTreeOptions {
     fn to_delete_options(&self) -> DeleteOptions {
         DeleteOptions {
@@ -57,7 +57,7 @@ impl DeleteUpTreeOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
