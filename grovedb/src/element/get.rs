@@ -5,7 +5,6 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-
 #[cfg(feature = "minimal")]
 use grovedb_merk::Merk;
 #[cfg(feature = "minimal")]
@@ -148,7 +147,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     fn get_optional_from_storage_v0<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(

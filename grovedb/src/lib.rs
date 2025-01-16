@@ -186,7 +186,6 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::{
     merk::tree_type::{MaybeTree, TreeType},

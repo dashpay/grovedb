@@ -8,7 +8,6 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-
 #[cfg(feature = "minimal")]
 use grovedb_merk::merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]

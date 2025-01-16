@@ -502,7 +502,7 @@ pub fn add_average_case_merk_propagate(
         )),
     }
 }
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add average case cost for propagating a merk
 fn add_average_case_merk_propagate_v1(
     cost: &mut OperationCost,
@@ -773,7 +773,7 @@ fn add_average_case_merk_propagate_v1(
     Ok(())
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add average case cost for propagating a merk
 fn add_average_case_merk_propagate_v0(
     cost: &mut OperationCost,

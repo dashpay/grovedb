@@ -49,7 +49,7 @@ impl TreeFeatureType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AggregateData {
     NoAggregateData,

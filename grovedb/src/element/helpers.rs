@@ -6,7 +6,6 @@ use grovedb_merk::tree::kv::{
     ValueDefinedCostType,
     ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
-
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     merk::{tree_type::TreeType, NodeType},

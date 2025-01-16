@@ -11,8 +11,8 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
-use grovedb_merk::{
-    estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
+use grovedb_merk::estimated_costs::average_case_costs::{
+    average_case_merk_propagate, EstimatedLayerInformation,
 };
 use grovedb_merk::{merk::tree_type::TreeType, tree::AggregateData, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]

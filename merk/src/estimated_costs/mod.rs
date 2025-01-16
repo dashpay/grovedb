@@ -29,7 +29,7 @@ pub const LAYER_COST_SIZE: u32 = 3;
 /// The cost of a sum value
 pub const SUM_VALUE_EXTRA_COST: u32 = 9;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// The cost of a count value
 pub const COUNT_VALUE_EXTRA_COST: u32 = 9;
 
