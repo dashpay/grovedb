@@ -44,6 +44,7 @@ use crate::{
         kv::{ValueDefinedCostType, KV},
         BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, TreeNode, Walker,
     },
+    tree_type::TreeType,
     Merk,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
@@ -80,7 +81,7 @@ pub fn apply_memonly_unchecked(
     batch: &MerkBatch<Vec<u8>>,
     grove_version: &GroveVersion,
 ) -> TreeNode {
-    let is_sum_node = tree.is_sum_node();
+    let node_type = tree.node_type();
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
     let mut tree = Walker::<PanicSource>::apply_to(
         Some(walker),
@@ -90,7 +91,7 @@ pub fn apply_memonly_unchecked(
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
-                is_sum_node,
+                node_type,
             ))
         },
         None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -108,12 +109,12 @@ pub fn apply_memonly_unchecked(
     .expect("apply failed")
     .0
     .expect("expected tree");
-    let is_sum_node = tree.is_sum_node();
+    let node_type = tree.node_type();
     tree.commit(&mut NoopCommit {}, &|key, value| {
         Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
             key.len() as u32,
             value.len() as u32,
-            is_sum_node,
+            node_type,
         ))
     })
     .unwrap()
@@ -138,7 +139,7 @@ pub fn apply_memonly(
 pub fn apply_to_memonly(
     maybe_tree: Option<TreeNode>,
     batch: &MerkBatch<Vec<u8>>,
-    is_sum_tree: bool,
+    tree_type: TreeType,
     grove_version: &GroveVersion,
 ) -> Option<TreeNode> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
@@ -150,7 +151,7 @@ pub fn apply_to_memonly(
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
-                is_sum_tree,
+                tree_type.inner_node_type(),
             ))
         },
         None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -168,12 +169,12 @@ pub fn apply_to_memonly(
     .expect("apply failed")
     .0
     .map(|mut tree| {
-        let is_sum_node = tree.is_sum_node();
+        let node_type = tree.node_type();
         tree.commit(&mut NoopCommit {}, &|key, value| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
-                is_sum_node,
+                node_type,
             ))
         })
         .unwrap()
@@ -320,7 +321,7 @@ where
         storage
             .get_storage_context(SubtreePath::empty(), Some(batch))
             .unwrap(),
-        false,
+        TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         grove_version,
     )
@@ -340,7 +341,7 @@ where
         storage
             .get_storage_context(SubtreePath::empty(), None)
             .unwrap(),
-        false,
+        TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
         grove_version,
     )

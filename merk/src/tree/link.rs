@@ -4,6 +4,8 @@
 use std::io::{Read, Write};
 
 #[cfg(feature = "minimal")]
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+#[cfg(feature = "minimal")]
 use ed::{Decode, Encode, Result, Terminated};
 #[cfg(feature = "minimal")]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
@@ -11,8 +13,11 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 #[cfg(feature = "minimal")]
 use super::{hash::CryptoHash, TreeNode};
 #[cfg(feature = "minimal")]
+use crate::merk::NodeType;
+#[cfg(feature = "minimal")]
+use crate::tree::tree_feature_type::AggregateData;
+#[cfg(feature = "minimal")]
 use crate::HASH_LENGTH_U32;
-
 // TODO: optimize memory footprint
 
 #[cfg(feature = "minimal")]
@@ -30,8 +35,8 @@ pub enum Link {
         child_heights: (u8, u8),
         /// Key
         key: Vec<u8>,
-        /// Sum
-        sum: Option<i64>,
+        /// Aggregate data like Sum
+        aggregate_data: AggregateData,
     },
 
     /// Represents a tree node which has been modified since the `Tree`'s last
@@ -57,8 +62,8 @@ pub enum Link {
         child_heights: (u8, u8),
         /// Tree
         tree: TreeNode,
-        /// Sum
-        sum: Option<i64>,
+        /// Aggregate data like Sum
+        aggregate_data: AggregateData,
     },
 
     /// Represents a tree node which has not been modified, has an up-to-date
@@ -70,8 +75,8 @@ pub enum Link {
         child_heights: (u8, u8),
         /// Tree
         tree: TreeNode,
-        /// Sum
-        sum: Option<i64>,
+        /// Aggregate data like Sum
+        aggregate_data: AggregateData,
     },
 }
 
@@ -160,12 +165,12 @@ impl Link {
     /// of variant `Link::Modified` since we have not yet recomputed the tree's
     /// hash.
     #[inline]
-    pub const fn sum(&self) -> Option<i64> {
+    pub const fn aggregate_data(&self) -> AggregateData {
         match self {
             Link::Modified { .. } => panic!("Cannot get hash from modified link"),
-            Link::Reference { sum, .. } => *sum,
-            Link::Uncommitted { sum, .. } => *sum,
-            Link::Loaded { sum, .. } => *sum,
+            Link::Reference { aggregate_data, .. } => *aggregate_data,
+            Link::Uncommitted { aggregate_data, .. } => *aggregate_data,
+            Link::Loaded { aggregate_data, .. } => *aggregate_data,
         }
     }
 
@@ -213,12 +218,12 @@ impl Link {
             Link::Uncommitted { .. } => panic!("Cannot prune Uncommitted tree"),
             Link::Loaded {
                 hash,
-                sum,
+                aggregate_data,
                 child_heights,
                 tree,
             } => Self::Reference {
                 hash,
-                sum,
+                aggregate_data,
                 child_heights,
                 key: tree.take_key(),
             },
@@ -251,8 +256,8 @@ impl Link {
     // Costs for operations within a single merk
     #[inline]
     /// Encoded link size
-    pub const fn encoded_link_size(not_prefixed_key_len: u32, is_sum_tree: bool) -> u32 {
-        let sum_tree_cost = if is_sum_tree { 8 } else { 0 };
+    pub const fn encoded_link_size(not_prefixed_key_len: u32, node_type: NodeType) -> u32 {
+        let sum_tree_cost = node_type.cost();
         // Links are optional values that represent the right or left node for a given
         // 1 byte to represent key_length (this is a u8)
         // key_length to represent the actual key
@@ -269,9 +274,13 @@ impl Link {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
         Ok(match self {
-            Link::Reference { key, sum, .. } => match sum {
-                None => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
-                Some(_sum_value) => {
+            Link::Reference {
+                key,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
+                AggregateData::NoAggregateData => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
+                AggregateData::Count(_) | AggregateData::Sum(_) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -282,13 +291,35 @@ impl Link {
                     //    sum_len for sum vale
                     key.len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
+                AggregateData::BigSum(_) | AggregateData::CountAndSum(..) => {
+                    // 1 for key len
+                    // key_len for keys
+                    // 32 for hash
+                    // 2 for child heights
+                    // 1 to represent presence of sum value
+                    //    if above is 1, then
+                    //    1 for sum len
+                    //    sum_len for sum vale
+                    key.len() + 52 // 1 + 32 + 2 + 1 + 16
+                }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, sum, .. } | Link::Loaded { tree, sum, .. } => match sum {
-                None => tree.key().len() + 36, // 1 + 32 + 2 + 1,
-                Some(sum_value) => {
-                    let _encoded_sum_value = sum_value.encode_var_vec();
+            Link::Uncommitted {
+                tree,
+                aggregate_data,
+                ..
+            }
+            | Link::Loaded {
+                tree,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
+                AggregateData::NoAggregateData => tree.key().len() + 36, // 1 + 32 + 2 + 1,
+                AggregateData::Count(_) | AggregateData::Sum(_) => {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
+                }
+                AggregateData::BigSum(_) | AggregateData::CountAndSum(..) => {
+                    tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
             },
         })
@@ -299,25 +330,25 @@ impl Link {
 impl Encode for Link {
     #[inline]
     fn encode_into<W: Write>(&self, out: &mut W) -> Result<()> {
-        let (hash, sum, key, (left_height, right_height)) = match self {
+        let (hash, aggregate_data, key, (left_height, right_height)) = match self {
             Link::Reference {
                 hash,
-                sum,
+                aggregate_data,
                 key,
                 child_heights,
-            } => (hash, sum, key.as_slice(), child_heights),
+            } => (hash, aggregate_data, key.as_slice(), child_heights),
             Link::Loaded {
                 hash,
-                sum,
+                aggregate_data,
                 tree,
                 child_heights,
-            } => (hash, sum, tree.key(), child_heights),
+            } => (hash, aggregate_data, tree.key(), child_heights),
             Link::Uncommitted {
                 hash,
-                sum,
+                aggregate_data,
                 tree,
                 child_heights,
-            } => (hash, sum, tree.key(), child_heights),
+            } => (hash, aggregate_data, tree.key(), child_heights),
 
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
         };
@@ -331,13 +362,26 @@ impl Encode for Link {
 
         out.write_all(&[*left_height, *right_height])?;
 
-        match sum {
-            None => {
+        match aggregate_data {
+            AggregateData::NoAggregateData => {
                 out.write_all(&[0])?;
             }
-            Some(sum_value) => {
+            AggregateData::Sum(sum_value) => {
                 out.write_all(&[1])?;
-                out.write_varint(sum_value.to_owned())?;
+                out.write_varint(*sum_value)?;
+            }
+            AggregateData::BigSum(big_sum_value) => {
+                out.write_all(&[2])?;
+                out.write_i128::<BigEndian>(*big_sum_value)?;
+            }
+            AggregateData::Count(count_value) => {
+                out.write_all(&[3])?;
+                out.write_varint(*count_value)?;
+            }
+            AggregateData::CountAndSum(count_value, sum_value) => {
+                out.write_all(&[4])?;
+                out.write_varint(*count_value)?;
+                out.write_varint(*sum_value)?;
             }
         }
 
@@ -349,9 +393,13 @@ impl Encode for Link {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
         Ok(match self {
-            Link::Reference { key, sum, .. } => match sum {
-                None => key.len() + 36, // 1 + 32 + 2 + 1
-                Some(sum_value) => {
+            Link::Reference {
+                key,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
+                AggregateData::NoAggregateData => key.len() + 36, // 1 + 32 + 2 + 1
+                AggregateData::Sum(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
                     // 1 for key len
                     // key_len for keys
@@ -363,13 +411,62 @@ impl Encode for Link {
                     //    sum_len for sum vale
                     key.len() + encoded_sum_value.len() + 36 // 1 + 32 + 2 + 1
                 }
+                AggregateData::BigSum(_) => {
+                    // 1 for key len
+                    // key_len for keys
+                    // 32 for hash
+                    // 2 for child heights
+                    // 1 to represent presence of sum value
+                    //    if above is 1, then
+                    //    1 for sum len
+                    //    sum_len for sum vale
+                    key.len() + 52 // 1 + 32 + 2 + 1 + 16
+                }
+                AggregateData::Count(count) => {
+                    let encoded_count_value = count.encode_var_vec();
+                    // 1 for key len
+                    // key_len for keys
+                    // 32 for hash
+                    // 2 for child heights
+                    // 1 to represent presence of sum value
+                    //    if above is 1, then
+                    //    1 for sum len
+                    //    sum_len for sum vale
+                    key.len() + encoded_count_value.len() + 36 // 1 + 32 + 2 + 1
+                }
+                AggregateData::CountAndSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
+                }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, sum, .. } | Link::Loaded { tree, sum, .. } => match sum {
-                None => tree.key().len() + 36, // 1 + 32 + 2 + 1
-                Some(sum_value) => {
+            Link::Uncommitted {
+                tree,
+                aggregate_data,
+                ..
+            }
+            | Link::Loaded {
+                tree,
+                aggregate_data,
+                ..
+            } => match aggregate_data {
+                AggregateData::NoAggregateData => tree.key().len() + 36, // 1 + 32 + 2 + 1
+                AggregateData::Sum(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
                     tree.key().len() + encoded_sum_value.len() + 36 // 1 + 32 + 2 + 1
+                }
+                AggregateData::BigSum(_) => {
+                    tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
+                }
+                AggregateData::Count(count_value) => {
+                    let encoded_count_value = count_value.encode_var_vec();
+                    tree.key().len() + encoded_count_value.len() + 36 // 1 + 32 + 2 + 1
+                }
+                AggregateData::CountAndSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    tree.key().len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
             },
         })
@@ -383,7 +480,7 @@ impl Link {
         Self::Reference {
             key: Vec::with_capacity(64),
             hash: Default::default(),
-            sum: None,
+            aggregate_data: AggregateData::NoAggregateData,
             child_heights: (0, 0),
         }
     }
@@ -407,7 +504,7 @@ impl Decode for Link {
         }
 
         if let Link::Reference {
-            ref mut sum,
+            ref mut aggregate_data,
             ref mut key,
             ref mut hash,
             ref mut child_heights,
@@ -423,14 +520,27 @@ impl Decode for Link {
             child_heights.0 = read_u8(&mut input)?;
             child_heights.1 = read_u8(&mut input)?;
 
-            let has_sum = read_u8(&mut input)?;
-            *sum = match has_sum {
-                0 => None,
+            let aggregate_data_byte = read_u8(&mut input)?;
+            *aggregate_data = match aggregate_data_byte {
+                0 => AggregateData::NoAggregateData,
                 1 => {
                     let encoded_sum: i64 = input.read_varint()?;
-                    Some(encoded_sum)
+                    AggregateData::Sum(encoded_sum)
                 }
-                _ => return Err(ed::Error::UnexpectedByte(55)),
+                2 => {
+                    let encoded_big_sum: i128 = input.read_i128::<BigEndian>()?;
+                    AggregateData::BigSum(encoded_big_sum)
+                }
+                3 => {
+                    let encoded_count: u64 = input.read_varint()?;
+                    AggregateData::Count(encoded_count)
+                }
+                4 => {
+                    let encoded_count: u64 = input.read_varint()?;
+                    let encoded_sum: i64 = input.read_varint()?;
+                    AggregateData::CountAndSum(encoded_count, encoded_sum)
+                }
+                byte => return Err(ed::Error::UnexpectedByte(byte)),
             };
         } else {
             unreachable!()
@@ -487,7 +597,7 @@ mod test {
     #[test]
     fn types() {
         let hash = NULL_HASH;
-        let sum = None;
+        let aggregate_data = AggregateData::NoAggregateData;
         let child_heights = (0, 0);
         let pending_writes = 1;
         let key = vec![0];
@@ -495,7 +605,7 @@ mod test {
 
         let reference = Link::Reference {
             hash,
-            sum,
+            aggregate_data,
             child_heights,
             key,
         };
@@ -506,13 +616,13 @@ mod test {
         };
         let uncommitted = Link::Uncommitted {
             hash,
-            sum,
+            aggregate_data,
             child_heights,
             tree: tree(),
         };
         let loaded = Link::Loaded {
             hash,
-            sum,
+            aggregate_data,
             child_heights,
             tree: tree(),
         };
@@ -578,7 +688,7 @@ mod test {
     fn uncommitted_into_reference() {
         Link::Uncommitted {
             hash: [1; 32],
-            sum: None,
+            aggregate_data: AggregateData::NoAggregateData,
             child_heights: (1, 1),
             tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
         }
@@ -589,7 +699,7 @@ mod test {
     fn encode_link() {
         let link = Link::Reference {
             key: vec![1, 2, 3],
-            sum: None,
+            aggregate_data: AggregateData::NoAggregateData,
             child_heights: (123, 124),
             hash: [55; 32],
         };
@@ -610,7 +720,7 @@ mod test {
     fn encode_link_with_sum() {
         let link = Link::Reference {
             key: vec![1, 2, 3],
-            sum: Some(50),
+            aggregate_data: AggregateData::Sum(50),
             child_heights: (123, 124),
             hash: [55; 32],
         };
@@ -630,11 +740,58 @@ mod test {
     }
 
     #[test]
+    fn encode_link_with_count() {
+        let link = Link::Reference {
+            key: vec![1, 2, 3],
+            aggregate_data: AggregateData::Count(50),
+            child_heights: (123, 124),
+            hash: [55; 32],
+        };
+        assert_eq!(link.encoding_length().unwrap(), 40);
+
+        let mut bytes = vec![];
+        link.encode_into(&mut bytes).unwrap();
+
+        assert_eq!(link.encoding_length().unwrap(), bytes.len());
+        assert_eq!(
+            bytes,
+            vec![
+                3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 3, 50,
+            ]
+        );
+    }
+
+    #[test]
+    fn encode_link_with_big_sum() {
+        let link = Link::Reference {
+            key: vec![1, 2, 3],
+            aggregate_data: AggregateData::BigSum(50),
+            child_heights: (123, 124),
+            hash: [55; 32],
+        };
+        assert_eq!(link.encoding_length().unwrap(), 55);
+
+        let mut bytes = vec![];
+        link.encode_into(&mut bytes).unwrap();
+
+        assert_eq!(link.encoding_length().unwrap(), bytes.len());
+        assert_eq!(
+            bytes,
+            vec![
+                3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 2, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50
+            ]
+        );
+    }
+
+    #[test]
     #[should_panic]
     fn encode_link_long_key() {
         let link = Link::Reference {
             key: vec![123; 300],
-            sum: None,
+            aggregate_data: AggregateData::NoAggregateData,
             child_heights: (123, 124),
             hash: [55; 32],
         };
@@ -649,6 +806,6 @@ mod test {
             55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0,
         ];
         let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
-        assert_eq!(link.sum(), None);
+        assert_eq!(link.aggregate_data(), AggregateData::NoAggregateData);
     }
 }

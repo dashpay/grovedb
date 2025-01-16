@@ -6,6 +6,10 @@ use grovedb_costs::OperationCost;
 use integer_encoding::VarInt;
 
 #[cfg(feature = "minimal")]
+use crate::merk::NodeType;
+#[cfg(feature = "minimal")]
+use crate::tree_type::TreeType;
+#[cfg(feature = "minimal")]
 use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
 
 #[cfg(feature = "minimal")]
@@ -26,17 +30,36 @@ pub const LAYER_COST_SIZE: u32 = 3;
 /// The cost of a sum value
 pub const SUM_VALUE_EXTRA_COST: u32 = 9;
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// The cost of a count value
+pub const COUNT_VALUE_EXTRA_COST: u32 = 9;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// The cost of a big sum value
+pub const BIG_SUM_VALUE_EXTRA_COST: u32 = 16;
+
 #[cfg(feature = "minimal")]
 /// The cost of a summed subtree layer
 /// This is the layer size + 9 for the encoded value
 pub const SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST;
 
 #[cfg(feature = "minimal")]
+/// The cost of a summed subtree layer
+/// This is the layer size + 9 for the encoded value
+pub const SUM_AND_COUNT_LAYER_COST_SIZE: u32 =
+    LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST + COUNT_VALUE_EXTRA_COST;
+
+#[cfg(feature = "minimal")]
+/// The cost of a summed subtree layer
+/// This is the layer size + 16 for the encoded value
+pub const BIG_SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + BIG_SUM_VALUE_EXTRA_COST;
+
+#[cfg(feature = "minimal")]
 impl KV {
-    fn encoded_kv_node_size(element_size: u32, is_sum_node: bool) -> u32 {
+    fn encoded_kv_node_size(element_size: u32, node_type: NodeType) -> u32 {
         // We always charge 8 bytes for the sum node (even though
         // it could theoretically be 9 bytes
-        let sum_node_feature_size = if is_sum_node { 9 } else { 1 };
+        let sum_node_feature_size = node_type.feature_len();
         // KV holds the state of a node
         // 32 bytes to encode the hash of the node
         // 32 bytes to encode the value hash
@@ -51,13 +74,13 @@ pub fn add_cost_case_merk_insert(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    in_tree_using_sums: bool,
+    in_tree_type: TreeType,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.added_bytes += KV::node_byte_cost_size_for_key_and_raw_value_lengths(
         key_len,
         value_len,
-        in_tree_using_sums,
+        in_tree_type.inner_node_type(),
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
@@ -75,13 +98,13 @@ pub fn add_cost_case_merk_insert_layered(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    in_tree_using_sums: bool,
+    in_tree_type: TreeType,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.added_bytes += KV::layered_node_byte_cost_size_for_key_and_value_lengths(
         key_len,
         value_len,
-        in_tree_using_sums,
+        in_tree_type.inner_node_type(),
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
@@ -101,11 +124,11 @@ pub fn add_cost_case_merk_replace(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    in_tree_using_sums: bool,
+    in_tree_type: TreeType,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.added_bytes +=
-        KV::node_value_byte_cost_size(key_len, value_len, in_tree_using_sums);
+        KV::node_value_byte_cost_size(key_len, value_len, in_tree_type.inner_node_type());
     cost.storage_cost.replaced_bytes += KV::node_key_byte_cost_size(key_len);
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
@@ -124,13 +147,13 @@ pub fn add_cost_case_merk_replace_same_size(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    in_tree_using_sums: bool,
+    in_tree_type: TreeType,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.replaced_bytes += KV::node_byte_cost_size_for_key_and_raw_value_lengths(
         key_len,
         value_len,
-        in_tree_using_sums,
+        in_tree_type.inner_node_type(),
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
@@ -148,13 +171,13 @@ pub fn add_cost_case_merk_replace_layered(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    in_tree_using_sums: bool,
+    in_tree_type: TreeType,
 ) {
     cost.seek_count += 1;
     cost.storage_cost.replaced_bytes += KV::layered_node_byte_cost_size_for_key_and_value_lengths(
         key_len,
         value_len,
-        in_tree_using_sums,
+        in_tree_type.inner_node_type(),
     );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
@@ -176,7 +199,7 @@ pub fn add_cost_case_merk_patch(
     key_len: u32,
     value_len: u32,
     change_in_bytes: i32,
-    in_tree_using_sums: bool,
+    in_tree_type: TreeType,
 ) {
     cost.seek_count += 1;
     if change_in_bytes >= 0 {
@@ -185,12 +208,12 @@ pub fn add_cost_case_merk_patch(
         let old_byte_size = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
             key_len,
             value_len - change_in_bytes as u32,
-            in_tree_using_sums,
+            in_tree_type.inner_node_type(),
         );
         let new_byte_size = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
             key_len,
             value_len,
-            in_tree_using_sums,
+            in_tree_type.inner_node_type(),
         );
         cost.storage_cost.replaced_bytes += old_byte_size;
 
@@ -199,7 +222,7 @@ pub fn add_cost_case_merk_patch(
         cost.storage_cost.replaced_bytes += KV::node_byte_cost_size_for_key_and_raw_value_lengths(
             key_len,
             value_len,
-            in_tree_using_sums,
+            in_tree_type.inner_node_type(),
         );
     }
 

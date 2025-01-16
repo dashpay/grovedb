@@ -1100,7 +1100,7 @@ mod test {
             None,
             Some(Link::Loaded {
                 hash: [123; 32],
-                sum: None,
+                aggregate_data: AggregateData::NoAggregateData,
                 child_heights: (0, 0),
                 tree: TreeNode::new(b"foo2".to_vec(), b"bar2".to_vec(), None, BasicMerkNode)
                     .unwrap(),

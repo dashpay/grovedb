@@ -65,6 +65,8 @@ pub mod error;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod estimated_costs;
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod tree_type;
 #[cfg(feature = "minimal")]
 mod visualize;
 
@@ -79,12 +81,16 @@ pub use tree::{
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use tree::{CryptoHash, TreeFeatureType};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use tree_type::MaybeTree;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use tree_type::TreeType;
 
 #[cfg(feature = "minimal")]
 pub use crate::merk::{
     defaults::ROOT_KEY_KEY,
     prove::{ProofConstructionResult, ProofWithoutEncodingResult},
-    IsSumTree, KVIterator, Merk, MerkType, RootHashKeyAndSum,
+    KVIterator, Merk, MerkType, RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "minimal")]
 pub use crate::visualize::VisualizeableMerk;

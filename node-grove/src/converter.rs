@@ -38,6 +38,9 @@ fn element_to_string(element: Element) -> String {
         Element::Reference(..) => "reference".to_string(),
         Element::Tree(..) => "tree".to_string(),
         Element::SumTree(..) => "sum_tree".to_string(),
+        Element::BigSumTree(..) => "big_sum_tree".to_string(),
+        Element::CountTree(..) => "count_tree".to_string(),
+        Element::CountSumTree(..) => "count_sum_tree".to_string(),
     }
 }
 
@@ -92,6 +95,9 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
         Element::Reference(..) => nested_vecs_to_js(vec![], cx)?,
         Element::Tree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::SumTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::BigSumTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::CountTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::CountSumTree(..) => nested_vecs_to_js(vec![], cx)?,
     };
 
     js_object.set(cx, "value", js_value)?;

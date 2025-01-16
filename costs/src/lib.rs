@@ -72,9 +72,29 @@ pub type ChildrenSizesWithValue = Option<(
     Option<(ChildKeyLength, ChildSumLength)>,
 )>;
 
+/// The tree cost type
+pub enum TreeCostType {
+    /// This is for sum trees and count trees
+    TreeFeatureUsesVarIntCostAs8Bytes,
+    /// This is for count sum trees
+    TreeFeatureUsesTwoVarIntsCostAs16Bytes,
+    /// This is for big sum trees
+    TreeFeatureUses16Bytes,
+}
+
+impl TreeCostType {
+    fn cost_size(&self) -> u32 {
+        match self {
+            TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes => 8,
+            TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes => 16,
+            TreeCostType::TreeFeatureUses16Bytes => 16,
+        }
+    }
+}
+
 /// Children sizes starting with if we are in a sum tree
 pub type ChildrenSizesWithIsSumTree = Option<(
-    Option<FeatureSumLength>,
+    Option<(TreeCostType, FeatureSumLength)>,
     Option<(ChildKeyLength, ChildSumLength)>,
     Option<(ChildKeyLength, ChildSumLength)>,
 )>;
@@ -199,19 +219,20 @@ impl OperationCost {
                     paid_value_len -= right_child_sum_len;
                 }
 
-                if let Some(sum_tree_len) = in_sum_tree {
+                let sum_tree_node_size = if let Some((tree_cost_type, sum_tree_len)) = in_sum_tree {
+                    let cost_size = tree_cost_type.cost_size();
                     paid_value_len -= sum_tree_len;
-                    paid_value_len += 8;
-                }
+                    paid_value_len += cost_size;
+                    cost_size
+                } else {
+                    0
+                };
 
                 // This is the moment we need to add the required space (after removing
                 // children) but before adding the parent to child hook
                 paid_value_len += paid_value_len.required_space() as u32;
 
                 // Now we are the parent to child hook
-
-                // we need to add the sum tree node size
-                let sum_tree_node_size = if in_sum_tree.is_some() { 8 } else { 0 };
 
                 // We need to add the cost of a parent
                 // key_len has a hash length already in it from the key prefix

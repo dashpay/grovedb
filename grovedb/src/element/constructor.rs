@@ -2,6 +2,8 @@
 //! Functions for setting an element's type
 
 #[cfg(feature = "minimal")]
+use crate::element::{BigSumValue, CountValue};
+#[cfg(feature = "minimal")]
 use crate::{
     element::{MaxReferenceHop, SumValue},
     reference_path::ReferencePathType,
@@ -29,9 +31,45 @@ impl Element {
     }
 
     #[cfg(feature = "minimal")]
+    /// Set element to default empty big sum tree without flags
+    pub fn empty_big_sum_tree() -> Self {
+        Element::new_big_sum_tree(Default::default())
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to default empty count tree without flags
+    pub fn empty_count_tree() -> Self {
+        Element::new_count_tree(Default::default())
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to default empty count sum tree without flags
+    pub fn empty_count_sum_tree() -> Self {
+        Element::new_count_sum_tree(Default::default())
+    }
+
+    #[cfg(feature = "minimal")]
     /// Set element to default empty sum tree with flags
     pub fn empty_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to default empty sum tree with flags
+    pub fn empty_big_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_big_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to default empty count tree with flags
+    pub fn empty_count_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_count_tree_with_flags(Default::default(), flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to default empty count sum tree with flags
+    pub fn empty_count_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_count_sum_tree_with_flags(Default::default(), flags)
     }
 
     #[cfg(feature = "minimal")]
@@ -130,5 +168,81 @@ impl Element {
         flags: Option<ElementFlags>,
     ) -> Self {
         Element::SumTree(maybe_root_key, sum_value, flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a big sum tree without flags
+    pub fn new_big_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::BigSumTree(maybe_root_key, 0, None)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a big sum tree with flags
+    pub fn new_big_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::BigSumTree(maybe_root_key, 0, flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a big sum tree with flags and sum value
+    pub fn new_big_sum_tree_with_flags_and_sum_value(
+        maybe_root_key: Option<Vec<u8>>,
+        big_sum_value: BigSumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::BigSumTree(maybe_root_key, big_sum_value, flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a count tree without flags
+    pub fn new_count_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::CountTree(maybe_root_key, 0, None)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a count tree with flags
+    pub fn new_count_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountTree(maybe_root_key, 0, flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a count tree with flags and sum value
+    pub fn new_count_tree_with_flags_and_count_value(
+        maybe_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountTree(maybe_root_key, count_value, flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a count sum tree without flags
+    pub fn new_count_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::CountSumTree(maybe_root_key, 0, 0, None)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a count sum tree with flags
+    pub fn new_count_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountSumTree(maybe_root_key, 0, 0, flags)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a count sum tree with flags and sum value
+    pub fn new_count_sum_tree_with_flags_and_sum_and_count_value(
+        maybe_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountSumTree(maybe_root_key, count_value, sum_value, flags)
     }
 }

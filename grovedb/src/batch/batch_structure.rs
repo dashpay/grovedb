@@ -17,7 +17,7 @@ use intmap::IntMap;
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache},
-    Element, ElementFlags, Error,
+    ElementFlags, Error,
 };
 
 #[cfg(feature = "minimal")]
@@ -124,17 +124,14 @@ where
                 | GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
                 | GroveOp::Patch { element, .. } => {
-                    if let Element::Tree(..) = element {
-                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false));
-                    } else if let Element::SumTree(..) = element {
-                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, true));
+                    if let Some(tree_type) = element.tree_type() {
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, tree_type));
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. }
-                | GroveOp::Delete
-                | GroveOp::DeleteTree
-                | GroveOp::DeleteSumTree => Ok(()),
+                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(_) => {
+                    Ok(())
+                }
                 GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
                     Err(Error::InvalidBatchOperation(
                         "replace and insert tree hash are internal operations only",

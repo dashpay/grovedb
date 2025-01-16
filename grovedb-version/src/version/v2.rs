@@ -12,8 +12,8 @@ use crate::version::{
     GroveVersion,
 };
 
-pub const GROVE_V1: GroveVersion = GroveVersion {
-    protocol_version: 0,
+pub const GROVE_V2: GroveVersion = GroveVersion {
+    protocol_version: 1,
     grovedb_versions: GroveDBVersions {
         apply_batch: GroveDBApplyBatchVersions {
             apply_batch_structure: 0,
@@ -36,7 +36,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             get: 0,
             get_optional: 0,
             get_from_storage: 0,
-            get_optional_from_storage: 0,
+            get_optional_from_storage: 1,
             get_with_absolute_refs: 0,
             get_value_hash: 0,
             get_specialized_cost: 0,
@@ -144,7 +144,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
-                average_case_merk_replace_tree: 0,
+                average_case_merk_replace_tree: 1, // changed
                 average_case_merk_insert_tree: 0,
                 average_case_merk_delete_tree: 0,
                 average_case_merk_insert_element: 0,
@@ -186,8 +186,8 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
     },
     merk_versions: MerkVersions {
         average_case_costs: MerkAverageCaseCostsVersions {
-            add_average_case_merk_propagate: 0,
-            sum_tree_estimated_size: 0,
+            add_average_case_merk_propagate: 1, // changed
+            sum_tree_estimated_size: 1,         // changed
         },
     },
 };

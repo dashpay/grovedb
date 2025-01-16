@@ -403,7 +403,7 @@ mod test {
     use grovedb_version::version::GroveVersion;
 
     use super::{super::NoopCommit, *};
-    use crate::tree::{TreeFeatureType::BasicMerkNode, TreeNode};
+    use crate::tree::{AggregateData, TreeFeatureType::BasicMerkNode, TreeNode};
 
     #[derive(Clone)]
     struct MockSource {}
@@ -491,7 +491,7 @@ mod test {
                 hash: Default::default(),
                 key: b"foo".to_vec(),
                 child_heights: (0, 0),
-                sum: None,
+                aggregate_data: AggregateData::NoAggregateData,
             }),
             None,
             BasicMerkNode,

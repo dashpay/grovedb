@@ -5,11 +5,12 @@
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::tree::kv::KV;
 #[cfg(feature = "minimal")]
 use grovedb_merk::Merk;
 #[cfg(feature = "minimal")]
 use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
+#[cfg(feature = "minimal")]
+use grovedb_merk::{merk::NodeType, tree::kv::KV};
 #[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_version::{
@@ -17,7 +18,11 @@ use grovedb_version::{
 };
 use integer_encoding::VarInt;
 
-use crate::element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE};
+#[cfg(feature = "minimal")]
+use crate::{
+    element::{CostSize, SUM_ITEM_COST_SIZE},
+    operations::proof::util::path_as_slices_hex_to_ascii,
+};
 #[cfg(feature = "minimal")]
 use crate::{Element, Error, Hash};
 
@@ -35,13 +40,19 @@ impl Element {
         Self::get_optional(merk, key.as_ref(), allow_cache, grove_version).map(|result| {
             let value = result?;
             value.ok_or_else(|| {
+                let key_single_byte = if key.as_ref().len() == 1 {
+                    format!("({} in decimal) ", key.as_ref().get(0).unwrap())
+                } else {
+                    String::new()
+                };
                 Error::PathKeyNotFound(format!(
-                    "get: key \"{}\" not found in Merk that has a root key [{}] and is of type {}",
+                    "get: key 0x{} {}not found in Merk that has a root key [{}] and is of type {}",
                     hex::encode(key),
+                    key_single_byte,
                     merk.root_key()
                         .map(hex::encode)
                         .unwrap_or("None".to_string()),
-                    merk.merk_type
+                    merk.merk_type,
                 ))
             })
         })
@@ -118,13 +129,32 @@ impl Element {
         key: K,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error> {
-        check_grovedb_v0_with_cost!(
-            "get_optional_from_storage",
-            grove_version
-                .grovedb_versions
-                .element
-                .get_optional_from_storage
-        );
+        match grove_version
+            .grovedb_versions
+            .element
+            .get_optional_from_storage
+        {
+            0 => Self::get_optional_from_storage_v0(storage, key, grove_version),
+            1 => Self::get_optional_from_storage_v1(storage, key, grove_version),
+            version => Err(Error::VersionError(
+                GroveVersionError::UnknownVersionMismatch {
+                    method: "get_optional_from_storage".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Get an element directly from storage under a key
+    /// Merk does not need to be loaded
+    fn get_optional_from_storage_v0<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        storage: &S,
+        key: K,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Element>, Error> {
         let mut cost = OperationCost::default();
         let key_ref = key.as_ref();
         let node_value_opt = cost_return_on_error!(
@@ -162,7 +192,7 @@ impl Element {
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
                     key_ref.len() as u32,
                     value.as_ref().unwrap().len() as u32,
-                    false,
+                    NodeType::NormalNode,
                 ) as u64
             }
             Some(Element::SumItem(_, flags)) => {
@@ -172,15 +202,18 @@ impl Element {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = cost_size + flags_len;
-                cost.storage_loaded_bytes =
-                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, false) as u64
+                cost.storage_loaded_bytes = KV::node_value_byte_cost_size(
+                    key_ref.len() as u32,
+                    value_len,
+                    NodeType::NormalNode,
+                ) as u64
             }
-            Some(Element::Tree(_, flags)) | Some(Element::SumTree(_, _, flags)) => {
-                let tree_cost_size = if element.as_ref().unwrap().is_sum_tree() {
-                    SUM_TREE_COST_SIZE
-                } else {
-                    TREE_COST_SIZE
-                };
+            Some(Element::Tree(_, flags))
+            | Some(Element::SumTree(_, _, flags))
+            | Some(Element::BigSumTree(_, _, flags))
+            | Some(Element::CountTree(_, _, flags))
+            | Some(Element::CountSumTree(.., flags)) => {
+                let tree_cost_size = element.as_ref().unwrap().tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -190,12 +223,93 @@ impl Element {
                     KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                         key_ref.len() as u32,
                         value_len,
-                        false,
+                        NodeType::NormalNode,
                     ) as u64
             }
             None => {}
         }
         Ok(element).wrap_with_cost(cost)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Get an element directly from storage under a key
+    /// Merk does not need to be loaded
+    fn get_optional_from_storage_v1<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        storage: &S,
+        key: K,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Element>, Error> {
+        let mut cost = OperationCost::default();
+        let key_ref = key.as_ref();
+        let node_value_opt = cost_return_on_error!(
+            &mut cost,
+            storage
+                .get(key_ref)
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
+            &cost,
+            node_value_opt
+                .map(|node_value| {
+                    Decode::decode(node_value.as_slice())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                })
+                .transpose()
+        );
+
+        let Some((value, tree_feature_type)) =
+            maybe_tree_inner.map(|tree_inner| tree_inner.value_as_owned_with_feature())
+        else {
+            return Ok(None).wrap_with_cost(cost);
+        };
+        let node_type = tree_feature_type.node_type();
+        let element = cost_return_on_error_no_add!(
+            &cost,
+            Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
+                Error::CorruptedData(String::from("unable to deserialize element"))
+            })
+        );
+        match &element {
+            Element::Item(..) | Element::Reference(..) => {
+                // while the loaded item might be a sum item, it is given for free
+                // as it would be very hard to know in advance
+                cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
+                    key_ref.len() as u32,
+                    value.len() as u32,
+                    node_type,
+                ) as u64
+            }
+            Element::SumItem(_, flags) => {
+                let cost_size = SUM_ITEM_COST_SIZE;
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = cost_size + flags_len;
+                cost.storage_loaded_bytes =
+                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, node_type) as u64
+                // this is changed to sum node in v1
+            }
+            Element::Tree(_, flags)
+            | Element::SumTree(_, _, flags)
+            | Element::BigSumTree(_, _, flags)
+            | Element::CountTree(_, _, flags)
+            | Element::CountSumTree(.., flags) => {
+                let tree_cost_size = element.tree_type().unwrap().cost_size();
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = tree_cost_size + flags_len;
+                cost.storage_loaded_bytes =
+                    KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key_ref.len() as u32,
+                        value_len,
+                        node_type,
+                    ) as u64
+            }
+        }
+        Ok(Some(element)).wrap_with_cost(cost)
     }
 
     #[cfg(feature = "minimal")]
@@ -208,6 +322,8 @@ impl Element {
         allow_cache: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
+        use crate::error::GroveDbErrorExt;
+
         check_grovedb_v0_with_cost!(
             "get_with_absolute_refs",
             grove_version
@@ -220,6 +336,7 @@ impl Element {
         let element = cost_return_on_error!(
             &mut cost,
             Self::get(merk, key.as_ref(), allow_cache, grove_version)
+                .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
         );
 
         let absolute_element = cost_return_on_error_no_add!(
@@ -262,6 +379,7 @@ impl Element {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
@@ -277,7 +395,7 @@ mod tests {
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
@@ -302,7 +420,7 @@ mod tests {
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )

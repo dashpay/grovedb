@@ -3,6 +3,8 @@
 #[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
 #[cfg(feature = "minimal")]
+use grovedb_merk::tree_type::TreeType;
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
 
@@ -20,7 +22,7 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -37,7 +39,7 @@ impl GroveDb {
             path,
             key,
             max_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)
@@ -48,7 +50,7 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -65,7 +67,7 @@ impl GroveDb {
             path,
             key,
             max_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)
@@ -77,7 +79,7 @@ impl GroveDb {
         key: &KeyInfo,
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -94,7 +96,7 @@ impl GroveDb {
             path,
             key,
             max_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             max_references_sizes,
             grove_version,
         )?;

@@ -34,6 +34,8 @@ use std::cmp::Ordering;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "minimal")]
+use crate::merk::NodeType;
+#[cfg(feature = "minimal")]
 use crate::{
     error::Error,
     merk::defaults::MAX_PREFIXED_KEY_SIZE,
@@ -57,13 +59,13 @@ impl TreeNode {
     pub fn worst_case_encoded_tree_size(
         not_prefixed_key_len: u32,
         max_element_size: u32,
-        is_sum_node: bool,
+        node_type: NodeType,
     ) -> u32 {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
-        2 + (2 * Link::encoded_link_size(not_prefixed_key_len, is_sum_node))
-            + KV::encoded_kv_node_size(max_element_size, is_sum_node)
+        2 + (2 * Link::encoded_link_size(not_prefixed_key_len, node_type))
+            + KV::encoded_kv_node_size(max_element_size, node_type)
     }
 }
 
@@ -73,7 +75,7 @@ pub fn add_worst_case_get_merk_node(
     cost: &mut OperationCost,
     not_prefixed_key_len: u32,
     max_element_size: u32,
-    is_sum_node: bool,
+    node_type: NodeType,
 ) -> Result<(), Error> {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
@@ -82,7 +84,7 @@ pub fn add_worst_case_get_merk_node(
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
     cost.storage_loaded_bytes +=
-        TreeNode::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node)
+        TreeNode::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, node_type)
             as u64;
     Ok(())
 }
@@ -104,10 +106,10 @@ pub fn add_worst_case_merk_insert(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    is_sum_node: bool,
+    node_type: NodeType,
 ) {
     cost.storage_cost.added_bytes +=
-        KV::node_byte_cost_size_for_key_and_raw_value_lengths(key_len, value_len, is_sum_node);
+        KV::node_byte_cost_size_for_key_and_raw_value_lengths(key_len, value_len, node_type);
     // .. and hash computation for the inserted element itself
     // todo: verify this
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
@@ -119,12 +121,12 @@ pub fn add_worst_case_merk_replace_layered(
     cost: &mut OperationCost,
     key_len: u32,
     value_len: u32,
-    is_sum_node: bool,
+    node_type: NodeType,
 ) {
     // todo: verify this
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
     cost.storage_cost.replaced_bytes =
-        KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
+        KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len, node_type);
     // 37 + 35 + key_len
 }
 

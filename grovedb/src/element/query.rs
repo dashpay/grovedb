@@ -15,6 +15,8 @@ use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(feature = "minimal")]
 use grovedb_merk::proofs::Query;
 #[cfg(feature = "minimal")]
+use grovedb_merk::tree_type::TreeType;
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -25,6 +27,8 @@ use grovedb_version::{
 
 #[cfg(feature = "minimal")]
 use crate::operations::proof::util::hex_to_ascii;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use crate::operations::proof::util::path_as_slices_hex_to_ascii;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::Element;
 #[cfg(feature = "minimal")]
@@ -741,6 +745,8 @@ impl Element {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        use crate::error::GroveDbErrorExt;
+
         check_grovedb_v0_with_cost!(
             "query_item",
             grove_version.grovedb_versions.element.query_item
@@ -763,6 +769,7 @@ impl Element {
                     grove_version,
                     {
                         Element::get(&subtree, key, query_options.allow_cache, grove_version)
+                            .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
                             .unwrap_add_cost(&mut cost)
                     }
                 );

@@ -7,6 +7,7 @@ mod tests {
         Identifier, StorageRemovalPerEpochByIdentifier,
         StorageRemovedBytes::SectionedStorageRemoval,
     };
+    use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
     use intmap::IntMap;
 
@@ -75,7 +76,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
-            false,
+            TreeType::NormalTree,
         )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
@@ -219,7 +220,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
-            false,
+            TreeType::NormalTree,
         )];
         let batch_cost = db
             .apply_batch(ops, None, None, grove_version)
@@ -368,7 +369,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
-            false,
+            TreeType::NormalTree,
         )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
@@ -467,7 +468,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
-            false,
+            TreeType::NormalTree,
         )];
         let batch_cost = db
             .apply_batch_with_element_flags_update(
@@ -642,7 +643,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
-            false,
+            TreeType::NormalTree,
         )];
         let batch_cost = db
             .apply_batch(ops, None, None, grove_version)

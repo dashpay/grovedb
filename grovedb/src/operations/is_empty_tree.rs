@@ -2,6 +2,7 @@
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_merk::tree_type::TreeType;
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_version::error::GroveVersionError;

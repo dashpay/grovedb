@@ -52,7 +52,7 @@ use committer::MerkCommitter;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithValue, CostContext,
-    CostResult, CostsExt, FeatureSumLength, OperationCost,
+    CostResult, CostsExt, FeatureSumLength, OperationCost, TreeCostType,
 };
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use grovedb_version::version::GroveVersion;
@@ -70,8 +70,10 @@ use crate::{
         Query,
     },
     tree::{
-        kv::ValueDefinedCostType, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode, NULL_HASH,
+        kv::ValueDefinedCostType, AggregateData, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode,
+        NULL_HASH,
     },
+    tree_type::TreeType,
     Error::{CostsError, EdError, StorageError},
     Link,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
@@ -105,16 +107,13 @@ impl KeyUpdates {
 /// Type alias for simple function signature
 pub type BatchValue = (
     Vec<u8>,
-    Option<FeatureSumLength>,
+    Option<(TreeCostType, FeatureSumLength)>,
     ChildrenSizesWithValue,
     KeyValueStorageCost,
 );
 
-/// A bool type
-pub type IsSumTree = bool;
-
 /// Root hash key and sum
-pub type RootHashKeyAndSum = (CryptoHash, Option<Vec<u8>>, Option<i64>);
+pub type RootHashKeyAndAggregateData = (CryptoHash, Option<Vec<u8>>, AggregateData);
 
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
 pub struct KVIterator<'a, I: RawIterator> {
@@ -243,6 +242,38 @@ impl MerkType {
     }
 }
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NodeType {
+    NormalNode,
+    SumNode,
+    BigSumNode,
+    CountNode,
+    CountSumNode,
+}
+
+impl NodeType {
+    pub const fn feature_len(&self) -> u32 {
+        match self {
+            NodeType::NormalNode => 1,
+            NodeType::SumNode => 9,
+            NodeType::BigSumNode => 17,
+            NodeType::CountNode => 9,
+            NodeType::CountSumNode => 17,
+        }
+    }
+
+    pub const fn cost(&self) -> u32 {
+        match self {
+            NodeType::NormalNode => 0,
+            NodeType::SumNode => 8,
+            NodeType::BigSumNode => 16,
+            NodeType::CountNode => 8,
+            NodeType::CountSumNode => 16,
+        }
+    }
+}
+
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<TreeNode>>,
@@ -251,8 +282,8 @@ pub struct Merk<S> {
     pub storage: S,
     /// Merk type
     pub merk_type: MerkType,
-    /// Is sum tree?
-    pub is_sum_tree: bool,
+    /// The tree type
+    pub tree_type: TreeType,
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -265,7 +296,7 @@ impl<S> fmt::Debug for Merk<S> {
 pub type UseTreeMutResult = CostResult<
     Vec<(
         Vec<u8>,
-        Option<FeatureSumLength>,
+        Option<(TreeCostType, FeatureSumLength)>,
         ChildrenSizesWithValue,
         KeyValueStorageCost,
     )>,
@@ -295,11 +326,11 @@ where
         res
     }
 
-    /// Returns the total sum value in the Merk tree
-    pub fn sum(&self) -> Result<Option<i64>, Error> {
+    /// Returns the total aggregate data in the Merk tree
+    pub fn aggregate_data(&self) -> Result<AggregateData, Error> {
         self.use_tree(|tree| match tree {
-            None => Ok(None),
-            Some(tree) => tree.sum(),
+            None => Ok(AggregateData::NoAggregateData),
+            Some(tree) => tree.aggregate_data(),
         })
     }
 
@@ -315,13 +346,16 @@ where
     }
 
     /// Returns the root hash and non-prefixed key of the tree.
-    pub fn root_hash_key_and_sum(&self) -> CostResult<RootHashKeyAndSum, Error> {
+    pub fn root_hash_key_and_aggregate_data(
+        &self,
+    ) -> CostResult<RootHashKeyAndAggregateData, Error> {
         self.use_tree(|tree| match tree {
-            None => Ok((NULL_HASH, None, None)).wrap_with_cost(Default::default()),
+            None => Ok((NULL_HASH, None, AggregateData::NoAggregateData))
+                .wrap_with_cost(Default::default()),
             Some(tree) => {
-                let sum = cost_return_on_error_default!(tree.sum());
+                let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
                 tree.hash()
-                    .map(|hash| Ok((hash, Some(tree.key().to_vec()), sum)))
+                    .map(|hash| Ok((hash, Some(tree.key().to_vec()), aggregate_data)))
             }
         })
     }
@@ -663,21 +697,28 @@ where
         skip_sum_checks: bool,
         grove_version: &GroveVersion,
     ) {
-        let (hash, key, sum) = match link {
-            Link::Reference { hash, key, sum, .. } => {
-                (hash.to_owned(), key.to_owned(), sum.to_owned())
-            }
+        let (hash, key, aggregate_data) = match link {
+            Link::Reference {
+                hash,
+                key,
+                aggregate_data,
+                ..
+            } => (hash.to_owned(), key.to_owned(), aggregate_data.to_owned()),
             Link::Modified { tree, .. } => (
                 tree.hash().unwrap(),
                 tree.key().to_vec(),
-                tree.sum().unwrap(),
+                tree.aggregate_data().unwrap(),
             ),
             Link::Loaded {
                 hash,
                 child_heights: _,
-                sum,
+                aggregate_data,
                 tree,
-            } => (hash.to_owned(), tree.key().to_vec(), sum.to_owned()),
+            } => (
+                hash.to_owned(),
+                tree.key().to_vec(),
+                aggregate_data.to_owned(),
+            ),
             _ => todo!(),
         };
 
@@ -711,7 +752,7 @@ where
         }
 
         // Need to skip this when restoring a sum tree
-        if !skip_sum_checks && node.sum().unwrap() != sum {
+        if !skip_sum_checks && node.aggregate_data().unwrap() != aggregate_data {
             bad_link_map.insert(instruction_id.to_vec(), hash);
             parent_keys.insert(instruction_id.to_vec(), parent_key.to_vec());
             return;
@@ -762,10 +803,9 @@ mod test {
 
     use super::{Merk, RefWalker};
     use crate::{
-        merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType, Op,
-        TreeFeatureType::BasicMerkNode,
+        merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType,
+        tree_type::TreeType, Op, TreeFeatureType::BasicMerkNode,
     };
-
     // TODO: Close and then reopen test
 
     fn assert_invariants(merk: &TempMerk) {
@@ -991,7 +1031,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1017,7 +1057,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1073,7 +1113,7 @@ mod test {
                 storage
                     .get_storage_context(SubtreePath::empty(), Some(&batch))
                     .unwrap(),
-                false,
+                TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
@@ -1092,7 +1132,7 @@ mod test {
                 storage
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),
-                false,
+                TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
@@ -1113,7 +1153,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1153,7 +1193,7 @@ mod test {
                 storage
                     .get_storage_context(SubtreePath::empty(), Some(&batch))
                     .unwrap(),
-                false,
+                TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
@@ -1174,7 +1214,7 @@ mod test {
                 storage
                     .get_storage_context(SubtreePath::empty(), None)
                     .unwrap(),
-                false,
+                TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
@@ -1189,7 +1229,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1213,7 +1253,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), Some(&batch))
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1277,7 +1317,7 @@ mod test {
             storage
                 .get_storage_context(SubtreePath::empty(), None)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )

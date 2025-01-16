@@ -18,7 +18,8 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{proofs::Query, KVIterator};
+#[cfg(feature = "minimal")]
+use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
@@ -511,7 +512,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &[QualifiedGroveDbOp],
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -544,28 +545,24 @@ impl GroveDb {
                     )
                 );
             }
-            let (is_subtree, is_subtree_with_sum) = match is_known_to_be_subtree_with_sum {
+            let tree_type = match is_known_to_be_subtree {
                 None => {
                     let element = cost_return_on_error!(
                         &mut cost,
                         self.get_raw(path.clone(), key.as_ref(), transaction, grove_version)
                     );
-                    match element {
-                        Element::Tree(..) => (true, false),
-                        Element::SumTree(..) => (true, true),
-                        _ => (false, false),
-                    }
+                    element.maybe_tree_type()
                 }
                 Some(x) => x,
             };
 
-            if is_subtree {
+            if let MaybeTree::Tree(tree_type) = tree_type {
                 let subtree_merk_path = path.derive_owned_with_child(key);
                 let subtree_merk_path_vec = subtree_merk_path.to_vec();
                 let batch_deleted_keys = current_batch_operations
                     .iter()
                     .filter_map(|op| match op.op {
-                        GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => {
+                        GroveOp::Delete | GroveOp::DeleteTree(_) => {
                             // todo: to_path clones (best to figure out how to compare without
                             // cloning)
                             if op.path.to_path() == subtree_merk_path_vec {
@@ -595,7 +592,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    GroveOp::Delete | GroveOp::DeleteTree | GroveOp::DeleteSumTree => false,
+                    GroveOp::Delete | GroveOp::DeleteTree(_) => false,
                     // todo: fix for to_path (it clones)
                     _ => op.path.to_path() == subtree_merk_path_vec,
                 });
@@ -613,7 +610,7 @@ impl GroveDb {
                     Ok(Some(QualifiedGroveDbOp::delete_tree_op(
                         path.to_vec(),
                         key.to_vec(),
-                        is_subtree_with_sum,
+                        tree_type,
                     )))
                 } else {
                     Err(Error::NotSupported(
@@ -711,8 +708,8 @@ impl GroveDb {
                 grove_version
             )
         );
-        let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
-        if element.is_any_tree() {
+        let uses_sum_tree = subtree_to_delete_from.tree_type;
+        if let Some(tree_type) = element.tree_type() {
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_merk_path_ref = SubtreePath::from(&subtree_merk_path);
 
@@ -771,7 +768,7 @@ impl GroveDb {
                     Merk::open_layered_with_root_key(
                         storage,
                         subtree_to_delete_from.root_key(),
-                        element.is_sum_tree(),
+                        tree_type,
                         Some(&Element::value_defined_cost_for_serialized_value),
                         grove_version,
                     )
@@ -905,7 +902,7 @@ impl GroveDb {
             &mut cost,
             self.open_non_transactional_merk_at_path(path.clone(), Some(batch), grove_version)
         );
-        let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
+        let uses_sum_tree = subtree_to_delete_from.tree_type;
         if element.is_any_tree() {
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(

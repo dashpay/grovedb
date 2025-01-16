@@ -24,10 +24,16 @@ mod serialize;
 use std::fmt;
 
 use bincode::{Decode, Encode};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
+use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "minimal")]
-use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
+use grovedb_merk::estimated_costs::{
+    BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
+};
+#[cfg(feature = "minimal")]
+use grovedb_merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::visualize_to_vec;
 
@@ -49,7 +55,7 @@ pub type MaxReferenceHop = Option<u8>;
 #[cfg(feature = "minimal")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 /// The cost of a sum item
 ///
 /// It is 11 because we have 9 bytes for the sum value
@@ -60,9 +66,47 @@ pub const SUM_ITEM_COST_SIZE: u32 = SUM_VALUE_EXTRA_COST + 2; // 11
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 
+#[cfg(feature = "minimal")]
+/// The cost of a big sum tree
+pub const BIG_SUM_TREE_COST_SIZE: u32 = BIG_SUM_LAYER_COST_SIZE; // 19
+
+#[cfg(feature = "minimal")]
+/// The cost of a count tree
+pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
+
+#[cfg(feature = "minimal")]
+/// The cost of a count tree
+pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
+
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// int 64 sum value
 pub type SumValue = i64;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// int 128 sum value
+pub type BigSumValue = i128;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// int 64 count value
+pub type CountValue = u64;
+
+#[cfg(feature = "minimal")]
+pub trait CostSize {
+    fn cost_size(&self) -> u32;
+}
+
+#[cfg(feature = "minimal")]
+impl CostSize for TreeType {
+    fn cost_size(&self) -> u32 {
+        match self {
+            TreeType::NormalTree => TREE_COST_SIZE,
+            TreeType::SumTree => SUM_TREE_COST_SIZE,
+            TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
+            TreeType::CountTree => COUNT_TREE_COST_SIZE,
+            TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
+        }
+    }
+}
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Variants of GroveDB stored entities
@@ -85,6 +129,15 @@ pub enum Element {
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk sums value of it's summable
+    /// nodes in big form i128
+    /// The big sum tree is valuable if you have a big sum tree of sum trees
+    BigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk counts value of its countable
+    /// nodes
+    CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
+    /// Combines Element::SumTree and Element::CountTree
+    CountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Display for Element {
@@ -142,6 +195,40 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::BigSumTree(root_key, sum_value, flags) => {
+                write!(
+                    f,
+                    "BigSumTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::CountTree(root_key, count_value, flags) => {
+                write!(
+                    f,
+                    "CountTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::CountSumTree(root_key, count_value, sum_value, flags) => {
+                write!(
+                    f,
+                    "CountSumTree({}, {}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -154,6 +241,9 @@ impl Element {
             Element::Tree(..) => "tree",
             Element::SumItem(..) => "sum item",
             Element::SumTree(..) => "sum tree",
+            Element::BigSumTree(..) => "big sum tree",
+            Element::CountTree(..) => "count tree",
+            Element::CountSumTree(..) => "count sum tree",
         }
     }
 

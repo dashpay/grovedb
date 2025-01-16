@@ -161,7 +161,7 @@ use std::{collections::HashMap, option::Option::None, path::Path};
 use debugger::start_visualizer;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::Element;
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
@@ -180,6 +180,10 @@ pub use grovedb_merk::proofs::query::query_item::QueryItem;
 pub use grovedb_merk::proofs::Query;
 #[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
+#[cfg(feature = "minimal")]
+pub use grovedb_merk::tree::AggregateData;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     self,
@@ -256,7 +260,7 @@ type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoH
 type OpenedMerkForReplication<'tx> = (
     Merk<PrefixedRocksDbImmediateStorageContext<'tx>>,
     Option<Vec<u8>>,
-    bool,
+    TreeType,
 );
 
 #[cfg(feature = "minimal")]
@@ -318,12 +322,11 @@ impl GroveDb {
                     }
                 )
             );
-            let is_sum_tree = element.is_sum_tree();
-            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
                 Merk::open_layered_with_root_key(
                     storage,
                     root_key,
-                    is_sum_tree,
+                    tree_type,
                     Some(&Element::value_defined_cost_for_serialized_value),
                     grove_version,
                 )
@@ -340,7 +343,7 @@ impl GroveDb {
         } else {
             Merk::open_base(
                 storage,
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -353,7 +356,7 @@ impl GroveDb {
         &'db self,
         prefix: SubtreePrefix,
         root_key: Option<Vec<u8>>,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         tx: &'db Transaction,
         batch: Option<&'db StorageBatch>,
         grove_version: &GroveVersion,
@@ -367,7 +370,7 @@ impl GroveDb {
             Merk::open_layered_with_root_key(
                 storage,
                 root_key,
-                is_sum_tree,
+                tree_type,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -380,7 +383,7 @@ impl GroveDb {
         } else {
             Merk::open_base(
                 storage,
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -421,13 +424,12 @@ impl GroveDb {
                     ))
                 })
                 .unwrap()?;
-            let is_sum_tree = element.is_sum_tree();
-            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
                 Ok((
                     Merk::open_layered_with_root_key(
                         storage,
                         root_key.clone(),
-                        is_sum_tree,
+                        tree_type,
                         Some(&Element::value_defined_cost_for_serialized_value),
                         grove_version,
                     )
@@ -436,7 +438,7 @@ impl GroveDb {
                     })
                     .unwrap()?,
                     root_key,
-                    is_sum_tree,
+                    tree_type,
                 ))
             } else {
                 Err(Error::CorruptedPath(
@@ -447,14 +449,14 @@ impl GroveDb {
             Ok((
                 Merk::open_base(
                     storage,
-                    false,
+                    TreeType::NormalTree,
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
                 .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
                 .unwrap()?,
                 None,
-                false,
+                TreeType::NormalTree,
             ))
         }
     }
@@ -494,12 +496,11 @@ impl GroveDb {
                     }
                 )
             );
-            let is_sum_tree = element.is_sum_tree();
-            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
                 Merk::open_layered_with_root_key(
                     storage,
                     root_key,
-                    is_sum_tree,
+                    tree_type,
                     Some(&Element::value_defined_cost_for_serialized_value),
                     grove_version,
                 )
@@ -516,7 +517,7 @@ impl GroveDb {
         } else {
             Merk::open_base(
                 storage,
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -529,7 +530,7 @@ impl GroveDb {
         &'db self,
         prefix: SubtreePrefix,
         root_key: Option<Vec<u8>>,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         batch: Option<&'db StorageBatch>,
         grove_version: &GroveVersion,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext<'db>>, Error> {
@@ -542,7 +543,7 @@ impl GroveDb {
             Merk::open_layered_with_root_key(
                 storage,
                 root_key,
-                is_sum_tree,
+                tree_type,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -555,7 +556,7 @@ impl GroveDb {
         } else {
             Merk::open_base(
                 storage,
-                false,
+                tree_type,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -651,9 +652,11 @@ impl GroveDb {
                     grove_version,
                 )
             );
-            let (root_hash, root_key, sum) = cost_return_on_error!(
+            let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+                child_tree
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -662,7 +665,7 @@ impl GroveDb {
                     parent_key,
                     root_key,
                     root_hash,
-                    sum,
+                    aggregate_data,
                     grove_version,
                 )
             );
@@ -705,9 +708,11 @@ impl GroveDb {
                     grove_version
                 )
             );
-            let (root_hash, root_key, sum) = cost_return_on_error!(
+            let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+                child_tree
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -716,7 +721,7 @@ impl GroveDb {
                     parent_key,
                     root_key,
                     root_hash,
-                    sum,
+                    aggregate_data,
                     grove_version,
                 )
             );
@@ -758,7 +763,9 @@ impl GroveDb {
             );
             let (root_hash, root_key, sum) = cost_return_on_error!(
                 &mut cost,
-                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+                child_tree
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
             );
             cost_return_on_error!(
                 &mut cost,
@@ -783,7 +790,7 @@ impl GroveDb {
         key: K,
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
-        sum: Option<i64>,
+        aggregate_data: AggregateData,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let key_ref = key.as_ref();
@@ -795,7 +802,47 @@ impl GroveDb {
             } else if let Element::SumTree(.., flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
                     maybe_root_key,
-                    sum.unwrap_or_default(),
+                    aggregate_data.as_sum_i64(),
+                    flag,
+                );
+                tree.insert_subtree(
+                    parent_tree,
+                    key.as_ref(),
+                    root_tree_hash,
+                    None,
+                    grove_version,
+                )
+            } else if let Element::BigSumTree(.., flag) = element {
+                let tree = Element::new_big_sum_tree_with_flags_and_sum_value(
+                    maybe_root_key,
+                    aggregate_data.as_summed_i128(),
+                    flag,
+                );
+                tree.insert_subtree(
+                    parent_tree,
+                    key.as_ref(),
+                    root_tree_hash,
+                    None,
+                    grove_version,
+                )
+            } else if let Element::CountTree(.., flag) = element {
+                let tree = Element::new_count_tree_with_flags_and_count_value(
+                    maybe_root_key,
+                    aggregate_data.as_count_u64(),
+                    flag,
+                );
+                tree.insert_subtree(
+                    parent_tree,
+                    key.as_ref(),
+                    root_tree_hash,
+                    None,
+                    grove_version,
+                )
+            } else if let Element::CountSumTree(.., flag) = element {
+                let tree = Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                    maybe_root_key,
+                    aggregate_data.as_count_u64(),
+                    aggregate_data.as_sum_i64(),
                     flag,
                 );
                 tree.insert_subtree(
@@ -825,7 +872,7 @@ impl GroveDb {
         key: K,
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
-        sum: Option<i64>,
+        aggregate_data: AggregateData,
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -836,7 +883,7 @@ impl GroveDb {
                     let tree = Element::new_tree_with_flags(maybe_root_key, flag);
                     let merk_feature_type = cost_return_on_error!(
                         &mut cost,
-                        tree.get_feature_type(parent_tree.is_sum_tree)
+                        tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
                     );
                     tree.insert_subtree_into_batch_operations(
@@ -850,12 +897,70 @@ impl GroveDb {
                 } else if let Element::SumTree(.., flag) = element {
                     let tree = Element::new_sum_tree_with_flags_and_sum_value(
                         maybe_root_key,
-                        sum.unwrap_or_default(),
+                        aggregate_data.as_sum_i64(),
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error!(
                         &mut cost,
-                        tree.get_feature_type(parent_tree.is_sum_tree)
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else if let Element::BigSumTree(.., flag) = element {
+                    let tree = Element::new_big_sum_tree_with_flags_and_sum_value(
+                        maybe_root_key,
+                        aggregate_data.as_summed_i128(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else if let Element::CountTree(.., flag) = element {
+                    let tree = Element::new_count_tree_with_flags_and_count_value(
+                        maybe_root_key,
+                        aggregate_data.as_count_u64(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else if let Element::CountSumTree(.., flag) = element {
+                    let tree = Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                        maybe_root_key,
+                        aggregate_data.as_count_u64(),
+                        aggregate_data.as_sum_i64(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
                     );
                     tree.insert_subtree_into_batch_operations(
@@ -1095,7 +1200,11 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
             match element {
-                Element::SumTree(..) | Element::Tree(..) => {
+                Element::SumTree(..)
+                | Element::Tree(..)
+                | Element::BigSumTree(..)
+                | Element::CountTree(..)
+                | Element::CountSumTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1239,7 +1348,11 @@ impl GroveDb {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value, grove_version)?;
             match element {
-                Element::SumTree(..) | Element::Tree(..) => {
+                Element::SumTree(..)
+                | Element::Tree(..)
+                | Element::BigSumTree(..)
+                | Element::CountTree(..)
+                | Element::CountSumTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

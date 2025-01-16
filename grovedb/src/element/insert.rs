@@ -32,13 +32,13 @@ impl Element {
 
         let serialized = cost_return_on_error_default!(self.serialize(grove_version));
 
-        if !merk.is_sum_tree && self.is_sum_item() {
+        if !merk.tree_type.allows_sum_item() && self.is_sum_item() {
             return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
                 .wrap_with_cost(Default::default());
         }
 
         let merk_feature_type =
-            cost_return_on_error_default!(self.get_feature_type(merk.is_sum_tree));
+            cost_return_on_error_default!(self.get_feature_type(merk.tree_type));
         let batch_operations = if matches!(self, SumItem(..)) {
             let value_cost =
                 cost_return_on_error_default!(self.get_specialized_cost(grove_version));
@@ -55,15 +55,20 @@ impl Element {
         } else {
             [(key, Op::Put(serialized, merk_feature_type))]
         };
-        let uses_sum_nodes = merk.is_sum_tree;
+        let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch_operations,
             &[],
             options,
             &|key, value| {
                 // it is possible that a normal item was being replaced with a
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -306,7 +311,7 @@ impl Element {
         let mut cost = OperationCost::default();
         let merk_feature_type = cost_return_on_error!(
             &mut cost,
-            self.get_feature_type(merk.is_sum_tree)
+            self.get_feature_type(merk.tree_type)
                 .wrap_with_cost(OperationCost::default())
         );
 
@@ -314,14 +319,19 @@ impl Element {
             key,
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
-        let uses_sum_nodes = merk.is_sum_tree;
+        let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch_operations,
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -387,7 +397,7 @@ impl Element {
 
         let cost = OperationCost::default();
         let merk_feature_type =
-            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.tree_type));
 
         let tree_cost =
             cost_return_on_error_no_add!(&cost, self.get_specialized_cost(grove_version));
@@ -401,14 +411,19 @@ impl Element {
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
-        let uses_sum_nodes = merk.is_sum_tree;
+        let tree_type = merk.tree_type;
         merk.apply_with_specialized_costs::<_, Vec<u8>>(
             &batch_operations,
             &[],
             options,
             &|key, value| {
-                Self::specialized_costs_for_key_value(key, value, uses_sum_nodes, grove_version)
-                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,

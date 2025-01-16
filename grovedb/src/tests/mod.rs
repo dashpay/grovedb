@@ -6,6 +6,8 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod count_sum_tree_tests;
+mod count_tree_tests;
 mod tree_hashes_tests;
 
 use std::{
@@ -3213,14 +3215,14 @@ mod tests {
         let storage = db.db.get_storage_context(EMPTY_PATH, None).unwrap();
         let root_merk = Merk::open_base(
             storage,
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
         .unwrap()
         .expect("expected to get root merk");
         let (_, root_key, _) = root_merk
-            .root_hash_key_and_sum()
+            .root_hash_key_and_aggregate_data()
             .unwrap()
             .expect("expected to get root hash, key and sum");
         assert!(root_key.is_some())
@@ -3318,7 +3320,7 @@ mod tests {
             let subtree = Merk::open_layered_with_root_key(
                 subtree_storage,
                 Some(b"key3".to_vec()),
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -3367,7 +3369,7 @@ mod tests {
         let subtree = Merk::open_layered_with_root_key(
             subtree_storage,
             Some(b"key4".to_vec()),
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
@@ -3387,7 +3389,7 @@ mod tests {
         let subtree = Merk::open_layered_with_root_key(
             subtree_storage,
             Some(b"key3".to_vec()),
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )

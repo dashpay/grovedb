@@ -2,6 +2,8 @@
 
 use std::convert::Infallible;
 
+use grovedb_costs::CostResult;
+
 /// GroveDB Errors
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
@@ -156,6 +158,50 @@ pub enum Error {
     #[error("cyclic error")]
     /// Cyclic reference
     CyclicError(&'static str),
+}
+
+impl Error {
+    pub fn add_context(&mut self, append: impl AsRef<str>) {
+        match self {
+            Self::MissingReference(s)
+            | Self::InternalError(s)
+            | Self::InvalidProof(s)
+            | Self::PathKeyNotFound(s)
+            | Self::PathNotFound(s)
+            | Self::PathParentLayerNotFound(s)
+            | Self::CorruptedReferencePathKeyNotFound(s)
+            | Self::CorruptedReferencePathNotFound(s)
+            | Self::CorruptedReferencePathParentLayerNotFound(s)
+            | Self::InvalidParentLayerPath(s)
+            | Self::InvalidPath(s)
+            | Self::CorruptedPath(s)
+            | Self::CorruptedData(s)
+            | Self::CorruptedStorage(s)
+            | Self::DeleteUpTreeStopHeightMoreThanInitialPathSize(s)
+            | Self::JustInTimeElementFlagsClientError(s)
+            | Self::SplitRemovalBytesClientError(s)
+            | Self::ClientReturnedNonClientError(s)
+            | Self::PathNotFoundInCacheForEstimatedCosts(s)
+            | Self::NotSupported(s) => {
+                s.push_str(", ");
+                s.push_str(append.as_ref());
+            }
+            _ => {}
+        }
+    }
+}
+
+pub trait GroveDbErrorExt {
+    fn add_context(self, append: impl AsRef<str>) -> Self;
+}
+
+impl<T> GroveDbErrorExt for CostResult<T, Error> {
+    fn add_context(self, append: impl AsRef<str>) -> Self {
+        self.map_err(|mut e| {
+            e.add_context(append.as_ref());
+            e
+        })
+    }
 }
 
 impl From<Infallible> for Error {

@@ -5,6 +5,7 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_merk::MaybeTree;
 use grovedb_path::SubtreePath;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
@@ -169,7 +170,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         mut current_batch_operations: Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -186,7 +187,7 @@ impl GroveDb {
             path,
             key,
             options,
-            is_known_to_be_subtree_with_sum,
+            is_known_to_be_subtree,
             &mut current_batch_operations,
             transaction,
             grove_version,
@@ -201,7 +202,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &mut Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -234,7 +235,7 @@ impl GroveDb {
                 path.clone(),
                 key,
                 &options.to_delete_options(),
-                is_known_to_be_subtree_with_sum,
+                is_known_to_be_subtree,
                 current_batch_operations,
                 transaction,
                 grove_version,

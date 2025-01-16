@@ -59,11 +59,15 @@ use kv::KV;
 pub use link::Link;
 #[cfg(feature = "minimal")]
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
+#[cfg(feature = "minimal")]
+pub use tree_feature_type::AggregateData;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use tree_feature_type::TreeFeatureType;
 #[cfg(feature = "minimal")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+#[cfg(feature = "minimal")]
+use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::tree::hash::HASH_LENGTH_X2;
 #[cfg(feature = "minimal")]
@@ -89,6 +93,11 @@ impl TreeNodeInner {
     /// Get the value as owned of the key value struct
     pub fn value_as_owned(self) -> Vec<u8> {
         self.kv.value
+    }
+
+    /// Get the value as owned of the key value struct
+    pub fn value_as_owned_with_feature(self) -> (Vec<u8>, TreeFeatureType) {
+        (self.kv.value, self.kv.feature_type)
     }
 
     /// Get the value as slice of the key value struct
@@ -155,9 +164,9 @@ impl TreeNode {
         }
     }
 
-    /// Is sum node?
-    pub fn is_sum_node(&self) -> bool {
-        self.inner.kv.feature_type.is_sum_feature()
+    /// the node type
+    pub fn node_type(&self) -> NodeType {
+        self.inner.kv.feature_type.node_type()
     }
 
     pub fn storage_cost_for_update(current_value_byte_cost: u32, old_cost: u32) -> StorageCost {
@@ -250,7 +259,7 @@ impl TreeNode {
             KV::value_byte_cost_size_for_key_and_value_lengths(
                 key_len,
                 value_len as u32,
-                self.inner.kv.feature_type.is_sum_feature(),
+                self.inner.kv.feature_type.node_type(),
             )
         } else {
             self.inner.kv.value_byte_cost_size()
@@ -447,9 +456,15 @@ impl TreeNode {
             (
                 // 36 = 32 Hash + 1 key length + 2 child heights + 1 feature type
                 link.key().len() as u32 + 36,
-                link.sum()
-                    .map(|s| s.encode_var_vec().len() as u32)
-                    .unwrap_or_default(),
+                match link.aggregate_data() {
+                    AggregateData::NoAggregateData => 0,
+                    AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
+                    AggregateData::BigSum(_) => 16 as u32,
+                    AggregateData::Count(c) => c.encode_var_vec().len() as u32,
+                    AggregateData::CountAndSum(c, s) => {
+                        s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32
+                    }
+                },
             )
         })
     }
@@ -490,9 +505,49 @@ impl TreeNode {
     /// Returns the sum of the root node's child on the given side, if any. If
     /// there is no child, returns 0.
     #[inline]
-    pub fn child_sum(&self, left: bool) -> i64 {
+    pub fn child_aggregate_sum_data_as_i64(&self, left: bool) -> Result<i64, Error> {
         match self.link(left) {
-            Some(link) => link.sum().unwrap_or_default(),
+            Some(link) => match link.aggregate_data() {
+                AggregateData::NoAggregateData => Ok(0),
+                AggregateData::Sum(s) => Ok(s),
+                AggregateData::BigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
+                    "for aggregate data as i64".to_string(),
+                )),
+                AggregateData::Count(_) => Ok(0),
+                AggregateData::CountAndSum(_, s) => Ok(s),
+            },
+            _ => Ok(0),
+        }
+    }
+
+    /// Returns the sum of the root node's child on the given side, if any. If
+    /// there is no child, returns 0.
+    #[inline]
+    pub fn child_aggregate_count_data_as_u64(&self, left: bool) -> Result<u64, Error> {
+        match self.link(left) {
+            Some(link) => match link.aggregate_data() {
+                AggregateData::NoAggregateData => Ok(0),
+                AggregateData::Sum(_) => Ok(0),
+                AggregateData::BigSum(_) => Ok(0),
+                AggregateData::Count(c) => Ok(c),
+                AggregateData::CountAndSum(c, _) => Ok(c),
+            },
+            _ => Ok(0),
+        }
+    }
+
+    /// Returns the sum of the root node's child on the given side, if any. If
+    /// there is no child, returns 0.
+    #[inline]
+    pub fn child_aggregate_sum_data_as_i128(&self, left: bool) -> i128 {
+        match self.link(left) {
+            Some(link) => match link.aggregate_data() {
+                AggregateData::NoAggregateData => 0,
+                AggregateData::Sum(s) => s as i128,
+                AggregateData::BigSum(s) => s,
+                AggregateData::Count(_) => 0,
+                AggregateData::CountAndSum(_, s) => s as i128,
+            },
             _ => 0,
         }
     }
@@ -510,14 +565,52 @@ impl TreeNode {
 
     /// Computes and returns the hash of the root node.
     #[inline]
-    pub fn sum(&self) -> Result<Option<i64>, Error> {
+    pub fn aggregate_data(&self) -> Result<AggregateData, Error> {
         match self.inner.kv.feature_type {
-            TreeFeatureType::BasicMerkNode => Ok(None),
-            TreeFeatureType::SummedMerkNode(value) => value
-                .checked_add(self.child_sum(true))
-                .and_then(|a| a.checked_add(self.child_sum(false)))
-                .ok_or(Overflow("sum is overflowing"))
-                .map(Some),
+            TreeFeatureType::BasicMerkNode => Ok(AggregateData::NoAggregateData),
+            TreeFeatureType::SummedMerkNode(value) => {
+                let left = self.child_aggregate_sum_data_as_i64(true)?;
+                let right = self.child_aggregate_sum_data_as_i64(false)?;
+                value
+                    .checked_add(left)
+                    .and_then(|a| a.checked_add(right))
+                    .ok_or(Overflow("sum is overflowing"))
+                    .map(AggregateData::Sum)
+            }
+            TreeFeatureType::BigSummedMerkNode(value) => value
+                .checked_add(self.child_aggregate_sum_data_as_i128(true))
+                .and_then(|a| a.checked_add(self.child_aggregate_sum_data_as_i128(false)))
+                .ok_or(Overflow("big sum is overflowing"))
+                .map(AggregateData::BigSum),
+            TreeFeatureType::CountedMerkNode(value) => {
+                let left = self.child_aggregate_count_data_as_u64(true)?;
+                let right = self.child_aggregate_count_data_as_u64(false)?;
+                value
+                    .checked_add(left)
+                    .and_then(|a| a.checked_add(right))
+                    .ok_or(Overflow("count is overflowing"))
+                    .map(AggregateData::Count)
+            }
+            TreeFeatureType::CountedSummedMerkNode(count_value, sum_value) => {
+                let left_count = self.child_aggregate_count_data_as_u64(true)?;
+                let right_count = self.child_aggregate_count_data_as_u64(false)?;
+                let left_sum = self.child_aggregate_sum_data_as_i64(true)?;
+                let right_sum = self.child_aggregate_sum_data_as_i64(false)?;
+                let aggregated_count_value = count_value
+                    .checked_add(left_count)
+                    .and_then(|a| a.checked_add(right_count))
+                    .ok_or(Overflow("count is overflowing"))?;
+
+                let aggregated_sum_value = sum_value
+                    .checked_add(left_sum)
+                    .and_then(|a| a.checked_add(right_sum))
+                    .ok_or(Overflow("count is overflowing"))?;
+
+                Ok(AggregateData::CountAndSum(
+                    aggregated_count_value,
+                    aggregated_sum_value,
+                ))
+            }
         }
     }
 
@@ -936,13 +1029,13 @@ impl TreeNode {
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
-                let sum = cost_return_on_error_default!(tree.sum());
+                let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
 
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
                     child_heights,
-                    sum,
+                    aggregate_data,
                 });
             } else {
                 unreachable!()
@@ -959,12 +1052,12 @@ impl TreeNode {
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
-                let sum = cost_return_on_error_default!(tree.sum());
+                let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
                     child_heights,
-                    sum,
+                    aggregate_data,
                 });
             } else {
                 unreachable!()
@@ -1001,13 +1094,13 @@ impl TreeNode {
     {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
-        let (child_heights, hash, sum) = match link {
+        let (child_heights, hash, aggregate_data) = match link {
             Link::Reference {
                 child_heights,
                 hash,
-                sum,
+                aggregate_data,
                 ..
-            } => (child_heights, hash, sum),
+            } => (child_heights, hash, aggregate_data),
             _ => panic!("Expected Some(Link::Reference)"),
         };
 
@@ -1021,7 +1114,7 @@ impl TreeNode {
             tree,
             hash: *hash,
             child_heights: *child_heights,
-            sum: *sum,
+            aggregate_data: *aggregate_data,
         });
         Ok(()).wrap_with_cost(cost)
     }
@@ -1041,7 +1134,7 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(test)]
 mod test {
 
-    use super::{commit::NoopCommit, hash::NULL_HASH, TreeNode};
+    use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, TreeNode};
     use crate::tree::{
         tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
     };
@@ -1250,6 +1343,10 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        assert_eq!(Some(8), tree.sum().expect("expected to get sum from tree"));
+        assert_eq!(
+            AggregateData::Sum(8),
+            tree.aggregate_data()
+                .expect("expected to get sum from tree")
+        );
     }
 }

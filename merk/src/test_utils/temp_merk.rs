@@ -40,9 +40,9 @@ use grovedb_storage::{
 };
 use grovedb_version::version::GroveVersion;
 
-use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::Merk;
+use crate::{tree::kv::ValueDefinedCostType, tree_type::TreeType};
 
 #[cfg(feature = "minimal")]
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.
@@ -66,7 +66,7 @@ impl TempMerk {
 
         let merk = Merk::open_base(
             context,
-            false,
+            TreeType::NormalTree,
             None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -93,7 +93,7 @@ impl TempMerk {
             .unwrap();
         self.merk = Merk::open_base(
             context,
-            false,
+            TreeType::NormalTree,
             None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
