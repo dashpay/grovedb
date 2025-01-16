@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::{merk::NodeType, Error, TreeFeatureType};
+#[cfg(feature = "minimal")]
+use crate::merk::NodeType;
+
+use crate::{Error, TreeFeatureType};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum MaybeTree {
@@ -56,6 +59,7 @@ impl TreeType {
         }
     }
 
+    #[cfg(feature = "minimal")]
     pub const fn inner_node_type(&self) -> NodeType {
         match self {
             TreeType::NormalTree => NodeType::NormalNode,
