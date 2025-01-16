@@ -55,7 +55,7 @@ pub type MaxReferenceHop = Option<u8>;
 #[cfg(feature = "minimal")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 /// The cost of a sum item
 ///
 /// It is 11 because we have 9 bytes for the sum value
