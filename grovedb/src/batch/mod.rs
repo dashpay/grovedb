@@ -1841,11 +1841,11 @@ impl GroveDb {
                                                 GroveOp::ReplaceTreeRootKey {
                                                     hash,
                                                     root_key,
-                                                    aggregate_data,
+                                                    aggregate_data: aggregate_data_entry,
                                                 } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
-                                                    *aggregate_data = *aggregate_data;
+                                                    *aggregate_data_entry = aggregate_data;
                                                 }
                                                 GroveOp::InsertTreeWithRootHash { .. } => {
                                                     return Err(Error::CorruptedCodeExecution(
