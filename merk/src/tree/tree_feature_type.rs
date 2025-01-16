@@ -35,6 +35,7 @@ pub enum TreeFeatureType {
     CountedSummedMerkNode(u64, i64),
 }
 
+#[cfg(feature = "minimal")]
 impl TreeFeatureType {
     pub fn node_type(&self) -> NodeType {
         match self {
@@ -47,7 +48,7 @@ impl TreeFeatureType {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AggregateData {
     NoAggregateData,
@@ -57,6 +58,7 @@ pub enum AggregateData {
     CountAndSum(u64, i64),
 }
 
+#[cfg(feature = "minimal")]
 impl AggregateData {
     pub fn parent_tree_type(&self) -> TreeType {
         match self {
@@ -106,6 +108,7 @@ impl AggregateData {
     }
 }
 
+#[cfg(feature = "minimal")]
 impl From<TreeFeatureType> for AggregateData {
     fn from(value: TreeFeatureType) -> Self {
         match value {
@@ -157,6 +160,7 @@ impl TreeFeatureType {
 #[cfg(feature = "minimal")]
 impl Terminated for TreeFeatureType {}
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for TreeFeatureType {
     #[inline]
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
