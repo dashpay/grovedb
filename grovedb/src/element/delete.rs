@@ -1,27 +1,27 @@
 //! Delete
 //! Implements functions in Element for deleting
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
 use grovedb_merk::merk::tree_type::TreeType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::check_grovedb_v0_with_cost;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::error::GroveVersionError;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{Element, Error};
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Delete an element from Merk under a key
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
@@ -66,7 +66,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Delete an element from Merk under a key
     pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
@@ -128,7 +128,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Delete an element from Merk under a key to batch operations
     pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,

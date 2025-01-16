@@ -1,9 +1,9 @@
 //! Merk tree iterator
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::TreeNode;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// An entry stored on an `Iter`'s stack, containing a reference to a `Tree`,
 /// and its traversal state.
 ///
@@ -14,7 +14,7 @@ struct StackItem<'a> {
     traversed: (bool, bool, bool),
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<'a> StackItem<'a> {
     /// Creates a new `StackItem` for the given tree. The `traversed` state will
     /// be `false` since the children and self have not been visited yet, but
@@ -39,14 +39,14 @@ impl<'a> StackItem<'a> {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// An iterator which yields the key/value pairs of the tree, in order, skipping
 /// any parts of the tree which are pruned (not currently retained in memory).
 pub struct Iter<'a> {
     stack: Vec<StackItem<'a>>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<'a> Iter<'a> {
     /// Creates a new iterator for the given tree.
     pub fn new(tree: &'a TreeNode) -> Self {
@@ -55,7 +55,7 @@ impl<'a> Iter<'a> {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<'a> TreeNode {
     /// Creates an iterator which yields `(key, value)` tuples for all of the
     /// tree's nodes which are retained in memory (skipping pruned subtrees).
@@ -64,7 +64,7 @@ impl<'a> TreeNode {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<'a> Iterator for Iter<'a> {
     type Item = (Vec<u8>, Vec<u8>);
 

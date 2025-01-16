@@ -2,27 +2,28 @@
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod delete_up_tree;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::collections::{BTreeSet, HashMap};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
+
 use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageBatch, StorageContext,
@@ -31,7 +32,7 @@ use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     util::storage_context_with_parent_optional_tx,
@@ -39,7 +40,7 @@ use crate::{
 };
 use crate::{raw_decode, util::merk_optional_tx_path_not_empty};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Clone)]
 /// Clear options
 pub struct ClearOptions {
@@ -52,7 +53,7 @@ pub struct ClearOptions {
     pub trying_to_clear_with_subtrees_returns_error: bool,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Default for ClearOptions {
     fn default() -> Self {
         ClearOptions {
@@ -63,7 +64,7 @@ impl Default for ClearOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Clone)]
 /// Delete options
 pub struct DeleteOptions {
@@ -77,7 +78,7 @@ pub struct DeleteOptions {
     pub validate_tree_at_path_exists: bool,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Default for DeleteOptions {
     fn default() -> Self {
         DeleteOptions {
@@ -89,7 +90,7 @@ impl Default for DeleteOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl DeleteOptions {
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
@@ -98,7 +99,7 @@ impl DeleteOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Delete an element at a specified subtree path and key.
     pub fn delete<'b, B, P>(
@@ -990,7 +991,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_costs::{

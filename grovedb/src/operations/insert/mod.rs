@@ -1,16 +1,16 @@
 //! Insert operations
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{collections::HashMap, option::Option::None};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::{tree::NULL_HASH, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::{
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
@@ -19,13 +19,13 @@ use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     reference_path::path_from_reference_path_type, Element, Error, GroveDb, Transaction,
     TransactionArg,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Clone)]
 /// Insert options
 pub struct InsertOptions {
@@ -37,7 +37,7 @@ pub struct InsertOptions {
     pub base_root_storage_is_free: bool,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Default for InsertOptions {
     fn default() -> Self {
         InsertOptions {
@@ -48,7 +48,7 @@ impl Default for InsertOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl InsertOptions {
     fn checks_for_override(&self) -> bool {
         self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
@@ -61,7 +61,7 @@ impl InsertOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Insert a GroveDB element given a path to the subtree and the key to
     /// insert at
@@ -646,7 +646,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_costs::{

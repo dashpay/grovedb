@@ -28,23 +28,23 @@
 
 //! Temp merk test utils
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::ops::{Deref, DerefMut};
 
 use grovedb_path::SubtreePath;
 use grovedb_storage::StorageBatch;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
     Storage,
 };
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::Merk;
 use crate::{merk::tree_type::TreeType, tree::kv::ValueDefinedCostType};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.
 pub struct TempMerk {
     storage: &'static TempStorage,
@@ -52,7 +52,7 @@ pub struct TempMerk {
     merk: Merk<PrefixedRocksDbStorageContext<'static>>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TempMerk {
     /// Opens a `TempMerk` at the given file path, creating a new one if it
     /// does not exist.
@@ -102,7 +102,7 @@ impl TempMerk {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Drop for TempMerk {
     fn drop(&mut self) {
         unsafe {
@@ -113,14 +113,14 @@ impl Drop for TempMerk {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Default for TempMerk {
     fn default() -> Self {
         Self::new(GroveVersion::latest())
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Deref for TempMerk {
     type Target = Merk<PrefixedRocksDbStorageContext<'static>>;
 
@@ -129,7 +129,7 @@ impl Deref for TempMerk {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl DerefMut for TempMerk {
     fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbStorageContext<'static>> {
         &mut self.merk

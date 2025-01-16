@@ -1,21 +1,21 @@
 //! Estimated costs for Merk
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
 use crate::merk::{tree_type::TreeType, NodeType};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod average_case_costs;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub mod worst_case_costs;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a subtree layer
 /// It is 3 because we have:
 /// 1 byte for the element type
@@ -23,7 +23,7 @@ pub mod worst_case_costs;
 /// 1 byte for the flag option
 pub const LAYER_COST_SIZE: u32 = 3;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// The cost of a sum value
 pub const SUM_VALUE_EXTRA_COST: u32 = 9;
 
@@ -35,23 +35,23 @@ pub const COUNT_VALUE_EXTRA_COST: u32 = 9;
 /// The cost of a big sum value
 pub const BIG_SUM_VALUE_EXTRA_COST: u32 = 16;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a summed subtree layer
 /// This is the layer size + 9 for the encoded value
 pub const SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a summed subtree layer
 /// This is the layer size + 9 for the encoded value
 pub const SUM_AND_COUNT_LAYER_COST_SIZE: u32 =
     LAYER_COST_SIZE + SUM_VALUE_EXTRA_COST + COUNT_VALUE_EXTRA_COST;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a summed subtree layer
 /// This is the layer size + 16 for the encoded value
 pub const BIG_SUM_LAYER_COST_SIZE: u32 = LAYER_COST_SIZE + BIG_SUM_VALUE_EXTRA_COST;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl KV {
     fn encoded_kv_node_size(element_size: u32, node_type: NodeType) -> u32 {
         // We always charge 8 bytes for the sum node (even though
@@ -65,7 +65,7 @@ impl KV {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add cost case for insertion into merk
 pub fn add_cost_case_merk_insert(
     cost: &mut OperationCost,
@@ -89,7 +89,7 @@ pub fn add_cost_case_merk_insert(
     cost.hash_node_calls += 2;
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add cost case for insertion into merk
 pub fn add_cost_case_merk_insert_layered(
     cost: &mut OperationCost,
@@ -115,7 +115,7 @@ pub fn add_cost_case_merk_insert_layered(
     cost.hash_node_calls += 2;
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add cost case for insertion into merk
 pub fn add_cost_case_merk_replace(
     cost: &mut OperationCost,
@@ -137,7 +137,7 @@ pub fn add_cost_case_merk_replace(
     cost.hash_node_calls += 2;
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add cost case for replacement in merk when the value size is known to not
 /// change
 pub fn add_cost_case_merk_replace_same_size(
@@ -162,7 +162,7 @@ pub fn add_cost_case_merk_replace_same_size(
     cost.hash_node_calls += 2;
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add cost case for insertion into merk
 pub fn add_cost_case_merk_replace_layered(
     cost: &mut OperationCost,
@@ -188,7 +188,7 @@ pub fn add_cost_case_merk_replace_layered(
     cost.hash_node_calls += 2;
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Add cost case for replacement in merk when the value size is known to not
 /// change
 pub fn add_cost_case_merk_patch(

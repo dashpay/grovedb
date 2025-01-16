@@ -1,16 +1,17 @@
 //! Get
 //! Implements functions in Element for getting
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+
+#[cfg(feature = "minimal")]
 use grovedb_merk::Merk;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::{ed::Decode, tree::TreeNodeInner};
 use grovedb_merk::{merk::NodeType, tree::kv::KV};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
@@ -21,11 +22,11 @@ use crate::{
     element::{CostSize, SUM_ITEM_COST_SIZE},
     operations::proof::util::path_as_slices_hex_to_ascii,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{Element, Error, Hash};
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -62,7 +63,7 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -101,7 +102,7 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     /// Errors if element doesn't exist
@@ -125,7 +126,7 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     pub fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -235,7 +236,8 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+
+    #[cfg(feature = "minimal")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     fn get_optional_from_storage_v1<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -316,7 +318,7 @@ impl Element {
         Ok(Some(element)).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -354,7 +356,7 @@ impl Element {
         Ok(absolute_element).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get an element's value hash from Merk under a key
     pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
@@ -383,7 +385,7 @@ impl Element {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::merk::tree_type::TreeType;

@@ -2,21 +2,21 @@
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod query;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use query::QueryItemOrSumReturnType;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::collections::HashSet;
 
 use grovedb_costs::cost_return_on_error_no_add;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_version::{
     check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
@@ -25,18 +25,18 @@ use grovedb_version::{
 use crate::{
     operations::proof::util::path_as_slices_hex_to_ascii, replication::utils::path_to_string,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     util::storage_context_optional_tx,
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Get an element from the backing store
     /// Merk Caching is on by default

@@ -1,25 +1,25 @@
 //! Merk tree feature type
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::io::{Read, Write};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use ed::Terminated;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use ed::{Decode, Encode};
 use grovedb_costs::TreeCostType;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
 use crate::{
     merk::{tree_type::TreeType, NodeType},
     TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
 };
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 /// Basic or summed
 pub enum TreeFeatureType {
@@ -118,7 +118,7 @@ impl From<TreeFeatureType> for AggregateData {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TreeFeatureType {
     #[inline]
     /// Get length of encoded SummedMerk
@@ -154,7 +154,7 @@ impl TreeFeatureType {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Terminated for TreeFeatureType {}
 
 impl Encode for TreeFeatureType {
@@ -215,7 +215,7 @@ impl Encode for TreeFeatureType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Decode for TreeFeatureType {
     #[inline]
     fn decode<R: Read>(mut input: R) -> ed::Result<Self> {

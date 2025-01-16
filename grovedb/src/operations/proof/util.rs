@@ -8,20 +8,20 @@ use grovedb_version::version::GroveVersion;
 
 use crate::Element;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedKeyValues = Vec<ProvedKeyValue>;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedKeyOptionalValues = Vec<ProvedKeyOptionalValue>;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedPathKeyValues = Vec<ProvedPathKeyValue>;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedPathKeyOptionalValues = Vec<ProvedPathKeyOptionalValue>;
 
 /// Proved path-key-value
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProvedPathKeyOptionalValue {
     /// Path
@@ -34,7 +34,7 @@ pub struct ProvedPathKeyOptionalValue {
     pub proof: CryptoHash,
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProvedPathKeyOptionalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "ProvedPathKeyValue {{")?;
@@ -59,7 +59,7 @@ impl fmt::Display for ProvedPathKeyOptionalValue {
 }
 
 /// Proved path-key-value
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProvedPathKeyValue {
     /// Path
@@ -72,7 +72,7 @@ pub struct ProvedPathKeyValue {
     pub proof: CryptoHash,
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProvedPathKeyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "ProvedPathKeyValue {{")?;

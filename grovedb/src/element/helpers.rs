@@ -1,42 +1,43 @@
 //! Helpers
 //! Implements helper functions in Element
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::{
     ValueDefinedCostType,
     ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
+
 use grovedb_merk::{
     merk::{tree_type::TreeType, NodeType},
     MaybeTree,
     TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::{
     tree::{kv::KV, TreeNode},
     TreeFeatureType,
     TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
 use crate::element::{BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::reference_path::path_from_reference_path_type;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     ElementFlags,
 };
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{Element, Error};
 
 impl Element {
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else
     pub fn sum_value_or_default(&self) -> i64 {
@@ -46,7 +47,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the CountTree element type, returns 1 for
     /// everything else
     pub fn count_value_or_default(&self) -> u64 {
@@ -56,7 +57,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the CountTree element type, returns 1 for
     /// everything else
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
@@ -68,7 +69,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else
     pub fn big_sum_value_or_default(&self) -> i128 {
@@ -81,7 +82,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the SumItem element type
     pub fn as_sum_item_value(&self) -> Result<i64, Error> {
         match self {
@@ -90,7 +91,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the SumItem element type
     pub fn into_sum_item_value(self) -> Result<i64, Error> {
         match self {
@@ -99,7 +100,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the SumTree element type
     pub fn as_sum_tree_value(&self) -> Result<i64, Error> {
         match self {
@@ -108,7 +109,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Decoded the integer value in the SumTree element type
     pub fn into_sum_tree_value(self) -> Result<i64, Error> {
         match self {
@@ -117,7 +118,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Gives the item value in the Item element type
     pub fn as_item_bytes(&self) -> Result<&[u8], Error> {
         match self {
@@ -126,7 +127,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Gives the item value in the Item element type
     pub fn into_item_bytes(self) -> Result<Vec<u8>, Error> {
         match self {
@@ -135,7 +136,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Gives the reference path type in the Reference element type
     pub fn into_reference_path_type(self) -> Result<ReferencePathType, Error> {
         match self {
@@ -144,13 +145,13 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a sum tree
     pub fn is_sum_tree(&self) -> bool {
         matches!(self, Element::SumTree(..))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the root_tree info and tree
     /// type
     pub fn root_key_and_tree_type_owned(self) -> Option<(Option<Vec<u8>>, TreeType)> {
@@ -164,7 +165,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the root_tree info and the
     /// tree type
     pub fn root_key_and_tree_type(&self) -> Option<(&Option<Vec<u8>>, TreeType)> {
@@ -178,7 +179,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the flags and the tree type
     pub fn tree_flags_and_type(&self) -> Option<(&Option<ElementFlags>, TreeType)> {
         match self {
@@ -191,7 +192,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the tree type
     pub fn tree_type(&self) -> Option<TreeType> {
         match self {
@@ -204,7 +205,7 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the tree type
     pub fn maybe_tree_type(&self) -> MaybeTree {
         match self {
@@ -217,19 +218,19 @@ impl Element {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a big sum tree
     pub fn is_big_sum_tree(&self) -> bool {
         matches!(self, Element::BigSumTree(..))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree but not a sum tree
     pub fn is_basic_tree(&self) -> bool {
         matches!(self, Element::Tree(..))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree
     pub fn is_any_tree(&self) -> bool {
         matches!(
@@ -242,31 +243,31 @@ impl Element {
         )
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a reference
     pub fn is_reference(&self) -> bool {
         matches!(self, Element::Reference(..))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is an item
     pub fn is_any_item(&self) -> bool {
         matches!(self, Element::Item(..) | Element::SumItem(..))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is an item
     pub fn is_basic_item(&self) -> bool {
         matches!(self, Element::Item(..))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a sum item
     pub fn is_sum_item(&self) -> bool {
         matches!(self, Element::SumItem(..))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get the tree feature type
     pub fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
@@ -281,7 +282,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
@@ -296,7 +297,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Grab the optional flag stored in an element
     pub fn get_flags_owned(self) -> Option<ElementFlags> {
         match self {
@@ -311,7 +312,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Grab the optional flag stored in an element as mutable
     pub fn get_flags_mut(&mut self) -> &mut Option<ElementFlags> {
         match self {
@@ -326,7 +327,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Sets the optional flag stored in an element
     pub fn set_flags(&mut self, new_flags: Option<ElementFlags>) {
         match self {
@@ -341,7 +342,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get the required item space
     pub fn required_item_space(
         len: u32,
@@ -355,7 +356,7 @@ impl Element {
         Ok(len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Convert the reference to an absolute reference
     pub(crate) fn convert_if_reference_to_absolute_reference(
         self,
@@ -386,7 +387,7 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get tree costs for a key value
     pub fn specialized_costs_for_key_value(
         key: &Vec<u8>,
@@ -473,7 +474,7 @@ impl Element {
         Ok(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get tree cost for the element
     pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         check_grovedb_v0!(
@@ -493,7 +494,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get the value defined cost for a serialized value
     pub fn value_defined_cost(&self, grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
         let Some(value_cost) = self.get_specialized_cost(grove_version).ok() else {
@@ -516,7 +517,7 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get the value defined cost for a serialized value
     pub fn value_defined_cost_for_serialized_value(
         value: &[u8],
@@ -527,7 +528,7 @@ impl Element {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Decode from bytes
 pub fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element, Error> {
     let tree = TreeNode::decode_raw(

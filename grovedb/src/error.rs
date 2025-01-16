@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 /// GroveDB Errors
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("infallible")]
@@ -80,7 +80,7 @@ pub enum Error {
     /// Invalid parameter
     InvalidParameter(&'static str),
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     /// Storage error

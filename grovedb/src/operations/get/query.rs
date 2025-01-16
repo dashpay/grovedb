@@ -1,31 +1,31 @@
 //! Query operations
 
 use grovedb_costs::cost_return_on_error_default;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::element::SumValue;
 use crate::{
     element::{BigSumValue, CountValue, QueryOptions},
     operations::proof::ProveOptions,
     query_result_type::PathKeyOptionalElementTrio,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Debug, Eq, PartialEq, Clone)]
 /// A return type for query_item_value_or_sum
 pub enum QueryItemOrSumReturnType {
@@ -41,7 +41,7 @@ pub enum QueryItemOrSumReturnType {
     CountSumValue(CountValue, SumValue),
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Encoded query for multiple path queries
     pub fn query_encoded_many(
@@ -728,7 +728,7 @@ where {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
