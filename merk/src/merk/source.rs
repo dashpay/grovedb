@@ -3,8 +3,8 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    merk::tree_type::TreeType,
     tree::{kv::ValueDefinedCostType, Fetch, TreeNode},
+    tree_type::TreeType,
     Error, Link, Merk,
 };
 

@@ -42,7 +42,7 @@ use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]
 use crate::Merk;
-use crate::{merk::tree_type::TreeType, tree::kv::ValueDefinedCostType};
+use crate::{tree::kv::ValueDefinedCostType, tree_type::TreeType};
 
 #[cfg(feature = "minimal")]
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.

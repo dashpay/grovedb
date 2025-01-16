@@ -8,7 +8,7 @@ use grovedb_merk::{
         average_case_costs::EstimatedLayerInformation,
         worst_case_costs::add_average_case_cost_for_is_empty_tree_except,
     },
-    merk::tree_type::TreeType,
+    tree_type::TreeType,
     HASH_LENGTH_U32,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};

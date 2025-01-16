@@ -3,7 +3,7 @@
 #[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
 #[cfg(feature = "minimal")]
-use grovedb_merk::merk::tree_type::TreeType;
+use grovedb_merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};

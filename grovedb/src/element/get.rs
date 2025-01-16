@@ -379,7 +379,7 @@ impl Element {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::merk::tree_type::TreeType;
+    use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 

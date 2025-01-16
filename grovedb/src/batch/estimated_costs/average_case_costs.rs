@@ -14,7 +14,7 @@ use grovedb_costs::{
 use grovedb_merk::estimated_costs::average_case_costs::{
     average_case_merk_propagate, EstimatedLayerInformation,
 };
-use grovedb_merk::{merk::tree_type::TreeType, tree::AggregateData, RootHashKeyAndAggregateData};
+use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
@@ -303,7 +303,7 @@ mod tests {
             EstimatedLayerSizes::{AllItems, AllSubtrees},
             EstimatedSumTrees::{NoSumTrees, SomeSumTrees},
         },
-        merk::tree_type::TreeType,
+        tree_type::TreeType,
     };
     use grovedb_version::version::GroveVersion;
 

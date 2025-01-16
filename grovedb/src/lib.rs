@@ -180,16 +180,15 @@ pub use grovedb_merk::proofs::query::query_item::QueryItem;
 pub use grovedb_merk::proofs::Query;
 #[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::tree::AggregateData;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
-};
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub use grovedb_merk::{
-    merk::tree_type::{MaybeTree, TreeType},
-    tree::AggregateData,
 };
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;

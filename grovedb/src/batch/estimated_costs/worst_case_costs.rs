@@ -14,7 +14,7 @@ use grovedb_costs::{
 use grovedb_merk::estimated_costs::worst_case_costs::{
     worst_case_merk_propagate, WorstCaseLayerInformation,
 };
-use grovedb_merk::{merk::tree_type::TreeType, tree::AggregateData, RootHashKeyAndAggregateData};
+use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;

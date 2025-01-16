@@ -24,16 +24,16 @@ mod serialize;
 use std::fmt;
 
 use bincode::{Decode, Encode};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::{
     BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
 };
 #[cfg(feature = "minimal")]
-use grovedb_merk::merk::tree_type::TreeType;
+use grovedb_merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::visualize_to_vec;
 
@@ -90,10 +90,12 @@ pub type BigSumValue = i128;
 /// int 64 count value
 pub type CountValue = u64;
 
+#[cfg(feature = "minimal")]
 pub trait CostSize {
     fn cost_size(&self) -> u32;
 }
 
+#[cfg(feature = "minimal")]
 impl CostSize for TreeType {
     fn cost_size(&self) -> u32 {
         match self {

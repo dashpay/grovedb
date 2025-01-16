@@ -9,13 +9,13 @@ use grovedb_costs::{
     OperationCost,
 };
 #[cfg(feature = "minimal")]
-use grovedb_merk::merk::tree_type::TreeType;
-#[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(feature = "minimal")]
 use grovedb_merk::proofs::Query;
+#[cfg(feature = "minimal")]
+use grovedb_merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]

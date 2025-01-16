@@ -7,7 +7,7 @@ mod tests {
         Identifier, StorageRemovalPerEpochByIdentifier,
         StorageRemovedBytes::SectionedStorageRemoval,
     };
-    use grovedb_merk::merk::tree_type::TreeType;
+    use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
     use intmap::IntMap;
 

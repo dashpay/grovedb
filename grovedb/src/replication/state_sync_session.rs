@@ -6,8 +6,8 @@ use std::{
 };
 
 use grovedb_merk::{
-    merk::tree_type::TreeType,
     tree::{kv::ValueDefinedCostType, value_hash},
+    tree_type::TreeType,
     CryptoHash, Restorer,
 };
 use grovedb_path::SubtreePath;

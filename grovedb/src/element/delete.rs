@@ -6,7 +6,7 @@ use grovedb_costs::OperationCost;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
 #[cfg(feature = "minimal")]
-use grovedb_merk::merk::tree_type::TreeType;
+use grovedb_merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
 #[cfg(feature = "minimal")]

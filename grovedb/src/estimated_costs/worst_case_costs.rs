@@ -14,8 +14,8 @@ use grovedb_merk::{
             MERK_BIGGEST_VALUE_SIZE,
         },
     },
-    merk::tree_type::TreeType,
     tree::TreeNode,
+    tree_type::TreeType,
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
@@ -497,9 +497,10 @@ mod test {
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
-        merk::{tree_type::TreeType, NodeType},
+        merk::NodeType,
         test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
         tree::kv::ValueDefinedCostType,
+        tree_type::TreeType,
     };
     use grovedb_storage::{
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},

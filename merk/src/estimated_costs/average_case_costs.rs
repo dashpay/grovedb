@@ -7,7 +7,6 @@ use grovedb_version::{check_grovedb_v0_or_v1, error::GroveVersionError, version:
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-use crate::merk::{tree_type::TreeType, NodeType};
 #[cfg(feature = "minimal")]
 use crate::{
     error::Error,
@@ -15,6 +14,7 @@ use crate::{
     tree::{kv::KV, Link, TreeNode},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
+use crate::{merk::NodeType, tree_type::TreeType};
 
 #[cfg(feature = "minimal")]
 /// Average key size

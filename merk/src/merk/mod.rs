@@ -41,7 +41,6 @@ pub mod open;
 pub mod prove;
 pub mod restore;
 pub mod source;
-pub mod tree_type;
 
 use std::{
     cell::Cell,
@@ -58,7 +57,6 @@ use grovedb_costs::{
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use grovedb_version::version::GroveVersion;
 use source::MerkSource;
-use tree_type::TreeType;
 
 use crate::{
     error::Error,
@@ -75,6 +73,7 @@ use crate::{
         kv::ValueDefinedCostType, AggregateData, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode,
         NULL_HASH,
     },
+    tree_type::TreeType,
     Error::{CostsError, EdError, StorageError},
     Link,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
@@ -804,11 +803,8 @@ mod test {
 
     use super::{Merk, RefWalker};
     use crate::{
-        merk::{source::MerkSource, tree_type::TreeType},
-        test_utils::*,
-        tree::kv::ValueDefinedCostType,
-        Op,
-        TreeFeatureType::BasicMerkNode,
+        merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType,
+        tree_type::TreeType, Op, TreeFeatureType::BasicMerkNode,
     };
     // TODO: Close and then reopen test
 

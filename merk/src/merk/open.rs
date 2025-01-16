@@ -5,8 +5,8 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    merk::tree_type::TreeType,
     tree::kv::ValueDefinedCostType,
+    tree_type::TreeType,
     Error, Merk, MerkType,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
@@ -103,7 +103,7 @@ mod test {
     use tempfile::TempDir;
 
     use crate::{
-        merk::tree_type::TreeType, tree::kv::ValueDefinedCostType, Merk, Op,
+        tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk, Op,
         TreeFeatureType::BasicMerkNode,
     };
 
