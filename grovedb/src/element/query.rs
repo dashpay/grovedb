@@ -28,6 +28,7 @@ use grovedb_version::{
 
 #[cfg(feature = "minimal")]
 use crate::operations::proof::util::hex_to_ascii;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::operations::proof::util::path_as_slices_hex_to_ascii;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::Element;
@@ -745,6 +746,8 @@ impl Element {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        use crate::error::GroveDbErrorExt;
+
         check_grovedb_v0_with_cost!(
             "query_item",
             grove_version.grovedb_versions.element.query_item
@@ -766,14 +769,9 @@ impl Element {
                     subtree,
                     grove_version,
                     {
-                        Element::get(
-                            &subtree,
-                            key,
-                            query_options.allow_cache,
-                            Some(|| format!("path is {}", path_as_slices_hex_to_ascii(path))),
-                            grove_version,
-                        )
-                        .unwrap_add_cost(&mut cost)
+                        Element::get(&subtree, key, query_options.allow_cache, grove_version)
+                            .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
+                            .unwrap_add_cost(&mut cost)
                     }
                 );
                 match element_res {

@@ -3,11 +3,13 @@
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use std::io::{Read, Write};
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 #[cfg(feature = "minimal")]
 use ed::Terminated;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use ed::{Decode, Encode};
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_costs::TreeCostType;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
@@ -157,6 +159,7 @@ impl TreeFeatureType {
 #[cfg(feature = "minimal")]
 impl Terminated for TreeFeatureType {}
 
+#[cfg(feature = "minimal")]
 impl Encode for TreeFeatureType {
     #[inline]
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {

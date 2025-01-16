@@ -5,8 +5,10 @@ use grovedb_costs::OperationCost;
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
+#[cfg(feature = "minimal")]
 use crate::merk::{tree_type::TreeType, NodeType};
 #[cfg(feature = "minimal")]
+
 use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
 
 #[cfg(feature = "minimal")]
@@ -31,7 +33,7 @@ pub const SUM_VALUE_EXTRA_COST: u32 = 9;
 /// The cost of a count value
 pub const COUNT_VALUE_EXTRA_COST: u32 = 9;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// The cost of a big sum value
 pub const BIG_SUM_VALUE_EXTRA_COST: u32 = 16;
 

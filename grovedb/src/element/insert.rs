@@ -502,15 +502,9 @@ mod tests {
             .expect("expected successful insertion 2");
 
         assert_eq!(
-            Element::get(
-                &merk,
-                b"another-key",
-                true,
-                None::<fn() -> String>,
-                grove_version
-            )
-            .unwrap()
-            .expect("expected successful get"),
+            Element::get(&merk, b"another-key", true, grove_version)
+                .unwrap()
+                .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
         );
     }
@@ -541,15 +535,9 @@ mod tests {
         assert!(!inserted);
         assert_eq!(previous, None);
         assert_eq!(
-            Element::get(
-                &merk,
-                b"another-key",
-                true,
-                None::<fn() -> String>,
-                grove_version
-            )
-            .unwrap()
-            .expect("expected successful get"),
+            Element::get(&merk, b"another-key", true, grove_version)
+                .unwrap()
+                .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
         );
     }
@@ -592,15 +580,9 @@ mod tests {
         let merk = empty_path_merk_read_only(&*storage, grove_version);
 
         assert_eq!(
-            Element::get(
-                &merk,
-                b"another-key",
-                true,
-                None::<fn() -> String>,
-                grove_version
-            )
-            .unwrap()
-            .expect("expected successful get"),
+            Element::get(&merk, b"another-key", true, grove_version)
+                .unwrap()
+                .expect("expected successful get"),
             Element::new_item(b"value2".to_vec()),
         );
     }
@@ -622,15 +604,9 @@ mod tests {
         assert_eq!(previous, None);
 
         assert_eq!(
-            Element::get(
-                &merk,
-                b"another-key",
-                true,
-                None::<fn() -> String>,
-                grove_version
-            )
-            .unwrap()
-            .expect("expected successful get"),
+            Element::get(&merk, b"another-key", true, grove_version)
+                .unwrap()
+                .expect("expected successful get"),
             Element::new_item(b"value2".to_vec()),
         );
     }

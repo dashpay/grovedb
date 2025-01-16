@@ -2,6 +2,7 @@
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
+#[cfg(feature = "minimal")]
 use grovedb_merk::merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;

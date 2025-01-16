@@ -1,6 +1,7 @@
 //! Constructor
 //! Functions for setting an element's type
 
+#[cfg(feature = "minimal")]
 use crate::element::{BigSumValue, CountValue};
 #[cfg(feature = "minimal")]
 use crate::{

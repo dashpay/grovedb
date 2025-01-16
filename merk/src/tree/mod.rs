@@ -66,6 +66,7 @@ pub use tree_feature_type::TreeFeatureType;
 #[cfg(feature = "minimal")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+#[cfg(feature = "minimal")]
 use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::tree::hash::HASH_LENGTH_X2;
@@ -455,7 +456,7 @@ impl TreeNode {
             (
                 // 36 = 32 Hash + 1 key length + 2 child heights + 1 feature type
                 link.key().len() as u32 + 36,
-                match link.aggregateData() {
+                match link.aggregate_data() {
                     AggregateData::NoAggregateData => 0,
                     AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
                     AggregateData::BigSum(_) => 16 as u32,
@@ -506,7 +507,7 @@ impl TreeNode {
     #[inline]
     pub fn child_aggregate_sum_data_as_i64(&self, left: bool) -> Result<i64, Error> {
         match self.link(left) {
-            Some(link) => match link.aggregateData() {
+            Some(link) => match link.aggregate_data() {
                 AggregateData::NoAggregateData => Ok(0),
                 AggregateData::Sum(s) => Ok(s),
                 AggregateData::BigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
@@ -524,7 +525,7 @@ impl TreeNode {
     #[inline]
     pub fn child_aggregate_count_data_as_u64(&self, left: bool) -> Result<u64, Error> {
         match self.link(left) {
-            Some(link) => match link.aggregateData() {
+            Some(link) => match link.aggregate_data() {
                 AggregateData::NoAggregateData => Ok(0),
                 AggregateData::Sum(_) => Ok(0),
                 AggregateData::BigSum(_) => Ok(0),
@@ -540,7 +541,7 @@ impl TreeNode {
     #[inline]
     pub fn child_aggregate_sum_data_as_i128(&self, left: bool) -> i128 {
         match self.link(left) {
-            Some(link) => match link.aggregateData() {
+            Some(link) => match link.aggregate_data() {
                 AggregateData::NoAggregateData => 0,
                 AggregateData::Sum(s) => s as i128,
                 AggregateData::BigSum(s) => s,

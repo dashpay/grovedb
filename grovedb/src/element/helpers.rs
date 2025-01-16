@@ -7,6 +7,7 @@ use grovedb_merk::tree::kv::{
     ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
 
+#[cfg(feature = "minimal")]
 use grovedb_merk::{
     merk::{tree_type::TreeType, NodeType},
     MaybeTree,
@@ -23,6 +24,7 @@ use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::Grove
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
+#[cfg(feature = "minimal")]
 use crate::element::{BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE};
 #[cfg(feature = "minimal")]
 use crate::reference_path::path_from_reference_path_type;

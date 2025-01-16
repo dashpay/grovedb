@@ -24,6 +24,7 @@ mod serialize;
 use std::fmt;
 
 use bincode::{Decode, Encode};
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;

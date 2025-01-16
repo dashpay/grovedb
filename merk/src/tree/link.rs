@@ -4,13 +4,15 @@
 use std::io::{Read, Write};
 
 #[cfg(feature = "minimal")]
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+#[cfg(feature = "minimal")]
 use ed::{Decode, Encode, Result, Terminated};
 #[cfg(feature = "minimal")]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 #[cfg(feature = "minimal")]
 use super::{hash::CryptoHash, TreeNode};
-
+#[cfg(feature = "minimal")]
 use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::tree::tree_feature_type::AggregateData;
@@ -163,7 +165,7 @@ impl Link {
     /// of variant `Link::Modified` since we have not yet recomputed the tree's
     /// hash.
     #[inline]
-    pub const fn aggregateData(&self) -> AggregateData {
+    pub const fn aggregate_data(&self) -> AggregateData {
         match self {
             Link::Modified { .. } => panic!("Cannot get hash from modified link"),
             Link::Reference { aggregate_data, .. } => *aggregate_data,
@@ -804,6 +806,6 @@ mod test {
             55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0,
         ];
         let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
-        assert_eq!(link.aggregateData(), AggregateData::NoAggregateData);
+        assert_eq!(link.aggregate_data(), AggregateData::NoAggregateData);
     }
 }

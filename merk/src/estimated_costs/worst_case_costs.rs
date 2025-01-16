@@ -33,6 +33,7 @@ use std::cmp::Ordering;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
+#[cfg(feature = "minimal")]
 use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::{
