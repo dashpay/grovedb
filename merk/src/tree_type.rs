@@ -2,7 +2,6 @@ use std::fmt;
 
 #[cfg(feature = "minimal")]
 use crate::merk::NodeType;
-
 use crate::{Error, TreeFeatureType};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
