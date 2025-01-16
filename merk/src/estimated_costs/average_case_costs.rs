@@ -4,10 +4,10 @@
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 #[cfg(feature = "minimal")]
 use grovedb_version::{check_grovedb_v0_or_v1, error::GroveVersionError, version::GroveVersion};
-use crate::merk::{tree_type::TreeType, NodeType};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
+use crate::merk::{tree_type::TreeType, NodeType};
 #[cfg(feature = "minimal")]
 use crate::{
     error::Error,

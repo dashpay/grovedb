@@ -8,7 +8,6 @@ use integer_encoding::VarInt;
 #[cfg(feature = "minimal")]
 use crate::merk::{tree_type::TreeType, NodeType};
 #[cfg(feature = "minimal")]
-
 use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
 
 #[cfg(feature = "minimal")]

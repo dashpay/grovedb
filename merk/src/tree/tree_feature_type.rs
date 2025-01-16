@@ -14,10 +14,12 @@ use grovedb_costs::TreeCostType;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode};
 #[cfg(feature = "minimal")]
 use crate::merk::{tree_type::TreeType, NodeType};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use crate::tree::tree_feature_type::TreeFeatureType::{
+    BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode, SummedMerkNode,
+};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
