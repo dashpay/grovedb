@@ -1,24 +1,23 @@
 //! Helpers
 //! Implements helper functions in Element
 
-#[cfg(feature = "minimal")]
-use grovedb_merk::tree::kv::{
-    ValueDefinedCostType,
-    ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-};
-#[cfg(feature = "minimal")]
-use grovedb_merk::tree_type::TreeType;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     merk::NodeType,
-    MaybeTree,
-    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
-};
-#[cfg(feature = "minimal")]
-use grovedb_merk::{
-    tree::{kv::KV, TreeNode},
+    tree::{
+        kv::{
+            ValueDefinedCostType,
+            ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+            KV,
+        },
+        TreeNode,
+    },
     TreeFeatureType,
-    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
+    TreeFeatureType::{
+        BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode, SummedMerkNode,
+    },
 };
 #[cfg(feature = "minimal")]
 use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
@@ -26,18 +25,16 @@ use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::Grove
 use integer_encoding::VarInt;
 
 #[cfg(feature = "minimal")]
-use crate::element::{BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE};
+use crate::element::{
+    BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, SUM_ITEM_COST_SIZE,
+    SUM_TREE_COST_SIZE, TREE_COST_SIZE,
+};
 #[cfg(feature = "minimal")]
 use crate::reference_path::path_from_reference_path_type;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
-#[cfg(feature = "minimal")]
-use crate::{
-    element::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
-    ElementFlags,
-};
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::{Element, Error};
+use crate::{Element, ElementFlags, Error};
 
 impl Element {
     #[cfg(any(feature = "minimal", feature = "verify"))]

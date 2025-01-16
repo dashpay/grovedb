@@ -161,7 +161,7 @@ use std::{collections::HashMap, option::Option::None, path::Path};
 use debugger::start_visualizer;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::Element;
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
@@ -180,7 +180,7 @@ pub use grovedb_merk::proofs::query::query_item::QueryItem;
 pub use grovedb_merk::proofs::Query;
 #[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 pub use grovedb_merk::tree::AggregateData;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
