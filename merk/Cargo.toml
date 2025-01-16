@@ -1,7 +1,7 @@
 [package]
 name = "grovedb-merk"
 description = "Merkle key/value store adapted for GroveDB"
-version = "2.2.1"
+version = "3.0.0"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>", "Matt Bell <mappum@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -11,11 +11,11 @@ readme = "README.md"
 documentation = "https://docs.rs/grovedb-merk"
 
 [dependencies]
-grovedb-costs = { version = "2.2.1" , path = "../costs" }
-grovedb-path = { version = "2.2.1", path = "../path" }
-grovedb-storage = { version = "2.2.1", path = "../storage", optional = true }
-grovedb-version = { version = "2.2.1", path = "../grovedb-version" }
-grovedb-visualize = { version = "2.2.1", path = "../visualize" }
+grovedb-costs = { version = "3.0.0" , path = "../costs" }
+grovedb-path = { version = "3.0.0", path = "../path" }
+grovedb-storage = { version = "3.0.0", path = "../storage", optional = true }
+grovedb-version = { version = "3.0.0", path = "../grovedb-version" }
+grovedb-visualize = { version = "3.0.0", path = "../visualize" }
 
 bincode = { version = "2.0.0-rc.3" }
 hex = "0.4.3"
@@ -24,7 +24,7 @@ integer-encoding = "4.0.0"
 thiserror = "2.0.11"
 serde = { version = "1.0.210", features = ["derive"], optional = true }
 rand = { version = "0.8.5", features = ["small_rng"], optional = true }
-byteorder = { version = "1.5.0", optional = true }
+byteorder = { version = "1.5.0" }
 
 [dependencies.colored]
 version = "3.0.0"
@@ -47,7 +47,6 @@ default = ["full"]
 proof_debug = []
 serde = ["dep:serde", "indexmap/serde"]
 minimal = ["num_cpus",
-        "byteorder",
         "ed",
         "blake3",
         "grovedb-storage",

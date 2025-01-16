@@ -15,11 +15,9 @@ use grovedb_costs::TreeCostType;
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
-use crate::{
-    merk::{tree_type::TreeType, NodeType},
-    TreeFeatureType::{BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode},
-};
+use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerkNode, SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode};
+#[cfg(feature = "minimal")]
+use crate::merk::{tree_type::TreeType, NodeType};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -159,7 +157,6 @@ impl TreeFeatureType {
 #[cfg(feature = "minimal")]
 impl Terminated for TreeFeatureType {}
 
-#[cfg(feature = "minimal")]
 impl Encode for TreeFeatureType {
     #[inline]
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
