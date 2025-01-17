@@ -7,16 +7,17 @@ use std::{collections::HashSet, iter};
 use bincode::{Decode, Encode};
 use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
 use grovedb_merk::CryptoHash;
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use grovedb_version::check_grovedb_v0_with_cost;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "minimal", feature = "visualize"))]
 use grovedb_visualize::visualize_to_vec;
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::Error;
+#[cfg(feature = "minimal")]
 use crate::{
     merk_cache::{MerkCache, MerkHandle},
     operations::MAX_REFERENCE_HOPS,
@@ -536,6 +537,7 @@ impl ReferencePathType {
     }
 }
 
+#[cfg(feature = "minimal")]
 pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
     pub target_merk: MerkHandle<'db, 'c>,
     pub target_path: SubtreePathBuilder<'b, B>,
@@ -544,6 +546,7 @@ pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
     pub target_node_value_hash: CryptoHash,
 }
 
+#[cfg(feature = "minimal")]
 pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
     merk_cache: &'c MerkCache<'db, 'b, B>,
     path: SubtreePathBuilder<'b, B>,
@@ -551,6 +554,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
     ref_path: ReferencePathType,
 ) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
     // TODO: this is a new version of follow reference
+
     check_grovedb_v0_with_cost!(
         "follow_reference",
         merk_cache
@@ -627,6 +631,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
     Err(Error::ReferenceLimit).wrap_with_cost(cost)
 }
 
+#[cfg(feature = "minimal")]
 /// Follow references stopping at the immediate element without following
 /// further.
 pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(

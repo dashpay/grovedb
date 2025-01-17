@@ -212,6 +212,7 @@ pub use query::{PathQuery, SizedQuery};
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
+#[cfg(feature = "minimal")]
 use util::{compat, TxRef};
 
 #[cfg(feature = "minimal")]
