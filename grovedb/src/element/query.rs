@@ -15,15 +15,11 @@ use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(feature = "minimal")]
 use grovedb_merk::proofs::Query;
 #[cfg(feature = "minimal")]
-use grovedb_merk::tree_type::TreeType;
-#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 #[cfg(feature = "minimal")]
-use grovedb_version::{
-    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "minimal")]
 use crate::operations::proof::util::hex_to_ascii;
@@ -41,7 +37,6 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    util::{merk_optional_tx, merk_optional_tx_internal_error, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
 #[cfg(feature = "minimal")]
@@ -453,6 +448,8 @@ impl Element {
         args: PathQueryPushArgs,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        use crate::util::{compat, TxRef};
+
         check_grovedb_v0_with_cost!(
             "path_query_push",
             grove_version.grovedb_versions.element.path_query_push
@@ -477,6 +474,9 @@ impl Element {
             limit,
             offset,
         } = args;
+
+        let tx = TxRef::new(storage, transaction);
+
         let QueryOptions {
             allow_get_raw,
             allow_cache,
@@ -486,7 +486,7 @@ impl Element {
         if element.is_any_tree() {
             let mut path_vec = path.to_vec();
             let key = cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 key.ok_or(Error::MissingParameter(
                     "the key must be provided when using a subquery path",
                 ))
@@ -534,89 +534,62 @@ impl Element {
                         path_vec.extend(subquery_path_front_keys.iter().map(|k| k.as_slice()));
 
                         let subtree_path: SubtreePath<_> = path_vec.as_slice().into();
+                        let subtree = cost_return_on_error!(
+                            &mut cost,
+                            compat::merk_optional_tx(
+                                storage,
+                                subtree_path,
+                                tx.as_ref(),
+                                None,
+                                grove_version
+                            )
+                        );
 
                         match result_type {
                             QueryElementResultType => {
-                                merk_optional_tx!(
-                                    &mut cost,
-                                    storage,
-                                    subtree_path,
-                                    None,
-                                    transaction,
-                                    subtree,
-                                    grove_version,
-                                    {
-                                        results.push(QueryResultElement::ElementResultItem(
-                                            cost_return_on_error!(
-                                                &mut cost,
-                                                Element::get_with_absolute_refs(
-                                                    &subtree,
-                                                    path_vec.as_slice(),
-                                                    subquery_path_last_key.as_slice(),
-                                                    allow_cache,
-                                                    grove_version,
-                                                )
-                                            ),
-                                        ));
-                                    }
-                                );
+                                results.push(QueryResultElement::ElementResultItem(
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        Element::get_with_absolute_refs(
+                                            &subtree,
+                                            path_vec.as_slice(),
+                                            subquery_path_last_key.as_slice(),
+                                            allow_cache,
+                                            grove_version,
+                                        )
+                                    ),
+                                ));
                             }
                             QueryKeyElementPairResultType => {
-                                merk_optional_tx!(
-                                    &mut cost,
-                                    storage,
-                                    subtree_path,
-                                    None,
-                                    transaction,
-                                    subtree,
-                                    grove_version,
-                                    {
-                                        results.push(QueryResultElement::KeyElementPairResultItem(
-                                            (
-                                                subquery_path_last_key.to_vec(),
-                                                cost_return_on_error!(
-                                                    &mut cost,
-                                                    Element::get_with_absolute_refs(
-                                                        &subtree,
-                                                        path_vec.as_slice(),
-                                                        subquery_path_last_key.as_slice(),
-                                                        allow_cache,
-                                                        grove_version,
-                                                    )
-                                                ),
-                                            ),
-                                        ));
-                                    }
-                                );
+                                results.push(QueryResultElement::KeyElementPairResultItem((
+                                    subquery_path_last_key.to_vec(),
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        Element::get_with_absolute_refs(
+                                            &subtree,
+                                            path_vec.as_slice(),
+                                            subquery_path_last_key.as_slice(),
+                                            allow_cache,
+                                            grove_version,
+                                        )
+                                    ),
+                                )));
                             }
                             QueryPathKeyElementTrioResultType => {
-                                merk_optional_tx!(
-                                    &mut cost,
-                                    storage,
-                                    subtree_path,
-                                    None,
-                                    transaction,
-                                    subtree,
-                                    grove_version,
-                                    {
-                                        results.push(
-                                            QueryResultElement::PathKeyElementTrioResultItem((
-                                                path_vec.iter().map(|p| p.to_vec()).collect(),
-                                                subquery_path_last_key.to_vec(),
-                                                cost_return_on_error!(
-                                                    &mut cost,
-                                                    Element::get_with_absolute_refs(
-                                                        &subtree,
-                                                        path_vec.as_slice(),
-                                                        subquery_path_last_key.as_slice(),
-                                                        allow_cache,
-                                                        grove_version,
-                                                    )
-                                                ),
-                                            )),
-                                        );
-                                    }
-                                );
+                                results.push(QueryResultElement::PathKeyElementTrioResultItem((
+                                    path_vec.iter().map(|p| p.to_vec()).collect(),
+                                    subquery_path_last_key.to_vec(),
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        Element::get_with_absolute_refs(
+                                            &subtree,
+                                            path_vec.as_slice(),
+                                            subquery_path_last_key.as_slice(),
+                                            allow_cache,
+                                            grove_version,
+                                        )
+                                    ),
+                                )));
                             }
                         }
                     } else {
@@ -634,7 +607,7 @@ impl Element {
                 }
             } else if allow_get_raw {
                 cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     Element::basic_push(
                         PathQueryPushArgs {
                             storage,
@@ -664,7 +637,7 @@ impl Element {
             }
         } else {
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 Element::basic_push(
                     PathQueryPushArgs {
                         storage,
@@ -745,7 +718,12 @@ impl Element {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        use crate::error::GroveDbErrorExt;
+        use grovedb_storage::Storage;
+
+        use crate::{
+            error::GroveDbErrorExt,
+            util::{compat, TxRef},
+        };
 
         check_grovedb_v0_with_cost!(
             "query_item",
@@ -753,26 +731,36 @@ impl Element {
         );
 
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(storage, transaction);
 
         let subtree_path: SubtreePath<_> = path.into();
 
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res = merk_optional_tx_internal_error!(
-                    &mut cost,
+                let subtree_res = compat::merk_optional_tx(
                     storage,
                     subtree_path,
+                    tx.as_ref(),
                     None,
-                    transaction,
-                    subtree,
                     grove_version,
-                    {
+                );
+
+                if subtree_res.value().is_err()
+                    && !matches!(subtree_res.value(), Err(Error::PathParentLayerNotFound(..)))
+                {
+                    // simulating old macro's behavior by letting this particular kind of error to
+                    // pass and to short circuit with the rest
+                    return subtree_res.map_ok(|_| ());
+                }
+
+                let element_res = subtree_res
+                    .flat_map_ok(|subtree| {
                         Element::get(&subtree, key, query_options.allow_cache, grove_version)
                             .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
-                            .unwrap_add_cost(&mut cost)
-                    }
-                );
+                    })
+                    .unwrap_add_cost(&mut cost);
+
                 match element_res {
                     Ok(element) => {
                         let (subquery_path, subquery) =
@@ -829,74 +817,74 @@ impl Element {
             }
         } else {
             // this is a query on a range
-            storage_context_optional_tx!(storage, subtree_path, None, transaction, ctx, {
-                let ctx = ctx.unwrap_add_cost(&mut cost);
-                let mut iter = ctx.raw_iter();
+            let ctx = storage
+                .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+                .unwrap_add_cost(&mut cost);
 
-                item.seek_for_iter(&mut iter, sized_query.query.left_to_right)
-                    .unwrap_add_cost(&mut cost);
+            let mut iter = ctx.raw_iter();
 
-                while item
-                    .iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right)
+            item.seek_for_iter(&mut iter, sized_query.query.left_to_right)
+                .unwrap_add_cost(&mut cost);
+
+            while item
+                .iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right)
+                .unwrap_add_cost(&mut cost)
+            {
+                let element = cost_return_on_error_no_add!(
+                    cost,
+                    raw_decode(
+                        iter.value()
+                            .unwrap_add_cost(&mut cost)
+                            .expect("if key exists then value should too"),
+                        grove_version
+                    )
+                );
+                let key = iter
+                    .key()
                     .unwrap_add_cost(&mut cost)
-                {
-                    let element = cost_return_on_error_no_add!(
-                        &cost,
-                        raw_decode(
-                            iter.value()
-                                .unwrap_add_cost(&mut cost)
-                                .expect("if key exists then value should too"),
-                            grove_version
-                        )
-                    );
-                    let key = iter
-                        .key()
-                        .unwrap_add_cost(&mut cost)
-                        .expect("key should exist");
-                    let (subquery_path, subquery) =
-                        Self::subquery_paths_and_value_for_sized_query(sized_query, key);
-                    let result_with_cost = add_element_function(
-                        PathQueryPushArgs {
-                            storage,
-                            transaction,
-                            key: Some(key),
-                            element,
-                            path,
-                            subquery_path,
-                            subquery,
-                            left_to_right: sized_query.query.left_to_right,
-                            query_options,
-                            result_type,
-                            results,
-                            limit,
-                            offset,
-                        },
-                        grove_version,
-                    );
-                    let result = result_with_cost.unwrap_add_cost(&mut cost);
-                    match result {
-                        Ok(x) => x,
-                        Err(e) => {
-                            if !query_options.error_if_intermediate_path_tree_not_present {
-                                match e {
-                                    Error::PathKeyNotFound(_)
-                                    | Error::PathParentLayerNotFound(_) => (),
-                                    _ => return Err(e).wrap_with_cost(cost),
-                                }
-                            } else {
-                                return Err(e).wrap_with_cost(cost);
+                    .expect("key should exist");
+                let (subquery_path, subquery) =
+                    Self::subquery_paths_and_value_for_sized_query(sized_query, key);
+                let result_with_cost = add_element_function(
+                    PathQueryPushArgs {
+                        storage,
+                        transaction,
+                        key: Some(key),
+                        element,
+                        path,
+                        subquery_path,
+                        subquery,
+                        left_to_right: sized_query.query.left_to_right,
+                        query_options,
+                        result_type,
+                        results,
+                        limit,
+                        offset,
+                    },
+                    grove_version,
+                );
+                let result = result_with_cost.unwrap_add_cost(&mut cost);
+                match result {
+                    Ok(x) => x,
+                    Err(e) => {
+                        if !query_options.error_if_intermediate_path_tree_not_present {
+                            match e {
+                                Error::PathKeyNotFound(_) | Error::PathParentLayerNotFound(_) => (),
+                                _ => return Err(e).wrap_with_cost(cost),
                             }
+                        } else {
+                            return Err(e).wrap_with_cost(cost);
                         }
                     }
-                    if sized_query.query.left_to_right {
-                        iter.next().unwrap_add_cost(&mut cost);
-                    } else {
-                        iter.prev().unwrap_add_cost(&mut cost);
-                    }
-                    cost.seek_count += 1;
                 }
-                Ok(())
-            })
+                if sized_query.query.left_to_right {
+                    iter.next().unwrap_add_cost(&mut cost);
+                } else {
+                    iter.prev().unwrap_add_cost(&mut cost);
+                }
+                cost.seek_count += 1;
+            }
+            Ok(())
         }
         .wrap_with_cost(cost)
     }
@@ -1204,9 +1192,12 @@ mod tests {
 
         let batch = StorageBatch::new();
         let storage = &db.db;
+        let transaction = db.start_transaction();
+
         let mut merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -1234,6 +1225,8 @@ mod tests {
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .expect("expected successful batch commit");
+
+        transaction.commit().unwrap();
 
         // Test range inclusive query
         let mut query = Query::new();
@@ -1316,9 +1309,12 @@ mod tests {
         let batch = StorageBatch::new();
 
         let storage = &db.db;
+        let transaction = db.start_transaction();
+
         let mut merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -1346,6 +1342,8 @@ mod tests {
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .expect("expected successful batch commit");
+
+        transaction.commit().unwrap();
 
         // Test range inclusive query
         let mut query = Query::new_with_direction(true);
@@ -1718,7 +1716,7 @@ impl<I: RawIterator> ElementsIterator<I> {
                 .unwrap_add_cost(&mut cost)
                 .zip(self.raw_iter.value().unwrap_add_cost(&mut cost))
             {
-                let element = cost_return_on_error_no_add!(&cost, raw_decode(value, grove_version));
+                let element = cost_return_on_error_no_add!(cost, raw_decode(value, grove_version));
                 let key_vec = key.to_vec();
                 self.raw_iter.next().unwrap_add_cost(&mut cost);
                 Some((key_vec, element))

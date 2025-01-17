@@ -14,8 +14,6 @@ use grovedb_storage::StorageContext;
 #[cfg(feature = "minimal")]
 use grovedb_version::check_grovedb_v0_with_cost;
 #[cfg(feature = "minimal")]
-use grovedb_version::error::GroveVersionError;
-#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]

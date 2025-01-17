@@ -84,7 +84,7 @@ impl Element {
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let element = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             value_opt
                 .map(|value| {
                     Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
@@ -164,7 +164,7 @@ impl Element {
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             node_value_opt
                 .map(|node_value| {
                     Decode::decode(node_value.as_slice())
@@ -175,7 +175,7 @@ impl Element {
 
         let value = maybe_tree_inner.map(|tree_inner| tree_inner.value_as_owned());
         let element = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             value
                 .as_ref()
                 .map(|value| {
@@ -248,7 +248,7 @@ impl Element {
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let maybe_tree_inner: Option<TreeNodeInner> = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             node_value_opt
                 .map(|node_value| {
                     Decode::decode(node_value.as_slice())
@@ -264,7 +264,7 @@ impl Element {
         };
         let node_type = tree_feature_type.node_type();
         let element = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
                 Error::CorruptedData(String::from("unable to deserialize element"))
             })
@@ -340,7 +340,7 @@ impl Element {
         );
 
         let absolute_element = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()))
         );
 
@@ -374,6 +374,47 @@ impl Element {
 
         Ok(value_hash).wrap_with_cost(cost)
     }
+
+    #[cfg(feature = "minimal")]
+    /// Get an element and its value hash from Merk under a key
+    pub fn get_with_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        key: K,
+        allow_cache: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(Element, Hash), Error> {
+        check_grovedb_v0_with_cost!(
+            "get_with_value_hash",
+            grove_version.grovedb_versions.element.get_with_value_hash
+        );
+        let mut cost = OperationCost::default();
+
+        let Some((value, value_hash)) = cost_return_on_error!(
+            &mut cost,
+            merk.get_value_and_value_hash(
+                key.as_ref(),
+                allow_cache,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version
+            )
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+        ) else {
+            return Err(Error::PathKeyNotFound(format!(
+                "get: key \"{}\" not found in Merk that has a root key [{}] and is of type {}",
+                hex::encode(key),
+                merk.root_key()
+                    .map(hex::encode)
+                    .unwrap_or("None".to_string()),
+                merk.merk_type
+            )))
+            .wrap_with_cost(cost);
+        };
+
+        Self::deserialize(value.as_slice(), grove_version)
+            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+            .map(|e| (e, value_hash))
+            .wrap_with_cost(cost)
+    }
 }
 
 #[cfg(feature = "minimal")]
@@ -390,8 +431,10 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
+        let transaction = storage.start_transaction();
+
         let ctx = storage
-            .get_storage_context(SubtreePath::empty(), Some(&batch))
+            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,
@@ -411,12 +454,12 @@ mod tests {
             .expect("expected successful insertion 2");
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .unwrap();
 
         let ctx = storage
-            .get_storage_context(SubtreePath::empty(), None)
+            .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,

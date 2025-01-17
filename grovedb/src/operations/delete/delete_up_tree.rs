@@ -7,13 +7,11 @@ use grovedb_costs::{
 };
 use grovedb_merk::MaybeTree;
 use grovedb_path::SubtreePath;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
-    TransactionArg,
+    batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, util::TxRef, ElementFlags, Error,
+    GroveDb, TransactionArg,
 };
 
 #[cfg(feature = "minimal")]
@@ -139,7 +137,7 @@ impl GroveDb {
         );
 
         let ops = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             if let Some(stop_path_height) = options.stop_path_height {
                 maybe_ops.ok_or_else(|| {
                     Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(
@@ -223,10 +221,13 @@ impl GroveDb {
                 return Ok(None).wrap_with_cost(cost);
             }
         }
+
+        let tx = TxRef::new(&self.db, transaction);
+
         if options.validate_tree_at_path_exists {
             cost_return_on_error!(
                 &mut cost,
-                self.check_subtree_exists_path_not_found(path.clone(), transaction, grove_version)
+                self.check_subtree_exists_path_not_found(path.clone(), tx.as_ref(), grove_version)
             );
         }
         if let Some(delete_operation_this_level) = cost_return_on_error!(
@@ -237,7 +238,7 @@ impl GroveDb {
                 &options.to_delete_options(),
                 is_known_to_be_subtree,
                 current_batch_operations,
-                transaction,
+                tx.as_ref(),
                 grove_version,
             )
         ) {

@@ -20,7 +20,7 @@ use grovedb_merk::{
     },
 };
 #[cfg(feature = "minimal")]
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 

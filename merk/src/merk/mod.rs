@@ -412,7 +412,7 @@ where
 
                         // update pointer to root node
                         cost_return_on_error_no_add!(
-                            &inner_cost,
+                            inner_cost,
                             batch
                                 .put_root(ROOT_KEY_KEY, tree_key, costs)
                                 .map_err(CostsError)
@@ -448,7 +448,7 @@ where
         for (key, maybe_sum_tree_cost, maybe_value, storage_cost) in to_batch {
             if let Some((value, left_size, right_size)) = maybe_value {
                 cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     batch
                         .put(
                             &key,
@@ -466,7 +466,7 @@ where
         for (key, value, storage_cost) in aux {
             match value {
                 Op::Put(value, ..) => cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     batch
                         .put_aux(key, value, storage_cost.clone())
                         .map_err(CostsError)
@@ -474,7 +474,7 @@ where
                 Op::Delete => batch.delete_aux(key, storage_cost.clone()),
                 _ => {
                     cost_return_on_error_no_add!(
-                        &cost,
+                        cost,
                         Err(Error::InvalidOperation(
                             "only put and delete allowed for aux storage"
                         ))
@@ -795,7 +795,7 @@ mod test {
 
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
-        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
+        rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
         RawIterator, Storage, StorageBatch, StorageContext,
     };
     use grovedb_version::version::GroveVersion;
@@ -1027,9 +1027,11 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
+        let transaction = storage.start_transaction();
+
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), None)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1053,9 +1055,11 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
+        let transaction = storage.start_transaction();
+
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), None)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1074,7 +1078,7 @@ mod test {
     fn reopen() {
         let grove_version = GroveVersion::latest();
         fn collect(
-            mut node: RefWalker<MerkSource<PrefixedRocksDbStorageContext>>,
+            mut node: RefWalker<MerkSource<PrefixedRocksDbTransactionContext>>,
             nodes: &mut Vec<Vec<u8>>,
         ) {
             let grove_version = GroveVersion::latest();
@@ -1109,9 +1113,15 @@ mod test {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
             let batch = StorageBatch::new();
+            let transaction = storage.start_transaction();
+
             let mut merk = Merk::open_base(
                 storage
-                    .get_storage_context(SubtreePath::empty(), Some(&batch))
+                    .get_transactional_storage_context(
+                        SubtreePath::empty(),
+                        Some(&batch),
+                        &transaction,
+                    )
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1125,12 +1135,13 @@ mod test {
                 .unwrap();
 
             storage
-                .commit_multi_context_batch(batch, None)
+                .commit_multi_context_batch(batch, Some(&transaction))
                 .unwrap()
                 .expect("cannot commit batch");
+
             let merk = Merk::open_base(
                 storage
-                    .get_storage_context(SubtreePath::empty(), None)
+                    .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1144,14 +1155,19 @@ mod test {
 
             let mut nodes = vec![];
             collect(walker, &mut nodes);
+
+            storage.commit_transaction(transaction).unwrap().unwrap();
+
             nodes
         };
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
+        let transaction = storage.start_transaction();
+
         let merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), None)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1169,7 +1185,7 @@ mod test {
     }
 
     type PrefixedStorageIter<'db, 'ctx> =
-        &'ctx mut <PrefixedRocksDbStorageContext<'db> as StorageContext<'db>>::RawIterator;
+        &'ctx mut <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db>>::RawIterator;
 
     #[test]
     fn reopen_iter() {
@@ -1189,9 +1205,15 @@ mod test {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
             let batch = StorageBatch::new();
+            let transaction = storage.start_transaction();
+
             let mut merk = Merk::open_base(
                 storage
-                    .get_storage_context(SubtreePath::empty(), Some(&batch))
+                    .get_transactional_storage_context(
+                        SubtreePath::empty(),
+                        Some(&batch),
+                        &transaction,
+                    )
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1205,14 +1227,14 @@ mod test {
                 .unwrap();
 
             storage
-                .commit_multi_context_batch(batch, None)
+                .commit_multi_context_batch(batch, Some(&transaction))
                 .unwrap()
                 .expect("cannot commit batch");
 
             let mut nodes = vec![];
             let merk = Merk::open_base(
                 storage
-                    .get_storage_context(SubtreePath::empty(), None)
+                    .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                     .unwrap(),
                 TreeType::NormalTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1221,13 +1243,18 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
             collect(&mut merk.storage.raw_iter(), &mut nodes);
+
+            storage.commit_transaction(transaction).unwrap().unwrap();
+
             nodes
         };
+
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
+        let transaction = storage.start_transaction();
         let merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), None)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1249,9 +1276,11 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let batch = StorageBatch::new();
+        let transaction = storage.start_transaction();
+
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), Some(&batch))
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1309,13 +1338,13 @@ mod test {
         assert_eq!(result, Some(b"b".to_vec()));
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), None)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

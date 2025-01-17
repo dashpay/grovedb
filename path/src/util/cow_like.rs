@@ -35,7 +35,7 @@ use std::{
 
 /// A smart pointer that follows the semantics of [Cow](std::borrow::Cow) except
 /// provides no means for mutability and thus doesn't require [Clone].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CowLike<'b> {
     Owned(Vec<u8>),
     Borrowed(&'b [u8]),

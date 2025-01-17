@@ -311,15 +311,16 @@ pub fn make_tree_seq_with_start_key(
 /// Shortcut to open a Merk with a provided storage and batch
 pub fn empty_path_merk<'db, S>(
     storage: &'db S,
+    transaction: &'db <S as Storage<'db>>::Transaction,
     batch: &'db StorageBatch,
     grove_version: &GroveVersion,
-) -> Merk<<S as Storage<'db>>::BatchStorageContext>
+) -> Merk<<S as Storage<'db>>::BatchTransactionalStorageContext>
 where
     S: Storage<'db>,
 {
     Merk::open_base(
         storage
-            .get_storage_context(SubtreePath::empty(), Some(batch))
+            .get_transactional_storage_context(SubtreePath::empty(), Some(batch), transaction)
             .unwrap(),
         TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -332,14 +333,15 @@ where
 /// Shortcut to open a Merk for read only
 pub fn empty_path_merk_read_only<'db, S>(
     storage: &'db S,
+    transaction: &'db <S as Storage<'db>>::Transaction,
     grove_version: &GroveVersion,
-) -> Merk<<S as Storage<'db>>::BatchStorageContext>
+) -> Merk<<S as Storage<'db>>::BatchTransactionalStorageContext>
 where
     S: Storage<'db>,
 {
     Merk::open_base(
         storage
-            .get_storage_context(SubtreePath::empty(), None)
+            .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
             .unwrap(),
         TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

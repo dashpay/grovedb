@@ -113,12 +113,18 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
+        let batch = StorageBatch::new();
+        let transaction = storage.start_transaction();
+
         let test_prefix = [b"ayy"];
 
-        let batch = StorageBatch::new();
         let mut merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), Some(&batch))
+                .get_transactional_storage_context(
+                    SubtreePath::from(test_prefix.as_ref()),
+                    Some(&batch),
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -139,13 +145,17 @@ mod test {
         let root_hash = merk.root_hash();
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
         let merk = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::from(test_prefix.as_ref()), None)
+                .get_transactional_storage_context(
+                    SubtreePath::from(test_prefix.as_ref()),
+                    None,
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -161,10 +171,11 @@ mod test {
         let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
+        let transaction = storage.start_transaction();
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), Some(&batch))
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -188,13 +199,13 @@ mod test {
         .expect("apply failed");
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_storage_context(SubtreePath::empty(), None)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

@@ -12,9 +12,7 @@ use grovedb_merk::{
     Merk, ProofWithoutEncodingResult,
 };
 use grovedb_storage::StorageContext;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "proof_debug")]
 use crate::query_result_type::QueryResultType;
@@ -89,7 +87,7 @@ impl GroveDb {
             .with_big_endian()
             .with_no_limit();
         let encoded_proof = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             bincode::encode_to_vec(proof, config)
                 .map_err(|e| Error::CorruptedData(format!("unable to encode proof {}", e)))
         );
@@ -192,8 +190,10 @@ impl GroveDb {
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
 
+        let tx = self.start_transaction();
+
         let query = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             path_query
                 .query_items_at_path(path.as_slice(), grove_version)
                 .and_then(|query_items| {
@@ -210,7 +210,7 @@ impl GroveDb {
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path.as_slice().into(), None, grove_version)
+            self.open_transactional_merk_at_path(path.as_slice().into(), &tx, None, grove_version)
         );
 
         let limit = if path.len() < path_query.path.len() {

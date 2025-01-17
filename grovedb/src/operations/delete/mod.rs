@@ -25,20 +25,19 @@ use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
-    Storage, StorageBatch, StorageContext,
+    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
-    util::storage_context_with_parent_optional_tx,
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
-use crate::{raw_decode, util::merk_optional_tx_path_not_empty};
+use crate::{
+    raw_decode,
+    util::{compat, TxRef},
+};
 
 #[cfg(feature = "minimal")]
 #[derive(Clone)]
@@ -119,15 +118,20 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.delete.delete
         );
 
+        let tx = TxRef::new(&self.db, transaction);
+
         let options = options.unwrap_or_default();
         let batch = StorageBatch::new();
 
-        let collect_costs = self
-            .delete_internal(
+        let mut cost = Default::default();
+
+        cost_return_on_error!(
+            &mut cost,
+            self.delete_internal_on_transaction(
                 path.into(),
                 key,
                 &options,
-                transaction,
+                tx.as_ref(),
                 &mut |_, removed_key_bytes, removed_value_bytes| {
                     Ok((
                         BasicStorageRemoval(removed_key_bytes),
@@ -137,13 +141,17 @@ impl GroveDb {
                 &batch,
                 grove_version,
             )
-            .map_ok(|_| ());
+            .map_ok(|_| ())
+        );
 
-        collect_costs.flat_map_ok(|_| {
+        cost_return_on_error!(
+            &mut cost,
             self.db
-                .commit_multi_context_batch(batch, transaction)
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
                 .map_err(Into::into)
-        })
+        );
+
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Delete all elements in a specified subtree
@@ -187,120 +195,52 @@ impl GroveDb {
                 .clear_subtree
         );
 
+        let tx = TxRef::new(&self.db, transaction);
+
         let subtree_path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let batch = StorageBatch::new();
 
         let options = options.unwrap_or_default();
 
-        if let Some(transaction) = transaction {
-            let mut merk_to_clear = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(
-                    subtree_path.clone(),
-                    transaction,
-                    Some(&batch),
-                    grove_version,
-                )
-            );
+        let mut merk_to_clear = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                subtree_path.clone(),
+                tx.as_ref(),
+                Some(&batch),
+                grove_version,
+            )
+        );
 
-            if options.check_for_subtrees {
-                let mut all_query = Query::new();
-                all_query.insert_all();
+        if options.check_for_subtrees {
+            let mut all_query = Query::new();
+            all_query.insert_all();
 
-                let mut element_iterator =
-                    KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
+            let mut element_iterator =
+                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
 
-                // delete all nested subtrees
-                while let Some((key, element_value)) =
-                    element_iterator.next_kv().unwrap_add_cost(&mut cost)
-                {
-                    let element = raw_decode(&element_value, grove_version).unwrap();
-                    if element.is_any_tree() {
-                        if options.allow_deleting_subtrees {
-                            cost_return_on_error!(
-                                &mut cost,
-                                self.delete(
-                                    subtree_path.clone(),
-                                    key.as_slice(),
-                                    Some(DeleteOptions {
-                                        allow_deleting_non_empty_trees: true,
-                                        deleting_non_empty_trees_returns_error: false,
-                                        ..Default::default()
-                                    }),
-                                    Some(transaction),
-                                    grove_version,
-                                )
-                            );
-                        } else if options.trying_to_clear_with_subtrees_returns_error {
-                            return Err(Error::ClearingTreeWithSubtreesNotAllowed(
-                                "options do not allow to clear this merk tree as it contains \
-                                 subtrees",
-                            ))
-                            .wrap_with_cost(cost);
-                        } else {
-                            return Ok(false).wrap_with_cost(cost);
-                        }
-                    }
-                }
-            }
-
-            // delete non subtree values
-            cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
-
-            // propagate changes
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
-            merk_cache.insert(subtree_path.clone(), merk_to_clear);
-            cost_return_on_error!(
-                &mut cost,
-                self.propagate_changes_with_transaction(
-                    merk_cache,
-                    subtree_path.clone(),
-                    transaction,
-                    &batch,
-                    grove_version,
-                )
-            );
-        } else {
-            let mut merk_to_clear = cost_return_on_error!(
-                &mut cost,
-                self.open_non_transactional_merk_at_path(
-                    subtree_path.clone(),
-                    Some(&batch),
-                    grove_version
-                )
-            );
-
-            if options.check_for_subtrees {
-                let mut all_query = Query::new();
-                all_query.insert_all();
-
-                let mut element_iterator =
-                    KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
-
-                // delete all nested subtrees
-                while let Some((key, element_value)) =
-                    element_iterator.next_kv().unwrap_add_cost(&mut cost)
-                {
-                    let element = raw_decode(&element_value, grove_version).unwrap();
+            // delete all nested subtrees
+            while let Some((key, element_value)) =
+                element_iterator.next_kv().unwrap_add_cost(&mut cost)
+            {
+                let element = raw_decode(&element_value, grove_version).unwrap();
+                if element.is_any_tree() {
                     if options.allow_deleting_subtrees {
-                        if element.is_any_tree() {
-                            cost_return_on_error!(
-                                &mut cost,
-                                self.delete(
-                                    subtree_path.clone(),
-                                    key.as_slice(),
-                                    Some(DeleteOptions {
-                                        allow_deleting_non_empty_trees: true,
-                                        deleting_non_empty_trees_returns_error: false,
-                                        ..Default::default()
-                                    }),
-                                    None,
-                                    grove_version,
-                                )
-                            );
-                        }
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.delete(
+                                subtree_path.clone(),
+                                key.as_slice(),
+                                Some(DeleteOptions {
+                                    allow_deleting_non_empty_trees: true,
+                                    deleting_non_empty_trees_returns_error: false,
+                                    ..Default::default()
+                                }),
+                                Some(tx.as_ref()),
+                                grove_version,
+                            )
+                        );
                     } else if options.trying_to_clear_with_subtrees_returns_error {
                         return Err(Error::ClearingTreeWithSubtreesNotAllowed(
                             "options do not allow to clear this merk tree as it contains subtrees",
@@ -311,33 +251,34 @@ impl GroveDb {
                     }
                 }
             }
-
-            // delete non subtree values
-            cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
-
-            // propagate changes
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
-                HashMap::default();
-            merk_cache.insert(subtree_path.clone(), merk_to_clear);
-            cost_return_on_error!(
-                &mut cost,
-                self.propagate_changes_without_transaction(
-                    merk_cache,
-                    subtree_path.clone(),
-                    &batch,
-                    grove_version,
-                )
-            );
         }
+
+        // delete non subtree values
+        cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
+
+        // propagate changes
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
+            HashMap::default();
+        merk_cache.insert(subtree_path.clone(), merk_to_clear);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                subtree_path.clone(),
+                tx.as_ref(),
+                &batch,
+                grove_version,
+            )
+        );
 
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(batch, transaction)
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
                 .map_err(Into::into)
         );
 
-        Ok(true).wrap_with_cost(cost)
+        tx.commit_local().map(|_| true).wrap_with_cost(cost)
     }
 
     /// Delete element with sectional storage function
@@ -366,15 +307,20 @@ impl GroveDb {
                 .delete_with_sectional_storage_function
         );
 
+        let tx = TxRef::new(&self.db, transaction);
+
         let options = options.unwrap_or_default();
         let batch = StorageBatch::new();
 
-        let collect_costs = self
-            .delete_internal(
+        let mut cost = Default::default();
+
+        cost_return_on_error!(
+            &mut cost,
+            self.delete_internal_on_transaction(
                 path,
                 key,
                 &options,
-                transaction,
+                tx.as_ref(),
                 &mut |value, removed_key_bytes, removed_value_bytes| {
                     let mut element = Element::deserialize(value.as_slice(), grove_version)
                         .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
@@ -395,13 +341,16 @@ impl GroveDb {
                 &batch,
                 grove_version,
             )
-            .map_ok(|_| ());
+        );
 
-        collect_costs.flat_map_ok(|_| {
+        cost_return_on_error!(
+            &mut cost,
             self.db
-                .commit_multi_context_batch(batch, transaction)
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
                 .map_err(Into::into)
-        })
+        );
+
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Delete if an empty tree
@@ -425,28 +374,36 @@ impl GroveDb {
                 .delete_if_empty_tree
         );
 
-        let batch = StorageBatch::new();
+        let mut cost = Default::default();
 
-        let collect_costs = self.delete_if_empty_tree_with_sectional_storage_function(
-            path.into(),
-            key,
-            transaction,
-            &mut |_, removed_key_bytes, removed_value_bytes| {
-                Ok((
-                    BasicStorageRemoval(removed_key_bytes),
-                    BasicStorageRemoval(removed_value_bytes),
-                ))
-            },
-            &batch,
-            grove_version,
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+
+        let result = cost_return_on_error!(
+            &mut cost,
+            self.delete_if_empty_tree_with_sectional_storage_function(
+                path.into(),
+                key,
+                tx.as_ref(),
+                &mut |_, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                &batch,
+                grove_version,
+            )
         );
 
-        collect_costs.flat_map_ok(|r| {
+        cost_return_on_error!(
+            &mut cost,
             self.db
-                .commit_multi_context_batch(batch, transaction)
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
                 .map_err(Into::into)
-                .map_ok(|_| r)
-        })
+        );
+
+        tx.commit_local().map(|_| result).wrap_with_cost(cost)
     }
 
     /// Delete if an empty tree with section storage function
@@ -454,7 +411,7 @@ impl GroveDb {
         &self,
         path: SubtreePath<B>,
         key: &[u8],
-        transaction: TransactionArg,
+        transaction: &Transaction,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
             u32, // key removed bytes
@@ -481,7 +438,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        self.delete_internal(
+        self.delete_internal_on_transaction(
             path,
             key,
             &options,
@@ -507,14 +464,14 @@ impl GroveDb {
     }
 
     /// Delete operation for delete internal
-    pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
+    fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &[QualifiedGroveDbOp],
-        transaction: TransactionArg,
+        transaction: &Transaction,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
@@ -549,7 +506,7 @@ impl GroveDb {
                 None => {
                     let element = cost_return_on_error!(
                         &mut cost,
-                        self.get_raw(path.clone(), key.as_ref(), transaction, grove_version)
+                        self.get_raw(path.clone(), key.as_ref(), Some(transaction), grove_version)
                     );
                     element.maybe_tree_type()
                 }
@@ -574,20 +531,20 @@ impl GroveDb {
                         _ => None,
                     })
                     .collect::<BTreeSet<&[u8]>>();
-                let mut is_empty = merk_optional_tx_path_not_empty!(
+                let subtree = cost_return_on_error!(
                     &mut cost,
-                    self.db,
-                    SubtreePath::from(&subtree_merk_path),
-                    None,
-                    transaction,
-                    subtree,
-                    grove_version,
-                    {
-                        subtree
-                            .is_empty_tree_except(batch_deleted_keys)
-                            .unwrap_add_cost(&mut cost)
-                    }
+                    compat::merk_optional_tx_path_not_empty(
+                        &self.db,
+                        SubtreePath::from(&subtree_merk_path),
+                        transaction,
+                        None,
+                        grove_version,
+                    )
                 );
+
+                let mut is_empty = subtree
+                    .is_empty_tree_except(batch_deleted_keys)
+                    .unwrap_add_cost(&mut cost);
 
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
@@ -625,45 +582,6 @@ impl GroveDb {
                 )))
                 .wrap_with_cost(cost)
             }
-        }
-    }
-
-    fn delete_internal<B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<B>,
-        key: &[u8],
-        options: &DeleteOptions,
-        transaction: TransactionArg,
-        sectioned_removal: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            MerkError,
-        >,
-        batch: &StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<bool, Error> {
-        if let Some(transaction) = transaction {
-            self.delete_internal_on_transaction(
-                path,
-                key,
-                options,
-                transaction,
-                sectioned_removal,
-                batch,
-                grove_version,
-            )
-        } else {
-            self.delete_internal_without_transaction(
-                path,
-                key,
-                options,
-                sectioned_removal,
-                batch,
-                grove_version,
-            )
         }
     }
 
@@ -861,131 +779,6 @@ impl GroveDb {
                 )
             );
         }
-
-        Ok(true).wrap_with_cost(cost)
-    }
-
-    fn delete_internal_without_transaction<B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<B>,
-        key: &[u8],
-        options: &DeleteOptions,
-        sectioned_removal: &mut impl FnMut(
-            &Vec<u8>,
-            u32,
-            u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            MerkError,
-        >,
-        batch: &StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<bool, Error> {
-        check_grovedb_v0_with_cost!(
-            "delete_internal_without_transaction",
-            grove_version
-                .grovedb_versions
-                .operations
-                .delete
-                .delete_internal_without_transaction
-        );
-
-        let mut cost = OperationCost::default();
-
-        let element = cost_return_on_error!(
-            &mut cost,
-            self.get_raw(path.clone(), key.as_ref(), None, grove_version)
-        );
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbStorageContext>> =
-            HashMap::default();
-        let mut subtree_to_delete_from = cost_return_on_error!(
-            &mut cost,
-            self.open_non_transactional_merk_at_path(path.clone(), Some(batch), grove_version)
-        );
-        let uses_sum_tree = subtree_to_delete_from.tree_type;
-        if element.is_any_tree() {
-            let subtree_merk_path = path.derive_owned_with_child(key);
-            let subtree_of_tree_we_are_deleting = cost_return_on_error!(
-                &mut cost,
-                self.open_non_transactional_merk_at_path(
-                    SubtreePath::from(&subtree_merk_path),
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            let is_empty = subtree_of_tree_we_are_deleting
-                .is_empty_tree()
-                .unwrap_add_cost(&mut cost);
-
-            if !options.allow_deleting_non_empty_trees && !is_empty {
-                return if options.deleting_non_empty_trees_returns_error {
-                    Err(Error::DeletingNonEmptyTree(
-                        "trying to do a delete operation for a non empty tree, but options not \
-                         allowing this",
-                    ))
-                    .wrap_with_cost(cost)
-                } else {
-                    Ok(false).wrap_with_cost(cost)
-                };
-            } else {
-                if !is_empty {
-                    let subtrees_paths = cost_return_on_error!(
-                        &mut cost,
-                        self.find_subtrees(
-                            &SubtreePath::from(&subtree_merk_path),
-                            None,
-                            grove_version
-                        )
-                    );
-                    // TODO: dumb traversal should not be tolerated
-                    for subtree_path in subtrees_paths.into_iter().rev() {
-                        let p: SubtreePath<_> = subtree_path.as_slice().into();
-                        let mut inner_subtree_to_delete_from = cost_return_on_error!(
-                            &mut cost,
-                            self.open_non_transactional_merk_at_path(p, Some(batch), grove_version)
-                        );
-                        cost_return_on_error!(
-                            &mut cost,
-                            inner_subtree_to_delete_from.clear().map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage: {e}",
-                                ))
-                            })
-                        );
-                    }
-                }
-                cost_return_on_error!(
-                    &mut cost,
-                    Element::delete_with_sectioned_removal_bytes(
-                        &mut subtree_to_delete_from,
-                        key,
-                        Some(options.as_merk_options()),
-                        true,
-                        uses_sum_tree,
-                        sectioned_removal,
-                        grove_version,
-                    )
-                );
-            }
-        } else {
-            cost_return_on_error!(
-                &mut cost,
-                Element::delete_with_sectioned_removal_bytes(
-                    &mut subtree_to_delete_from,
-                    key,
-                    Some(options.as_merk_options()),
-                    false,
-                    uses_sum_tree,
-                    sectioned_removal,
-                    grove_version,
-                )
-            );
-        }
-        merk_cache.insert(path.clone(), subtree_to_delete_from);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_without_transaction(merk_cache, path, batch, grove_version)
-        );
 
         Ok(true).wrap_with_cost(cost)
     }
@@ -1882,9 +1675,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!matches!(key1_tree, Element::Tree(None, _)));
+
+        let transaction = db.start_transaction();
+
         let key1_merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
+                &transaction,
                 None,
                 grove_version,
             )
@@ -1946,9 +1743,12 @@ mod tests {
             .unwrap();
         assert!(matches!(key1_tree, Element::Tree(None, _)));
 
+        let transaction = db.start_transaction();
+
         let key1_merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
+                &transaction,
                 None,
                 grove_version,
             )

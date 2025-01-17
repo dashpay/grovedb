@@ -52,7 +52,7 @@ impl TreeNode {
         let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(StorageError));
 
         let tree_opt = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             tree_bytes
                 .map(|x| TreeNode::decode_raw(
                     &x,

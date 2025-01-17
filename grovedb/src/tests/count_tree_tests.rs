@@ -165,11 +165,13 @@ mod tests {
         .expect("should insert item");
 
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
 
         // Open merk and check all elements in it
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -223,6 +225,8 @@ mod tests {
 
         // Perform the same test on regular trees
         let db = make_test_grovedb(grove_version);
+        let transaction = db.start_transaction();
+
         db.insert(
             [TEST_LEAF].as_ref(),
             b"key",
@@ -255,8 +259,9 @@ mod tests {
         .expect("should insert item");
 
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -306,12 +311,14 @@ mod tests {
         .expect("should insert tree");
 
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
 
         // Sum should be non for non count tree
         // TODO: change interface to retrieve element directly
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -350,10 +357,12 @@ mod tests {
         )
         .unwrap()
         .expect("should insert item");
+
         // TODO: change interface to retrieve element directly
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key2"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -386,8 +395,9 @@ mod tests {
         .unwrap()
         .expect("should insert item");
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key2"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -409,8 +419,9 @@ mod tests {
         .unwrap()
         .expect("should insert item");
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key2"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -442,8 +453,9 @@ mod tests {
         .unwrap()
         .expect("should insert item");
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key2"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -464,8 +476,9 @@ mod tests {
         .unwrap()
         .expect("expected to delete");
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key2"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -572,11 +585,13 @@ mod tests {
         assert_eq!(count_tree.count_value_or_default(), 5);
 
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
 
         // Assert node feature types
         let test_leaf_merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -596,8 +611,9 @@ mod tests {
         assert_matches!(root_tree_feature_type, BasicMerkNode);
 
         let parent_count_tree = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"count_key"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -616,8 +632,9 @@ mod tests {
         assert_matches!(count_tree_feature_type, CountedMerkNode(4));
 
         let child_count_tree = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"count_key", b"tree2"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -702,9 +719,12 @@ mod tests {
             .expect("should apply batch");
 
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
         let count_tree = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -748,8 +768,9 @@ mod tests {
 
         let batch = StorageBatch::new();
         let count_tree = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -837,8 +858,9 @@ mod tests {
 
         let batch = StorageBatch::new();
         let count_tree = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )

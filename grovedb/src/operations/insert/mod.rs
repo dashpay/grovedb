@@ -11,14 +11,11 @@ use grovedb_costs::{
 use grovedb_merk::{tree::NULL_HASH, Merk, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::{
-    PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
-};
+use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_storage::{Storage, StorageBatch};
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
+use crate::util::TxRef;
 #[cfg(feature = "minimal")]
 use crate::{
     reference_path::path_from_reference_path_type, Element, Error, GroveDb, Transaction,
@@ -86,32 +83,31 @@ impl GroveDb {
         let subtree_path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
 
-        let collect_costs = if let Some(transaction) = transaction {
+        let tx = TxRef::new(&self.db, transaction);
+
+        let mut cost = Default::default();
+
+        cost_return_on_error!(
+            &mut cost,
             self.insert_on_transaction(
                 subtree_path,
                 key,
                 element,
                 options.unwrap_or_default(),
-                transaction,
+                tx.as_ref(),
                 &batch,
                 grove_version,
             )
-        } else {
-            self.insert_without_transaction(
-                subtree_path,
-                key,
-                element,
-                options.unwrap_or_default(),
-                &batch,
-                grove_version,
-            )
-        };
+        );
 
-        collect_costs.flat_map_ok(|_| {
+        cost_return_on_error!(
+            &mut cost,
             self.db
-                .commit_multi_context_batch(batch, transaction)
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
                 .map_err(Into::into)
-        })
+        );
+
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
@@ -160,50 +156,6 @@ impl GroveDb {
                 batch,
                 grove_version
             )
-        );
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    fn insert_without_transaction<'b, B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<'b, B>,
-        key: &[u8],
-        element: Element,
-        options: InsertOptions,
-        batch: &StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "insert_without_transaction",
-            grove_version
-                .grovedb_versions
-                .operations
-                .insert
-                .insert_without_transaction
-        );
-
-        let mut cost = OperationCost::default();
-
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbStorageContext>> =
-            HashMap::default();
-
-        let merk = cost_return_on_error!(
-            &mut cost,
-            self.add_element_without_transaction(
-                &path.to_vec(),
-                key,
-                element,
-                options,
-                batch,
-                grove_version
-            )
-        );
-        merk_cache.insert(path.clone(), merk);
-
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_without_transaction(merk_cache, path, batch, grove_version)
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -267,7 +219,7 @@ impl GroveDb {
                 }
                 if options.validate_insertion_does_not_override_tree {
                     let element = cost_return_on_error_no_add!(
-                        &cost,
+                        cost,
                         Element::deserialize(element_bytes.as_slice(), grove_version).map_err(
                             |_| {
                                 Error::CorruptedData(String::from("unable to deserialize element"))
@@ -314,142 +266,6 @@ impl GroveDb {
                         referenced_element_value_hash,
                         Some(options.as_merk_options()),
                         grove_version,
-                    )
-                );
-            }
-            Element::Tree(ref value, _)
-            | Element::SumTree(ref value, ..)
-            | Element::BigSumTree(ref value, ..)
-            | Element::CountTree(ref value, ..) => {
-                if value.is_some() {
-                    return Err(Error::InvalidCodeExecution(
-                        "a tree should be empty at the moment of insertion when not using batches",
-                    ))
-                    .wrap_with_cost(cost);
-                } else {
-                    cost_return_on_error!(
-                        &mut cost,
-                        element.insert_subtree(
-                            &mut subtree_to_insert_into,
-                            key,
-                            NULL_HASH,
-                            Some(options.as_merk_options()),
-                            grove_version
-                        )
-                    );
-                }
-            }
-            _ => {
-                cost_return_on_error!(
-                    &mut cost,
-                    element.insert(
-                        &mut subtree_to_insert_into,
-                        key,
-                        Some(options.as_merk_options()),
-                        grove_version
-                    )
-                );
-            }
-        }
-
-        Ok(subtree_to_insert_into).wrap_with_cost(cost)
-    }
-
-    /// Add an empty tree or item to a parent tree.
-    /// We want to add a new empty merk to another merk at a key
-    /// first make sure other merk exist
-    /// if it exists, then create merk to be inserted, and get root hash
-    /// we only care about root hash of merk to be inserted
-    fn add_element_without_transaction<'db, B: AsRef<[u8]>>(
-        &'db self,
-        path: &[B],
-        key: &[u8],
-        element: Element,
-        options: InsertOptions,
-        batch: &'db StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
-        check_grovedb_v0_with_cost!(
-            "add_element_without_transaction",
-            grove_version
-                .grovedb_versions
-                .operations
-                .insert
-                .add_element_without_transaction
-        );
-
-        let mut cost = OperationCost::default();
-        let mut subtree_to_insert_into = cost_return_on_error!(
-            &mut cost,
-            self.open_non_transactional_merk_at_path(path.into(), Some(batch), grove_version)
-        );
-
-        if options.checks_for_override() {
-            let maybe_element_bytes = cost_return_on_error!(
-                &mut cost,
-                subtree_to_insert_into
-                    .get(
-                        key,
-                        true,
-                        Some(&Element::value_defined_cost_for_serialized_value),
-                        grove_version
-                    )
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
-            );
-            if let Some(element_bytes) = maybe_element_bytes {
-                if options.validate_insertion_does_not_override {
-                    return Err(Error::OverrideNotAllowed(
-                        "insertion not allowed to override",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-                if options.validate_insertion_does_not_override_tree {
-                    let element = cost_return_on_error_no_add!(
-                        &cost,
-                        Element::deserialize(element_bytes.as_slice(), grove_version).map_err(
-                            |_| {
-                                Error::CorruptedData(String::from("unable to deserialize element"))
-                            }
-                        )
-                    );
-                    if element.is_any_tree() {
-                        return Err(Error::OverrideNotAllowed(
-                            "insertion not allowed to override tree",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                }
-            }
-        }
-
-        match element {
-            Element::Reference(ref reference_path, ..) => {
-                let reference_path = cost_return_on_error!(
-                    &mut cost,
-                    path_from_reference_path_type(reference_path.clone(), path, Some(key))
-                        .wrap_with_cost(OperationCost::default())
-                );
-                let referenced_item = cost_return_on_error!(
-                    &mut cost,
-                    self.follow_reference(
-                        reference_path.as_slice().into(),
-                        false,
-                        None,
-                        grove_version
-                    )
-                );
-
-                let referenced_element_value_hash =
-                    cost_return_on_error!(&mut cost, referenced_item.value_hash(grove_version));
-
-                cost_return_on_error!(
-                    &mut cost,
-                    element.insert_reference(
-                        &mut subtree_to_insert_into,
-                        key,
-                        referenced_element_value_hash,
-                        Some(options.as_merk_options()),
-                        grove_version
                     )
                 );
             }

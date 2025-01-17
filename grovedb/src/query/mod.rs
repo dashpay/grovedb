@@ -12,7 +12,7 @@ use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::Query;
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
 
 use crate::operations::proof::util::hex_to_ascii;

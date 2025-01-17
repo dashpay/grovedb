@@ -4,10 +4,10 @@ use std::pin::Pin;
 
 use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer};
 use grovedb_path::SubtreePath;
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 pub use self::state_sync_session::MultiStateSyncSession;
-use crate::{Error, GroveDb, TransactionArg};
+use crate::{util::TxRef, Error, GroveDb, TransactionArg};
 
 /// Type alias representing a chunk identifier in the state synchronization
 /// process.
@@ -74,6 +74,9 @@ impl GroveDb {
             "fetch_chunk",
             grove_version.grovedb_versions.replication.fetch_chunk
         );
+
+        let tx = TxRef::new(&self.db, transaction);
+
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -81,104 +84,57 @@ impl GroveDb {
             ));
         }
 
-        let root_app_hash = self.root_hash(transaction, grove_version).value?;
+        let root_app_hash = self.root_hash(Some(tx.as_ref()), grove_version).value?;
         let (chunk_prefix, root_key, tree_type, chunk_id) =
             utils::decode_global_chunk_id(global_chunk_id, &root_app_hash)?;
 
         // TODO: Refactor this by writing fetch_chunk_inner (as only merk constructor
         // and type are different)
-        if let Some(tx) = transaction {
-            let merk = self
-                .open_transactional_merk_by_prefix(
-                    chunk_prefix,
-                    root_key,
-                    tree_type,
-                    tx,
-                    None,
-                    grove_version,
-                )
-                .value
-                .map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "failed to open merk by prefix tx:{} with:{}",
-                        hex::encode(chunk_prefix),
-                        e
-                    ))
-                })?;
-            if merk.is_empty_tree().unwrap() {
-                return Ok(vec![]);
-            }
-
-            let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
+        let merk = self
+            .open_transactional_merk_by_prefix(
+                chunk_prefix,
+                root_key,
+                tree_type,
+                tx.as_ref(),
+                None,
+                grove_version,
+            )
+            .value
+            .map_err(|e| {
                 Error::CorruptedData(format!(
-                    "failed to create chunk producer by prefix tx:{} with:{}",
+                    "failed to open merk by prefix tx:{} with:{}",
                     hex::encode(chunk_prefix),
                     e
                 ))
             })?;
-            let (chunk, _) = chunk_producer
-                .chunk(&chunk_id, grove_version)
-                .map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "failed to apply chunk:{} with:{}",
-                        hex::encode(chunk_prefix),
-                        e
-                    ))
-                })?;
-            let op_bytes = utils::encode_vec_ops(chunk).map_err(|e| {
-                Error::CorruptedData(format!(
-                    "failed to encode chunk ops:{} with:{}",
-                    hex::encode(chunk_prefix),
-                    e
-                ))
-            })?;
-            Ok(op_bytes)
-        } else {
-            let merk = self
-                .open_non_transactional_merk_by_prefix(
-                    chunk_prefix,
-                    root_key,
-                    tree_type,
-                    None,
-                    grove_version,
-                )
-                .value
-                .map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "failed to open merk by prefix non-tx:{} with:{}",
-                        e,
-                        hex::encode(chunk_prefix)
-                    ))
-                })?;
-            if merk.is_empty_tree().unwrap() {
-                return Ok(vec![]);
-            }
-
-            let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
-                Error::CorruptedData(format!(
-                    "failed to create chunk producer by prefix non-tx:{} with:{}",
-                    hex::encode(chunk_prefix),
-                    e
-                ))
-            })?;
-            let (chunk, _) = chunk_producer
-                .chunk(&chunk_id, grove_version)
-                .map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "failed to apply chunk:{} with:{}",
-                        hex::encode(chunk_prefix),
-                        e
-                    ))
-                })?;
-            let op_bytes = utils::encode_vec_ops(chunk).map_err(|e| {
-                Error::CorruptedData(format!(
-                    "failed to encode chunk ops:{} with:{}",
-                    hex::encode(chunk_prefix),
-                    e
-                ))
-            })?;
-            Ok(op_bytes)
+        if merk.is_empty_tree().unwrap() {
+            return Ok(vec![]);
         }
+
+        let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
+            Error::CorruptedData(format!(
+                "failed to create chunk producer by prefix tx:{} with:{}",
+                hex::encode(chunk_prefix),
+                e
+            ))
+        })?;
+        let (chunk, _) = chunk_producer
+            .chunk(&chunk_id, grove_version)
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "failed to apply chunk:{} with:{}",
+                    hex::encode(chunk_prefix),
+                    e
+                ))
+            })?;
+        let op_bytes = utils::encode_vec_ops(chunk).map_err(|e| {
+            Error::CorruptedData(format!(
+                "failed to encode chunk ops:{} with:{}",
+                hex::encode(chunk_prefix),
+                e
+            ))
+        })?;
+        Ok(op_bytes)
     }
 
     /// Starts a state synchronization process for a snapshot with the given
