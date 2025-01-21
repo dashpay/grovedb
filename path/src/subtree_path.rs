@@ -53,30 +53,51 @@ pub struct SubtreePath<'b, B> {
 }
 
 impl<B: AsRef<[u8]>> Display for SubtreePath<'_, B> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let path = self.to_vec();
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        fn bytes_to_hex_or_ascii(bytes: &[u8]) -> String {
+            // Define the set of allowed characters
+            const ALLOWED_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                                  abcdefghijklmnopqrstuvwxyz\
+                                  0123456789_-/\\[]@";
 
-        fn fmt_segment(s: impl AsRef<[u8]>) -> String {
-            let bytes = s.as_ref();
-            let hex_str = hex::encode(bytes);
-            let utf8_str = String::from_utf8(bytes.to_vec());
-            let mut result = format!("h:{hex_str}");
-            if let Ok(s) = utf8_str {
-                result.push_str("/s:");
-                result.push_str(&s);
+            // Check if all characters in hex_value are allowed
+            if bytes.iter().all(|&c| ALLOWED_CHARS.contains(&c)) {
+                // Try to convert to UTF-8
+                String::from_utf8(bytes.to_vec())
+                    .unwrap_or_else(|_| format!("0x{}", hex::encode(bytes)))
+            } else {
+                // Hex encode and prepend "0x"
+                format!("0x{}", hex::encode(bytes))
             }
-            result
         }
 
-        f.write_str("[")?;
-
-        for s in itertools::intersperse(path.into_iter().map(fmt_segment), ", ".to_owned()) {
-            f.write_str(&s)?;
+        match &self.ref_variant {
+            SubtreePathInner::Slice(slice) => {
+                let ascii_path = slice
+                    .iter()
+                    .map(|e| bytes_to_hex_or_ascii(e.as_ref()))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                write!(f, "{}", ascii_path)
+            }
+            SubtreePathInner::SubtreePath(subtree_path) => {
+                let ascii_path = subtree_path
+                    .to_vec()
+                    .into_iter()
+                    .map(|a| bytes_to_hex_or_ascii(a.as_slice()))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                write!(f, "{}", ascii_path)
+            }
+            SubtreePathInner::SubtreePathIter(iter) => {
+                let ascii_path = iter
+                    .clone()
+                    .map(bytes_to_hex_or_ascii)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                write!(f, "{}", ascii_path)
+            }
         }
-
-        f.write_str("]")?;
-
-        Ok(())
     }
 }
 

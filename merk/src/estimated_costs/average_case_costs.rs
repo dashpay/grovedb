@@ -523,7 +523,7 @@ fn add_average_case_merk_propagate_v1(
         // we can get about 1 rotation, if there are more than 2 levels
         nodes_updated += 1;
     }
-    cost.seek_count += nodes_updated as u32;
+    cost.seek_count += nodes_updated;
 
     cost.hash_node_calls += nodes_updated * 2;
 
@@ -794,7 +794,7 @@ fn add_average_case_merk_propagate_v0(
         // we can get about 1 rotation, if there are more than 2 levels
         nodes_updated += 1;
     }
-    cost.seek_count += nodes_updated as u32;
+    cost.seek_count += nodes_updated;
 
     cost.hash_node_calls += nodes_updated * 2;
 

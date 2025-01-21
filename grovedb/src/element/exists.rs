@@ -1,7 +1,7 @@
 //! Exists
 //! Implements in Element functions for checking if stuff exists
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::CostResult;
 use grovedb_merk::Merk;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};

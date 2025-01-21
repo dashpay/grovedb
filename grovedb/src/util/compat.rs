@@ -10,9 +10,9 @@ use grovedb_version::version::GroveVersion;
 use crate::{Element, Error, Transaction};
 
 pub(crate) trait OpenMerkErrorsCompat {
-    fn parent_key_not_found<'b, B: AsRef<[u8]>>(
+    fn parent_key_not_found<B: AsRef<[u8]>>(
         e: Error,
-        parent_path: SubtreePath<'b, B>,
+        parent_path: SubtreePath<B>,
         parent_key: &[u8],
     ) -> Error;
 
@@ -88,9 +88,9 @@ where
     struct Compat;
 
     impl OpenMerkErrorsCompat for Compat {
-        fn parent_key_not_found<'b, B: AsRef<[u8]>>(
+        fn parent_key_not_found<B: AsRef<[u8]>>(
             e: Error,
-            _parent_path: SubtreePath<'b, B>,
+            _parent_path: SubtreePath<B>,
             _parent_key: &[u8],
         ) -> Error {
             Error::PathParentLayerNotFound(format!(

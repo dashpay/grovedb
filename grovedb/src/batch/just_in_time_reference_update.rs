@@ -60,7 +60,7 @@ where
                     let val_hash = value_hash(&new_serialized_bytes).unwrap_add_cost(&mut cost);
                     Ok(val_hash).wrap_with_cost(cost)
                 } else {
-                    let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                    let val_hash = value_hash(serialized).unwrap_add_cost(&mut cost);
                     Ok(val_hash).wrap_with_cost(cost)
                 }
             } else {

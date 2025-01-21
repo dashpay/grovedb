@@ -289,7 +289,7 @@ impl GroveDb {
 
         if merk_result.result_set.is_empty() {
             if prove_options.decrease_limit_on_empty_sub_query_result {
-                limit_left.as_mut().map(|limit| *limit -= 1);
+                limit_left.iter_mut().for_each(|limit| *limit -= 1);
             }
         } else {
             for proved_key_value in merk_result.result_set {
@@ -370,7 +370,7 @@ impl GroveDb {
                         }
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
 
-                        limit_left.as_mut().map(|limit| *limit -= 1);
+                        limit_left.iter_mut().for_each(|limit| *limit -= 1);
                         if limit_left == &Some(0) {
                             break;
                         }

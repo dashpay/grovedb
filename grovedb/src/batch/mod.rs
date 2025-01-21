@@ -706,11 +706,11 @@ where
     /// change in the same batch. It distinguishes between two cases:
     ///
     /// 1. When the hop count is exactly 1, it tries to directly extract the
-    /// value hash from the reference element.
+    ///    value hash from the reference element.
     ///
     /// 2. When the hop count is greater than 1, it retrieves the referenced
-    /// element and then determines the next step based on the type of the
-    /// element.
+    ///    element and then determines the next step based on the type of the
+    ///    element.
     ///
     /// # Arguments
     ///
@@ -722,12 +722,11 @@ where
     /// # Returns
     ///
     /// * `Ok(CryptoHash)`: Returns the crypto hash of the referenced element
-    ///   wrapped in the
-    /// associated cost, if successful.
+    ///   wrapped in the associated cost, if successful.
     ///
     /// * `Err(Error)`: Returns an error if there is an issue with the
-    ///   operation, such as
-    /// missing reference, corrupted data, or invalid batch operation.
+    ///   operation, such as missing reference, corrupted data, or invalid batch
+    ///   operation.
     ///
     /// # Errors
     ///
@@ -868,8 +867,8 @@ where
     ///   the Merk tree.
     /// * `Error::CorruptedData` - If the referenced element cannot be
     ///   deserialized due to corrupted data.
-    fn get_and_deserialize_referenced_element<'a>(
-        &'a mut self,
+    fn get_and_deserialize_referenced_element(
+        &mut self,
         key: &[u8],
         reference_path: &[Vec<u8>],
         grove_version: &GroveVersion,
@@ -1527,7 +1526,7 @@ where
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
-                            &merk,
+                            merk,
                             key_info.get_key(),
                             root_key,
                             hash,
@@ -1711,12 +1710,9 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
-        let r = merk
-            .root_hash_key_and_aggregate_data()
+        merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
-            .map_err(Error::MerkError);
-
-        r
+            .map_err(Error::MerkError)
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
@@ -1824,14 +1820,11 @@ impl GroveDb {
                                 {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            vacant_entry.insert(
-                                                GroveOp::ReplaceTreeRootKey {
-                                                    hash: root_hash,
-                                                    root_key: calculated_root_key,
-                                                    aggregate_data,
-                                                }
-                                                .into(),
-                                            );
+                                            vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
+                                                hash: root_hash,
+                                                root_key: calculated_root_key,
+                                                aggregate_data,
+                                            });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
@@ -1864,7 +1857,6 @@ impl GroveDb {
                                                                 aggregate_data:
                                                                     AggregateData::NoAggregateData,
                                                             }
-                                                            .into();
                                                     } else if let Element::SumTree(.., flags) =
                                                         element
                                                     {
@@ -1875,7 +1867,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else if let Element::BigSumTree(.., flags) =
                                                         element
                                                     {
@@ -1886,7 +1877,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else if let Element::CountTree(.., flags) =
                                                         element
                                                     {
@@ -1897,7 +1887,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else if let Element::CountSumTree(.., flags) =
                                                         element
                                                     {
@@ -1908,7 +1897,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -1956,8 +1944,7 @@ impl GroveDb {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
                                         aggregate_data,
-                                    }
-                                    .into(),
+                                    },
                                 );
                                 let mut ops_on_level: BTreeMap<
                                     KeyInfoPath,

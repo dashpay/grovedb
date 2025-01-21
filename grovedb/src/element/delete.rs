@@ -2,8 +2,6 @@
 //! Implements functions in Element for deleting
 
 #[cfg(feature = "minimal")]
-use grovedb_costs::OperationCost;
-#[cfg(feature = "minimal")]
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
 #[cfg(feature = "minimal")]
 use grovedb_merk::tree_type::TreeType;

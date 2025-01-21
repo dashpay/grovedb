@@ -41,7 +41,7 @@ impl Element {
             let value = result?;
             value.ok_or_else(|| {
                 let key_single_byte = if key.as_ref().len() == 1 {
-                    format!("({} in decimal) ", key.as_ref().get(0).unwrap())
+                    format!("({} in decimal) ", key.as_ref().first().unwrap())
                 } else {
                     String::new()
                 };

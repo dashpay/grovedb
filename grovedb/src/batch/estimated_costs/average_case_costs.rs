@@ -212,7 +212,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             .estimated_to_be_empty();
 
         // Then we have to get the tree
-        if self.cached_merks.get(path).is_none() {
+        if !self.cached_merks.contains_key(path) {
             let layer_info = cost_return_on_error_no_add!(
                 cost,
                 self.paths.get(path).ok_or_else(|| {
@@ -256,6 +256,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
     }
 
+    // Clippy's suggestion doesn't respect ownership in this case
+    #[allow(clippy::map_entry)]
     fn update_base_merk_root_key(
         &mut self,
         _root_key: Option<Vec<u8>>,

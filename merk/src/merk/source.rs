@@ -26,7 +26,7 @@ pub struct MerkSource<'s, S> {
     tree_type: TreeType,
 }
 
-impl<'s, S> Clone for MerkSource<'s, S> {
+impl<S> Clone for MerkSource<'_, S> {
     fn clone(&self) -> Self {
         MerkSource {
             storage: self.storage,
@@ -35,7 +35,7 @@ impl<'s, S> Clone for MerkSource<'s, S> {
     }
 }
 
-impl<'s, 'db, S> Fetch for MerkSource<'s, S>
+impl<'db, S> Fetch for MerkSource<'_, S>
 where
     S: StorageContext<'db>,
 {

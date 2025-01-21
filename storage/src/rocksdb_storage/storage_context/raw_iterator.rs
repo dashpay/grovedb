@@ -46,7 +46,7 @@ pub struct PrefixedRocksDbRawIterator<I> {
     pub(super) raw_iterator: I,
 }
 
-impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Db>> {
+impl RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'_, Db>> {
     fn seek_to_first(&mut self) -> CostContext<()> {
         self.raw_iterator.seek(self.prefix);
         ().wrap_with_cost(OperationCost::with_seek_count(1))
@@ -90,10 +90,9 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         let mut cost = OperationCost::default();
 
         let value = if self.valid().unwrap_add_cost(&mut cost) {
-            self.raw_iterator.value().map(|v| {
-                cost.storage_loaded_bytes += v.len() as u64;
-                v
-            })
+            self.raw_iterator
+                .value()
+                .inspect(|v| cost.storage_loaded_bytes += v.len() as u64)
         } else {
             None
         };
@@ -211,10 +210,9 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         let mut cost = OperationCost::default();
 
         let value = if self.valid().unwrap_add_cost(&mut cost) {
-            self.raw_iterator.value().map(|v| {
-                cost.storage_loaded_bytes += v.len() as u64;
-                v
-            })
+            self.raw_iterator
+                .value()
+                .inspect(|v| cost.storage_loaded_bytes += v.len() as u64)
         } else {
             None
         };

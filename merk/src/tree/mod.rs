@@ -459,7 +459,7 @@ impl TreeNode {
                 match link.aggregate_data() {
                     AggregateData::NoAggregateData => 0,
                     AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
-                    AggregateData::BigSum(_) => 16 as u32,
+                    AggregateData::BigSum(_) => 16_u32,
                     AggregateData::Count(c) => c.encode_var_vec().len() as u32,
                     AggregateData::CountAndSum(c, s) => {
                         s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32

@@ -341,7 +341,7 @@ where
 {
     Merk::open_base(
         storage
-            .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+            .get_transactional_storage_context(SubtreePath::empty(), None, transaction)
             .unwrap(),
         TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

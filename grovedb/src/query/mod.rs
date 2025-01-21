@@ -464,7 +464,7 @@ pub enum HasSubquery<'a> {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl<'a> fmt::Display for HasSubquery<'a> {
+impl fmt::Display for HasSubquery<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HasSubquery::NoSubquery => write!(f, "NoSubquery"),
@@ -480,7 +480,7 @@ impl<'a> fmt::Display for HasSubquery<'a> {
     }
 }
 
-impl<'a> HasSubquery<'a> {
+impl HasSubquery<'_> {
     /// Checks to see if we have a subquery on a specific key
     pub fn has_subquery_on_key(&self, key: &[u8]) -> bool {
         match self {
@@ -509,7 +509,7 @@ pub struct SinglePathSubquery<'a> {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl<'a> fmt::Display for SinglePathSubquery<'a> {
+impl fmt::Display for SinglePathSubquery<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "InternalCowItemsQuery {{")?;
         writeln!(f, "  items: [")?;

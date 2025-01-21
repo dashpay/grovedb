@@ -169,7 +169,7 @@ fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
 }
 
 #[cfg(feature = "minimal")]
-impl<'db, 'ctx, 'a> fmt::Display for PathQueryPushArgs<'db, 'ctx, 'a>
+impl<'db, 'ctx> fmt::Display for PathQueryPushArgs<'db, 'ctx, '_>
 where
     'db: 'ctx,
 {

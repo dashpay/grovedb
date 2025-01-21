@@ -414,7 +414,7 @@ impl<'a> Decoder<'a> {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl<'a> Iterator for Decoder<'a> {
+impl Iterator for Decoder<'_> {
     type Item = Result<Op, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -187,7 +187,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 }
 
 // Cannot be an Iterator as it should return cost
-impl<'a, I: RawIterator> KVIterator<'a, I> {
+impl<I: RawIterator> KVIterator<'_, I> {
     /// Next key-value
     pub fn next_kv(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();

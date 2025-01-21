@@ -10,4 +10,3 @@ repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
 hex = "0.4.3"
-itertools = "0.13.0"

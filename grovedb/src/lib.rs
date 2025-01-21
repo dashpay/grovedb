@@ -300,9 +300,9 @@ impl GroveDb {
         struct Compat;
 
         impl compat::OpenMerkErrorsCompat for Compat {
-            fn parent_key_not_found<'b, B: AsRef<[u8]>>(
+            fn parent_key_not_found<B: AsRef<[u8]>>(
                 e: Error,
-                parent_path: SubtreePath<'b, B>,
+                parent_path: SubtreePath<B>,
                 parent_key: &[u8],
             ) -> Error {
                 Error::InvalidParentLayerPath(format!(

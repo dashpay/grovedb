@@ -40,7 +40,7 @@ use crate::{
 pub const LEFT: bool = true;
 pub const RIGHT: bool = false;
 
-impl<'a, S> RefWalker<'a, S>
+impl<S> RefWalker<'_, S>
 where
     S: Fetch + Sized + Clone,
 {
@@ -214,7 +214,7 @@ pub fn verify_height_proof(proof: Vec<Op>, expected_root_hash: CryptoHash) -> Re
 
 // TODO: add documentation
 pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
-    return Ok(match height_proof_tree.child(LEFT) {
+    Ok(match height_proof_tree.child(LEFT) {
         Some(child) => {
             if !matches!(child.tree.node, Node::KVHash(..)) {
                 // todo deal with old chunk restoring error
@@ -225,7 +225,7 @@ pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
             verify_height_tree(&child.tree)? + 1
         }
         None => 1,
-    });
+    })
 }
 
 #[cfg(test)]
