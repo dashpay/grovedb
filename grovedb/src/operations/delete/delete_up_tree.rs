@@ -238,7 +238,7 @@ impl GroveDb {
                 &options.to_delete_options(),
                 is_known_to_be_subtree,
                 current_batch_operations,
-                tx.as_ref(),
+                Some(tx.as_ref()),
                 grove_version,
             )
         ) {

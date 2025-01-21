@@ -471,7 +471,7 @@ impl GroveDb {
         options: &DeleteOptions,
         is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &[QualifiedGroveDbOp],
-        transaction: &Transaction,
+        transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
@@ -482,6 +482,8 @@ impl GroveDb {
                 .delete
                 .delete_operation_for_delete_internal
         );
+
+        let tx = TxRef::new(&self.db, transaction);
 
         let mut cost = OperationCost::default();
 
@@ -497,7 +499,7 @@ impl GroveDb {
                     &mut cost,
                     self.check_subtree_exists_path_not_found(
                         path.clone(),
-                        transaction,
+                        tx.as_ref(),
                         grove_version
                     )
                 );
@@ -506,7 +508,7 @@ impl GroveDb {
                 None => {
                     let element = cost_return_on_error!(
                         &mut cost,
-                        self.get_raw(path.clone(), key.as_ref(), Some(transaction), grove_version)
+                        self.get_raw(path.clone(), key.as_ref(), Some(tx.as_ref()), grove_version)
                     );
                     element.maybe_tree_type()
                 }
@@ -536,7 +538,7 @@ impl GroveDb {
                     compat::merk_optional_tx_path_not_empty(
                         &self.db,
                         SubtreePath::from(&subtree_merk_path),
-                        transaction,
+                        tx.as_ref(),
                         None,
                         grove_version,
                     )
