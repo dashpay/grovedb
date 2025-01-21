@@ -57,12 +57,9 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
-    Storage, StorageBatch, StorageContext,
+    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
@@ -82,6 +79,7 @@ use crate::{
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
+    util::TxRef,
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
@@ -708,11 +706,11 @@ where
     /// change in the same batch. It distinguishes between two cases:
     ///
     /// 1. When the hop count is exactly 1, it tries to directly extract the
-    /// value hash from the reference element.
+    ///    value hash from the reference element.
     ///
     /// 2. When the hop count is greater than 1, it retrieves the referenced
-    /// element and then determines the next step based on the type of the
-    /// element.
+    ///    element and then determines the next step based on the type of the
+    ///    element.
     ///
     /// # Arguments
     ///
@@ -724,12 +722,11 @@ where
     /// # Returns
     ///
     /// * `Ok(CryptoHash)`: Returns the crypto hash of the referenced element
-    ///   wrapped in the
-    /// associated cost, if successful.
+    ///   wrapped in the associated cost, if successful.
     ///
     /// * `Err(Error)`: Returns an error if there is an issue with the
-    ///   operation, such as
-    /// missing reference, corrupted data, or invalid batch operation.
+    ///   operation, such as missing reference, corrupted data, or invalid batch
+    ///   operation.
     ///
     /// # Errors
     ///
@@ -808,7 +805,7 @@ where
             Ok(referenced_element_value_hash).wrap_with_cost(cost)
         } else if let Some(referenced_path) = intermediate_reference_info {
             let path = cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 path_from_reference_qualified_path_type(referenced_path.clone(), qualified_path)
             );
             self.follow_reference_get_value_hash(
@@ -870,8 +867,8 @@ where
     ///   the Merk tree.
     /// * `Error::CorruptedData` - If the referenced element cannot be
     ///   deserialized due to corrupted data.
-    fn get_and_deserialize_referenced_element<'a>(
-        &'a mut self,
+    fn get_and_deserialize_referenced_element(
+        &mut self,
         key: &[u8],
         reference_path: &[Vec<u8>],
         grove_version: &GroveVersion,
@@ -901,7 +898,7 @@ where
 
         if let Some(referenced_element) = referenced_element {
             let element = cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|_| {
                     Error::CorruptedData(String::from("unable to deserialize element"))
                 })
@@ -1001,13 +998,13 @@ where
         match element {
             Element::Item(..) | Element::SumItem(..) => {
                 let serialized =
-                    cost_return_on_error_no_add!(&cost, element.serialize(grove_version));
+                    cost_return_on_error_no_add!(cost, element.serialize(grove_version));
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
             Element::Reference(path, ..) => {
                 let path = cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     path_from_reference_qualified_path_type(path, qualified_path)
                 );
                 self.follow_reference_get_value_hash(
@@ -1079,7 +1076,7 @@ where
                     match element {
                         Element::Item(..) | Element::SumItem(..) => {
                             let serialized = cost_return_on_error_no_add!(
-                                &cost,
+                                cost,
                                 element.serialize(grove_version)
                             );
                             if element.get_flags().is_none() {
@@ -1126,7 +1123,7 @@ where
                         }
                         Element::Reference(path, ..) => {
                             let path = cost_return_on_error_no_add!(
-                                &cost,
+                                cost,
                                 path_from_reference_qualified_path_type(
                                     path.clone(),
                                     qualified_path
@@ -1154,13 +1151,13 @@ where
                 GroveOp::InsertOnly { element } => match element {
                     Element::Item(..) | Element::SumItem(..) => {
                         let serialized =
-                            cost_return_on_error_no_add!(&cost, element.serialize(grove_version));
+                            cost_return_on_error_no_add!(cost, element.serialize(grove_version));
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
                     Element::Reference(path, ..) => {
                         let path = cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
                         self.follow_reference_get_value_hash(
@@ -1440,7 +1437,7 @@ where
                             )
                         );
                         cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             Element::deserialize(value.as_slice(), grove_version).map_err(|_| {
                                 Error::CorruptedData(String::from("unable to deserialize element"))
                             })
@@ -1529,7 +1526,7 @@ where
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
-                            &merk,
+                            merk,
                             key_info.get_key(),
                             root_key,
                             hash,
@@ -1576,7 +1573,7 @@ where
                         }
                     };
                     let merk_feature_type =
-                        cost_return_on_error_no_add!(&cost, element.get_feature_type(in_tree_type));
+                        cost_return_on_error_no_add!(cost, element.get_feature_type(in_tree_type));
 
                     cost_return_on_error!(
                         &mut cost,
@@ -1713,12 +1710,9 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
-        let r = merk
-            .root_hash_key_and_aggregate_data()
+        merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
-            .map_err(Error::MerkError);
-
-        r
+            .map_err(Error::MerkError)
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
@@ -1785,7 +1779,7 @@ impl GroveDb {
                     if batch_apply_options.base_root_storage_is_free {
                         // the base root is free
                         let mut update_root_cost = cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             merk_tree_cache
                                 .update_base_merk_root_key(calculated_root_key, grove_version)
                                 .cost_as_result()
@@ -1826,14 +1820,11 @@ impl GroveDb {
                                 {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            vacant_entry.insert(
-                                                GroveOp::ReplaceTreeRootKey {
-                                                    hash: root_hash,
-                                                    root_key: calculated_root_key,
-                                                    aggregate_data,
-                                                }
-                                                .into(),
-                                            );
+                                            vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
+                                                hash: root_hash,
+                                                root_key: calculated_root_key,
+                                                aggregate_data,
+                                            });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
@@ -1866,7 +1857,6 @@ impl GroveDb {
                                                                 aggregate_data:
                                                                     AggregateData::NoAggregateData,
                                                             }
-                                                            .into();
                                                     } else if let Element::SumTree(.., flags) =
                                                         element
                                                     {
@@ -1877,7 +1867,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else if let Element::BigSumTree(.., flags) =
                                                         element
                                                     {
@@ -1888,7 +1877,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else if let Element::CountTree(.., flags) =
                                                         element
                                                     {
@@ -1899,7 +1887,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else if let Element::CountSumTree(.., flags) =
                                                         element
                                                     {
@@ -1910,7 +1897,6 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
-                                                            .into();
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -1958,8 +1944,7 @@ impl GroveDb {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
                                         aggregate_data,
-                                    }
-                                    .into(),
+                                    },
                                 );
                                 let mut ops_on_level: BTreeMap<
                                     KeyInfoPath,
@@ -2282,74 +2267,6 @@ impl GroveDb {
         }
     }
 
-    /// Opens merk at path with given storage batch context. Returns CostResult.
-    pub fn open_batch_merk_at_path<'a, B: AsRef<[u8]>>(
-        &'a self,
-        storage_batch: &'a StorageBatch,
-        path: SubtreePath<B>,
-        new_merk: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error> {
-        check_grovedb_v0_with_cost!(
-            "open_batch_merk_at_path",
-            grove_version
-                .grovedb_versions
-                .apply_batch
-                .open_batch_merk_at_path
-        );
-        let mut local_cost = OperationCost::default();
-        let storage = self
-            .db
-            .get_storage_context(path.clone(), Some(storage_batch))
-            .unwrap_add_cost(&mut local_cost);
-
-        if new_merk {
-            let merk_type = if path.is_root() {
-                MerkType::BaseMerk
-            } else {
-                MerkType::LayeredMerk
-            };
-            Ok(Merk::open_empty(storage, merk_type, TreeType::NormalTree))
-                .wrap_with_cost(local_cost)
-        } else if let Some((base_path, last)) = path.derive_parent() {
-            let parent_storage = self
-                .db
-                .get_storage_context(base_path, Some(storage_batch))
-                .unwrap_add_cost(&mut local_cost);
-            let element = cost_return_on_error!(
-                &mut local_cost,
-                Element::get_from_storage(&parent_storage, last, grove_version)
-            );
-            if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
-                Merk::open_layered_with_root_key(
-                    storage,
-                    root_key,
-                    tree_type,
-                    Some(&Element::value_defined_cost_for_serialized_value),
-                    grove_version,
-                )
-                .map_err(|_| {
-                    Error::CorruptedData("cannot open a subtree with given root key".to_owned())
-                })
-                .add_cost(local_cost)
-            } else {
-                Err(Error::CorruptedData(
-                    "cannot open a subtree as parent exists but is not a tree".to_owned(),
-                ))
-                .wrap_with_cost(local_cost)
-            }
-        } else {
-            Merk::open_base(
-                storage,
-                TreeType::NormalTree,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version,
-            )
-            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-            .add_cost(local_cost)
-        }
-    }
-
     /// Applies batch of operations on GroveDB
     pub fn apply_batch_with_element_flags_update(
         &self,
@@ -2379,6 +2296,7 @@ impl GroveDb {
                 .apply_batch_with_element_flags_update
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         if ops.is_empty() {
             return Ok(()).wrap_with_cost(cost);
@@ -2416,93 +2334,50 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        if let Some(tx) = transaction {
-            cost_return_on_error!(
-                &mut cost,
-                self.apply_body(
-                    ops,
-                    batch_apply_options,
-                    update_element_flags_function,
-                    split_removal_bytes_function,
-                    |path, new_merk| {
-                        self.open_batch_transactional_merk_at_path(
-                            &storage_batch,
-                            path.into(),
-                            tx,
-                            new_merk,
-                            grove_version,
-                        )
-                    },
-                    grove_version
-                )
-            );
+        cost_return_on_error!(
+            &mut cost,
+            self.apply_body(
+                ops,
+                batch_apply_options,
+                update_element_flags_function,
+                split_removal_bytes_function,
+                |path, new_merk| {
+                    self.open_batch_transactional_merk_at_path(
+                        &storage_batch,
+                        path.into(),
+                        tx.as_ref(),
+                        new_merk,
+                        grove_version,
+                    )
+                },
+                grove_version
+            )
+        );
 
-            // TODO: compute batch costs
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_multi_context_batch(storage_batch, Some(tx))
-                    .map_err(|e| e.into())
-            );
+        // TODO: compute batch costs
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(storage_batch, Some(tx.as_ref()))
+                .map_err(|e| e.into())
+        );
 
-            // Keep this commented for easy debugging in the future.
-            // let issues = self
-            //     .visualize_verify_grovedb(Some(tx), true,
-            // &Default::default())     .unwrap();
-            // if issues.len() > 0 {
-            //     println!(
-            //         "tx_issues: {}",
-            //         issues
-            //             .iter()
-            //             .map(|(hash, (a, b, c))| format!("{}: {} {} {}",
-            // hash, a, b, c))             .collect::<Vec<_>>()
-            //             .join(" | ")
-            //     );
-            // }
-        } else {
-            cost_return_on_error!(
-                &mut cost,
-                self.apply_body(
-                    ops,
-                    batch_apply_options,
-                    update_element_flags_function,
-                    split_removal_bytes_function,
-                    |path, new_merk| {
-                        self.open_batch_merk_at_path(
-                            &storage_batch,
-                            path.into(),
-                            new_merk,
-                            grove_version,
-                        )
-                    },
-                    grove_version
-                )
-            );
+        // Keep this commented for easy debugging in the future.
+        // let issues = self
+        //     .visualize_verify_grovedb(Some(tx), true,
+        // &Default::default())     .unwrap();
+        // if issues.len() > 0 {
+        //     println!(
+        //         "tx_issues: {}",
+        //         issues
+        //             .iter()
+        //             .map(|(hash, (a, b, c))| format!("{}: {} {} {}",
+        // hash, a, b, c))             .collect::<Vec<_>>()
+        //             .join(" | ")
+        //     );
+        // }
 
-            // TODO: compute batch costs
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_multi_context_batch(storage_batch, None)
-                    .map_err(|e| e.into())
-            );
-
-            // Keep this commented for easy debugging in the future.
-            // let issues = self
-            //     .visualize_verify_grovedb(None, true, &Default::default())
-            //     .unwrap();
-            // if issues.len() > 0 {
-            //     println!(
-            //         "non_tx_issues: {}",
-            //         issues
-            //             .iter()
-            //             .map(|(hash, (a, b, c))| format!("{}: {} {} {}",
-            // hash, a, b, c))             .collect::<Vec<_>>()
-            //             .join(" | ")
-            //     );
-            // }
-        }
-        Ok(()).wrap_with_cost(cost)
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Applies a partial batch of operations on GroveDB
@@ -2541,6 +2416,7 @@ impl GroveDb {
                 .apply_partial_batch_with_element_flags_update
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         if ops.is_empty() {
             return Ok(()).wrap_with_cost(cost);
@@ -2582,177 +2458,93 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        if let Some(tx) = transaction {
-            let left_over_operations = cost_return_on_error!(
-                &mut cost,
-                self.apply_body(
-                    ops,
-                    Some(batch_apply_options.clone()),
-                    &mut update_element_flags_function,
-                    &mut split_removal_bytes_function,
-                    |path, new_merk| {
-                        self.open_batch_transactional_merk_at_path(
-                            &storage_batch,
-                            path.into(),
-                            tx,
-                            new_merk,
-                            grove_version,
-                        )
-                    },
-                    grove_version
-                )
-            );
-            // if we paused at the root height, the left over operations would be to replace
-            // a lot of leaf nodes in the root tree
+        let left_over_operations = cost_return_on_error!(
+            &mut cost,
+            self.apply_body(
+                ops,
+                Some(batch_apply_options.clone()),
+                &mut update_element_flags_function,
+                &mut split_removal_bytes_function,
+                |path, new_merk| {
+                    self.open_batch_transactional_merk_at_path(
+                        &storage_batch,
+                        path.into(),
+                        tx.as_ref(),
+                        new_merk,
+                        grove_version,
+                    )
+                },
+                grove_version
+            )
+        );
+        // if we paused at the root height, the left over operations would be to replace
+        // a lot of leaf nodes in the root tree
 
-            // let's build the write batch
-            let (mut write_batch, mut pending_costs) = cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .build_write_batch(storage_batch)
-                    .map_err(|e| e.into())
-            );
+        // let's build the write batch
+        let (mut write_batch, mut pending_costs) = cost_return_on_error!(
+            &mut cost,
+            self.db
+                .build_write_batch(storage_batch)
+                .map_err(|e| e.into())
+        );
 
-            let total_current_costs = cost.clone().add(pending_costs.clone());
+        let total_current_costs = cost.clone().add(pending_costs.clone());
 
-            // todo: estimate root costs
+        // todo: estimate root costs
 
-            // at this point we need to send the pending costs back
-            // we will get GroveDB a new set of GroveDBOps
+        // at this point we need to send the pending costs back
+        // we will get GroveDB a new set of GroveDBOps
 
-            let new_operations = cost_return_on_error_no_add!(
-                &cost,
-                add_on_operations(&total_current_costs, &left_over_operations)
-            );
+        let new_operations = cost_return_on_error_no_add!(
+            cost,
+            add_on_operations(&total_current_costs, &left_over_operations)
+        );
 
-            // we are trying to finalize
-            batch_apply_options.batch_pause_height = None;
+        // we are trying to finalize
+        batch_apply_options.batch_pause_height = None;
 
-            let continue_storage_batch = StorageBatch::new();
+        let continue_storage_batch = StorageBatch::new();
 
-            cost_return_on_error!(
-                &mut cost,
-                self.continue_partial_apply_body(
-                    left_over_operations,
-                    new_operations,
-                    Some(batch_apply_options),
-                    update_element_flags_function,
-                    split_removal_bytes_function,
-                    |path, new_merk| {
-                        self.open_batch_transactional_merk_at_path(
-                            &continue_storage_batch,
-                            path.into(),
-                            tx,
-                            new_merk,
-                            grove_version,
-                        )
-                    },
-                    grove_version
-                )
-            );
+        cost_return_on_error!(
+            &mut cost,
+            self.continue_partial_apply_body(
+                left_over_operations,
+                new_operations,
+                Some(batch_apply_options),
+                update_element_flags_function,
+                split_removal_bytes_function,
+                |path, new_merk| {
+                    self.open_batch_transactional_merk_at_path(
+                        &continue_storage_batch,
+                        path.into(),
+                        tx.as_ref(),
+                        new_merk,
+                        grove_version,
+                    )
+                },
+                grove_version
+            )
+        );
 
-            // let's build the write batch
-            let continued_pending_costs = cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .continue_write_batch(&mut write_batch, continue_storage_batch)
-                    .map_err(|e| e.into())
-            );
+        // let's build the write batch
+        let continued_pending_costs = cost_return_on_error!(
+            &mut cost,
+            self.db
+                .continue_write_batch(&mut write_batch, continue_storage_batch)
+                .map_err(|e| e.into())
+        );
 
-            pending_costs.add_assign(continued_pending_costs);
+        pending_costs.add_assign(continued_pending_costs);
 
-            // TODO: compute batch costs
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_db_write_batch(write_batch, pending_costs, Some(tx))
-                    .map_err(|e| e.into())
-            );
-        } else {
-            let left_over_operations = cost_return_on_error!(
-                &mut cost,
-                self.apply_body(
-                    ops,
-                    Some(batch_apply_options.clone()),
-                    &mut update_element_flags_function,
-                    &mut split_removal_bytes_function,
-                    |path, new_merk| {
-                        self.open_batch_merk_at_path(
-                            &storage_batch,
-                            path.into(),
-                            new_merk,
-                            grove_version,
-                        )
-                    },
-                    grove_version
-                )
-            );
+        // TODO: compute batch costs
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_db_write_batch(write_batch, pending_costs, Some(tx.as_ref()))
+                .map_err(|e| e.into())
+        );
 
-            // if we paused at the root height, the left over operations would be to replace
-            // a lot of leaf nodes in the root tree
-
-            // let's build the write batch
-            let (mut write_batch, mut pending_costs) = cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .build_write_batch(storage_batch)
-                    .map_err(|e| e.into())
-            );
-
-            let total_current_costs = cost.clone().add(pending_costs.clone());
-
-            // at this point we need to send the pending costs back
-            // we will get GroveDB a new set of GroveDBOps
-
-            let new_operations = cost_return_on_error_no_add!(
-                &cost,
-                add_on_operations(&total_current_costs, &left_over_operations)
-            );
-
-            // we are trying to finalize
-            batch_apply_options.batch_pause_height = None;
-
-            let continue_storage_batch = StorageBatch::new();
-
-            cost_return_on_error!(
-                &mut cost,
-                self.continue_partial_apply_body(
-                    left_over_operations,
-                    new_operations,
-                    Some(batch_apply_options),
-                    update_element_flags_function,
-                    split_removal_bytes_function,
-                    |path, new_merk| {
-                        self.open_batch_merk_at_path(
-                            &continue_storage_batch,
-                            path.into(),
-                            new_merk,
-                            grove_version,
-                        )
-                    },
-                    grove_version
-                )
-            );
-
-            // let's build the write batch
-            let continued_pending_costs = cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .continue_write_batch(&mut write_batch, continue_storage_batch)
-                    .map_err(|e| e.into())
-            );
-
-            pending_costs.add_assign(continued_pending_costs);
-
-            // TODO: compute batch costs
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_db_write_batch(write_batch, pending_costs, None)
-                    .map_err(|e| e.into())
-            );
-        }
-        Ok(()).wrap_with_cost(cost)
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     #[cfg(feature = "estimated_costs")]

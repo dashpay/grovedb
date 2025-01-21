@@ -109,9 +109,12 @@ mod count_sum_tree_tests {
 
         // Test aggregate data (count and sum)
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"count_sum_key"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -168,9 +171,12 @@ mod count_sum_tree_tests {
 
         // Test aggregate data
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"count_sum_key2"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -249,9 +255,12 @@ mod count_sum_tree_tests {
 
         // Open merk and check all elements in it
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"count_sum_key3"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -344,11 +353,13 @@ mod count_sum_tree_tests {
         .expect("should insert regular tree");
 
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
 
         // Aggregate data should be None for regular tree
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"regular_key"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -407,8 +418,9 @@ mod count_sum_tree_tests {
         // Verify aggregate data
         let batch = StorageBatch::new();
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"count_sum_key4"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -452,9 +464,12 @@ mod count_sum_tree_tests {
 
         // Open the CountSumTree and verify aggregate data
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
         let merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"count_sum_key6"].as_ref().into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -521,11 +536,14 @@ mod count_sum_tree_tests {
 
         // Verify aggregate data of child
         let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
         let child_merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"parent_count_sum", b"child_count_sum"]
                     .as_ref()
                     .into(),
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -540,8 +558,9 @@ mod count_sum_tree_tests {
         // Verify aggregate data of parent
         let parent_batch = StorageBatch::new();
         let parent_merk = db
-            .open_non_transactional_merk_at_path(
+            .open_transactional_merk_at_path(
                 [TEST_LEAF, b"parent_count_sum"].as_ref().into(),
+                &transaction,
                 Some(&parent_batch),
                 grove_version,
             )

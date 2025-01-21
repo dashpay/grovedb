@@ -35,7 +35,8 @@
 //! subtree paths and other path references if use as generic [Into].
 
 use std::{
-    fmt::{Display, Formatter},
+    cmp,
+    fmt::{self, Display},
     hash::{Hash, Hasher},
 };
 
@@ -51,30 +52,30 @@ pub struct SubtreePath<'b, B> {
     pub(crate) ref_variant: SubtreePathInner<'b, B>,
 }
 
-fn hex_to_ascii(hex_value: &[u8]) -> String {
-    // Define the set of allowed characters
-    const ALLOWED_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+impl<B: AsRef<[u8]>> Display for SubtreePath<'_, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        fn bytes_to_hex_or_ascii(bytes: &[u8]) -> String {
+            // Define the set of allowed characters
+            const ALLOWED_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                                   abcdefghijklmnopqrstuvwxyz\
                                   0123456789_-/\\[]@";
 
-    // Check if all characters in hex_value are allowed
-    if hex_value.iter().all(|&c| ALLOWED_CHARS.contains(&c)) {
-        // Try to convert to UTF-8
-        String::from_utf8(hex_value.to_vec())
-            .unwrap_or_else(|_| format!("0x{}", hex::encode(hex_value)))
-    } else {
-        // Hex encode and prepend "0x"
-        format!("0x{}", hex::encode(hex_value))
-    }
-}
+            // Check if all characters in hex_value are allowed
+            if bytes.iter().all(|&c| ALLOWED_CHARS.contains(&c)) {
+                // Try to convert to UTF-8
+                String::from_utf8(bytes.to_vec())
+                    .unwrap_or_else(|_| format!("0x{}", hex::encode(bytes)))
+            } else {
+                // Hex encode and prepend "0x"
+                format!("0x{}", hex::encode(bytes))
+            }
+        }
 
-impl<'b, B: AsRef<[u8]>> Display for SubtreePath<'b, B> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self.ref_variant {
             SubtreePathInner::Slice(slice) => {
                 let ascii_path = slice
                     .iter()
-                    .map(|e| hex_to_ascii(e.as_ref()))
+                    .map(|e| bytes_to_hex_or_ascii(e.as_ref()))
                     .collect::<Vec<_>>()
                     .join("/");
                 write!(f, "{}", ascii_path)
@@ -83,13 +84,17 @@ impl<'b, B: AsRef<[u8]>> Display for SubtreePath<'b, B> {
                 let ascii_path = subtree_path
                     .to_vec()
                     .into_iter()
-                    .map(|a| hex_to_ascii(a.as_slice()))
+                    .map(|a| bytes_to_hex_or_ascii(a.as_slice()))
                     .collect::<Vec<_>>()
                     .join("/");
                 write!(f, "{}", ascii_path)
             }
             SubtreePathInner::SubtreePathIter(iter) => {
-                let ascii_path = iter.clone().map(hex_to_ascii).collect::<Vec<_>>().join("/");
+                let ascii_path = iter
+                    .clone()
+                    .map(bytes_to_hex_or_ascii)
+                    .collect::<Vec<_>>()
+                    .join("/");
                 write!(f, "{}", ascii_path)
             }
         }
@@ -114,7 +119,7 @@ pub(crate) enum SubtreePathInner<'b, B> {
     SubtreePathIter(SubtreePathIter<'b, B>),
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePath<'br, BR>> for SubtreePath<'bl, BL>
+impl<'br, BL, BR> PartialEq<SubtreePath<'br, BR>> for SubtreePath<'_, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -126,7 +131,78 @@ where
     }
 }
 
-impl<'b, B: AsRef<[u8]>> Eq for SubtreePath<'b, B> {}
+/// First and foremost, the order of subtree paths is dictated by their lengths.
+/// Therefore, those subtrees closer to the root will come first. The rest it
+/// can guarantee is to be free of false equality; however, seemingly unrelated
+/// subtrees can come one after another if they share the same length, which was
+/// (not) done for performance reasons.
+impl<'br, BL, BR> PartialOrd<SubtreePath<'br, BR>> for SubtreePath<'_, BL>
+where
+    BL: AsRef<[u8]>,
+    BR: AsRef<[u8]>,
+{
+    fn partial_cmp(&self, other: &SubtreePath<'br, BR>) -> Option<cmp::Ordering> {
+        let iter_a = self.clone().into_reverse_iter();
+        let iter_b = other.clone().into_reverse_iter();
+
+        Some(
+            iter_a
+                .len()
+                .cmp(&iter_b.len())
+                .reverse()
+                .then_with(|| iter_a.cmp(iter_b)),
+        )
+    }
+}
+
+impl<'br, BL, BR> PartialOrd<SubtreePathBuilder<'br, BR>> for SubtreePathBuilder<'_, BL>
+where
+    BL: AsRef<[u8]>,
+    BR: AsRef<[u8]>,
+{
+    fn partial_cmp(&self, other: &SubtreePathBuilder<'br, BR>) -> Option<cmp::Ordering> {
+        let iter_a = self.reverse_iter();
+        let iter_b = other.reverse_iter();
+
+        Some(
+            iter_a
+                .len()
+                .cmp(&iter_b.len())
+                .reverse()
+                .then_with(|| iter_a.cmp(iter_b)),
+        )
+    }
+}
+
+impl<'br, BL, BR> PartialOrd<SubtreePathBuilder<'br, BR>> for SubtreePath<'_, BL>
+where
+    BL: AsRef<[u8]>,
+    BR: AsRef<[u8]>,
+{
+    fn partial_cmp(&self, other: &SubtreePathBuilder<'br, BR>) -> Option<cmp::Ordering> {
+        self.partial_cmp(&SubtreePath::from(other))
+    }
+}
+
+impl<BL> Ord for SubtreePath<'_, BL>
+where
+    BL: AsRef<[u8]>,
+{
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.partial_cmp(other).expect("order is totally defined")
+    }
+}
+
+impl<BL> Ord for SubtreePathBuilder<'_, BL>
+where
+    BL: AsRef<[u8]>,
+{
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.partial_cmp(other).expect("order is totally defined")
+    }
+}
+
+impl<B: AsRef<[u8]>> Eq for SubtreePath<'_, B> {}
 
 impl<'b, B> From<SubtreePathInner<'b, B>> for SubtreePath<'b, B> {
     fn from(ref_variant: SubtreePathInner<'b, B>) -> Self {
@@ -156,7 +232,7 @@ impl<'s, 'b, B> From<&'s SubtreePathBuilder<'b, B>> for SubtreePath<'s, B> {
 
 /// Hash order is the same as iteration order: from most deep path segment up to
 /// root.
-impl<'b, B: AsRef<[u8]>> Hash for SubtreePath<'b, B> {
+impl<B: AsRef<[u8]>> Hash for SubtreePath<'_, B> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match &self.ref_variant {
             SubtreePathInner::Slice(slice) => slice
@@ -222,7 +298,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
     }
 
     /// Get a derived path with a child path segment added.
-    pub fn derive_owned_with_child<'s, S>(&'b self, segment: S) -> SubtreePathBuilder<'b, B>
+    pub fn derive_owned_with_child<'s, S>(&self, segment: S) -> SubtreePathBuilder<'b, B>
     where
         S: Into<CowLike<'s>>,
         's: 'b,
@@ -321,5 +397,30 @@ mod tests {
 
         assert_eq!(as_vec, reference_vec);
         assert_eq!(parent.len(), reference_vec.len());
+    }
+
+    #[test]
+    fn ordering() {
+        let path_a: SubtreePath<_> = (&[b"one" as &[u8], b"two", b"three"]).into();
+        let path_b = path_a.derive_owned_with_child(b"four");
+        let path_c = path_a.derive_owned_with_child(b"notfour");
+        let (path_d_parent, _) = path_a.derive_parent().unwrap();
+        let path_d = path_d_parent.derive_owned_with_child(b"three");
+
+        // Same lengths for different paths don't make them equal:
+        assert!(!matches!(
+            SubtreePath::from(&path_b).cmp(&SubtreePath::from(&path_c)),
+            cmp::Ordering::Equal
+        ));
+
+        // Equal paths made the same way are equal:
+        assert!(matches!(
+            path_a.cmp(&SubtreePath::from(&path_d)),
+            cmp::Ordering::Equal
+        ));
+
+        // Longer paths come first
+        assert!(path_a > path_b);
+        assert!(path_a > path_c);
     }
 }

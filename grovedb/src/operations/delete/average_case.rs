@@ -12,9 +12,7 @@ use grovedb_merk::{
     HASH_LENGTH_U32,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use intmap::IntMap;
 
 use crate::{
@@ -68,11 +66,11 @@ impl GroveDb {
                     estimated_element_size,
                     tree_type,
                 ) = cost_return_on_error_no_add!(
-                    &cost,
+                    cost,
                     if height == path_len - 1 {
                         if let Some(layer_info) = estimated_layer_info.get(height) {
                             let estimated_value_len = cost_return_on_error_no_add!(
-                                &cost,
+                                cost,
                                 layer_info
                                     .estimated_layer_sizes
                                     .value_with_feature_and_flags_size(grove_version)
@@ -97,7 +95,7 @@ impl GroveDb {
                         used_path = smaller_path;
                         if let Some(layer_info) = estimated_layer_info.get(height) {
                             let estimated_value_len = cost_return_on_error_no_add!(
-                                &cost,
+                                cost,
                                 layer_info
                                     .estimated_layer_sizes
                                     .subtree_with_feature_and_flags_size(grove_version)
@@ -159,7 +157,7 @@ impl GroveDb {
 
         if validate {
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 GroveDb::add_average_case_get_merk_at_path::<S>(
                     &mut cost,
                     path,
@@ -171,7 +169,7 @@ impl GroveDb {
         }
         if check_if_tree {
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 GroveDb::add_average_case_get_raw_cost::<S>(
                     &mut cost,
                     path,

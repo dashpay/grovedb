@@ -65,8 +65,8 @@ impl<'a, F> VisualizableTree<'a, F> {
     }
 }
 
-impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
-    for VisualizeableMerk<'a, S, F>
+impl<'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
+    for VisualizeableMerk<'_, S, F>
 {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         drawer.write(b"Merk root: ")?;
@@ -84,7 +84,7 @@ impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Vi
     }
 }
 
-impl<'a, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize for VisualizableTree<'a, F> {
+impl<T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize for VisualizableTree<'_, F> {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         drawer.write(b"[key: ")?;
         drawer = self.tree.inner.kv.key_as_ref().visualize(drawer)?;

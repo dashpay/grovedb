@@ -65,6 +65,8 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             serialize: 0,
             serialized_size: 0,
             deserialize: 0,
+            get_with_value_hash: 0,
+            insert_reference_if_changed_value: 0,
         },
         operations: GroveDBOperationsVersions {
             get: GroveDBOperationsGetVersions {
@@ -86,6 +88,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 worst_case_for_get_raw: 0,
                 worst_case_for_get: 0,
                 is_empty_tree: 0,
+                follow_reference_once: 0,
             },
             insert: GroveDBOperationsInsertVersions {
                 insert: 0,

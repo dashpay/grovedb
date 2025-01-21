@@ -46,16 +46,25 @@ pub struct SubtreePathBuilder<'b, B> {
     pub(crate) relative: SubtreePathRelative<'b>,
 }
 
+impl<B> Clone for SubtreePathBuilder<'_, B> {
+    fn clone(&self) -> Self {
+        SubtreePathBuilder {
+            base: self.base.clone(),
+            relative: self.relative.clone(),
+        }
+    }
+}
+
 /// Hash order is the same as iteration order: from most deep path segment up to
 /// root.
-impl<'b, B: AsRef<[u8]>> Hash for SubtreePathBuilder<'b, B> {
+impl<B: AsRef<[u8]>> Hash for SubtreePathBuilder<'_, B> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.relative.hash(state);
         self.base.hash(state);
     }
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePathBuilder<'bl, BL>
+impl<'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePathBuilder<'_, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -65,7 +74,7 @@ where
     }
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePath<'bl, BL>
+impl<'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePath<'_, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -75,7 +84,7 @@ where
     }
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePath<'br, BR>> for SubtreePathBuilder<'bl, BL>
+impl<'br, BL, BR> PartialEq<SubtreePath<'br, BR>> for SubtreePathBuilder<'_, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -85,7 +94,7 @@ where
     }
 }
 
-impl<'b, B: AsRef<[u8]>> Eq for SubtreePathBuilder<'b, B> {}
+impl<B: AsRef<[u8]>> Eq for SubtreePathBuilder<'_, B> {}
 
 impl<'s, 'b, B> From<&'s SubtreePath<'b, B>> for SubtreePathBuilder<'b, B> {
     fn from(value: &'s SubtreePath<'b, B>) -> Self {
@@ -97,7 +106,7 @@ impl<'s, 'b, B> From<&'s SubtreePath<'b, B>> for SubtreePathBuilder<'b, B> {
 }
 
 /// Derived subtree path on top of base path.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum SubtreePathRelative<'r> {
     /// Equivalent to the base path.
     Empty,
@@ -150,6 +159,28 @@ impl Default for SubtreePathBuilder<'static, [u8; 0]> {
 }
 
 impl<B> SubtreePathBuilder<'_, B> {
+    /// Makes an owned `SubtreePathBuilder` out of iterator.
+    pub fn owned_from_iter<S: AsRef<[u8]>>(iter: impl IntoIterator<Item = S>) -> Self {
+        let bytes = iter.into_iter().fold(CompactBytes::new(), |mut bytes, s| {
+            bytes.add_segment(s.as_ref());
+            bytes
+        });
+
+        SubtreePathBuilder {
+            base: SubtreePath {
+                ref_variant: SubtreePathInner::Slice(&[]),
+            },
+            relative: SubtreePathRelative::Multi(bytes),
+        }
+    }
+
+    /// Create an owned version of `SubtreePathBuilder` from `SubtreePath`.
+    pub fn owned_from_path<S: AsRef<[u8]>>(path: SubtreePath<S>) -> Self {
+        Self::owned_from_iter(path.to_vec())
+    }
+}
+
+impl<B> SubtreePathBuilder<'_, B> {
     /// Returns the length of the subtree path.
     pub fn len(&self) -> usize {
         self.base.len() + self.relative.len()
@@ -158,6 +189,24 @@ impl<B> SubtreePathBuilder<'_, B> {
     /// Returns whether the path is empty (the root tree).
     pub fn is_empty(&self) -> bool {
         self.base.is_empty() && self.relative.is_empty()
+    }
+
+    /// Adds path segment in place.
+    pub fn push_segment(&mut self, segment: &[u8]) {
+        match &mut self.relative {
+            SubtreePathRelative::Empty => {
+                let mut bytes = CompactBytes::new();
+                bytes.add_segment(segment);
+                self.relative = SubtreePathRelative::Multi(bytes);
+            }
+            SubtreePathRelative::Single(old_segment) => {
+                let mut bytes = CompactBytes::new();
+                bytes.add_segment(old_segment);
+                bytes.add_segment(segment);
+                self.relative = SubtreePathRelative::Multi(bytes);
+            }
+            SubtreePathRelative::Multi(bytes) => bytes.add_segment(segment),
+        }
     }
 }
 
@@ -191,6 +240,38 @@ impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
         }
     }
 
+    /// Get a derived path for a parent and a chopped segment. The lifetime of
+    /// returned path is constrained solely by the original slice that this
+    /// whole path hierarchy is based upon, and the point of derivation has
+    /// no effect on it.
+    pub fn derive_parent_owned(&self) -> Option<(SubtreePathBuilder<'b, B>, Vec<u8>)> {
+        match &self.relative {
+            SubtreePathRelative::Empty => self
+                .base
+                .derive_parent()
+                .map(|(path, key)| (path.derive_owned(), key.to_vec())),
+            SubtreePathRelative::Single(relative) => {
+                Some((self.base.derive_owned(), relative.to_vec()))
+            }
+            SubtreePathRelative::Multi(bytes) => {
+                let mut new_bytes = bytes.clone();
+                if let Some(key) = new_bytes.pop_segment() {
+                    Some((
+                        SubtreePathBuilder {
+                            base: self.base.clone(),
+                            relative: SubtreePathRelative::Multi(new_bytes),
+                        },
+                        key,
+                    ))
+                } else {
+                    self.base
+                        .derive_parent()
+                        .map(|(path, key)| (path.derive_owned(), key.to_vec()))
+                }
+            }
+        }
+    }
+
     /// Get a derived path with a child path segment added.
     pub fn derive_owned_with_child<'s, S>(&'b self, segment: S) -> SubtreePathBuilder<'b, B>
     where
@@ -200,24 +281,6 @@ impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
         SubtreePathBuilder {
             base: SubtreePathInner::SubtreePath(self).into(),
             relative: SubtreePathRelative::Single(segment.into()),
-        }
-    }
-
-    /// Adds path segment in place.
-    pub fn push_segment(&mut self, segment: &[u8]) {
-        match &mut self.relative {
-            SubtreePathRelative::Empty => {
-                let mut bytes = CompactBytes::new();
-                bytes.add_segment(segment);
-                self.relative = SubtreePathRelative::Multi(bytes);
-            }
-            SubtreePathRelative::Single(old_segment) => {
-                let mut bytes = CompactBytes::new();
-                bytes.add_segment(old_segment);
-                bytes.add_segment(segment);
-                self.relative = SubtreePathRelative::Multi(bytes);
-            }
-            SubtreePathRelative::Multi(bytes) => bytes.add_segment(segment),
         }
     }
 

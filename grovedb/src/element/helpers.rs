@@ -20,7 +20,7 @@ use grovedb_merk::{
     },
 };
 #[cfg(feature = "minimal")]
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
@@ -390,7 +390,7 @@ impl Element {
     #[cfg(feature = "minimal")]
     /// Get tree costs for a key value
     pub fn specialized_costs_for_key_value(
-        key: &Vec<u8>,
+        key: &[u8],
         value: &[u8],
         node_type: NodeType,
         grove_version: &GroveVersion,
@@ -497,9 +497,7 @@ impl Element {
     #[cfg(feature = "minimal")]
     /// Get the value defined cost for a serialized value
     pub fn value_defined_cost(&self, grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
-        let Some(value_cost) = self.get_specialized_cost(grove_version).ok() else {
-            return None;
-        };
+        let value_cost = self.get_specialized_cost(grove_version).ok()?;
 
         let cost = value_cost
             + self.get_flags().as_ref().map_or(0, |flags| {

@@ -5,9 +5,7 @@ use grovedb_costs::cost_return_on_error_default;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_version::{
-    check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
@@ -140,7 +138,7 @@ where {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             PathQuery::merge(path_queries.to_vec(), grove_version)
         );
         let (result, _) = cost_return_on_error!(
@@ -278,7 +276,7 @@ where {
             })
             .collect::<Result<Vec<QueryResultElement>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((QueryResultElements { elements: results }, skipped)).wrap_with_cost(cost)
     }
 
@@ -368,7 +366,7 @@ where {
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
@@ -488,7 +486,7 @@ where {
             })
             .collect::<Result<Vec<QueryItemOrSumReturnType>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
@@ -574,7 +572,7 @@ where {
             })
             .collect::<Result<Vec<i64>, Error>>();
 
-        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
@@ -639,7 +637,7 @@ where {
         let mut cost = OperationCost::default();
 
         let terminal_keys = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             path_query.terminal_keys(max_results, grove_version)
         );
 
@@ -698,7 +696,7 @@ where {
         let mut cost = OperationCost::default();
 
         let terminal_keys = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             path_query.terminal_keys(max_results, grove_version)
         );
 

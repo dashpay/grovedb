@@ -31,7 +31,7 @@
 use std::mem;
 
 /// Bytes vector wrapper to have multiple byte arrays allocated continuosuly.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct CompactBytes {
     n_segments: usize,
     data: Vec<u8>,
@@ -63,6 +63,29 @@ impl CompactBytes {
 
     pub fn len(&self) -> usize {
         self.n_segments
+    }
+
+    pub fn pop_segment(&mut self) -> Option<Vec<u8>> {
+        if self.n_segments < 1 {
+            return None;
+        }
+
+        let length_size = mem::size_of::<usize>();
+        let last_segment_length = usize::from_ne_bytes(
+            self.data[self.data.len() - length_size..]
+                .try_into()
+                .expect("internal structure bug"),
+        );
+
+        let segment = self.data
+            [self.data.len() - last_segment_length - length_size..self.data.len() - length_size]
+            .to_vec();
+
+        self.data
+            .truncate(self.data.len() - last_segment_length - length_size);
+        self.n_segments -= 1;
+
+        Some(segment)
     }
 }
 
@@ -159,5 +182,26 @@ mod tests {
         assert_eq!(iter.next(), Some(b"ayya".as_ref()));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn pop_segment() {
+        let mut bytes = CompactBytes::default();
+        bytes.add_segment(b"ayya");
+        bytes.add_segment(b"ayyb");
+        bytes.add_segment(b"ayyc");
+        bytes.add_segment(b"ayyd");
+
+        assert_eq!(bytes.pop_segment(), Some(b"ayyd".to_vec()));
+        assert_eq!(bytes.pop_segment(), Some(b"ayyc".to_vec()));
+
+        let mut v: Vec<_> = bytes.reverse_iter().collect();
+        v.reverse();
+        assert_eq!(v, vec![b"ayya".to_vec(), b"ayyb".to_vec()]);
+
+        assert_eq!(bytes.pop_segment(), Some(b"ayyb".to_vec()));
+        assert_eq!(bytes.pop_segment(), Some(b"ayya".to_vec()));
+        assert_eq!(bytes.pop_segment(), None);
+        assert_eq!(bytes.pop_segment(), None);
     }
 }

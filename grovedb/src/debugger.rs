@@ -227,9 +227,15 @@ async fn fetch_node(
     }): Json<WithSession<NodeFetchRequest>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
     let db = state.get_snapshot(session_id).await?;
+    let transaction = db.start_transaction();
 
     let merk = db
-        .open_non_transactional_merk_at_path(path.as_slice().into(), None, GroveVersion::latest())
+        .open_transactional_merk_at_path(
+            path.as_slice().into(),
+            &transaction,
+            None,
+            GroveVersion::latest(),
+        )
         .unwrap()?;
     let node = merk.get_node_dbg(&key)?;
 
@@ -249,9 +255,15 @@ async fn fetch_root_node(
     }): Json<WithSession<()>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
     let db = state.get_snapshot(session_id).await?;
+    let transaction = db.start_transaction();
 
     let merk = db
-        .open_non_transactional_merk_at_path(SubtreePath::empty(), None, GroveVersion::latest())
+        .open_transactional_merk_at_path(
+            SubtreePath::empty(),
+            &transaction,
+            None,
+            GroveVersion::latest(),
+        )
         .unwrap()?;
 
     let node = merk.get_root_node_dbg()?;
@@ -312,6 +324,7 @@ fn query_result_to_grovedbg(
     query_result: QueryResultElements,
 ) -> Result<Vec<NodeUpdate>, crate::Error> {
     let mut result = Vec::new();
+    let transaction = db.start_transaction();
 
     let mut last_merk: Option<(Vec<Vec<u8>>, grovedb_merk::Merk<_>)> = None;
 
@@ -322,8 +335,9 @@ fn query_result_to_grovedbg(
                 _ => {
                     last_merk = Some((
                         path.clone(),
-                        db.open_non_transactional_merk_at_path(
+                        db.open_transactional_merk_at_path(
                             path.as_slice().into(),
+                            &transaction,
                             None,
                             GroveVersion::latest(),
                         )

@@ -44,10 +44,7 @@ use rocksdb::{
     Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
-use super::{
-    PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbStorageContext,
-    PrefixedRocksDbTransactionContext,
-};
+use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
@@ -190,7 +187,7 @@ impl RocksDbStorage {
                     db_batch.put(&key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
-                        &cost,
+                        cost,
                         pending_costs
                             .add_key_value_storage_costs(
                                 key.len() as u32,
@@ -209,7 +206,7 @@ impl RocksDbStorage {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
-                        &cost,
+                        cost,
                         pending_costs
                             .add_key_value_storage_costs(
                                 key.len() as u32,
@@ -230,7 +227,7 @@ impl RocksDbStorage {
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
                         cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             pending_costs
                                 .add_key_value_storage_costs(
                                     key.len() as u32,
@@ -250,7 +247,7 @@ impl RocksDbStorage {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
                     cost.seek_count += 1;
                     cost_return_on_error_no_add!(
-                        &cost,
+                        cost,
                         pending_costs
                             .add_key_value_storage_costs(
                                 key.len() as u32,
@@ -274,7 +271,7 @@ impl RocksDbStorage {
                         cost.seek_count += 2;
                         // lets get the values
                         let value_len = cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             self.db.get(&key).map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
@@ -301,7 +298,7 @@ impl RocksDbStorage {
                     } else {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
                         )
                         .map(|x| x.len() as u32)
@@ -329,7 +326,7 @@ impl RocksDbStorage {
                     } else {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             self.db
                                 .get_cf(cf_roots(&self.db), &key)
                                 .map_err(RocksDBError)
@@ -359,7 +356,7 @@ impl RocksDbStorage {
                     } else {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
-                            &cost,
+                            cost,
                             self.db
                                 .get_cf(cf_meta(&self.db), &key)
                                 .map_err(RocksDBError)
@@ -434,7 +431,6 @@ impl RocksDbStorage {
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
-    type BatchStorageContext = PrefixedRocksDbStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
     type ImmediateStorageContext = PrefixedRocksDbImmediateStorageContext<'db>;
     type Transaction = Tx<'db>;
@@ -457,27 +453,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn flush(&self) -> Result<(), Error> {
         self.db.flush().map_err(RocksDBError)
-    }
-
-    fn get_storage_context<'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        Self::build_prefix(path)
-            .map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix, batch))
-    }
-
-    fn get_storage_context_by_subtree_prefix(
-        &'db self,
-        prefix: SubtreePrefix,
-        batch: Option<&'db StorageBatch>,
-    ) -> CostContext<Self::BatchStorageContext> {
-        PrefixedRocksDbStorageContext::new(&self.db, prefix, batch)
-            .wrap_with_cost(OperationCost::default())
     }
 
     fn get_transactional_storage_context<'b, B>(
@@ -621,11 +596,13 @@ mod tests {
         };
 
         let batch = StorageBatch::new();
+        let transaction = storage.start_transaction();
+
         let left = storage
-            .get_storage_context(left_path.clone(), Some(&batch))
+            .get_transactional_storage_context(left_path.clone(), Some(&batch), &transaction)
             .unwrap();
         let right = storage
-            .get_storage_context(right_path.clone(), Some(&batch))
+            .get_transactional_storage_context(right_path.clone(), Some(&batch), &transaction)
             .unwrap();
 
         left.put(b"a", b"a", None, None).unwrap().unwrap();
@@ -643,10 +620,10 @@ mod tests {
 
         let batch = StorageBatch::new();
         let left = storage
-            .get_storage_context(left_path.clone(), Some(&batch))
+            .get_transactional_storage_context(left_path.clone(), Some(&batch), &transaction)
             .unwrap();
         let right = storage
-            .get_storage_context(right_path.clone(), Some(&batch))
+            .get_transactional_storage_context(right_path.clone(), Some(&batch), &transaction)
             .unwrap();
 
         // Iterate over left subtree while right subtree contains 1 byte keys:
@@ -687,7 +664,9 @@ mod tests {
             .unwrap()
             .expect("cannot commit batch");
 
-        let left = storage.get_storage_context(left_path, None).unwrap();
+        let left = storage
+            .get_transactional_storage_context(left_path, None, &transaction)
+            .unwrap();
         // Iterate over left subtree once again
         let mut iteration_cost_after = OperationCost::default();
         let mut iter = left.raw_iter();

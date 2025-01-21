@@ -459,7 +459,7 @@ impl TreeNode {
                 match link.aggregate_data() {
                     AggregateData::NoAggregateData => 0,
                     AggregateData::Sum(s) => s.encode_var_vec().len() as u32,
-                    AggregateData::BigSum(_) => 16 as u32,
+                    AggregateData::BigSum(_) => 16_u32,
                     AggregateData::Count(c) => c.encode_var_vec().len() as u32,
                     AggregateData::CountAndSum(c, s) => {
                         s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32
@@ -809,7 +809,7 @@ impl TreeNode {
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
@@ -865,7 +865,7 @@ impl TreeNode {
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
@@ -919,7 +919,7 @@ impl TreeNode {
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
@@ -981,7 +981,7 @@ impl TreeNode {
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
             cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 self.just_in_time_tree_node_value_update(
                     old_specialized_cost,
                     get_temp_new_value_with_old_flags,
@@ -1064,7 +1064,7 @@ impl TreeNode {
             }
         }
 
-        cost_return_on_error_no_add!(&cost, c.write(self, old_specialized_cost,));
+        cost_return_on_error_no_add!(cost, c.write(self, old_specialized_cost,));
 
         // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 

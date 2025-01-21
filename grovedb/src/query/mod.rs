@@ -12,7 +12,7 @@ use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::Query;
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
 
 use crate::operations::proof::util::hex_to_ascii;
@@ -464,7 +464,7 @@ pub enum HasSubquery<'a> {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl<'a> fmt::Display for HasSubquery<'a> {
+impl fmt::Display for HasSubquery<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HasSubquery::NoSubquery => write!(f, "NoSubquery"),
@@ -480,7 +480,7 @@ impl<'a> fmt::Display for HasSubquery<'a> {
     }
 }
 
-impl<'a> HasSubquery<'a> {
+impl HasSubquery<'_> {
     /// Checks to see if we have a subquery on a specific key
     pub fn has_subquery_on_key(&self, key: &[u8]) -> bool {
         match self {
@@ -509,7 +509,7 @@ pub struct SinglePathSubquery<'a> {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl<'a> fmt::Display for SinglePathSubquery<'a> {
+impl fmt::Display for SinglePathSubquery<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "InternalCowItemsQuery {{")?;
         writeln!(f, "  items: [")?;

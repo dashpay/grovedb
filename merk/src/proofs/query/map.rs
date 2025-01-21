@@ -107,7 +107,7 @@ impl Map {
     /// of keys. If during iteration we encounter a gap in the data (e.g. the
     /// proof did not include all nodes within the range), the iterator will
     /// yield an error.
-    pub fn range<'a, R: RangeBounds<&'a [u8]>>(&'a self, bounds: R) -> Range {
+    pub fn range<'a, R: RangeBounds<&'a [u8]>>(&'a self, bounds: R) -> Range<'a> {
         let start_key = bound_to_inner(bounds.start_bound()).map(|x| (*x).into());
         let bounds = bounds_to_vec(bounds);
 
@@ -159,7 +159,7 @@ pub struct Range<'a> {
 }
 
 #[cfg(feature = "minimal")]
-impl<'a> Range<'a> {
+impl Range<'_> {
     /// Returns an error if the proof does not properly prove the end of the
     /// range.
     fn check_end_bound(&self) -> Result<(), Error> {

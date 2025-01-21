@@ -54,13 +54,13 @@ where
                     updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
                     // There are no storage flags, we can just hash new element
                     let new_serialized_bytes = cost_return_on_error_no_add!(
-                        &cost,
+                        cost,
                         updated_new_element_with_old_flags.serialize(grove_version)
                     );
                     let val_hash = value_hash(&new_serialized_bytes).unwrap_add_cost(&mut cost);
                     Ok(val_hash).wrap_with_cost(cost)
                 } else {
-                    let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                    let val_hash = value_hash(serialized).unwrap_add_cost(&mut cost);
                     Ok(val_hash).wrap_with_cost(cost)
                 }
             } else {
@@ -94,7 +94,7 @@ where
             updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
 
             let serialized_with_old_flags = cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 updated_new_element_with_old_flags.serialize(grove_version)
             );
             KV::node_value_byte_cost_size(
@@ -120,7 +120,7 @@ where
             if let Some(old_element_flags) = maybe_old_flags.as_mut() {
                 if let BasicStorageRemoval(removed_bytes) = storage_costs.removed_bytes {
                     let (_, value_removed_bytes) = cost_return_on_error_no_add!(
-                        &cost,
+                        cost,
                         split_removal_bytes(old_element_flags, 0, removed_bytes)
                     );
                     storage_costs.removed_bytes = value_removed_bytes;
@@ -130,7 +130,7 @@ where
             let mut new_element_cloned = original_new_element.clone();
 
             let changed = cost_return_on_error_no_add!(
-                &cost,
+                cost,
                 (flags_update)(
                     &storage_costs,
                     maybe_old_flags.clone(),
@@ -150,10 +150,8 @@ where
                 return Ok(val_hash).wrap_with_cost(cost);
             } else {
                 // There are no storage flags, we can just hash new element
-                let new_serialized_bytes = cost_return_on_error_no_add!(
-                    &cost,
-                    new_element_cloned.serialize(grove_version)
-                );
+                let new_serialized_bytes =
+                    cost_return_on_error_no_add!(cost, new_element_cloned.serialize(grove_version));
 
                 new_storage_cost = KV::node_value_byte_cost_size(
                     key.len() as u32,

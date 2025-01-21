@@ -702,7 +702,7 @@ impl Link {
 }
 
 #[cfg(feature = "minimal")]
-impl<'a, S> RefWalker<'a, S>
+impl<S> RefWalker<'_, S>
 where
     S: Fetch + Sized + Clone,
 {

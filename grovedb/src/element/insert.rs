@@ -7,9 +7,7 @@ use grovedb_costs::{
 };
 use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
 use grovedb_storage::StorageContext;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use integer_encoding::VarInt;
 
 use crate::{Element, Element::SumItem, Error, Hash};
@@ -397,10 +395,10 @@ impl Element {
 
         let cost = OperationCost::default();
         let merk_feature_type =
-            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.tree_type));
+            cost_return_on_error_no_add!(cost, self.get_feature_type(merk.tree_type));
 
         let tree_cost =
-            cost_return_on_error_no_add!(&cost, self.get_specialized_cost(grove_version));
+            cost_return_on_error_no_add!(cost, self.get_specialized_cost(grove_version));
 
         let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {

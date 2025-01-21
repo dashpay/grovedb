@@ -4,6 +4,7 @@
 mod average_case;
 #[cfg(feature = "minimal")]
 mod query;
+use grovedb_storage::Storage;
 #[cfg(feature = "minimal")]
 pub use query::QueryItemOrSumReturnType;
 #[cfg(feature = "estimated_costs")]
@@ -18,16 +19,14 @@ use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "minimal")]
 use crate::error::GroveDbErrorExt;
+use crate::util::TxRef;
 #[cfg(feature = "minimal")]
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    util::storage_context_optional_tx,
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
@@ -213,17 +212,15 @@ impl GroveDb {
                 .get_raw_caching_optional
         );
 
-        if let Some(transaction) = transaction {
-            self.get_raw_on_transaction_caching_optional(
-                path,
-                key,
-                allow_cache,
-                transaction,
-                grove_version,
-            )
-        } else {
-            self.get_raw_without_transaction_caching_optional(path, key, allow_cache, grove_version)
-        }
+        let tx = TxRef::new(&self.db, transaction);
+
+        self.get_raw_on_transaction_caching_optional(
+            path,
+            key,
+            allow_cache,
+            tx.as_ref(),
+            grove_version,
+        )
     }
 
     /// Get Element at specified path and key
@@ -266,22 +263,15 @@ impl GroveDb {
                 .get_raw_optional_caching_optional
         );
 
-        if let Some(transaction) = transaction {
-            self.get_raw_optional_on_transaction_caching_optional(
-                path,
-                key,
-                allow_cache,
-                transaction,
-                grove_version,
-            )
-        } else {
-            self.get_raw_optional_without_transaction_caching_optional(
-                path,
-                key,
-                allow_cache,
-                grove_version,
-            )
-        }
+        let tx = TxRef::new(&self.db, transaction);
+
+        self.get_raw_optional_on_transaction_caching_optional(
+            path,
+            key,
+            allow_cache,
+            tx.as_ref(),
+            grove_version,
+        )
     }
 
     /// Get tree item without following references
@@ -329,67 +319,7 @@ impl GroveDb {
             })
             .unwrap_add_cost(&mut cost);
         let merk = cost_return_on_error_no_add!(
-            &cost,
-            match merk_result {
-                Ok(result) => Ok(Some(result)),
-                Err(Error::PathParentLayerNotFound(_)) | Err(Error::InvalidParentLayerPath(_)) =>
-                    Ok(None),
-                Err(e) => Err(e),
-            }
-        );
-
-        if let Some(merk_to_get_from) = merk {
-            Element::get_optional(&merk_to_get_from, key, allow_cache, grove_version).add_cost(cost)
-        } else {
-            Ok(None).wrap_with_cost(cost)
-        }
-    }
-
-    /// Get tree item without following references
-    pub(crate) fn get_raw_without_transaction_caching_optional<B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<B>,
-        key: &[u8],
-        allow_cache: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Element, Error> {
-        let mut cost = OperationCost::default();
-
-        let merk_to_get_from = cost_return_on_error!(
-            &mut cost,
-            self.open_non_transactional_merk_at_path(path.clone(), None, grove_version)
-                .map_err(|e| match e {
-                    Error::InvalidParentLayerPath(s) => {
-                        Error::PathParentLayerNotFound(s)
-                    }
-                    _ => e,
-                })
-        );
-
-        Element::get(&merk_to_get_from, key, allow_cache, grove_version)
-            .add_context(format!("path is {}", path))
-            .add_cost(cost)
-    }
-
-    /// Get tree item without following references
-    pub(crate) fn get_raw_optional_without_transaction_caching_optional<B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<B>,
-        key: &[u8],
-        allow_cache: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Option<Element>, Error> {
-        let mut cost = OperationCost::default();
-
-        let merk_result = self
-            .open_non_transactional_merk_at_path(path, None, grove_version)
-            .map_err(|e| match e {
-                Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
-                _ => e,
-            })
-            .unwrap_add_cost(&mut cost);
-        let merk = cost_return_on_error_no_add!(
-            &cost,
+            cost,
             match merk_result {
                 Ok(result) => Ok(Some(result)),
                 Err(Error::PathParentLayerNotFound(_)) | Err(Error::InvalidParentLayerPath(_)) =>
@@ -423,23 +353,25 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.get.has_raw
         );
 
+        let tx = TxRef::new(&self.db, transaction);
+
         // Merk's items should be written into data storage and checked accordingly
-        storage_context_optional_tx!(self.db, path.into(), None, transaction, storage, {
-            storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
-        })
+        self.db
+            .get_transactional_storage_context(path.into(), None, tx.as_ref())
+            .flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
     }
 
     fn check_subtree_exists<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         error_fn: impl FnOnce() -> Error,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if let Some((parent_path, parent_key)) = path.derive_parent() {
-            let element = if let Some(transaction) = transaction {
+            let element = {
                 let merk_to_get_from = cost_return_on_error!(
                     &mut cost,
                     self.open_transactional_merk_at_path(
@@ -448,14 +380,6 @@ impl GroveDb {
                         None,
                         grove_version
                     )
-                );
-
-                Element::get(&merk_to_get_from, parent_key, true, grove_version)
-                    .add_context(format!("path is {}", path))
-            } else {
-                let merk_to_get_from = cost_return_on_error!(
-                    &mut cost,
-                    self.open_non_transactional_merk_at_path(parent_path, None, grove_version)
                 );
 
                 Element::get(&merk_to_get_from, parent_key, true, grove_version)
@@ -480,7 +404,7 @@ impl GroveDb {
     pub(crate) fn check_subtree_exists_path_not_found<'b, B>(
         &self,
         path: SubtreePath<'b, B>,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -518,9 +442,11 @@ impl GroveDb {
                 .check_subtree_exists_invalid_path
         );
 
+        let tx = TxRef::new(&self.db, transaction);
+
         self.check_subtree_exists(
             path,
-            transaction,
+            tx.as_ref(),
             || Error::InvalidPath("subtree doesn't exist".to_owned()),
             grove_version,
         )

@@ -65,7 +65,7 @@ impl<'a> TreeNode {
 }
 
 #[cfg(feature = "minimal")]
-impl<'a> Iterator for Iter<'a> {
+impl Iterator for Iter<'_> {
     type Item = (Vec<u8>, Vec<u8>);
 
     /// Traverses to and yields the next key/value pair, in key order.
