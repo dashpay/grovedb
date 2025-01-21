@@ -547,49 +547,55 @@ impl Element {
 
                         match result_type {
                             QueryElementResultType => {
-                                results.push(QueryResultElement::ElementResultItem(
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Element::get_with_absolute_refs(
-                                            &subtree,
-                                            path_vec.as_slice(),
-                                            subquery_path_last_key.as_slice(),
-                                            allow_cache,
-                                            grove_version,
-                                        )
-                                    ),
-                                ));
+                                if let Some(element) = cost_return_on_error!(
+                                    &mut cost,
+                                    Element::get_optional_with_absolute_refs(
+                                        &subtree,
+                                        path_vec.as_slice(),
+                                        subquery_path_last_key.as_slice(),
+                                        allow_cache,
+                                        grove_version,
+                                    )
+                                ) {
+                                    results.push(QueryResultElement::ElementResultItem(element));
+                                }
                             }
                             QueryKeyElementPairResultType => {
-                                results.push(QueryResultElement::KeyElementPairResultItem((
-                                    subquery_path_last_key.to_vec(),
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Element::get_with_absolute_refs(
-                                            &subtree,
-                                            path_vec.as_slice(),
-                                            subquery_path_last_key.as_slice(),
-                                            allow_cache,
-                                            grove_version,
-                                        )
-                                    ),
-                                )));
+                                if let Some(element) = cost_return_on_error!(
+                                    &mut cost,
+                                    Element::get_optional_with_absolute_refs(
+                                        &subtree,
+                                        path_vec.as_slice(),
+                                        subquery_path_last_key.as_slice(),
+                                        allow_cache,
+                                        grove_version,
+                                    )
+                                ) {
+                                    results.push(QueryResultElement::KeyElementPairResultItem((
+                                        subquery_path_last_key.to_vec(),
+                                        element,
+                                    )));
+                                }
                             }
                             QueryPathKeyElementTrioResultType => {
-                                results.push(QueryResultElement::PathKeyElementTrioResultItem((
-                                    path_vec.iter().map(|p| p.to_vec()).collect(),
-                                    subquery_path_last_key.to_vec(),
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Element::get_with_absolute_refs(
-                                            &subtree,
-                                            path_vec.as_slice(),
-                                            subquery_path_last_key.as_slice(),
-                                            allow_cache,
-                                            grove_version,
-                                        )
-                                    ),
-                                )));
+                                if let Some(element) = cost_return_on_error!(
+                                    &mut cost,
+                                    Element::get_optional_with_absolute_refs(
+                                        &subtree,
+                                        path_vec.as_slice(),
+                                        subquery_path_last_key.as_slice(),
+                                        allow_cache,
+                                        grove_version,
+                                    )
+                                ) {
+                                    results.push(QueryResultElement::PathKeyElementTrioResultItem(
+                                        (
+                                            path_vec.iter().map(|p| p.to_vec()).collect(),
+                                            subquery_path_last_key.to_vec(),
+                                            element,
+                                        ),
+                                    ));
+                                }
                             }
                         }
                     } else {

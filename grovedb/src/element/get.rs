@@ -348,6 +348,45 @@ impl Element {
     }
 
     #[cfg(feature = "minimal")]
+    /// Get an element from Merk under a key; path should be resolved and proper
+    /// Merk should be loaded by this moment
+    pub fn get_optional_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        path: &[&[u8]],
+        key: K,
+        allow_cache: bool,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Element>, Error> {
+        use crate::error::GroveDbErrorExt;
+
+        check_grovedb_v0_with_cost!(
+            "get_with_absolute_refs",
+            grove_version
+                .grovedb_versions
+                .element
+                .get_with_absolute_refs
+        );
+        let mut cost = OperationCost::default();
+
+        let maybe_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_optional(merk, key.as_ref(), allow_cache, grove_version)
+                .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
+        );
+
+        match maybe_element {
+            None => Ok(None).wrap_with_cost(cost),
+            Some(element) => {
+                let absolute_element = cost_return_on_error_no_add!(
+                    cost,
+                    element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()))
+                );
+                Ok(Some(absolute_element)).wrap_with_cost(cost)
+            }
+        }
+    }
+
+    #[cfg(feature = "minimal")]
     /// Get an element's value hash from Merk under a key
     pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
