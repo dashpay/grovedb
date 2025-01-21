@@ -464,7 +464,7 @@ impl GroveDb {
     }
 
     /// Delete operation for delete internal
-    fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
+    pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         key: &[u8],
