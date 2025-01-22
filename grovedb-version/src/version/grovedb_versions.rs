@@ -20,14 +20,9 @@ pub struct GroveDBPathQueryMethodVersions {
 pub struct GroveDBApplyBatchVersions {
     pub apply_batch_structure: FeatureVersion,
     pub apply_body: FeatureVersion,
-    pub continue_partial_apply_body: FeatureVersion,
-    pub apply_operations_without_batching: FeatureVersion,
     pub apply_batch: FeatureVersion,
-    pub apply_partial_batch: FeatureVersion,
     pub open_batch_transactional_merk_at_path: FeatureVersion,
-    pub open_batch_merk_at_path: FeatureVersion,
     pub apply_batch_with_element_flags_update: FeatureVersion,
-    pub apply_partial_batch_with_element_flags_update: FeatureVersion,
     pub estimated_case_operations_for_batch: FeatureVersion,
 }
 
@@ -132,9 +127,7 @@ pub struct GroveDBOperationsWorstCaseVersions {
 pub struct GroveDBOperationsInsertVersions {
     pub insert: FeatureVersion,
     pub insert_on_transaction: FeatureVersion,
-    pub insert_without_transaction: FeatureVersion,
     pub add_element_on_transaction: FeatureVersion,
-    pub add_element_without_transaction: FeatureVersion,
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_return_existing_element: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
@@ -149,7 +142,6 @@ pub struct GroveDBOperationsDeleteVersions {
     pub delete_if_empty_tree_with_sectional_storage_function: FeatureVersion,
     pub delete_operation_for_delete_internal: FeatureVersion,
     pub delete_internal_on_transaction: FeatureVersion,
-    pub delete_internal_without_transaction: FeatureVersion,
     pub average_case_delete_operation_for_delete: FeatureVersion,
     pub worst_case_delete_operation_for_delete: FeatureVersion,
 }

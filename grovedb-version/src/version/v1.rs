@@ -18,14 +18,9 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
         apply_batch: GroveDBApplyBatchVersions {
             apply_batch_structure: 0,
             apply_body: 0,
-            continue_partial_apply_body: 0,
-            apply_operations_without_batching: 0,
             apply_batch: 0,
-            apply_partial_batch: 0,
             open_batch_transactional_merk_at_path: 0,
-            open_batch_merk_at_path: 0,
             apply_batch_with_element_flags_update: 0,
-            apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
         },
         element: GroveDBElementMethodVersions {
@@ -93,9 +88,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             insert: GroveDBOperationsInsertVersions {
                 insert: 0,
                 insert_on_transaction: 0,
-                insert_without_transaction: 0,
                 add_element_on_transaction: 0,
-                add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
                 insert_if_changed_value: 0,
@@ -108,7 +101,6 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 delete_if_empty_tree_with_sectional_storage_function: 0,
                 delete_operation_for_delete_internal: 0,
                 delete_internal_on_transaction: 0,
-                delete_internal_without_transaction: 0,
                 average_case_delete_operation_for_delete: 0,
                 worst_case_delete_operation_for_delete: 0,
             },
