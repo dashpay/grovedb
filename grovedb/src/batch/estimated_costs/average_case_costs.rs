@@ -25,8 +25,7 @@ use crate::Element;
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
-        QualifiedGroveDbOp, TreeCache,
+        key_info::KeyInfo, BatchApplyOptions, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache,
     },
     Error, GroveDb,
 };
@@ -173,10 +172,6 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         average_case_cost.hash_node_calls += 1;
         self.cached_merks.insert(inserted_path, tree_type);
         Ok(()).wrap_with_cost(average_case_cost)
-    }
-
-    fn get_batch_run_mode(&self) -> BatchRunMode {
-        BatchRunMode::AverageCase(self.paths.clone())
     }
 
     fn execute_ops_on_path(
