@@ -30,7 +30,7 @@ impl Element {
     #[cfg(feature = "minimal")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub(crate) fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -61,7 +61,7 @@ impl Element {
     #[cfg(feature = "minimal")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub(crate) fn get_optional<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
@@ -101,7 +101,7 @@ impl Element {
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     /// Errors if element doesn't exist
-    pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub(crate) fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -124,7 +124,7 @@ impl Element {
     #[cfg(feature = "minimal")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
-    pub fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub(crate) fn get_optional_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         storage: &S,
         key: K,
         grove_version: &GroveVersion,
@@ -315,42 +315,7 @@ impl Element {
     #[cfg(feature = "minimal")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &Merk<S>,
-        path: &[&[u8]],
-        key: K,
-        allow_cache: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Element, Error> {
-        use crate::error::GroveDbErrorExt;
-
-        check_grovedb_v0_with_cost!(
-            "get_with_absolute_refs",
-            grove_version
-                .grovedb_versions
-                .element
-                .get_with_absolute_refs
-        );
-        let mut cost = OperationCost::default();
-
-        let element = cost_return_on_error!(
-            &mut cost,
-            Self::get(merk, key.as_ref(), allow_cache, grove_version)
-                .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
-        );
-
-        let absolute_element = cost_return_on_error_no_add!(
-            cost,
-            element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()))
-        );
-
-        Ok(absolute_element).wrap_with_cost(cost)
-    }
-
-    #[cfg(feature = "minimal")]
-    /// Get an element from Merk under a key; path should be resolved and proper
-    /// Merk should be loaded by this moment
-    pub fn get_optional_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub(crate) fn get_optional_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         path: &[&[u8]],
         key: K,
@@ -387,36 +352,8 @@ impl Element {
     }
 
     #[cfg(feature = "minimal")]
-    /// Get an element's value hash from Merk under a key
-    pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &Merk<S>,
-        key: K,
-        allow_cache: bool,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Option<Hash>, Error> {
-        check_grovedb_v0_with_cost!(
-            "get_value_hash",
-            grove_version.grovedb_versions.element.get_value_hash
-        );
-        let mut cost = OperationCost::default();
-
-        let value_hash = cost_return_on_error!(
-            &mut cost,
-            merk.get_value_hash(
-                key.as_ref(),
-                allow_cache,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version
-            )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
-        );
-
-        Ok(value_hash).wrap_with_cost(cost)
-    }
-
-    #[cfg(feature = "minimal")]
     /// Get an element and its value hash from Merk under a key
-    pub fn get_with_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    pub(crate) fn get_with_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
         allow_cache: bool,
