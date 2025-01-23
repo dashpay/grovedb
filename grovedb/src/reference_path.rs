@@ -1,21 +1,31 @@
 //! Space efficient methods for referencing other elements in GroveDB
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::fmt;
-use std::iter;
+use std::{collections::HashSet, iter};
 
 use bincode::{Decode, Encode};
+use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
+use grovedb_merk::CryptoHash;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
-#[cfg(feature = "full")]
+use grovedb_version::check_grovedb_v0_with_cost;
+#[cfg(any(feature = "minimal", feature = "visualize"))]
 use grovedb_visualize::visualize_to_vec;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::Error;
+#[cfg(feature = "minimal")]
+use crate::{
+    merk_cache::{MerkCache, MerkHandle},
+    operations::MAX_REFERENCE_HOPS,
+    Element,
+};
 
-#[cfg(any(feature = "full", feature = "verify"))]
-#[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg_attr(not(any(feature = "minimal", feature = "visualize")), derive(Debug))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Reference path variants
 #[derive(Hash, Eq, PartialEq, Encode, Decode, Clone)]
@@ -137,9 +147,9 @@ fn display_path(path: &[Vec<u8>]) -> String {
         .map(|bytes| {
             let mut hx = hex::encode(bytes);
             if let Ok(s) = String::from_utf8(bytes.clone()) {
-                hx.push_str("(");
+                hx.push('(');
                 hx.push_str(&s);
-                hx.push_str(")");
+                hx.push(')');
             }
 
             hx
@@ -191,7 +201,7 @@ impl fmt::Display for ReferencePathType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl ReferencePathType {
     /// Given the reference path type and the current qualified path (path+key),
     /// this computes the absolute path of the item the reference is pointing
@@ -341,7 +351,7 @@ impl ReferencePathType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "visualize"))]
+#[cfg(any(feature = "minimal", feature = "visualize"))]
 impl fmt::Debug for ReferencePathType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -351,7 +361,7 @@ impl fmt::Debug for ReferencePathType {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
@@ -368,7 +378,7 @@ pub fn path_from_reference_qualified_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
@@ -377,6 +387,7 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     current_key: Option<&[u8]>,
 ) -> Result<Vec<Vec<u8>>, Error> {
     match reference_path_type {
+        // No computation required, we already know the absolute path
         ReferencePathType::AbsolutePathReference(path) => Ok(path),
 
         // Take the first n elements from current path, append new path to subpath
@@ -491,7 +502,7 @@ pub fn path_from_reference_path_type<B: AsRef<[u8]>>(
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl ReferencePathType {
     /// Serialized size
     pub fn serialized_size(&self) -> usize {
@@ -526,7 +537,157 @@ impl ReferencePathType {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
+pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
+    pub target_merk: MerkHandle<'db, 'c>,
+    pub target_path: SubtreePathBuilder<'b, B>,
+    pub target_key: Vec<u8>,
+    pub target_element: Element,
+    pub target_node_value_hash: CryptoHash,
+}
+
+#[cfg(feature = "minimal")]
+pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
+    merk_cache: &'c MerkCache<'db, 'b, B>,
+    path: SubtreePathBuilder<'b, B>,
+    key: &[u8],
+    ref_path: ReferencePathType,
+) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
+    // TODO: this is a new version of follow reference
+
+    check_grovedb_v0_with_cost!(
+        "follow_reference",
+        merk_cache
+            .version
+            .grovedb_versions
+            .operations
+            .get
+            .follow_reference
+    );
+
+    let mut cost = Default::default();
+
+    let mut hops_left = MAX_REFERENCE_HOPS;
+    let mut visited = HashSet::new();
+
+    let mut qualified_path = path.clone();
+    qualified_path.push_segment(key);
+
+    visited.insert(qualified_path);
+
+    let mut current_path = path;
+    let mut current_key = key.to_vec();
+    let mut current_ref = ref_path;
+
+    while hops_left > 0 {
+        let referred_qualified_path = cost_return_on_error_no_add!(
+            cost,
+            current_ref.absolute_qualified_path(current_path, &current_key)
+        );
+
+        if !visited.insert(referred_qualified_path.clone()) {
+            return Err(Error::CyclicReference).wrap_with_cost(cost);
+        }
+
+        let Some((referred_path, referred_key)) = referred_qualified_path.derive_parent_owned()
+        else {
+            return Err(Error::InvalidCodeExecution("empty reference")).wrap_with_cost(cost);
+        };
+
+        let mut referred_merk =
+            cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
+        let (element, value_hash) = cost_return_on_error!(
+            &mut cost,
+            referred_merk
+                .for_merk(|m| {
+                    Element::get_with_value_hash(m, &referred_key, true, merk_cache.version)
+                })
+                .map_err(|e| match e {
+                    Error::PathKeyNotFound(s) => Error::CorruptedReferencePathKeyNotFound(s),
+                    e => e,
+                })
+        );
+
+        match element {
+            Element::Reference(ref_path, ..) => {
+                current_path = referred_path;
+                current_key = referred_key;
+                current_ref = ref_path;
+                hops_left -= 1;
+            }
+            e => {
+                return Ok(ResolvedReference {
+                    target_merk: referred_merk,
+                    target_path: referred_path,
+                    target_key: referred_key,
+                    target_element: e,
+                    target_node_value_hash: value_hash,
+                })
+                .wrap_with_cost(cost)
+            }
+        }
+    }
+
+    Err(Error::ReferenceLimit).wrap_with_cost(cost)
+}
+
+#[cfg(feature = "minimal")]
+/// Follow references stopping at the immediate element without following
+/// further.
+pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
+    merk_cache: &'c MerkCache<'db, 'b, B>,
+    path: SubtreePathBuilder<'b, B>,
+    key: &[u8],
+    ref_path: ReferencePathType,
+) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
+    check_grovedb_v0_with_cost!(
+        "follow_reference_once",
+        merk_cache
+            .version
+            .grovedb_versions
+            .operations
+            .get
+            .follow_reference_once
+    );
+
+    let mut cost = Default::default();
+
+    let referred_qualified_path =
+        cost_return_on_error_no_add!(cost, ref_path.absolute_qualified_path(path.clone(), key));
+
+    let Some((referred_path, referred_key)) = referred_qualified_path.derive_parent_owned() else {
+        return Err(Error::InvalidCodeExecution("empty reference")).wrap_with_cost(cost);
+    };
+
+    if path == referred_path && key == referred_key {
+        return Err(Error::CyclicReference).wrap_with_cost(cost);
+    }
+
+    let mut referred_merk =
+        cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
+    let (element, value_hash) = cost_return_on_error!(
+        &mut cost,
+        referred_merk
+            .for_merk(|m| {
+                Element::get_with_value_hash(m, &referred_key, true, merk_cache.version)
+            })
+            .map_err(|e| match e {
+                Error::PathKeyNotFound(s) => Error::CorruptedReferencePathKeyNotFound(s),
+                e => e,
+            })
+    );
+
+    Ok(ResolvedReference {
+        target_merk: referred_merk,
+        target_path: referred_path,
+        target_key: referred_key,
+        target_element: element,
+        target_node_value_hash: value_hash,
+    })
+    .wrap_with_cost(cost)
+}
+
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::Query;

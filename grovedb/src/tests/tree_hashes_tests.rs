@@ -56,12 +56,12 @@ fn test_node_hashes_when_inserting_item() {
     .expect("successful subtree insert");
 
     let batch = StorageBatch::new();
-    let tx = db.start_transaction();
+    let transaction = db.start_transaction();
 
     let test_leaf_merk = db
         .open_transactional_merk_at_path(
             [TEST_LEAF].as_ref().into(),
-            &tx,
+            &transaction,
             Some(&batch),
             grove_version,
         )
@@ -131,13 +131,12 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     .expect("successful subtree insert");
 
     let batch = StorageBatch::new();
-
-    let tx = db.start_transaction();
+    let transaction = db.start_transaction();
 
     let test_leaf_merk = db
         .open_transactional_merk_at_path(
             [TEST_LEAF].as_ref().into(),
-            &tx,
+            &transaction,
             Some(&batch),
             grove_version,
         )
@@ -180,7 +179,7 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     let underlying_merk = db
         .open_transactional_merk_at_path(
             [TEST_LEAF, b"key1"].as_ref().into(),
-            &tx,
+            &transaction,
             Some(&batch),
             grove_version,
         )
@@ -231,12 +230,12 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     .expect("successful subtree insert");
 
     let batch = StorageBatch::new();
-    let tx = db.start_transaction();
+    let transaction = db.start_transaction();
 
     let under_top_merk = db
         .open_transactional_merk_at_path(
             [TEST_LEAF].as_ref().into(),
-            &tx,
+            &transaction,
             Some(&batch),
             grove_version,
         )
@@ -246,7 +245,7 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     let middle_merk_key1 = db
         .open_transactional_merk_at_path(
             [TEST_LEAF, b"key1"].as_ref().into(),
-            &tx,
+            &transaction,
             Some(&batch),
             grove_version,
         )
@@ -269,7 +268,7 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     let bottom_merk = db
         .open_transactional_merk_at_path(
             [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
-            &tx,
+            &transaction,
             Some(&batch),
             grove_version,
         )

@@ -54,8 +54,7 @@ use crate::{
 };
 
 const BLAKE_BLOCK_LEN: usize = 64;
-
-pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
+pub type SubtreePrefix = [u8; 32];
 
 fn blake_block_count(len: usize) -> usize {
     if len == 0 {
@@ -470,6 +469,16 @@ impl<'db> Storage<'db> for RocksDbStorage {
         })
     }
 
+    fn get_transactional_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        batch: Option<&'db StorageBatch>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::BatchTransactionalStorageContext> {
+        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
+            .wrap_with_cost(OperationCost::default())
+    }
+
     fn get_immediate_storage_context<'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
@@ -481,6 +490,15 @@ impl<'db> Storage<'db> for RocksDbStorage {
         Self::build_prefix(path).map(|prefix| {
             PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
         })
+    }
+
+    fn get_immediate_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext> {
+        PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn commit_multi_context_batch(
@@ -578,12 +596,13 @@ mod tests {
         };
 
         let batch = StorageBatch::new();
-        let tx = storage.start_transaction();
+        let transaction = storage.start_transaction();
+
         let left = storage
-            .get_transactional_storage_context(left_path.clone(), Some(&batch), &tx)
+            .get_transactional_storage_context(left_path.clone(), Some(&batch), &transaction)
             .unwrap();
         let right = storage
-            .get_transactional_storage_context(right_path.clone(), Some(&batch), &tx)
+            .get_transactional_storage_context(right_path.clone(), Some(&batch), &transaction)
             .unwrap();
 
         left.put(b"a", b"a", None, None).unwrap().unwrap();
@@ -595,17 +614,16 @@ mod tests {
         right.put(b"c", b"c", None, None).unwrap().unwrap();
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
         let batch = StorageBatch::new();
-        let tx = storage.start_transaction();
         let left = storage
-            .get_transactional_storage_context(left_path.clone(), Some(&batch), &tx)
+            .get_transactional_storage_context(left_path.clone(), Some(&batch), &transaction)
             .unwrap();
         let right = storage
-            .get_transactional_storage_context(right_path.clone(), Some(&batch), &tx)
+            .get_transactional_storage_context(right_path.clone(), Some(&batch), &transaction)
             .unwrap();
 
         // Iterate over left subtree while right subtree contains 1 byte keys:
@@ -642,13 +660,12 @@ mod tests {
         drop(iter);
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
-        let tx = storage.start_transaction();
         let left = storage
-            .get_transactional_storage_context(left_path, None, &tx)
+            .get_transactional_storage_context(left_path, None, &transaction)
             .unwrap();
         // Iterate over left subtree once again
         let mut iteration_cost_after = OperationCost::default();

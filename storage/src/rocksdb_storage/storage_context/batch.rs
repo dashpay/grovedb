@@ -33,7 +33,7 @@ pub struct PrefixedMultiContextBatchPart {
 }
 
 /// Implementation of a batch outside a transaction
-impl<'db> Batch for PrefixedRocksDbBatch<'db> {
+impl Batch for PrefixedRocksDbBatch<'_> {
     fn put<K: AsRef<[u8]>>(
         &mut self,
         key: K,

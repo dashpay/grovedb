@@ -46,7 +46,7 @@ pub struct SubtreePathBuilder<'b, B> {
     pub(crate) relative: SubtreePathRelative<'b>,
 }
 
-impl<'b, B> Clone for SubtreePathBuilder<'b, B> {
+impl<B> Clone for SubtreePathBuilder<'_, B> {
     fn clone(&self) -> Self {
         SubtreePathBuilder {
             base: self.base.clone(),
@@ -57,14 +57,14 @@ impl<'b, B> Clone for SubtreePathBuilder<'b, B> {
 
 /// Hash order is the same as iteration order: from most deep path segment up to
 /// root.
-impl<'b, B: AsRef<[u8]>> Hash for SubtreePathBuilder<'b, B> {
+impl<B: AsRef<[u8]>> Hash for SubtreePathBuilder<'_, B> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.relative.hash(state);
         self.base.hash(state);
     }
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePathBuilder<'bl, BL>
+impl<'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePathBuilder<'_, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -74,7 +74,7 @@ where
     }
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePath<'bl, BL>
+impl<'br, BL, BR> PartialEq<SubtreePathBuilder<'br, BR>> for SubtreePath<'_, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -84,7 +84,7 @@ where
     }
 }
 
-impl<'bl, 'br, BL, BR> PartialEq<SubtreePath<'br, BR>> for SubtreePathBuilder<'bl, BL>
+impl<'br, BL, BR> PartialEq<SubtreePath<'br, BR>> for SubtreePathBuilder<'_, BL>
 where
     BL: AsRef<[u8]>,
     BR: AsRef<[u8]>,
@@ -94,7 +94,7 @@ where
     }
 }
 
-impl<'b, B: AsRef<[u8]>> Eq for SubtreePathBuilder<'b, B> {}
+impl<B: AsRef<[u8]>> Eq for SubtreePathBuilder<'_, B> {}
 
 impl<'s, 'b, B> From<&'s SubtreePath<'b, B>> for SubtreePathBuilder<'b, B> {
     fn from(value: &'s SubtreePath<'b, B>) -> Self {
@@ -158,7 +158,7 @@ impl Default for SubtreePathBuilder<'static, [u8; 0]> {
     }
 }
 
-impl<'b, B> SubtreePathBuilder<'b, B> {
+impl<B> SubtreePathBuilder<'_, B> {
     /// Makes an owned `SubtreePathBuilder` out of iterator.
     pub fn owned_from_iter<S: AsRef<[u8]>>(iter: impl IntoIterator<Item = S>) -> Self {
         let bytes = iter.into_iter().fold(CompactBytes::new(), |mut bytes, s| {
@@ -175,7 +175,7 @@ impl<'b, B> SubtreePathBuilder<'b, B> {
     }
 
     /// Create an owned version of `SubtreePathBuilder` from `SubtreePath`.
-    pub fn owned_from_path<'a, S: AsRef<[u8]>>(path: SubtreePath<'a, S>) -> Self {
+    pub fn owned_from_path<S: AsRef<[u8]>>(path: SubtreePath<S>) -> Self {
         Self::owned_from_iter(path.to_vec())
     }
 }
@@ -240,9 +240,10 @@ impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
         }
     }
 
-    /// Get a derived path for a parent and a chopped segment. Returned
-    /// [SubtreePath] will be linked to this [SubtreePath] because it might
-    /// contain owned data and it has to outlive [SubtreePath].
+    /// Get a derived path for a parent and a chopped segment. The lifetime of
+    /// returned path is constrained solely by the original slice that this
+    /// whole path hierarchy is based upon, and the point of derivation has
+    /// no effect on it.
     pub fn derive_parent_owned(&self) -> Option<(SubtreePathBuilder<'b, B>, Vec<u8>)> {
         match &self.relative {
             SubtreePathRelative::Empty => self

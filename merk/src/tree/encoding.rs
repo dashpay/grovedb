@@ -1,26 +1,26 @@
 //! Merk tree encoding
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use ed::{Decode, Encode};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::TreeNode;
 use crate::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     error::{Error, Error::EdError},
     tree::TreeNodeInner,
     Error::StorageError,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TreeNode {
     /// Decode given bytes and set as Tree fields. Set key to value of given
     /// key.
@@ -67,7 +67,7 @@ impl TreeNode {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl TreeNode {
     #[inline]
     /// Encode
@@ -143,11 +143,14 @@ impl TreeNode {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use super::{super::Link, *};
-    use crate::TreeFeatureType::{BasicMerkNode, SummedMerkNode};
+    use crate::{
+        tree::AggregateData,
+        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
+    };
 
     #[test]
     fn encode_leaf_tree() {
@@ -196,7 +199,7 @@ mod tests {
             [55; 32],
             Some(Link::Loaded {
                 hash: [66; 32],
-                sum: None,
+                aggregate_data: AggregateData::NoAggregateData,
                 child_heights: (123, 124),
                 tree: TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap(),
             }),
@@ -225,7 +228,7 @@ mod tests {
             [55; 32],
             Some(Link::Uncommitted {
                 hash: [66; 32],
-                sum: Some(10),
+                aggregate_data: AggregateData::Sum(10),
                 child_heights: (123, 124),
                 tree: TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap(),
             }),
@@ -254,7 +257,7 @@ mod tests {
             [55; 32],
             Some(Link::Reference {
                 hash: [66; 32],
-                sum: None,
+                aggregate_data: AggregateData::NoAggregateData,
                 child_heights: (123, 124),
                 key: vec![2],
             }),
@@ -328,7 +331,7 @@ mod tests {
             key,
             child_heights,
             hash,
-            sum: _,
+            aggregate_data: _,
         }) = tree.link(true)
         {
             assert_eq!(*key, [2]);

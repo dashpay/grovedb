@@ -3,31 +3,31 @@
 
 use std::fmt;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::SubqueryBranch;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::proofs::Query;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::operations::proof::util::hex_to_ascii;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use crate::operations::proof::util::path_as_slices_hex_to_ascii;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::Element;
-#[cfg(feature = "full")]
-use crate::Transaction;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     element::helpers::raw_decode,
     query_result_type::{
@@ -37,12 +37,12 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    Error, PathQuery, TransactionArg,
+    Error, PathQuery, Transaction, TransactionArg,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{query_result_type::Path, SizedQuery};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Copy, Clone, Debug)]
 pub struct QueryOptions {
     pub allow_get_raw: bool,
@@ -57,7 +57,7 @@ pub struct QueryOptions {
     pub error_if_intermediate_path_tree_not_present: bool,
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for QueryOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "QueryOptions {{")?;
@@ -77,7 +77,7 @@ impl fmt::Display for QueryOptions {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Default for QueryOptions {
     fn default() -> Self {
         QueryOptions {
@@ -89,7 +89,7 @@ impl Default for QueryOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Path query push arguments
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
@@ -110,7 +110,7 @@ where
     pub offset: &'a mut Option<u16>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn format_query(query: &Query, indent: usize) -> String {
     let indent_str = " ".repeat(indent);
     let mut output = format!("{}Query {{\n", indent_str);
@@ -146,7 +146,7 @@ fn format_query(query: &Query, indent: usize) -> String {
     output
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
     let indent_str = " ".repeat(indent);
     let mut output = "SubqueryBranch {{\n".to_string();
@@ -168,8 +168,8 @@ fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
     output
 }
 
-#[cfg(feature = "full")]
-impl<'db, 'ctx, 'a> fmt::Display for PathQueryPushArgs<'db, 'ctx, 'a>
+#[cfg(feature = "minimal")]
+impl<'db, 'ctx> fmt::Display for PathQueryPushArgs<'db, 'ctx, '_>
 where
     'db: 'ctx,
 {
@@ -229,7 +229,7 @@ where
 }
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of result elements based on given query
     pub fn get_query(
         storage: &RocksDbStorage,
@@ -258,7 +258,7 @@ impl Element {
         .map_ok(|(elements, _)| elements)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Get values of result elements coming from given query
     pub fn get_query_values(
         storage: &RocksDbStorage,
@@ -296,7 +296,7 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of result elements and the number of skipped items
     /// based on given query
     pub fn get_query_apply_function(
@@ -385,7 +385,7 @@ impl Element {
         Ok((QueryResultElements::from_elements(results), skipped)).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of elements excluding trees, and the number of skipped
     /// elements
     pub fn get_path_query(
@@ -418,7 +418,7 @@ impl Element {
         )
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Returns a vector of elements, and the number of skipped elements
     pub fn get_sized_query(
         storage: &RocksDbStorage,
@@ -446,13 +446,13 @@ impl Element {
         )
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Push arguments to path query
     fn path_query_push(
         args: PathQueryPushArgs,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        use crate::util::{self, TxRef};
+        use crate::util::{compat, TxRef};
 
         check_grovedb_v0_with_cost!(
             "path_query_push",
@@ -478,15 +478,15 @@ impl Element {
             limit,
             offset,
         } = args;
+
+        let tx = TxRef::new(storage, transaction);
+
         let QueryOptions {
             allow_get_raw,
             allow_cache,
             decrease_limit_on_range_with_no_sub_elements,
             ..
         } = query_options;
-
-        let tx = TxRef::new(storage, transaction);
-
         if element.is_any_tree() {
             let mut path_vec = path.to_vec();
             let key = cost_return_on_error_no_add!(
@@ -538,10 +538,9 @@ impl Element {
                         path_vec.extend(subquery_path_front_keys.iter().map(|k| k.as_slice()));
 
                         let subtree_path: SubtreePath<_> = path_vec.as_slice().into();
-
                         let subtree = cost_return_on_error!(
                             &mut cost,
-                            util::open_transactional_merk_at_path(
+                            compat::merk_optional_tx(
                                 storage,
                                 subtree_path,
                                 tx.as_ref(),
@@ -552,49 +551,55 @@ impl Element {
 
                         match result_type {
                             QueryElementResultType => {
-                                results.push(QueryResultElement::ElementResultItem(
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Element::get_with_absolute_refs(
-                                            &subtree,
-                                            path_vec.as_slice(),
-                                            subquery_path_last_key.as_slice(),
-                                            allow_cache,
-                                            grove_version,
-                                        )
-                                    ),
-                                ));
+                                if let Some(element) = cost_return_on_error!(
+                                    &mut cost,
+                                    Element::get_optional_with_absolute_refs(
+                                        &subtree,
+                                        path_vec.as_slice(),
+                                        subquery_path_last_key.as_slice(),
+                                        allow_cache,
+                                        grove_version,
+                                    )
+                                ) {
+                                    results.push(QueryResultElement::ElementResultItem(element));
+                                }
                             }
                             QueryKeyElementPairResultType => {
-                                results.push(QueryResultElement::KeyElementPairResultItem((
-                                    subquery_path_last_key.to_vec(),
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Element::get_with_absolute_refs(
-                                            &subtree,
-                                            path_vec.as_slice(),
-                                            subquery_path_last_key.as_slice(),
-                                            allow_cache,
-                                            grove_version,
-                                        )
-                                    ),
-                                )));
+                                if let Some(element) = cost_return_on_error!(
+                                    &mut cost,
+                                    Element::get_optional_with_absolute_refs(
+                                        &subtree,
+                                        path_vec.as_slice(),
+                                        subquery_path_last_key.as_slice(),
+                                        allow_cache,
+                                        grove_version,
+                                    )
+                                ) {
+                                    results.push(QueryResultElement::KeyElementPairResultItem((
+                                        subquery_path_last_key.to_vec(),
+                                        element,
+                                    )));
+                                }
                             }
                             QueryPathKeyElementTrioResultType => {
-                                results.push(QueryResultElement::PathKeyElementTrioResultItem((
-                                    path_vec.iter().map(|p| p.to_vec()).collect(),
-                                    subquery_path_last_key.to_vec(),
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Element::get_with_absolute_refs(
-                                            &subtree,
-                                            path_vec.as_slice(),
-                                            subquery_path_last_key.as_slice(),
-                                            allow_cache,
-                                            grove_version,
-                                        )
-                                    ),
-                                )));
+                                if let Some(element) = cost_return_on_error!(
+                                    &mut cost,
+                                    Element::get_optional_with_absolute_refs(
+                                        &subtree,
+                                        path_vec.as_slice(),
+                                        subquery_path_last_key.as_slice(),
+                                        allow_cache,
+                                        grove_version,
+                                    )
+                                ) {
+                                    results.push(QueryResultElement::PathKeyElementTrioResultItem(
+                                        (
+                                            path_vec.iter().map(|p| p.to_vec()).collect(),
+                                            subquery_path_last_key.to_vec(),
+                                            element,
+                                        ),
+                                    ));
+                                }
                             }
                         }
                     } else {
@@ -666,7 +671,7 @@ impl Element {
         Ok(()).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Takes a sized query and a key and returns subquery key and subquery as
     /// tuple
     fn subquery_paths_and_value_for_sized_query(
@@ -707,7 +712,7 @@ impl Element {
     /// trees where the sub elements have no matches, hence the limit would
     /// not decrease and hence we would continue on the increasingly
     /// expensive query.
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     // TODO: refactor
     fn query_item(
         storage: &RocksDbStorage,
@@ -725,7 +730,7 @@ impl Element {
     ) -> CostResult<(), Error> {
         use grovedb_storage::Storage;
 
-        use crate::util::{self};
+        use crate::{error::GroveDbErrorExt, util::compat};
 
         check_grovedb_v0_with_cost!(
             "query_item",
@@ -739,15 +744,28 @@ impl Element {
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res = util::open_transactional_merk_at_path(
+                let subtree_res = compat::merk_optional_tx(
                     storage,
                     subtree_path,
                     transaction,
                     None,
                     grove_version,
-                )
-                .flat_map_ok(|s| Element::get(&s, key, query_options.allow_cache, grove_version))
-                .unwrap_add_cost(&mut cost);
+                );
+
+                if subtree_res.value().is_err()
+                    && !matches!(subtree_res.value(), Err(Error::PathParentLayerNotFound(..)))
+                {
+                    // simulating old macro's behavior by letting this particular kind of error to
+                    // pass and to short circuit with the rest
+                    return subtree_res.map_ok(|_| ());
+                }
+
+                let element_res = subtree_res
+                    .flat_map_ok(|subtree| {
+                        Element::get(&subtree, key, query_options.allow_cache, grove_version)
+                            .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
+                    })
+                    .unwrap_add_cost(&mut cost);
 
                 match element_res {
                     Ok(element) => {
@@ -777,7 +795,7 @@ impl Element {
                             Err(e) => {
                                 if !query_options.error_if_intermediate_path_tree_not_present {
                                     match e {
-                                        Error::InvalidParentLayerPath(_) => Ok(()),
+                                        Error::PathParentLayerNotFound(_) => Ok(()),
                                         _ => Err(e),
                                     }
                                 } else {
@@ -790,7 +808,7 @@ impl Element {
                     Err(e) => {
                         if !query_options.error_if_intermediate_path_tree_not_present {
                             match e {
-                                Error::InvalidParentLayerPath(_) => Ok(()),
+                                Error::PathParentLayerNotFound(_) => Ok(()),
                                 _ => Err(e),
                             }
                         } else {
@@ -857,7 +875,7 @@ impl Element {
                     Err(e) => {
                         if !query_options.error_if_intermediate_path_tree_not_present {
                             match e {
-                                Error::PathKeyNotFound(_) | Error::InvalidParentLayerPath(_) => (),
+                                Error::PathKeyNotFound(_) | Error::PathParentLayerNotFound(_) => (),
                                 _ => return Err(e).wrap_with_cost(cost),
                             }
                         } else {
@@ -877,7 +895,7 @@ impl Element {
         .wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
         check_grovedb_v0!(
             "basic_push",
@@ -933,7 +951,7 @@ impl Element {
         Ok(())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Iterator
     pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         let mut cost = OperationCost::default();
@@ -942,7 +960,7 @@ impl Element {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::Query;
@@ -1017,13 +1035,13 @@ mod tests {
                 &query,
                 QueryOptions::default(),
                 None,
-                grove_version,
+                grove_version
             )
             .unwrap()
             .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyc".to_vec())
             ]
         );
 
@@ -1038,14 +1056,14 @@ mod tests {
                 &query,
                 QueryOptions::default(),
                 None,
-                grove_version,
+                grove_version
             )
             .unwrap()
             .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyc".to_vec())
             ]
         );
 
@@ -1060,14 +1078,14 @@ mod tests {
                 &query,
                 QueryOptions::default(),
                 None,
-                grove_version,
+                grove_version
             )
             .unwrap()
             .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayyb".to_vec()),
                 Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyd".to_vec()),
+                Element::new_item(b"ayyd".to_vec())
             ]
         );
 
@@ -1083,14 +1101,14 @@ mod tests {
                 &query,
                 QueryOptions::default(),
                 None,
-                grove_version,
+                grove_version
             )
             .unwrap()
             .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
                 Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyc".to_vec())
             ]
         );
     }
@@ -1153,7 +1171,7 @@ mod tests {
                 QueryOptions::default(),
                 QueryPathKeyElementTrioResultType,
                 None,
-                grove_version,
+                grove_version
             )
             .unwrap()
             .expect("expected successful get_query")
@@ -1168,7 +1186,7 @@ mod tests {
                     vec![TEST_LEAF.to_vec()],
                     b"c".to_vec(),
                     Element::new_item(b"ayyc".to_vec())
-                ),
+                )
             ]
         );
     }
@@ -1180,12 +1198,12 @@ mod tests {
 
         let batch = StorageBatch::new();
         let storage = &db.db;
-        let tx = db.start_transaction();
+        let transaction = db.start_transaction();
 
         let mut merk = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF].as_ref().into(),
-                &tx,
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -1213,6 +1231,8 @@ mod tests {
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .expect("expected successful batch commit");
+
+        transaction.commit().unwrap();
 
         // Test range inclusive query
         let mut query = Query::new();
@@ -1293,13 +1313,14 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         let batch = StorageBatch::new();
-        let tx = db.start_transaction();
+
         let storage = &db.db;
+        let transaction = db.start_transaction();
 
         let mut merk = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF].as_ref().into(),
-                &tx,
+                &transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -1327,6 +1348,8 @@ mod tests {
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .expect("expected successful batch commit");
+
+        transaction.commit().unwrap();
 
         // Test range inclusive query
         let mut query = Query::new_with_direction(true);
@@ -1520,7 +1543,7 @@ mod tests {
         .expect("expected successful get_query");
         assert_eq!(
             elements.to_key_elements(),
-            vec![(b"c".to_vec(), Element::new_item(b"ayyc".to_vec()))]
+            vec![(b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),]
         );
         assert_eq!(skipped, 0);
 
@@ -1544,7 +1567,7 @@ mod tests {
             elements.to_key_elements(),
             vec![
                 (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
-                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec()))
             ]
         );
         assert_eq!(skipped, 0);
@@ -1565,7 +1588,7 @@ mod tests {
             elements.to_key_elements(),
             vec![
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
-                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec()))
             ]
         );
         assert_eq!(skipped, 1);
@@ -1591,7 +1614,7 @@ mod tests {
             elements.to_key_elements(),
             vec![
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
-                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec()))
             ]
         );
         assert_eq!(skipped, 1);
@@ -1675,12 +1698,12 @@ mod tests {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub struct ElementsIterator<I: RawIterator> {
     raw_iter: I,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<I: RawIterator> ElementsIterator<I> {
     pub fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }

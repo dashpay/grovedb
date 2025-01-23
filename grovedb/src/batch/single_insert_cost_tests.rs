@@ -1,6 +1,6 @@
 //! Tests
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod tests {
     use grovedb_costs::{
         storage_cost::{

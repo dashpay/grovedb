@@ -1,29 +1,33 @@
 //! Query operations
 
 use grovedb_costs::cost_return_on_error_default;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::element::SumValue;
+#[cfg(feature = "minimal")]
+use crate::util::TxRef;
 use crate::{
-    bidirectional_references::BidirectionalReference, element::QueryOptions,
-    operations::proof::ProveOptions, query_result_type::PathKeyOptionalElementTrio, util::TxRef,
+    bidirectional_references::BidirectionalReference,
+    element::{BigSumValue, CountValue, QueryOptions},
+    operations::proof::ProveOptions,
+    query_result_type::PathKeyOptionalElementTrio,
     Transaction,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Debug, Eq, PartialEq, Clone)]
 /// A return type for query_item_value_or_sum
 pub enum QueryItemOrSumReturnType {
@@ -31,9 +35,15 @@ pub enum QueryItemOrSumReturnType {
     ItemData(Vec<u8>),
     /// A sum item or a sum tree value
     SumValue(SumValue),
+    /// A big sum tree value
+    BigSumValue(BigSumValue),
+    /// A count value
+    CountValue(CountValue),
+    /// A count and sum value
+    CountSumValue(CountValue, SumValue),
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Encoded query for multiple path queries
     pub fn query_encoded_many(
@@ -232,6 +242,9 @@ where {
             Element::Item(..)
             | Element::SumItem(..)
             | Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountTree(..)
+            | Element::CountSumTree(..)
             | Element::ItemWithBackwardsReferences(..)
             | Element::SumItemWithBackwardsReferences(..) => Ok(element),
             Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
@@ -366,7 +379,11 @@ where {
                         | Element::SumItemWithBackwardsReferences(item, ..) => {
                             Ok(item.encode_var_vec())
                         }
-                        Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
+                        Element::Tree(..)
+                        | Element::SumTree(..)
+                        | Element::BigSumTree(..)
+                        | Element::CountTree(..)
+                        | Element::CountSumTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
                     }
@@ -455,6 +472,18 @@ where {
                                         Element::SumTree(_, sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
+                                        Element::BigSumTree(_, big_sum_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                                        }
+                                        Element::CountTree(_, count_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::CountValue(count_value))
+                                        }
+                                        Element::CountSumTree(_, count_value, sum_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::CountSumValue(
+                                                count_value,
+                                                sum_value,
+                                            ))
+                                        }
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),
@@ -475,6 +504,15 @@ where {
                         Element::SumTree(_, sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
+                        Element::BigSumTree(_, big_sum_value, _) => {
+                            Ok(QueryItemOrSumReturnType::BigSumValue(big_sum_value))
+                        }
+                        Element::CountTree(_, count_value, _) => {
+                            Ok(QueryItemOrSumReturnType::CountValue(count_value))
+                        }
+                        Element::CountSumTree(_, count_value, sum_value, _) => Ok(
+                            QueryItemOrSumReturnType::CountSumValue(count_value, sum_value),
+                        ),
                         Element::Tree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items, sum items, references and sum \
                              trees",
@@ -567,6 +605,9 @@ where {
                         | Element::SumItemWithBackwardsReferences(item, ..) => Ok(item),
                         Element::Tree(..)
                         | Element::SumTree(..)
+                        | Element::BigSumTree(..)
+                        | Element::CountTree(..)
+                        | Element::CountSumTree(..)
                         | Element::Item(..)
                         | Element::ItemWithBackwardsReferences(..) => Err(Error::InvalidQuery(
                             "path_queries over sum items can only refer to sum items and \
@@ -734,7 +775,7 @@ where {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

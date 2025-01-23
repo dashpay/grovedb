@@ -48,6 +48,7 @@ use crate::{
         Node, Op,
     },
     tree::{combine_hash, kv::ValueDefinedCostType, RefWalker, TreeNode},
+    tree_type::TreeType,
     CryptoHash, Error,
     Error::{CostsError, StorageError},
     Link, Merk,
@@ -315,11 +316,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .expect("rewrite is only called when traversal_instruction is not empty");
 
         let updated_key = chunk_tree.key();
-        let updated_sum = chunk_tree.sum();
+        let updated_sum = chunk_tree.aggregate_data();
 
-        if let Some(Link::Reference { key, sum, .. }) = parent.link_mut(*is_left) {
+        if let Some(Link::Reference {
+            key,
+            aggregate_data,
+            ..
+        }) = parent.link_mut(*is_left)
+        {
             *key = updated_key.to_vec();
-            *sum = updated_sum;
+            *aggregate_data = updated_sum;
         }
 
         let parent_bytes = parent.encode();
@@ -449,7 +455,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         if !self
             .merk
-            .verify(self.merk.is_sum_tree, grove_version)
+            .verify(self.merk.tree_type == TreeType::NormalTree, grove_version)
             .0
             .is_empty()
         {
@@ -561,6 +567,7 @@ mod tests {
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
         test_utils::{make_batch_seq, TempMerk},
+        tree_type::TreeType,
         Error::ChunkRestoringError,
         Merk, PanicSource,
     };
@@ -682,7 +689,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -932,7 +939,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -951,7 +958,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1024,7 +1031,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1093,7 +1100,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1175,7 +1182,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1277,7 +1284,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1359,7 +1366,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -1409,7 +1416,7 @@ mod tests {
             storage
                 .get_immediate_storage_context(SubtreePath::empty(), &tx)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )

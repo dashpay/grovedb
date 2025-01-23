@@ -1,7 +1,7 @@
 [package]
 name = "grovedb"
 description = "Fully featured database using balanced hierarchical authenticated data structures"
-version = "2.1.0"
+version = "3.0.0"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
 edition = "2021"
 license = "MIT"
@@ -11,51 +11,55 @@ readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [dependencies]
-grovedb-costs = { version = "2.1.0", path = "../costs" , optional = true }
-grovedbg-types = { version = "2.1.0", path = "../grovedbg-types", optional = true }
-grovedb-merk = { version = "2.1.0", path = "../merk", optional = true, default-features = false }
-grovedb-path = { version = "2.1.0", path = "../path" }
-grovedb-storage = { version = "2.1.0", path = "../storage", optional = true }
-grovedb-version = { version = "2.1.0", path = "../grovedb-version" }
-grovedb-visualize = { version = "2.1.0", path = "../visualize", optional = true }
+grovedb-costs = { version = "3.0.0", path = "../costs" , optional = true }
+grovedbg-types = { version = "3.0.0", path = "../grovedbg-types", optional = true }
+grovedb-merk = { version = "3.0.0", path = "../merk", optional = true, default-features = false }
+grovedb-path = { version = "3.0.0", path = "../path" }
+grovedb-storage = { version = "3.0.0", path = "../storage", optional = true }
+grovedb-version = { version = "3.0.0", path = "../grovedb-version" }
+grovedb-visualize = { version = "3.0.0", path = "../visualize", optional = true }
 
-axum = { version = "0.7.5", features = ["macros"], optional = true }
+axum = { version = "=0.7.5", features = ["macros"], optional = true }
 bincode = { version = "2.0.0-rc.3" }
-bitvec = "1"
-blake3 = "1.4.0"
-derive_more = "0.99.18"
+blake3 = "1.5.5"
 hex = "0.4.3"
-indexmap = "2.2.6"
+indexmap = "2.7.0"
 integer-encoding = { version = "4.0.0", optional = true }
-intmap = { version = "2.0.0", optional = true }
-itertools = { version = "0.12.1", optional = true }
-nohash-hasher = { version = "0.2.0", optional = true }
+intmap = { version = "3.0.1", optional = true }
+itertools = { version = "0.14.0", optional = true }
 tempfile = { version = "3.10.1", optional = true }
-thiserror = { version = "1.0.59", optional = true }
+thiserror = { version = "2.0.11", optional = true }
 tokio-util = { version = "0.7.12", optional = true }
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "net"], optional = true }
 tower-http = { version = "0.5.2", features = ["fs"], optional = true }
-zip-extensions = { version ="0.6.2", optional = true }
+zip-extensions = { version = "0.8.1", optional = true }
 serde = { version = "1.0.210", features = ["derive"], optional = true }
+bitvec = { version = "1.0.1", optional = true }
 
 [dev-dependencies]
-grovedb-epoch-based-storage-flags = { version = "2.1.0", path = "../grovedb-epoch-based-storage-flags" }
+grovedb-epoch-based-storage-flags = { version = "3.0.0", path = "../grovedb-epoch-based-storage-flags" }
 
 criterion = "0.5.1"
 hex = "0.4.3"
 pretty_assertions = "1.4.0"
 rand = "0.8.5"
+assert_matches = "1.5.0"
 
 [[bench]]
 name = "insertion_benchmark"
 harness = false
 
 [features]
-default = ["full"]
+default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
 serde = ["dep:serde", "grovedb-merk/serde", "indexmap/serde"]
 full = [
     "grovedb-merk/full",
+    "minimal",
+]
+minimal = [
+    "bitvec",
+    "grovedb-merk/minimal",
     "thiserror",
     "tempfile",
     "grovedb-storage/rocksdb_storage",
@@ -63,7 +67,6 @@ full = [
     "itertools",
     "integer-encoding",
     "grovedb-costs",
-    "nohash-hasher",
     "intmap",
 ]
 visualize = [

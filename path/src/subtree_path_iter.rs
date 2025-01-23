@@ -42,7 +42,7 @@ pub struct SubtreePathIter<'b, B> {
     next_subtree_path: Option<&'b SubtreePath<'b, B>>,
 }
 
-impl<'b, B> Clone for SubtreePathIter<'b, B> {
+impl<B> Clone for SubtreePathIter<'_, B> {
     fn clone(&self) -> Self {
         SubtreePathIter {
             current_iter: self.current_iter.clone(),
@@ -147,12 +147,12 @@ impl<B> CurrentSubtreePathIter<'_, B> {
     }
 }
 
-impl<'b, B> Clone for CurrentSubtreePathIter<'b, B> {
+impl<B> Clone for CurrentSubtreePathIter<'_, B> {
     fn clone(&self) -> Self {
         match self {
             CurrentSubtreePathIter::Single(x) => CurrentSubtreePathIter::Single(x),
             CurrentSubtreePathIter::Slice(x) => CurrentSubtreePathIter::Slice(x.clone()),
-            CurrentSubtreePathIter::OwnedBytes(x) => CurrentSubtreePathIter::OwnedBytes(x.clone()),
+            CurrentSubtreePathIter::OwnedBytes(x) => CurrentSubtreePathIter::OwnedBytes(*x),
         }
     }
 }

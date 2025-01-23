@@ -43,10 +43,10 @@ use crate::storage_cost::removal::StorageRemovedBytes::{
 pub type Identifier = [u8; 32];
 
 /// Unknown Epoch
-pub const UNKNOWN_EPOCH: u64 = u64::MAX;
+pub const UNKNOWN_EPOCH: u16 = u16::MAX;
 
 /// A BTreeMap mapping identities to the storage they removed by epoch
-pub type StorageRemovalPerEpochByIdentifier = BTreeMap<Identifier, IntMap<u32>>;
+pub type StorageRemovalPerEpochByIdentifier = BTreeMap<Identifier, IntMap<u16, u32>>;
 
 /// Removal bytes
 #[derive(Debug, PartialEq, Clone, Eq, Default)]
@@ -122,7 +122,7 @@ impl Add for StorageRemovedBytes {
                                     };
                                     (k, combined)
                                 })
-                                .collect::<IntMap<u32>>();
+                                .collect::<IntMap<u16, u32>>();
                             intersection.into_iter().chain(int_map_b).collect()
                         } else {
                             int_map_b
@@ -193,7 +193,7 @@ impl AddAssign for StorageRemovedBytes {
                                     };
                                     (k, combined)
                                 })
-                                .collect::<IntMap<u32>>();
+                                .collect::<IntMap<u16, u32>>();
                             intersection.into_iter().chain(int_map_b).collect()
                         } else {
                             int_map_b

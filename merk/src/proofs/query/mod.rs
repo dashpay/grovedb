@@ -1,73 +1,73 @@
 //! Query proofs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod map;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod common_path;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod insert;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod merge;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod query_item;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::cmp::Ordering;
 use std::{collections::HashSet, fmt, ops::RangeFull};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use bincode::{
     enc::write::Writer,
     error::{DecodeError, EncodeError},
     BorrowDecode, Decode, Encode,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use indexmap::IndexMap;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub use map::*;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query_item::intersect::QueryItemIntersectionResult;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query_item::QueryItem;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use verify::ProofAbsenceLimit;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify::VerifyOptions;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify::{ProofVerificationResult, ProvedKeyOptionalValue, ProvedKeyValue};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use {super::Op, std::collections::LinkedList};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use super::Node;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::error::Error;
 use crate::proofs::hex_to_ascii;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::tree::{Fetch, Link, RefWalker};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for a path.
 pub type Path = Vec<Vec<u8>>;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for a Key.
 pub type Key = Vec<u8>;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for path-key common pattern.
 pub type PathKey = (Path, Key);
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq, Encode, Decode)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Subquery branch
@@ -108,7 +108,7 @@ impl SubqueryBranch {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -124,7 +124,7 @@ pub struct Query {
     pub left_to_right: bool,
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for Query {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
         // Encode the items vector
@@ -158,7 +158,7 @@ impl Encode for Query {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Decode for Query {
     fn decode<D: bincode::de::Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
         // Decode the items vector
@@ -193,7 +193,7 @@ impl Decode for Query {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl<'de> BorrowDecode<'de> for Query {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
         decoder: &mut D,
@@ -230,7 +230,7 @@ impl<'de> BorrowDecode<'de> for Query {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for SubqueryBranch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SubqueryBranch {{ ")?;
@@ -255,7 +255,7 @@ impl fmt::Display for SubqueryBranch {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for Query {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Query {{")?;
@@ -281,7 +281,7 @@ impl fmt::Display for Query {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
@@ -650,7 +650,7 @@ impl Query {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
@@ -666,14 +666,14 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl From<Query> for Vec<QueryItem> {
     fn from(q: Query) -> Self {
         q.into_iter().collect()
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl IntoIterator for Query {
     type IntoIter = <Vec<QueryItem> as IntoIterator>::IntoIter;
     type Item = QueryItem;
@@ -683,11 +683,11 @@ impl IntoIterator for Query {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Link {
     /// Creates a `Node::Hash` from this link. Panics if the link is of variant
     /// `Link::Modified` since its hash has not yet been computed.
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     const fn to_hash_node(&self) -> Node {
         let hash = match self {
             Link::Reference { hash, .. } => hash,
@@ -701,8 +701,8 @@ impl Link {
     }
 }
 
-#[cfg(feature = "full")]
-impl<'a, S> RefWalker<'a, S>
+#[cfg(feature = "minimal")]
+impl<S> RefWalker<'_, S>
 where
     S: Fetch + Sized + Clone,
 {
@@ -758,7 +758,7 @@ where
     /// right edge, respectively.
     ///
     /// TODO: Generalize logic and get code to better represent logic
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     pub(crate) fn create_proof(
         &mut self,
         query: &[QueryItem],
@@ -965,7 +965,7 @@ where
 
     /// Similar to `create_proof`. Recurses into the child on the given side and
     /// generates a proof for the queried keys.
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     fn create_child_proof(
         &mut self,
         left: bool,
@@ -1001,7 +1001,7 @@ where
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {

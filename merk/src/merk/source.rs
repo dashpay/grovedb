@@ -4,6 +4,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     tree::{kv::ValueDefinedCostType, Fetch, TreeNode},
+    tree_type::TreeType,
     Error, Link, Merk,
 };
 
@@ -14,7 +15,7 @@ where
     pub(in crate::merk) fn source(&self) -> MerkSource<S> {
         MerkSource {
             storage: &self.storage,
-            is_sum_tree: self.is_sum_tree,
+            tree_type: self.tree_type,
         }
     }
 }
@@ -22,19 +23,19 @@ where
 #[derive(Debug)]
 pub struct MerkSource<'s, S> {
     storage: &'s S,
-    is_sum_tree: bool,
+    tree_type: TreeType,
 }
 
-impl<'s, S> Clone for MerkSource<'s, S> {
+impl<S> Clone for MerkSource<'_, S> {
     fn clone(&self) -> Self {
         MerkSource {
             storage: self.storage,
-            is_sum_tree: self.is_sum_tree,
+            tree_type: self.tree_type,
         }
     }
 }
 
-impl<'s, 'db, S> Fetch for MerkSource<'s, S>
+impl<'db, S> Fetch for MerkSource<'_, S>
 where
     S: StorageContext<'db>,
 {

@@ -1,10 +1,10 @@
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::collections::LinkedList;
 use std::fmt;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::proofs::{
     query::{Map, MapBuilder},
     Op,
@@ -16,10 +16,10 @@ use crate::{
     CryptoHash as MerkHash, CryptoHash,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), Option<u16>);
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Verify proof against expected hash
 #[deprecated]
 #[allow(unused)]
@@ -65,7 +65,7 @@ impl Default for VerifyOptions {
 }
 
 impl Query {
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Verifies the encoded proof with the given query
     ///
     /// Every key in `keys` is checked to either have a key/value pair in the
@@ -361,7 +361,7 @@ impl Query {
         .wrap_with_cost(cost)
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Verifies the encoded proof with the given query and expected hash
     pub fn verify_proof(
         &self,
@@ -385,7 +385,7 @@ impl Query {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
 /// Proved key-value
 pub struct ProvedKeyOptionalValue {
@@ -422,7 +422,7 @@ impl TryFrom<ProvedKeyOptionalValue> for ProvedKeyValue {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProvedKeyOptionalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let key_string = if self.key.len() == 1 && self.key[0] < b"0"[0] {
@@ -444,7 +444,7 @@ impl fmt::Display for ProvedKeyOptionalValue {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
 /// Proved key-value
 pub struct ProvedKeyValue {
@@ -456,7 +456,7 @@ pub struct ProvedKeyValue {
     pub proof: CryptoHash,
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProvedKeyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -469,7 +469,7 @@ impl fmt::Display for ProvedKeyValue {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
 /// Proof verification result
 pub struct ProofVerificationResult {
@@ -479,7 +479,7 @@ pub struct ProofVerificationResult {
     pub limit: Option<u16>,
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProofVerificationResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "ProofVerificationResult {{")?;

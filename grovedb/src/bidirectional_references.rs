@@ -12,8 +12,7 @@ use crate::{
     element::{Delta, MaxReferenceHop},
     merk_cache::{MerkCache, MerkHandle},
     operations::insert::InsertOptions,
-    reference_path::ReferencePathType,
-    util::{self, ResolvedReference},
+    reference_path::{follow_reference_once, ReferencePathType, ResolvedReference},
     Element, ElementFlags, Error,
 };
 
@@ -53,7 +52,7 @@ impl BidirectionalReference {
             ..
         } = cost_return_on_error!(
             &mut cost,
-            util::follow_reference_once(
+            follow_reference_once(
                 merk_cache,
                 current_path,
                 current_key,
@@ -131,7 +130,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
         ..
     } = cost_return_on_error!(
         &mut cost,
-        util::follow_reference_once(
+        follow_reference_once(
             merk_cache,
             path.derive_owned(),
             key,
@@ -422,7 +421,7 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
                 ..
             } = cost_return_on_error!(
                 &mut cost,
-                util::follow_reference_once(
+                follow_reference_once(
                     merk_cache,
                     current_path.clone(),
                     &current_key,
@@ -444,17 +443,18 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
         }
 
         // ... and the element altogether
-        cost_return_on_error!(
-            &mut cost,
-            current_merk.for_merk(|m| Element::delete(
-                m,
-                current_key,
-                None,
-                false,
-                false,
-                &merk_cache.version
-            ))
-        );
+        todo!()
+        // cost_return_on_error!(
+        //     &mut cost,
+        //     current_merk.for_merk(|m| Element::delete_with_sectioned_removal_bytes(
+        //         m,
+        //         current_key,
+        //         None,
+        //         false,
+        //         false,
+        //         &merk_cache.version
+        //     ))
+        // );
     }
 
     Ok(()).wrap_with_cost(cost)
@@ -487,7 +487,7 @@ fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
                 ..
             } = cost_return_on_error!(
                 &mut cost,
-                util::follow_reference_once(
+                follow_reference_once(
                     merk_cache,
                     current_path.clone(),
                     &current_key,

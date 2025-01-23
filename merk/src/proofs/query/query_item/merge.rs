@@ -5,7 +5,7 @@ use std::{
 
 use crate::proofs::query::query_item::QueryItem;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl QueryItem {
     pub(crate) fn merge(&self, other: &Self) -> Self {
         let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();

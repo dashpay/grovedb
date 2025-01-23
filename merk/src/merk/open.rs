@@ -6,6 +6,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     tree::kv::ValueDefinedCostType,
+    tree_type::TreeType,
     Error, Merk, MerkType,
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
@@ -15,21 +16,21 @@ where
     S: StorageContext<'db>,
 {
     /// Open empty tree
-    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
+    pub fn open_empty(storage: S, merk_type: MerkType, tree_type: TreeType) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
             merk_type,
-            is_sum_tree,
             meta_cache: Default::default(),
+            tree_type,
         }
     }
 
     /// Open standalone tree
     pub fn open_standalone(
         storage: S,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         value_defined_cost_fn: Option<
             impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
@@ -40,7 +41,7 @@ where
             root_tree_key: Cell::new(None),
             storage,
             merk_type: StandaloneMerk,
-            is_sum_tree,
+            tree_type,
             meta_cache: Default::default(),
         };
 
@@ -51,7 +52,7 @@ where
     /// Open base tree
     pub fn open_base(
         storage: S,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         value_defined_cost_fn: Option<
             impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
@@ -62,7 +63,7 @@ where
             root_tree_key: Cell::new(None),
             storage,
             merk_type: BaseMerk,
-            is_sum_tree,
+            tree_type,
             meta_cache: Default::default(),
         };
 
@@ -74,7 +75,7 @@ where
     pub fn open_layered_with_root_key(
         storage: S,
         root_key: Option<Vec<u8>>,
-        is_sum_tree: bool,
+        tree_type: TreeType,
         value_defined_cost_fn: Option<
             impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         >,
@@ -85,7 +86,7 @@ where
             root_tree_key: Cell::new(root_key),
             storage,
             merk_type: LayeredMerk,
-            is_sum_tree,
+            tree_type,
             meta_cache: Default::default(),
         };
 
@@ -105,7 +106,10 @@ mod test {
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
-    use crate::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType::BasicMerkNode};
+    use crate::{
+        tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk, Op,
+        TreeFeatureType::BasicMerkNode,
+    };
 
     #[test]
     fn test_reopen_root_hash() {
@@ -113,19 +117,20 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
+        let batch = StorageBatch::new();
+        let transaction = storage.start_transaction();
+
         let test_prefix = [b"ayy"];
 
-        let batch = StorageBatch::new();
-        let tx = storage.start_transaction();
         let mut merk = Merk::open_base(
             storage
                 .get_transactional_storage_context(
                     SubtreePath::from(test_prefix.as_ref()),
                     Some(&batch),
-                    &tx,
+                    &transaction,
                 )
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -144,7 +149,7 @@ mod test {
         let root_hash = merk.root_hash();
 
         storage
-            .commit_multi_context_batch(batch, Some(&tx))
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
@@ -153,10 +158,10 @@ mod test {
                 .get_transactional_storage_context(
                     SubtreePath::from(test_prefix.as_ref()),
                     None,
-                    &tx,
+                    &transaction,
                 )
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -170,13 +175,13 @@ mod test {
         let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
-        let tx = storage.start_transaction();
+        let transaction = storage.start_transaction();
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &tx)
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         );
@@ -198,15 +203,15 @@ mod test {
         .expect("apply failed");
 
         storage
-            .commit_multi_context_batch(batch, Some(&tx))
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
         let merk_fee_context = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &tx)
+                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
                 .unwrap(),
-            false,
+            TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         );

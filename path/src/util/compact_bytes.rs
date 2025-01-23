@@ -89,7 +89,7 @@ impl CompactBytes {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct CompactBytesIter<'a> {
     bytes: &'a CompactBytes,
     offset_back: usize,

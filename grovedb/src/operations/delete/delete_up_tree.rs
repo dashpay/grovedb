@@ -5,15 +5,16 @@ use grovedb_costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_merk::MaybeTree;
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
-    TransactionArg,
+    batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, util::TxRef, ElementFlags, Error,
+    GroveDb, TransactionArg,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[derive(Clone)]
 /// Delete up tree options
 pub struct DeleteUpTreeOptions {
@@ -29,7 +30,7 @@ pub struct DeleteUpTreeOptions {
     pub stop_path_height: Option<u16>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl Default for DeleteUpTreeOptions {
     fn default() -> Self {
         DeleteUpTreeOptions {
@@ -42,7 +43,7 @@ impl Default for DeleteUpTreeOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl DeleteUpTreeOptions {
     fn to_delete_options(&self) -> DeleteOptions {
         DeleteOptions {
@@ -54,7 +55,7 @@ impl DeleteUpTreeOptions {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
@@ -167,7 +168,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         mut current_batch_operations: Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -184,7 +185,7 @@ impl GroveDb {
             path,
             key,
             options,
-            is_known_to_be_subtree_with_sum,
+            is_known_to_be_subtree,
             &mut current_batch_operations,
             transaction,
             grove_version,
@@ -199,7 +200,7 @@ impl GroveDb {
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
+        is_known_to_be_subtree: Option<MaybeTree>,
         current_batch_operations: &mut Vec<QualifiedGroveDbOp>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -220,10 +221,13 @@ impl GroveDb {
                 return Ok(None).wrap_with_cost(cost);
             }
         }
+
+        let tx = TxRef::new(&self.db, transaction);
+
         if options.validate_tree_at_path_exists {
             cost_return_on_error!(
                 &mut cost,
-                self.check_subtree_exists_path_not_found(path.clone(), transaction, grove_version)
+                self.check_subtree_exists_path_not_found(path.clone(), tx.as_ref(), grove_version)
             );
         }
         if let Some(delete_operation_this_level) = cost_return_on_error!(
@@ -232,9 +236,9 @@ impl GroveDb {
                 path.clone(),
                 key,
                 &options.to_delete_options(),
-                is_known_to_be_subtree_with_sum,
+                is_known_to_be_subtree,
                 current_batch_operations,
-                transaction,
+                Some(tx.as_ref()),
                 grove_version,
             )
         ) {

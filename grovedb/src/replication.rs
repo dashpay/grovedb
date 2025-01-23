@@ -1,249 +1,68 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+mod state_sync_session;
 
-use grovedb_merk::{
-    ed::Encode,
-    merk::restore::Restorer,
-    proofs::{Decoder, Op},
-    tree::{hash::CryptoHash, kv::ValueDefinedCostType, value_hash},
-    ChunkProducer,
-};
+use std::pin::Pin;
+
+use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer};
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[rustfmt::skip]
-use grovedb_storage::rocksdb_storage::storage_context::context_immediate::PrefixedRocksDbImmediateStorageContext;
-use grovedb_version::{check_grovedb_v0, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
-use crate::{replication, util::TxRef, Error, GroveDb, Transaction, TransactionArg};
+pub use self::state_sync_session::MultiStateSyncSession;
+use crate::{util::TxRef, Error, GroveDb, TransactionArg};
 
-pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
+/// Type alias representing a chunk identifier in the state synchronization
+/// process.
+///
+/// - `SubtreePrefix`: The prefix of the subtree (32 bytes).
+/// - `Option<Vec<u8>>`: The root key, which may be `None` if not present.
+/// - `bool`: Indicates whether the tree is a sum tree.
+/// - `Vec<u8>`: The chunk ID representing traversal instructions.
+pub type ChunkIdentifier = (crate::SubtreePrefix, Option<Vec<u8>>, TreeType, Vec<u8>);
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
-#[derive(Default)]
-struct SubtreeStateSyncInfo<'db> {
-    // Current Chunk restorer
-    restorer: Option<Restorer<PrefixedRocksDbImmediateStorageContext<'db>>>,
-    // Set of global chunk ids requested to be fetched and pending for processing. For the
-    // description of global chunk id check fetch_chunk().
-    pending_chunks: BTreeSet<Vec<u8>>,
-    // Number of processed chunks in current prefix (Path digest)
-    num_processed_chunks: usize,
-}
-
-// Struct governing state sync
-pub struct MultiStateSyncInfo<'db> {
-    // Map of current processing subtrees
-    // SubtreePrefix (Path digest) -> SubtreeStateSyncInfo
-    current_prefixes: BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>>,
-    // Set of processed prefixes (Path digests)
-    processed_prefixes: BTreeSet<SubtreePrefix>,
-    // Root app_hash
-    app_hash: [u8; 32],
-    // Version of state sync protocol,
-    version: u16,
-}
-
-impl<'db> Default for MultiStateSyncInfo<'db> {
-    fn default() -> Self {
-        Self {
-            current_prefixes: BTreeMap::new(),
-            processed_prefixes: BTreeSet::new(),
-            app_hash: [0; 32],
-            version: CURRENT_STATE_SYNC_VERSION,
-        }
-    }
-}
-
-// Struct containing information about current subtrees found in GroveDB
-pub struct SubtreesMetadata {
-    // Map of Prefix (Path digest) -> (Actual path, Parent Subtree actual_value_hash, Parent
-    // Subtree elem_value_hash) Note: Parent Subtree actual_value_hash, Parent Subtree
-    // elem_value_hash are needed when verifying the new constructed subtree after wards.
-    pub data: BTreeMap<SubtreePrefix, (Vec<Vec<u8>>, CryptoHash, CryptoHash)>,
-}
-
-impl SubtreesMetadata {
-    pub fn new() -> SubtreesMetadata {
-        SubtreesMetadata {
-            data: BTreeMap::new(),
-        }
-    }
-}
-
-impl Default for SubtreesMetadata {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Debug for SubtreesMetadata {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (prefix, metadata) in self.data.iter() {
-            let metadata_path = &metadata.0;
-            let metadata_path_str = util_path_to_string(metadata_path);
-            writeln!(
-                f,
-                " prefix:{:?} -> path:{:?}",
-                hex::encode(prefix),
-                metadata_path_str
-            )?;
-        }
-        Ok(())
-    }
-}
-
-// Converts a path into a human-readable string (for debugging)
-pub fn util_path_to_string(path: &[Vec<u8>]) -> Vec<String> {
-    let mut subtree_path_str: Vec<String> = vec![];
-    for subtree in path {
-        let string = std::str::from_utf8(subtree).expect("should be able to convert path");
-        subtree_path_str.push(
-            string
-                .parse()
-                .expect("should be able to parse path to string"),
-        );
-    }
-    subtree_path_str
-}
-
-// Splits the given global chunk id into [SUBTREE_PREFIX:CHUNK_ID]
-pub fn util_split_global_chunk_id(
-    global_chunk_id: &[u8],
-    app_hash: &[u8],
-) -> Result<(crate::SubtreePrefix, Vec<u8>), Error> {
-    let chunk_prefix_length: usize = 32;
-    if global_chunk_id.len() < chunk_prefix_length {
-        return Err(Error::CorruptedData(
-            "expected global chunk id of at least 32 length".to_string(),
-        ));
-    }
-
-    if global_chunk_id == app_hash {
-        let array_of_zeros: [u8; 32] = [0; 32];
-        let root_chunk_prefix_key: crate::SubtreePrefix = array_of_zeros;
-        return Ok((root_chunk_prefix_key, vec![]));
-    }
-
-    let (chunk_prefix, chunk_id) = global_chunk_id.split_at(chunk_prefix_length);
-    let mut array = [0u8; 32];
-    array.copy_from_slice(chunk_prefix);
-    let chunk_prefix_key: crate::SubtreePrefix = array;
-    Ok((chunk_prefix_key, chunk_id.to_vec()))
-}
-
-pub fn util_encode_vec_ops(chunk: Vec<Op>) -> Result<Vec<u8>, Error> {
-    let mut res = vec![];
-    for op in chunk {
-        op.encode_into(&mut res)
-            .map_err(|e| Error::CorruptedData(format!("unable to encode chunk: {}", e)))?;
-    }
-    Ok(res)
-}
-
-pub fn util_decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
-    let decoder = Decoder::new(&chunk);
-    let mut res = vec![];
-    for op in decoder {
-        match op {
-            Ok(op) => res.push(op),
-            Err(e) => {
-                return Err(Error::CorruptedData(format!(
-                    "unable to decode chunk: {}",
-                    e
-                )));
-            }
-        }
-    }
-    Ok(res)
-}
-
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
-    // Returns the discovered subtrees found recursively along with their associated
-    // metadata Params:
-    // tx: Transaction. Function returns the data by opening merks at given tx.
-    // TODO: Add a SubTreePath as param and start searching from that path instead
-    // of root (as it is now)
-    pub fn get_subtrees_metadata(
-        &self,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> Result<SubtreesMetadata, Error> {
-        check_grovedb_v0!(
-            "is_empty_tree",
-            grove_version
-                .grovedb_versions
-                .replication
-                .get_subtrees_metadata
-        );
-        let mut subtrees_metadata = SubtreesMetadata::new();
-
-        let tx = TxRef::new(&self.db, transaction);
-
-        let subtrees_root = self
-            .find_subtrees(&SubtreePath::empty(), Some(tx.as_ref()), grove_version)
-            .value?;
-        for subtree in subtrees_root.into_iter() {
-            let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
-            let path: &[&[u8]] = &subtree_path;
-            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
-
-            let current_path = SubtreePath::from(path);
-
-            match (current_path.derive_parent(), subtree.last()) {
-                (Some((parent_path, _)), Some(parent_key)) => {
-                    let parent_merk = self
-                        .open_transactional_merk_at_path(
-                            parent_path,
-                            tx.as_ref(),
-                            None,
-                            grove_version,
-                        )
-                        .value?;
-                    if let Ok(Some((elem_value, elem_value_hash))) = parent_merk
-                        .get_value_and_value_hash(
-                            parent_key,
-                            true,
-                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                            grove_version,
-                        )
-                        .value
-                    {
-                        let actual_value_hash = value_hash(&elem_value).unwrap();
-                        subtrees_metadata.data.insert(
-                            prefix,
-                            (current_path.to_vec(), actual_value_hash, elem_value_hash),
-                        );
-                    }
-                }
-                _ => {
-                    subtrees_metadata.data.insert(
-                        prefix,
-                        (
-                            current_path.to_vec(),
-                            CryptoHash::default(),
-                            CryptoHash::default(),
-                        ),
-                    );
-                }
-            }
-        }
-        Ok(subtrees_metadata)
+    pub fn start_syncing_session(&self, app_hash: [u8; 32]) -> Pin<Box<MultiStateSyncSession>> {
+        MultiStateSyncSession::new(self.start_transaction(), app_hash)
     }
 
-    // Fetch a chunk by global chunk id (should be called by ABCI when
-    // LoadSnapshotChunk method is called) Params:
-    // global_chunk_id: Global chunk id in the following format:
-    // [SUBTREE_PREFIX:CHUNK_ID] SUBTREE_PREFIX: 32 bytes (mandatory) (All zeros
-    // = Root subtree) CHUNK_ID: 0.. bytes (optional) Traversal instructions to
-    // the root of the given chunk. Traversal instructions are "1" for left, and
-    // "0" for right. TODO: Compact CHUNK_ID into bitset for size optimization
-    // as a subtree can be big hence traversal instructions for the deepest chunks
-    // tx: Transaction. Function returns the data by opening merks at given tx.
-    // Returns the Chunk proof operators for the requested chunk encoded in bytes
+    pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) -> Result<(), Error> {
+        match self.commit_transaction(session.into_transaction()).value {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Log the error or handle it as needed
+                eprintln!("Failed to commit session: {:?}", e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Fetch a chunk by global chunk ID (should be called by ABCI when the
+    /// `LoadSnapshotChunk` method is invoked).
+    ///
+    /// # Parameters
+    /// - `global_chunk_id`: Global chunk ID in the following format:
+    ///   `[SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]`
+    ///   - **SUBTREE_PREFIX**: 32 bytes (mandatory) - All zeros indicate the
+    ///     Root subtree.
+    ///   - **SIZE_ROOT_KEY**: 1 byte - Size of `ROOT_KEY` in bytes.
+    ///   - **ROOT_KEY**: `SIZE_ROOT_KEY` bytes (optional).
+    ///   - **IS_SUM_TREE**: 1 byte (mandatory) - Marks if the tree is a sum
+    ///     tree or not.
+    ///   - **CHUNK_ID**: 0 or more bytes (optional) - Traversal instructions to
+    ///     the root of the given chunk. Traversal instructions are represented
+    ///     as "1" for left and "0" for right.
+    ///     - TODO: Compact `CHUNK_ID` into a bitset for size optimization as a
+    ///       subtree can be large, and traversal instructions for the deepest
+    ///       chunks could consume significant space.
+    ///
+    /// - `transaction`: The transaction used to fetch the chunk.
+    /// - `version`: The version of the state sync protocol.
+    /// - `grove_version`: The version of GroveDB.
+    ///
+    /// # Returns
+    /// Returns the chunk proof operators for the requested chunk, encoded as
+    /// bytes.
     pub fn fetch_chunk(
         &self,
         global_chunk_id: &[u8],
@@ -255,6 +74,9 @@ impl GroveDb {
             "fetch_chunk",
             grove_version.grovedb_versions.replication.fetch_chunk
         );
+
+        let tx = TxRef::new(&self.db, transaction);
+
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -262,67 +84,100 @@ impl GroveDb {
             ));
         }
 
-        let tx = TxRef::new(&self.db, transaction);
-
         let root_app_hash = self.root_hash(Some(tx.as_ref()), grove_version).value?;
-        let (chunk_prefix, chunk_id) =
-            replication::util_split_global_chunk_id(global_chunk_id, &root_app_hash)?;
+        let (chunk_prefix, root_key, tree_type, chunk_id) =
+            utils::decode_global_chunk_id(global_chunk_id, &root_app_hash)?;
 
-        let subtrees_metadata = self.get_subtrees_metadata(Some(tx.as_ref()), grove_version)?;
-
-        match subtrees_metadata.data.get(&chunk_prefix) {
-            Some(path_data) => {
-                let subtree = &path_data.0;
-                let subtree_path: Vec<&[u8]> = subtree.iter().map(|vec| vec.as_slice()).collect();
-                let path: &[&[u8]] = &subtree_path;
-
-                let merk = self
-                    .open_transactional_merk_at_path(path.into(), tx.as_ref(), None, grove_version)
-                    .value?;
-
-                if merk.is_empty_tree().unwrap() {
-                    return Ok(vec![]);
-                }
-
-                let chunk_producer_res = ChunkProducer::new(&merk);
-                match chunk_producer_res {
-                    Ok(mut chunk_producer) => {
-                        let chunk_res = chunk_producer.chunk(&chunk_id, grove_version);
-                        match chunk_res {
-                            Ok((chunk, _)) => match util_encode_vec_ops(chunk) {
-                                Ok(op_bytes) => Ok(op_bytes),
-                                Err(_) => Err(Error::CorruptedData(
-                                    "Unable to create to load chunk".to_string(),
-                                )),
-                            },
-                            Err(_) => Err(Error::CorruptedData(
-                                "Unable to create to load chunk".to_string(),
-                            )),
-                        }
-                    }
-                    Err(_) => Err(Error::CorruptedData(
-                        "Unable to create Chunk producer".to_string(),
-                    )),
-                }
-            }
-            None => Err(Error::CorruptedData("Prefix not found".to_string())),
+        // TODO: Refactor this by writing fetch_chunk_inner (as only merk constructor
+        // and type are different)
+        let merk = self
+            .open_transactional_merk_by_prefix(
+                chunk_prefix,
+                root_key,
+                tree_type,
+                tx.as_ref(),
+                None,
+                grove_version,
+            )
+            .value
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "failed to open merk by prefix tx:{} with:{}",
+                    hex::encode(chunk_prefix),
+                    e
+                ))
+            })?;
+        if merk.is_empty_tree().unwrap() {
+            return Ok(vec![]);
         }
+
+        let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
+            Error::CorruptedData(format!(
+                "failed to create chunk producer by prefix tx:{} with:{}",
+                hex::encode(chunk_prefix),
+                e
+            ))
+        })?;
+        let (chunk, _) = chunk_producer
+            .chunk(&chunk_id, grove_version)
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "failed to apply chunk:{} with:{}",
+                    hex::encode(chunk_prefix),
+                    e
+                ))
+            })?;
+        let op_bytes = utils::encode_vec_ops(chunk).map_err(|e| {
+            Error::CorruptedData(format!(
+                "failed to encode chunk ops:{} with:{}",
+                hex::encode(chunk_prefix),
+                e
+            ))
+        })?;
+        Ok(op_bytes)
     }
 
-    // Starts a state sync process (should be called by ABCI when OfferSnapshot
-    // method is called) Params:
-    // state_sync_info: Consumed StateSyncInfo
-    // app_hash: Snapshot's AppHash
-    // tx: Transaction for the state sync
-    // Returns the StateSyncInfo transferring ownership back to the caller)
-    pub fn start_snapshot_syncing<'db>(
-        &'db self,
-        mut state_sync_info: MultiStateSyncInfo<'db>,
+    /// Starts a state synchronization process for a snapshot with the given
+    /// `app_hash` root hash. This method should be called by ABCI when the
+    /// `OfferSnapshot` method is invoked.
+    ///
+    /// # Parameters
+    /// - `app_hash`: The root hash of the application state to synchronize.
+    /// - `version`: The version of the state sync protocol to use.
+    /// - `grove_version`: The version of GroveDB being used.
+    ///
+    /// # Returns
+    /// - `Ok(Pin<Box<MultiStateSyncSession>>)`: A pinned, boxed
+    ///   `MultiStateSyncSession` representing the new sync session. This
+    ///   session allows for managing the synchronization process.
+    /// - `Err(Error)`: An error indicating why the state sync process could not
+    ///   be started.
+    ///
+    /// # Behavior
+    /// - Initiates the state synchronization process by preparing the necessary
+    ///   data and resources.
+    /// - Returns the first set of global chunk IDs that can be fetched from
+    ///   available sources.
+    /// - A new sync session is created and managed internally, facilitating
+    ///   further synchronization.
+    ///
+    /// # Usage
+    /// This method is typically called as part of the ABCI `OfferSnapshot`
+    /// workflow when a new snapshot synchronization process is required to
+    /// bring the application state up to date.
+    ///
+    /// # Notes
+    /// - The returned `MultiStateSyncSession` is pinned because its lifetime
+    ///   may depend on asynchronous operations or other system resources that
+    ///   require it to remain immovable in memory.
+    /// - Ensure that `app_hash` corresponds to a valid snapshot to avoid
+    ///   errors.
+    pub fn start_snapshot_syncing(
+        &self,
         app_hash: CryptoHash,
-        tx: &'db Transaction,
         version: u16,
         grove_version: &GroveVersion,
-    ) -> Result<MultiStateSyncInfo, Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession>>, Error> {
         check_grovedb_v0!(
             "start_snapshot_syncing",
             grove_version
@@ -336,277 +191,215 @@ impl GroveDb {
                 "Unsupported state sync protocol version".to_string(),
             ));
         }
-        if version != state_sync_info.version {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
-        }
 
-        if !state_sync_info.current_prefixes.is_empty()
-            || !state_sync_info.processed_prefixes.is_empty()
-        {
-            return Err(Error::InternalError(
-                "GroveDB has already started a snapshot syncing".to_string(),
-            ));
-        }
-
-        println!(
-            "    starting:{:?}...",
-            replication::util_path_to_string(&[])
-        );
-
-        let mut root_prefix_state_sync_info = SubtreeStateSyncInfo::default();
         let root_prefix = [0u8; 32];
-        if let Ok(merk) = self.open_merk_for_replication(SubtreePath::empty(), tx, grove_version) {
-            let restorer = Restorer::new(merk, app_hash, None);
-            root_prefix_state_sync_info.restorer = Some(restorer);
-            root_prefix_state_sync_info.pending_chunks.insert(vec![]);
-            state_sync_info
-                .current_prefixes
-                .insert(root_prefix, root_prefix_state_sync_info);
-            state_sync_info.app_hash = app_hash;
-        } else {
-            return Err(Error::InternalError(
-                "Unable to open merk for replication".to_string(),
-            ));
-        }
 
-        Ok(state_sync_info)
+        let mut session = self.start_syncing_session(app_hash);
+
+        session.add_subtree_sync_info(
+            self,
+            SubtreePath::empty(),
+            app_hash,
+            None,
+            root_prefix,
+            grove_version,
+        )?;
+
+        Ok(session)
+    }
+}
+
+pub(crate) mod utils {
+    use grovedb_merk::{
+        ed::Encode,
+        proofs::{Decoder, Op},
+        tree_type::TreeType,
+    };
+
+    use crate::{replication::ChunkIdentifier, Error};
+
+    /// Converts a path, represented as a slice of byte vectors (`&[Vec<u8>]`),
+    /// into a human-readable string representation for debugging purposes.
+    ///
+    /// # Parameters
+    /// - `path`: A slice of byte vectors where each vector represents a segment
+    ///   of the path.
+    ///
+    /// # Returns
+    /// - `Vec<String>`: A vector of strings where each string is a
+    ///   human-readable representation of a corresponding segment in the input
+    ///   path. If a segment contains invalid UTF-8, it is replaced with the
+    ///   placeholder string `"<NON_UTF8_PATH>"`.
+    ///
+    /// # Behavior
+    /// - Each byte vector in the path is interpreted as a UTF-8 string. If the
+    ///   conversion fails, the placeholder `"<NON_UTF8_PATH>"` is used instead.
+    /// - This function is primarily intended for debugging and logging.
+    ///
+    /// # Notes
+    /// - This function does not handle or normalize paths; it only provides a
+    ///   human-readable representation.
+    /// - Be cautious when using this for paths that might contain sensitive
+    ///   data, as the output could be logged.
+    pub fn path_to_string(path: &[Vec<u8>]) -> Vec<String> {
+        let mut subtree_path_str: Vec<String> = vec![];
+        for subtree in path {
+            let string = std::str::from_utf8(subtree).unwrap_or("<NON_UTF8_PATH>");
+            subtree_path_str.push(string.to_string());
+        }
+        subtree_path_str
     }
 
-    // Apply a chunk (should be called by ABCI when ApplySnapshotChunk method is
-    // called) Params:
-    // state_sync_info: Consumed MultiStateSyncInfo
-    // global_chunk_id: Global chunk id
-    // chunk: Chunk proof operators encoded in bytes
-    // tx: Transaction for the state sync
-    // Returns the next set of global chunk ids that can be fetched from sources (+
-    // the MultiStateSyncInfo transferring ownership back to the caller)
-    pub fn apply_chunk<'db>(
-        &'db self,
-        mut state_sync_info: MultiStateSyncInfo<'db>,
+    /// Decodes a given global chunk ID into its components:
+    /// `[SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]`.
+    ///
+    /// # Parameters
+    /// - `global_chunk_id`: A byte slice representing the global chunk ID to
+    ///   decode.
+    /// - `app_hash`: The application hash, which may be required for validation
+    ///   or context.
+    ///
+    /// # Returns
+    /// - `Ok(ChunkIdentifier)`: A tuple containing the decoded components:
+    ///   - `SUBTREE_PREFIX`: A 32-byte prefix of the subtree.
+    ///   - `SIZE_ROOT_KEY`: Size of the root key (derived from `ROOT_KEY`
+    ///     length).
+    ///   - `ROOT_KEY`: Optional root key as a byte vector.
+    ///   - `IS_SUM_TREE`: A boolean indicating whether the tree is a sum tree.
+    ///   - `CHUNK_ID`: Traversal instructions as a byte vector.
+    /// - `Err(Error)`: An error if the global chunk ID could not be decoded.
+    pub fn decode_global_chunk_id(
         global_chunk_id: &[u8],
-        chunk: Vec<u8>,
-        tx: &'db Transaction,
-        version: u16,
-        grove_version: &GroveVersion,
-    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
-        check_grovedb_v0!(
-            "apply_chunk",
-            grove_version.grovedb_versions.replication.apply_chunk
-        );
-        // For now, only CURRENT_STATE_SYNC_VERSION is supported
-        if version != CURRENT_STATE_SYNC_VERSION {
+        app_hash: &[u8],
+    ) -> Result<ChunkIdentifier, Error> {
+        let chunk_prefix_length: usize = 32;
+        if global_chunk_id.len() < chunk_prefix_length {
             return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
+                "expected global chunk id of at least 32 length".to_string(),
             ));
         }
-        if version != state_sync_info.version {
+
+        if global_chunk_id == app_hash {
+            let root_chunk_prefix_key: crate::SubtreePrefix = [0u8; 32];
+            return Ok((root_chunk_prefix_key, None, TreeType::NormalTree, vec![]));
+        }
+
+        let (chunk_prefix_key, remaining) = global_chunk_id.split_at(chunk_prefix_length);
+
+        let root_key_size_length: usize = 1;
+        if remaining.len() < root_key_size_length {
             return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
+                "unable to decode root key size".to_string(),
             ));
         }
-
-        let mut next_chunk_ids = vec![];
-
-        let (chunk_prefix, chunk_id) =
-            replication::util_split_global_chunk_id(global_chunk_id, &state_sync_info.app_hash)?;
-
-        if state_sync_info.current_prefixes.is_empty() {
-            return Err(Error::InternalError(
-                "GroveDB is not in syncing mode".to_string(),
+        let (root_key_size, remaining) = remaining.split_at(root_key_size_length);
+        if remaining.len() < root_key_size[0] as usize {
+            return Err(Error::CorruptedData(
+                "unable to decode root key".to_string(),
             ));
         }
-        if let Some(subtree_state_sync) = state_sync_info.current_prefixes.remove(&chunk_prefix) {
-            if let Ok((res, mut new_subtree_state_sync)) =
-                self.apply_inner_chunk(subtree_state_sync, &chunk_id, chunk, grove_version)
-            {
-                if !res.is_empty() {
-                    for local_chunk_id in res.iter() {
-                        let mut next_global_chunk_id = chunk_prefix.to_vec();
-                        next_global_chunk_id.extend(local_chunk_id.to_vec());
-                        next_chunk_ids.push(next_global_chunk_id);
-                    }
+        let (root_key, remaining) = remaining.split_at(root_key_size[0] as usize);
+        let is_sum_tree_length: usize = 1;
+        if remaining.len() < is_sum_tree_length {
+            return Err(Error::CorruptedData(
+                "unable to decode root key".to_string(),
+            ));
+        }
+        let (is_sum_tree, chunk_id) = remaining.split_at(is_sum_tree_length);
 
-                    // re-insert subtree_state_sync in state_sync_info
-                    state_sync_info
-                        .current_prefixes
-                        .insert(chunk_prefix, new_subtree_state_sync);
-                    Ok((next_chunk_ids, state_sync_info))
-                } else {
-                    if !new_subtree_state_sync.pending_chunks.is_empty() {
-                        // re-insert subtree_state_sync in state_sync_info
-                        state_sync_info
-                            .current_prefixes
-                            .insert(chunk_prefix, new_subtree_state_sync);
-                        return Ok((vec![], state_sync_info));
-                    }
+        let tree_type = is_sum_tree[0].try_into()?;
 
-                    // Subtree is finished. We can save it.
-                    match new_subtree_state_sync.restorer.take() {
-                        None => Err(Error::InternalError(
-                            "Unable to finalize subtree".to_string(),
-                        )),
-                        Some(restorer) => {
-                            if (new_subtree_state_sync.num_processed_chunks > 0)
-                                && (restorer.finalize(grove_version).is_err())
-                            {
-                                return Err(Error::InternalError(
-                                    "Unable to finalize Merk".to_string(),
-                                ));
-                            }
-                            state_sync_info.processed_prefixes.insert(chunk_prefix);
+        let subtree_prefix: crate::SubtreePrefix = chunk_prefix_key
+            .try_into()
+            .map_err(|_| Error::CorruptedData("unable to construct subtree".to_string()))?;
 
-                            // Subtree was successfully save. Time to discover new subtrees that
-                            // need to be processed
-                            let subtrees_metadata =
-                                self.get_subtrees_metadata(Some(tx), grove_version)?;
-                            if let Some(value) = subtrees_metadata.data.get(&chunk_prefix) {
-                                println!(
-                                    "    path:{:?} done (num_processed_chunks:{:?})",
-                                    replication::util_path_to_string(&value.0),
-                                    new_subtree_state_sync.num_processed_chunks
-                                );
-                            }
-
-                            if let Ok((res, new_state_sync_info)) = self.discover_subtrees(
-                                state_sync_info,
-                                subtrees_metadata,
-                                tx,
-                                grove_version,
-                            ) {
-                                next_chunk_ids.extend(res);
-                                Ok((next_chunk_ids, new_state_sync_info))
-                            } else {
-                                Err(Error::InternalError(
-                                    "Unable to discover Subtrees".to_string(),
-                                ))
-                            }
-                        }
-                    }
-                }
-            } else {
-                Err(Error::InternalError(
-                    "Unable to process incoming chunk".to_string(),
-                ))
-            }
+        if !root_key.is_empty() {
+            Ok((
+                subtree_prefix,
+                Some(root_key.to_vec()),
+                tree_type,
+                chunk_id.to_vec(),
+            ))
         } else {
-            Err(Error::InternalError("Invalid incoming prefix".to_string()))
+            Ok((subtree_prefix, None, tree_type, chunk_id.to_vec()))
         }
     }
 
-    // Apply a chunk using the given SubtreeStateSyncInfo
-    // state_sync_info: Consumed SubtreeStateSyncInfo
-    // chunk_id: Local chunk id
-    // chunk_data: Chunk proof operators encoded in bytes
-    // Returns the next set of global chunk ids that can be fetched from sources (+
-    // the SubtreeStateSyncInfo transferring ownership back to the caller)
-    fn apply_inner_chunk<'db>(
-        &'db self,
-        mut state_sync_info: SubtreeStateSyncInfo<'db>,
-        chunk_id: &[u8],
-        chunk_data: Vec<u8>,
-        grove_version: &GroveVersion,
-    ) -> Result<(Vec<Vec<u8>>, SubtreeStateSyncInfo), Error> {
+    /// Encodes the given components into a global chunk ID in the format:
+    /// `[SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]`.
+    ///
+    /// # Parameters
+    /// - `subtree_prefix`: A 32-byte array representing the prefix of the
+    ///   subtree.
+    /// - `root_key_opt`: An optional root key as a byte vector.
+    /// - `is_sum_tree`: A boolean indicating whether the tree is a sum tree.
+    /// - `chunk_id`: A byte vector representing the traversal instructions.
+    ///
+    /// # Returns
+    /// - A `Vec<u8>` containing the encoded global chunk ID.
+    pub fn encode_global_chunk_id(
+        subtree_prefix: [u8; blake3::OUT_LEN],
+        root_key_opt: Option<Vec<u8>>,
+        tree_type: TreeType,
+        chunk_id: Vec<u8>,
+    ) -> Vec<u8> {
         let mut res = vec![];
 
-        match &mut state_sync_info.restorer {
-            Some(restorer) => {
-                if !state_sync_info.pending_chunks.contains(chunk_id) {
-                    return Err(Error::InternalError(
-                        "Incoming global_chunk_id not expected".to_string(),
-                    ));
-                }
-                state_sync_info.pending_chunks.remove(chunk_id);
-                if !chunk_data.is_empty() {
-                    match util_decode_vec_ops(chunk_data) {
-                        Ok(ops) => {
-                            match restorer.process_chunk(chunk_id, ops, grove_version) {
-                                Ok(next_chunk_ids) => {
-                                    state_sync_info.num_processed_chunks += 1;
-                                    for next_chunk_id in next_chunk_ids {
-                                        state_sync_info
-                                            .pending_chunks
-                                            .insert(next_chunk_id.clone());
-                                        res.push(next_chunk_id);
-                                    }
-                                }
-                                _ => {
-                                    return Err(Error::InternalError(
-                                        "Unable to process incoming chunk".to_string(),
-                                    ));
-                                }
-                            };
-                        }
-                        Err(_) => {
-                            return Err(Error::CorruptedData(
-                                "Unable to decode incoming chunk".to_string(),
-                            ));
-                        }
-                    }
-                }
-            }
-            _ => {
-                return Err(Error::InternalError(
-                    "Invalid internal state (restorer".to_string(),
-                ));
-            }
+        res.extend(subtree_prefix);
+
+        if let Some(root_key) = root_key_opt {
+            res.push(root_key.len() as u8);
+            res.extend(root_key);
+        } else {
+            res.push(0u8);
         }
 
-        Ok((res, state_sync_info))
+        res.push(tree_type as u8);
+
+        res.extend(chunk_id.to_vec());
+
+        res
     }
 
-    // Prepares SubtreeStateSyncInfos for the freshly discovered subtrees in
-    // subtrees_metadata and returns the root global chunk ids for all of those
-    // new subtrees. state_sync_info: Consumed MultiStateSyncInfo
-    // subtrees_metadata: Metadata about discovered subtrees
-    // chunk_data: Chunk proof operators
-    // Returns the next set of global chunk ids that can be fetched from sources (+
-    // the MultiStateSyncInfo transferring ownership back to the caller)
-    fn discover_subtrees<'db>(
-        &'db self,
-        mut state_sync_info: MultiStateSyncInfo<'db>,
-        subtrees_metadata: SubtreesMetadata,
-        tx: &'db Transaction,
-        grove_version: &GroveVersion,
-    ) -> Result<(Vec<Vec<u8>>, MultiStateSyncInfo), Error> {
+    /// Encodes a vector of operations (`Vec<Op>`) into a byte vector.
+    ///
+    /// # Parameters
+    /// - `chunk`: A vector of `Op` operations to be encoded.
+    ///
+    /// # Returns
+    /// - `Ok(Vec<u8>)`: A byte vector representing the encoded operations.
+    /// - `Err(Error)`: An error if the encoding process fails.
+    pub fn encode_vec_ops(chunk: Vec<Op>) -> Result<Vec<u8>, Error> {
         let mut res = vec![];
+        for op in chunk {
+            op.encode_into(&mut res)
+                .map_err(|e| Error::CorruptedData(format!("unable to encode chunk: {}", e)))?;
+        }
+        Ok(res)
+    }
 
-        for (prefix, prefix_metadata) in &subtrees_metadata.data {
-            if !state_sync_info.processed_prefixes.contains(prefix)
-                && !state_sync_info.current_prefixes.contains_key(prefix)
-            {
-                let (current_path, s_actual_value_hash, s_elem_value_hash) = &prefix_metadata;
-
-                let subtree_path: Vec<&[u8]> =
-                    current_path.iter().map(|vec| vec.as_slice()).collect();
-                let path: &[&[u8]] = &subtree_path;
-                println!(
-                    "    path:{:?} starting...",
-                    replication::util_path_to_string(&prefix_metadata.0)
-                );
-
-                let mut subtree_state_sync_info = SubtreeStateSyncInfo::default();
-                if let Ok(merk) = self.open_merk_for_replication(path.into(), tx, grove_version) {
-                    let restorer =
-                        Restorer::new(merk, *s_elem_value_hash, Some(*s_actual_value_hash));
-                    subtree_state_sync_info.restorer = Some(restorer);
-                    subtree_state_sync_info.pending_chunks.insert(vec![]);
-
-                    state_sync_info
-                        .current_prefixes
-                        .insert(*prefix, subtree_state_sync_info);
-
-                    let root_chunk_prefix = prefix.to_vec();
-                    res.push(root_chunk_prefix.to_vec());
-                } else {
-                    return Err(Error::InternalError(
-                        "Unable to open Merk for replication".to_string(),
-                    ));
+    /// Decodes a byte vector into a vector of operations (`Vec<Op>`).
+    ///
+    /// # Parameters
+    /// - `chunk`: A byte vector representing encoded operations.
+    ///
+    /// # Returns
+    /// - `Ok(Vec<Op>)`: A vector of decoded `Op` operations.
+    /// - `Err(Error)`: An error if the decoding process fails.
+    pub fn decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
+        let decoder = Decoder::new(&chunk);
+        let mut res = vec![];
+        for op in decoder {
+            match op {
+                Ok(op) => res.push(op),
+                Err(e) => {
+                    return Err(Error::CorruptedData(format!(
+                        "unable to decode chunk: {}",
+                        e
+                    )));
                 }
             }
         }
-
-        Ok((res, state_sync_info))
+        Ok(res)
     }
 }

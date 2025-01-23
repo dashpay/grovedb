@@ -1,28 +1,28 @@
 //! Worst case costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
     worst_case_merk_propagate, WorstCaseLayerInformation,
 };
-use grovedb_merk::RootHashKeyAndSum;
-#[cfg(feature = "full")]
+use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use itertools::Itertools;
 
 use crate::Element;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
@@ -31,12 +31,12 @@ use crate::{
     Error, GroveDb,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveOp {
     fn worst_case_cost(
         &self,
         key: &KeyInfo,
-        is_in_parent_sum_tree: bool,
+        in_parent_tree_type: TreeType,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
         propagate: bool,
         grove_version: &GroveVersion,
@@ -49,29 +49,33 @@ impl GroveOp {
             }
         };
         match self {
-            GroveOp::ReplaceTreeRootKey { sum, .. } => GroveDb::worst_case_merk_replace_tree(
-                key,
-                sum.is_some(),
-                is_in_parent_sum_tree,
-                worst_case_layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
-            GroveOp::InsertTreeWithRootHash { flags, sum, .. } => {
-                GroveDb::worst_case_merk_insert_tree(
+            GroveOp::ReplaceTreeRootKey { aggregate_data, .. } => {
+                GroveDb::worst_case_merk_replace_tree(
                     key,
-                    flags,
-                    sum.is_some(),
-                    is_in_parent_sum_tree,
-                    propagate_if_input(),
+                    aggregate_data.parent_tree_type(),
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
                     grove_version,
                 )
             }
+            GroveOp::InsertTreeWithRootHash {
+                flags,
+                aggregate_data,
+                ..
+            } => GroveDb::worst_case_merk_insert_tree(
+                key,
+                flags,
+                aggregate_data.parent_tree_type(),
+                in_parent_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
             GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
-                    is_in_parent_sum_tree,
+                    in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
                 )
@@ -88,14 +92,14 @@ impl GroveOp {
                     *max_reference_hop,
                     flags.clone(),
                 ),
-                is_in_parent_sum_tree,
+                in_parent_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
             GroveOp::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
-                is_in_parent_sum_tree,
+                in_parent_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
@@ -105,7 +109,7 @@ impl GroveOp {
             } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
-                is_in_parent_sum_tree,
+                in_parent_tree_type,
                 propagate_if_input(),
                 grove_version,
             ),
@@ -115,16 +119,9 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::DeleteTree => GroveDb::worst_case_merk_delete_tree(
+            GroveOp::DeleteTree(tree_type) => GroveDb::worst_case_merk_delete_tree(
                 key,
-                false,
-                worst_case_layer_element_estimates,
-                propagate,
-                grove_version,
-            ),
-            GroveOp::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
-                key,
-                true,
+                *tree_type,
                 worst_case_layer_element_estimates,
                 propagate,
                 grove_version,
@@ -133,7 +130,7 @@ impl GroveOp {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -141,7 +138,7 @@ pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     cached_merks: HashSet<KeyInfoPath>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl WorstCaseTreeCacheKnownPaths {
     /// Updates the cache with the default settings and the given paths
     pub(in crate::batch) fn new_with_worst_case_layer_information(
@@ -154,16 +151,16 @@ impl WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
-    fn insert(&mut self, op: &QualifiedGroveDbOp, _is_sum_tree: bool) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &QualifiedGroveDbOp, _tree_type: TreeType) -> CostResult<(), Error> {
         let mut worst_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -188,7 +185,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
-    ) -> CostResult<RootHashKeyAndSum, Error> {
+    ) -> CostResult<RootHashKeyAndAggregateData, Error> {
         let mut cost = OperationCost::default();
 
         let worst_case_layer_element_estimates = cost_return_on_error_no_add!(
@@ -208,7 +205,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                 GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
                     &mut cost,
                     path,
-                    false,
+                    TreeType::NormalTree,
                     grove_version,
                 )
             );
@@ -220,7 +217,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                 &mut cost,
                 op.worst_case_cost(
                     &key,
-                    false,
+                    TreeType::NormalTree,
                     worst_case_layer_element_estimates,
                     false,
                     grove_version
@@ -232,7 +229,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             &mut cost,
             worst_case_merk_propagate(worst_case_layer_element_estimates).map_err(Error::MerkError)
         );
-        Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
+        Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
     }
 
     fn update_base_merk_root_key(
@@ -251,7 +248,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                     GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
                         &mut cost,
                         &base_path,
-                        false,
+                        TreeType::NormalTree,
                         grove_version,
                     )
                 );
@@ -262,7 +259,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

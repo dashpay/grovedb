@@ -42,6 +42,7 @@ use grovedb_path::SubtreePath;
 use grovedb_visualize::visualize_to_vec;
 
 use crate::{worst_case_costs::WorstKeyLength, Error};
+pub type SubtreePrefix = [u8; 32];
 
 /// Top-level storage abstraction.
 /// Should be able to hold storage connection and to start transaction when
@@ -87,6 +88,15 @@ pub trait Storage<'db> {
     where
         B: AsRef<[u8]> + 'b;
 
+    /// Make context for a subtree by prefix on transactional data, keeping all
+    /// write operations inside a `batch` if provided.
+    fn get_transactional_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        batch: Option<&'db StorageBatch>,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::BatchTransactionalStorageContext>;
+
     /// Make context for a subtree on transactional data that will apply all
     /// operations straight to the storage.
     fn get_immediate_storage_context<'b, B>(
@@ -96,6 +106,14 @@ pub trait Storage<'db> {
     ) -> CostContext<Self::ImmediateStorageContext>
     where
         B: AsRef<[u8]> + 'b;
+
+    /// Make context for a subtree by prefix on transactional data that will
+    /// apply all operations straight to the storage.
+    fn get_immediate_storage_context_by_subtree_prefix(
+        &'db self,
+        prefix: SubtreePrefix,
+        transaction: &'db Self::Transaction,
+    ) -> CostContext<Self::ImmediateStorageContext>;
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
@@ -305,13 +323,18 @@ impl StorageBatch {
         }
     }
 
-    /// Returns a number of operations in the batch.
+    /// Get batch length
     pub fn len(&self) -> usize {
         let operations = self.operations.borrow();
         operations.data.len()
             + operations.roots.len()
             + operations.aux.len()
             + operations.meta.len()
+    }
+
+    /// Batch emptiness predicate
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Add deferred `put` operation

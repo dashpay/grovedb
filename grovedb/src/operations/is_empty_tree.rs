@@ -1,10 +1,13 @@
 //! Check if empty tree operations
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{cost_return_on_error, CostResult, OperationCost};
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{util::TxRef, Error, GroveDb, TransactionArg};
+use crate::{
+    util::{compat, TxRef},
+    Error, GroveDb, TransactionArg,
+};
 
 impl GroveDb {
     /// Check if it's an empty tree
@@ -29,16 +32,11 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.check_subtree_exists_path_not_found(
-                path.clone(),
-                Some(tx.as_ref()),
-                grove_version
-            )
+            self.check_subtree_exists_path_not_found(path.clone(), tx.as_ref(), grove_version)
         );
-
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path, tx.as_ref(), None, grove_version)
+            compat::merk_optional_tx(&self.db, path, tx.as_ref(), None, grove_version)
         );
 
         subtree.is_empty_tree().add_cost(cost).map(Ok)

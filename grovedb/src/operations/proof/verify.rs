@@ -289,7 +289,7 @@ impl GroveDb {
 
         if merk_result.result_set.is_empty() {
             if prove_options.decrease_limit_on_empty_sub_query_result {
-                limit_left.as_mut().map(|limit| *limit -= 1);
+                limit_left.iter_mut().for_each(|limit| *limit -= 1);
             }
         } else {
             for proved_key_value in merk_result.result_set {
@@ -307,7 +307,11 @@ impl GroveDb {
                             println!("lower layer had key {}", hex_to_ascii(key));
                         }
                         match element {
-                            Element::Tree(Some(_), _) | Element::SumTree(Some(_), ..) => {
+                            Element::Tree(Some(_), _)
+                            | Element::SumTree(Some(_), ..)
+                            | Element::BigSumTree(Some(_), ..)
+                            | Element::CountTree(Some(_), ..)
+                            | Element::CountSumTree(Some(_), ..) => {
                                 path.push(key);
                                 let lower_hash = Self::verify_layer_proof(
                                     lower_layer,
@@ -336,6 +340,9 @@ impl GroveDb {
                             }
                             Element::Tree(None, _)
                             | Element::SumTree(None, ..)
+                            | Element::BigSumTree(None, ..)
+                            | Element::CountTree(None, ..)
+                            | Element::CountSumTree(None, ..)
                             | Element::SumItem(..)
                             | Element::SumItemWithBackwardsReferences(..)
                             | Element::Item(..)
@@ -366,7 +373,7 @@ impl GroveDb {
                         }
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
 
-                        limit_left.as_mut().map(|limit| *limit -= 1);
+                        limit_left.iter_mut().for_each(|limit| *limit -= 1);
                         if limit_left == &Some(0) {
                             break;
                         }

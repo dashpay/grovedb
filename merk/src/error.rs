@@ -1,8 +1,8 @@
 //! Errors
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::proofs::chunk::error::ChunkError;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 /// Errors
 pub enum Error {
@@ -36,7 +36,7 @@ pub enum Error {
     CorruptedState(&'static str),
 
     /// Chunking error
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     #[error("chunking error {0}")]
     ChunkingError(ChunkError),
 
@@ -46,7 +46,7 @@ pub enum Error {
     OldChunkingError(&'static str),
 
     /// Chunk restoring error
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     #[error("chunk restoring error {0}")]
     ChunkRestoringError(ChunkError),
 
@@ -99,7 +99,7 @@ pub enum Error {
     #[error("client corruption error {0}")]
     ClientCorruptionError(String),
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Storage error
     #[error("storage error {0}")]
     StorageError(grovedb_storage::Error),
@@ -117,6 +117,12 @@ pub enum Error {
     #[error(transparent)]
     /// Version error
     VersionError(grovedb_version::error::GroveVersionError),
+
+    #[error("big sum tree under normal sum tree error {0}")]
+    BigSumTreeUnderNormalSumTree(String),
+
+    #[error("unknown tree type {0}")]
+    UnknownTreeType(String),
 }
 
 impl From<grovedb_version::error::GroveVersionError> for Error {

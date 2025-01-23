@@ -2,77 +2,122 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod constructor;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod delete;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod exists;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod get;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub(crate) mod helpers;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 mod insert;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod query;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::QueryOptions;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod serialize;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::fmt;
 
 use bincode::{Decode, Encode};
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "minimal")]
+use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
+#[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
-#[cfg(feature = "full")]
-use grovedb_merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
+use grovedb_merk::estimated_costs::{
+    BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
+};
+#[cfg(feature = "minimal")]
+use grovedb_merk::tree_type::TreeType;
+#[cfg(feature = "minimal")]
 use grovedb_visualize::visualize_to_vec;
 pub(crate) use insert::Delta;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::OperationCost;
 use crate::{
     bidirectional_references::BidirectionalReference, operations::proof::util::hex_to_ascii,
 };
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
 pub type MaxReferenceHop = Option<u8>;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(feature = "minimal")]
 /// The cost of a sum item
 ///
 /// It is 11 because we have 9 bytes for the sum value
 /// 1 byte for the item type
 /// 1 byte for the flags option
 pub const SUM_ITEM_COST_SIZE: u32 = SUM_VALUE_EXTRA_COST + 2; // 11
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 
+#[cfg(feature = "minimal")]
+/// The cost of a big sum tree
+pub const BIG_SUM_TREE_COST_SIZE: u32 = BIG_SUM_LAYER_COST_SIZE; // 19
+
+#[cfg(feature = "minimal")]
+/// The cost of a count tree
+pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
+
+#[cfg(feature = "minimal")]
+/// The cost of a count tree
+pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// int 64 sum value
 pub type SumValue = i64;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// int 128 sum value
+pub type BigSumValue = i128;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// int 64 count value
+pub type CountValue = u64;
+
+#[cfg(feature = "minimal")]
+pub trait CostSize {
+    fn cost_size(&self) -> u32;
+}
+
+#[cfg(feature = "minimal")]
+impl CostSize for TreeType {
+    fn cost_size(&self) -> u32 {
+        match self {
+            TreeType::NormalTree => TREE_COST_SIZE,
+            TreeType::SumTree => SUM_TREE_COST_SIZE,
+            TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
+            TreeType::CountTree => COUNT_TREE_COST_SIZE,
+            TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
+        }
+    }
+}
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Variants of GroveDB stored entities
 ///
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
 #[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
-#[cfg_attr(not(any(feature = "full", feature = "visualize")), derive(Debug))]
+#[cfg_attr(not(any(feature = "minimal", feature = "visualize")), derive(Debug))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Element {
     /// An ordinary value
@@ -87,6 +132,15 @@ pub enum Element {
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk sums value of it's summable
+    /// nodes in big form i128
+    /// The big sum tree is valuable if you have a big sum tree of sum trees
+    BigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk counts value of its countable
+    /// nodes
+    CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
+    /// Combines Element::SumTree and Element::CountTree
+    CountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
     /// A reference to an object by its path
     BidirectionalReference(BidirectionalReference),
     /// An ordinary value that has a backwards reference
@@ -169,6 +223,40 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::BigSumTree(root_key, sum_value, flags) => {
+                write!(
+                    f,
+                    "BigSumTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::CountTree(root_key, count_value, flags) => {
+                write!(
+                    f,
+                    "CountTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::CountSumTree(root_key, count_value, sum_value, flags) => {
+                write!(
+                    f,
+                    "CountSumTree({}, {}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
             Element::ItemWithBackwardsReferences(data, flags) => write!(
                 f,
                 "ItemWithBackwardReferences({}{})",
@@ -197,13 +285,16 @@ impl Element {
             Element::Tree(..) => "tree",
             Element::SumItem(..) => "sum item",
             Element::SumTree(..) => "sum tree",
+            Element::BigSumTree(..) => "big sum tree",
+            Element::CountTree(..) => "count tree",
+            Element::CountSumTree(..) => "count sum tree",
             Element::BidirectionalReference(..) => "bidirectional reference",
             Element::ItemWithBackwardsReferences(..) => "item with backwards references",
             Element::SumItemWithBackwardsReferences(..) => "sum item with backwards references",
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     pub(crate) fn value_hash(
         &self,
         grove_version: &grovedb_version::version::GroveVersion,
@@ -213,7 +304,7 @@ impl Element {
     }
 }
 
-#[cfg(any(feature = "full", feature = "visualize"))]
+#[cfg(any(feature = "minimal", feature = "visualize"))]
 impl fmt::Debug for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();

@@ -10,7 +10,7 @@ use crate::Error;
 
 impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Get metadata for the Merk under `key`.
-    pub fn get_meta<'s>(&'s mut self, key: Vec<u8>) -> CostResult<Option<&'s [u8]>, Error> {
+    pub fn get_meta(&mut self, key: Vec<u8>) -> CostResult<Option<&[u8]>, Error> {
         match self.meta_cache.entry(key) {
             Entry::Occupied(e) => Ok(e.into_mut().as_deref()).wrap_with_cost(Default::default()),
             Entry::Vacant(e) => self
@@ -34,7 +34,7 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Delete metadata under `key`.
     pub fn delete_meta(&mut self, key: &[u8]) -> CostResult<(), Error> {
         self.storage
-            .delete_meta(&key, None)
+            .delete_meta(key, None)
             .map_ok(|_| {
                 self.meta_cache.remove(key);
             })

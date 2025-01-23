@@ -1,26 +1,28 @@
 //! Worst case get costs
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
+use grovedb_merk::tree_type::TreeType;
+#[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::Error;
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     GroveDb,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Worst case cost for has raw
     pub fn worst_case_for_has_raw(
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -37,7 +39,7 @@ impl GroveDb {
             path,
             key,
             max_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)
@@ -48,7 +50,7 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -65,7 +67,7 @@ impl GroveDb {
             path,
             key,
             max_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             grove_version,
         )?;
         Ok(cost)
@@ -77,7 +79,7 @@ impl GroveDb {
         key: &KeyInfo,
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
-        in_parent_tree_using_sums: bool,
+        in_parent_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
         check_grovedb_v0!(
@@ -94,7 +96,7 @@ impl GroveDb {
             path,
             key,
             max_element_size,
-            in_parent_tree_using_sums,
+            in_parent_tree_type,
             max_references_sizes,
             grove_version,
         )?;

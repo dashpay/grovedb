@@ -1,5 +1,5 @@
 pub mod intersect;
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod merge;
 
 use std::{
@@ -11,20 +11,20 @@ use std::{
 };
 
 use bincode::{enc::write::Writer, error::DecodeError, BorrowDecode, Decode, Encode};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 use grovedb_storage::RawIterator;
 #[cfg(feature = "serde")]
 use serde::de::VariantAccess;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::error::Error;
 use crate::proofs::hex_to_ascii;
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
 #[derive(Clone, Debug)]
 pub enum QueryItem {
@@ -183,7 +183,7 @@ impl<'de> Deserialize<'de> for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for QueryItem {
     fn encode<E: bincode::enc::Encoder>(
         &self,
@@ -238,7 +238,7 @@ impl Encode for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Decode for QueryItem {
     fn decode<D: bincode::de::Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
         let variant_id = u8::decode(decoder)?;
@@ -294,7 +294,7 @@ impl Decode for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl<'de> BorrowDecode<'de> for QueryItem {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
         decoder: &mut D,
@@ -352,7 +352,7 @@ impl<'de> BorrowDecode<'de> for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for QueryItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -396,7 +396,7 @@ impl fmt::Display for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Hash for QueryItem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.enum_value().hash(state);
@@ -405,7 +405,7 @@ impl Hash for QueryItem {
 }
 
 impl QueryItem {
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn processing_footprint(&self) -> u32 {
         match self {
             QueryItem::Key(key) => key.len() as u32,
@@ -417,7 +417,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), false),
@@ -433,7 +433,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -449,7 +449,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn upper_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), true),
@@ -465,7 +465,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -481,7 +481,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
@@ -493,7 +493,7 @@ impl QueryItem {
                 || (Some(key) == upper_bound && upper_bound_inclusive))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     fn enum_value(&self) -> u32 {
         match self {
             QueryItem::Key(_) => 0,
@@ -509,7 +509,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     fn value_hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
             QueryItem::Key(key) => key.hash(state),
@@ -525,17 +525,17 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn is_key(&self) -> bool {
         matches!(self, QueryItem::Key(_))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn is_range(&self) -> bool {
         !matches!(self, QueryItem::Key(_))
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn is_unbounded_range(&self) -> bool {
         !matches!(
             self,
@@ -543,7 +543,7 @@ impl QueryItem {
         )
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key.clone()]),
@@ -593,7 +593,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn keys_consume(self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key]),
@@ -643,7 +643,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     pub fn seek_for_iter<I: RawIterator>(
         &self,
         iter: &mut I,
@@ -743,7 +743,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
         for (ai, bi) in a.iter().zip(b.iter()) {
             match ai.cmp(bi) {
@@ -756,7 +756,7 @@ impl QueryItem {
         a.len().cmp(&b.len())
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     pub fn iter_is_valid_for_type<I: RawIterator>(
         &self,
         iter: &I,
@@ -833,30 +833,30 @@ impl QueryItem {
         is_valid.wrap_with_cost(cost)
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn collides_with(&self, other: &Self) -> bool {
         self.intersect(other).in_both.is_some()
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialEq for QueryItem {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialEq<&[u8]> for QueryItem {
     fn eq(&self, other: &&[u8]) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Eq for QueryItem {}
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
         let self_as_range_set = self.to_range_set();
@@ -874,14 +874,14 @@ impl Ord for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialOrd for QueryItem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialOrd<&[u8]> for QueryItem {
     fn partial_cmp(&self, other: &&[u8]) -> Option<Ordering> {
         let other = Self::Key(other.to_vec());
@@ -889,14 +889,14 @@ impl PartialOrd<&[u8]> for QueryItem {
     }
 }
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl From<Vec<u8>> for QueryItem {
     fn from(key: Vec<u8>) -> Self {
         Self::Key(key)
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
     use crate::proofs::query::query_item::QueryItem;

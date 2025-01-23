@@ -15,13 +15,17 @@ use crate::{Error, GroveDb, Transaction};
 
 type TxMerk<'db> = Merk<PrefixedRocksDbTransactionContext<'db>>;
 
+/// We store Merk on heap to preserve its location as well as borrow flag
+/// alongside.
+type CachedMerkEntry<'db> = Box<(Cell<bool>, TxMerk<'db>)>;
+
 /// Structure to keep subtrees open in memory for repeated access.
 pub(crate) struct MerkCache<'db, 'b, B: AsRef<[u8]>> {
     db: &'db GroveDb,
     pub(crate) version: &'db GroveVersion,
     batch: Box<StorageBatch>,
     tx: &'db Transaction<'db>,
-    merks: UnsafeCell<BTreeMap<SubtreePathBuilder<'b, B>, Box<(Cell<bool>, TxMerk<'db>)>>>,
+    merks: UnsafeCell<BTreeMap<SubtreePathBuilder<'b, B>, CachedMerkEntry<'db>>>,
 }
 
 impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
@@ -142,9 +146,10 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
             if let Some((parent_path, parent_key)) = path.derive_parent_owned() {
                 let mut parent_merk = cost_return_on_error!(&mut cost, self.get_merk(parent_path));
 
-                let (root_hash, root_key, sum) = cost_return_on_error!(
+                let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
                     &mut cost,
-                    merk.root_hash_key_and_sum().map_err(Error::MerkError)
+                    merk.root_hash_key_and_aggregate_data()
+                        .map_err(Error::MerkError)
                 );
                 cost_return_on_error!(
                     &mut cost,
@@ -153,7 +158,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                         parent_key,
                         root_key,
                         root_hash,
-                        sum,
+                        aggregate_data,
                         self.version,
                     ))
                 );
@@ -171,7 +176,7 @@ pub(crate) struct MerkHandle<'db, 'c> {
     taken_handle: &'c Cell<bool>,
 }
 
-impl<'db, 'c> MerkHandle<'db, 'c> {
+impl<'db> MerkHandle<'db, '_> {
     pub(crate) fn for_merk<T>(&mut self, f: impl FnOnce(&mut TxMerk<'db>) -> T) -> T {
         if self.taken_handle.get() {
             panic!("Attempt to have double &mut borrow on Merk");

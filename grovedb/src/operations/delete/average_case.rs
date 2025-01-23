@@ -8,12 +8,11 @@ use grovedb_merk::{
         average_case_costs::EstimatedLayerInformation,
         worst_case_costs::add_average_case_cost_for_is_empty_tree_except,
     },
+    tree_type::TreeType,
     HASH_LENGTH_U32,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
-use grovedb_version::{
-    check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use intmap::IntMap;
 
 use crate::{
@@ -32,7 +31,7 @@ impl GroveDb {
         key: &KeyInfo,
         stop_path_height: Option<u16>,
         validate: bool,
-        estimated_layer_info: IntMap<EstimatedLayerInformation>,
+        estimated_layer_info: IntMap<u16, EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         check_grovedb_v0_with_cost!(
@@ -65,16 +64,16 @@ impl GroveDb {
                     except_keys_count,
                     key_len,
                     estimated_element_size,
-                    is_sum_tree,
+                    tree_type,
                 ) = cost_return_on_error_no_add!(
                     cost,
                     if height == path_len - 1 {
-                        if let Some(layer_info) = estimated_layer_info.get(height as u64) {
+                        if let Some(layer_info) = estimated_layer_info.get(height) {
                             let estimated_value_len = cost_return_on_error_no_add!(
                                 cost,
                                 layer_info
                                     .estimated_layer_sizes
-                                    .value_with_feature_and_flags_size()
+                                    .value_with_feature_and_flags_size(grove_version)
                                     .map_err(Error::MerkError)
                             );
                             Ok((
@@ -84,7 +83,7 @@ impl GroveDb {
                                 0,
                                 key.max_length() as u32,
                                 estimated_value_len,
-                                layer_info.is_sum_tree,
+                                layer_info.tree_type,
                             ))
                         } else {
                             Err(Error::InvalidParameter(
@@ -94,12 +93,12 @@ impl GroveDb {
                     } else {
                         let (last_key, smaller_path) = used_path.split_last().unwrap();
                         used_path = smaller_path;
-                        if let Some(layer_info) = estimated_layer_info.get(height as u64) {
+                        if let Some(layer_info) = estimated_layer_info.get(height) {
                             let estimated_value_len = cost_return_on_error_no_add!(
                                 cost,
                                 layer_info
                                     .estimated_layer_sizes
-                                    .subtree_with_feature_and_flags_size()
+                                    .subtree_with_feature_and_flags_size(grove_version)
                                     .map_err(Error::MerkError)
                             );
                             Ok((
@@ -109,7 +108,7 @@ impl GroveDb {
                                 1,
                                 last_key.max_length() as u32,
                                 estimated_value_len,
-                                layer_info.is_sum_tree,
+                                layer_info.tree_type,
                             ))
                         } else {
                             Err(Error::InvalidParameter("intermediate layer info missing"))
@@ -121,7 +120,7 @@ impl GroveDb {
                     Self::average_case_delete_operation_for_delete::<S>(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
-                        is_sum_tree,
+                        tree_type,
                         validate,
                         check_if_tree,
                         except_keys_count,
@@ -139,7 +138,7 @@ impl GroveDb {
     pub fn average_case_delete_operation_for_delete<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
-        parent_tree_is_sum_tree: bool,
+        in_parent_tree_type: TreeType,
         validate: bool,
         check_if_tree: bool,
         except_keys_count: u16,
@@ -163,7 +162,7 @@ impl GroveDb {
                     &mut cost,
                     path,
                     false,
-                    parent_tree_is_sum_tree,
+                    in_parent_tree_type,
                     grove_version,
                 )
             );
@@ -176,7 +175,7 @@ impl GroveDb {
                     path,
                     key,
                     estimated_key_element_size.1,
-                    parent_tree_is_sum_tree,
+                    in_parent_tree_type,
                     grove_version,
                 )
             );

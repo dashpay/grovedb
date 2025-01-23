@@ -6,6 +6,8 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod count_sum_tree_tests;
+mod count_tree_tests;
 mod tree_hashes_tests;
 
 use std::{
@@ -1405,12 +1407,17 @@ mod tests {
     fn test_root_tree_leaves_are_noted() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        db.check_subtree_exists_path_not_found([TEST_LEAF].as_ref().into(), None, grove_version)
-            .unwrap()
-            .expect("should exist");
+        let transaction = db.start_transaction();
+        db.check_subtree_exists_path_not_found(
+            [TEST_LEAF].as_ref().into(),
+            &transaction,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should exist");
         db.check_subtree_exists_path_not_found(
             [ANOTHER_TEST_LEAF].as_ref().into(),
-            None,
+            &transaction,
             grove_version,
         )
         .unwrap()
@@ -3116,13 +3123,15 @@ mod tests {
         // let mut iter = db
         //     .elements_iterator([TEST_LEAF, b"subtree1"].as_ref(), None)
         //     .expect("cannot create iterator");
-
-        let tx = db.start_transaction();
-
+        let transaction = db.grove_db.start_transaction();
         let storage_context = db
             .grove_db
             .db
-            .get_transactional_storage_context([TEST_LEAF, b"subtree1"].as_ref().into(), None, &tx)
+            .get_transactional_storage_context(
+                [TEST_LEAF, b"subtree1"].as_ref().into(),
+                None,
+                &transaction,
+            )
             .unwrap();
         let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
         assert_eq!(
@@ -3211,22 +3220,22 @@ mod tests {
     fn test_root_subtree_has_root_key() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        let tx = db.start_transaction();
+        let transaction = db.start_transaction();
 
         let storage = db
             .db
-            .get_transactional_storage_context(EMPTY_PATH, None, &tx)
+            .get_transactional_storage_context(EMPTY_PATH, None, &transaction)
             .unwrap();
         let root_merk = Merk::open_base(
             storage,
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
         .unwrap()
         .expect("expected to get root merk");
         let (_, root_key, _) = root_merk
-            .root_hash_key_and_sum()
+            .root_hash_key_and_aggregate_data()
             .unwrap()
             .expect("expected to get root hash, key and sum");
         assert!(root_key.is_some())
@@ -3316,7 +3325,7 @@ mod tests {
         // Retrieve subtree instance
         // Check if it returns the same instance that was inserted
         {
-            let tx = db.start_transaction();
+            let transaction = db.grove_db.start_transaction();
 
             let subtree_storage = db
                 .grove_db
@@ -3324,13 +3333,13 @@ mod tests {
                 .get_transactional_storage_context(
                     [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
                     None,
-                    &tx,
+                    &transaction,
                 )
                 .unwrap();
             let subtree = Merk::open_layered_with_root_key(
                 subtree_storage,
                 Some(b"key3".to_vec()),
-                false,
+                TreeType::NormalTree,
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
@@ -3340,6 +3349,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
+
+            db.grove_db
+                .commit_transaction(transaction)
+                .unwrap()
+                .unwrap();
         }
         // Insert a new tree with transaction
         let transaction = db.start_transaction();
@@ -3379,7 +3393,7 @@ mod tests {
         let subtree = Merk::open_layered_with_root_key(
             subtree_storage,
             Some(b"key4".to_vec()),
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
@@ -3391,20 +3405,19 @@ mod tests {
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
         // Should be able to retrieve instances created before transaction
-        let tx = db.start_transaction();
         let subtree_storage = db
             .grove_db
             .db
             .get_transactional_storage_context(
                 [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
                 None,
-                &tx,
+                &transaction,
             )
             .unwrap();
         let subtree = Merk::open_layered_with_root_key(
             subtree_storage,
             Some(b"key3".to_vec()),
-            false,
+            TreeType::NormalTree,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
         )
@@ -3927,7 +3940,7 @@ mod tests {
         assert!(elem_result.is_err());
         assert!(matches!(
             elem_result,
-            Err(Error::InvalidParentLayerPath(..))
+            Err(Error::PathParentLayerNotFound(..))
         ));
     }
 

@@ -205,6 +205,7 @@ pub struct GroveDBElementMethodVersions {
     pub insert_if_changed_value_into_batch_operations: FeatureVersion,
     pub insert_reference: FeatureVersion,
     pub insert_reference_into_batch_operations: FeatureVersion,
+    pub insert_reference_if_changed_value: FeatureVersion,
     pub insert_subtree: FeatureVersion,
     pub insert_subtree_into_batch_operations: FeatureVersion,
     pub get_query: FeatureVersion,

@@ -4,11 +4,11 @@
 use bincode::config;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
-#[cfg(any(feature = "full", feature = "verify"))]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{Element, Error};
 
 impl Element {
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Serializes self. Returns vector of u8s.
     pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, Error> {
         check_grovedb_v0!(
@@ -20,7 +20,7 @@ impl Element {
             .map_err(|e| Error::CorruptedData(format!("unable to serialize element {}", e)))
     }
 
-    #[cfg(feature = "full")]
+    #[cfg(feature = "minimal")]
     /// Serializes self. Returns usize.
     pub fn serialized_size(&self, grove_version: &GroveVersion) -> Result<usize, Error> {
         check_grovedb_v0!(
@@ -31,7 +31,7 @@ impl Element {
             .map(|serialized| serialized.len())
     }
 
-    #[cfg(any(feature = "full", feature = "verify"))]
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Deserializes given bytes and sets as self
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, Error> {
         check_grovedb_v0!(
@@ -45,7 +45,7 @@ impl Element {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use integer_encoding::VarInt;

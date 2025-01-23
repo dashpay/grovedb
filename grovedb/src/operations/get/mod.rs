@@ -2,29 +2,39 @@
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
+#[cfg(feature = "minimal")]
 mod query;
+use grovedb_storage::Storage;
+#[cfg(feature = "minimal")]
 pub use query::QueryItemOrSumReturnType;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
+#[cfg(feature = "minimal")]
 use std::collections::HashSet;
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
+use grovedb_costs::cost_return_on_error_no_add;
+#[cfg(feature = "minimal")]
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageContext};
+#[cfg(feature = "minimal")]
+use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
+#[cfg(feature = "minimal")]
+use crate::error::GroveDbErrorExt;
+use crate::util::TxRef;
+#[cfg(feature = "minimal")]
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    util::TxRef,
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
+#[cfg(feature = "minimal")]
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
+#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Get an element from the backing store
     /// Merk Caching is on by default
@@ -137,7 +147,7 @@ impl GroveDb {
                         grove_version
                     )
                     .map_err(|e| match e {
-                        Error::InvalidParentLayerPath(p) => {
+                        Error::PathParentLayerNotFound(p) => {
                             Error::CorruptedReferencePathParentLayerNotFound(p)
                         }
                         Error::PathKeyNotFound(p) => {
@@ -278,10 +288,18 @@ impl GroveDb {
 
         let merk_to_get_from = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path, transaction, None, grove_version)
+            self.open_transactional_merk_at_path(path.clone(), transaction, None, grove_version)
+                .map_err(|e| match e {
+                    Error::InvalidParentLayerPath(s) => {
+                        Error::PathParentLayerNotFound(s)
+                    }
+                    _ => e,
+                })
         );
 
-        Element::get(&merk_to_get_from, key, allow_cache, grove_version).add_cost(cost)
+        Element::get(&merk_to_get_from, key, allow_cache, grove_version)
+            .add_context(format!("path is {}", path))
+            .add_cost(cost)
     }
 
     /// Get tree item without following references
@@ -296,12 +314,17 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let merk_result = self
             .open_transactional_merk_at_path(path, transaction, None, grove_version)
+            .map_err(|e| match e {
+                Error::InvalidParentLayerPath(s) => Error::PathParentLayerNotFound(s),
+                _ => e,
+            })
             .unwrap_add_cost(&mut cost);
         let merk = cost_return_on_error_no_add!(
             cost,
             match merk_result {
                 Ok(result) => Ok(Some(result)),
-                Err(Error::InvalidParentLayerPath(_)) => Ok(None),
+                Err(Error::PathParentLayerNotFound(_)) | Err(Error::InvalidParentLayerPath(_)) =>
+                    Ok(None),
                 Err(e) => Err(e),
             }
         );
@@ -361,10 +384,15 @@ impl GroveDb {
                 );
 
                 Element::get(&merk_to_get_from, parent_key, true, grove_version)
+                    .add_context(format!("path is {}", path))
             }
             .unwrap_add_cost(&mut cost);
             match element {
-                Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => Ok(()).wrap_with_cost(cost),
+                Ok(Element::Tree(..))
+                | Ok(Element::SumTree(..))
+                | Ok(Element::BigSumTree(..))
+                | Ok(Element::CountTree(..))
+                | Ok(Element::CountSumTree(..)) => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),
                 Err(e) => Err(e).wrap_with_cost(cost),
             }
@@ -377,17 +405,15 @@ impl GroveDb {
     pub(crate) fn check_subtree_exists_path_not_found<'b, B>(
         &self,
         path: SubtreePath<'b, B>,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
     {
-        let tx = TxRef::new(&self.db, transaction);
-
         self.check_subtree_exists(
             path.clone(),
-            tx.as_ref(),
+            transaction,
             || {
                 Error::PathNotFound(format!(
                     "subtree doesn't exist at path {:?}",

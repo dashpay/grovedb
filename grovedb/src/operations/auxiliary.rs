@@ -33,7 +33,7 @@ use grovedb_costs::{
     OperationCost,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch, StorageContext};
+use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 
 use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
@@ -48,27 +48,29 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
         let tx = TxRef::new(&self.db, transaction);
+        let batch = Default::default();
 
-        let storage = self
+        let aux_storage = self
             .db
             .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         cost_return_on_error!(
             &mut cost,
-            storage
+            aux_storage
                 .put_aux(key.as_ref(), value, cost_info)
-                .map_err(|e| e.into())
+                .map_err(Into::into)
         );
 
-        self.db
-            .commit_multi_context_batch(batch, Some(tx.as_ref()))
-            .add_cost(cost)
-            .map_err(Into::into)
-            .map_ok(|_| tx.commit_local())
-            .flatten()
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
+                .map_err(Into::into)
+        );
+
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Delete op for aux storage
@@ -79,27 +81,29 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
         let tx = TxRef::new(&self.db, transaction);
+        let batch = Default::default();
 
-        let storage = self
+        let aux_storage = self
             .db
             .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         cost_return_on_error!(
             &mut cost,
-            storage
+            aux_storage
                 .delete_aux(key.as_ref(), cost_info)
                 .map_err(|e| e.into())
         );
 
-        self.db
-            .commit_multi_context_batch(batch, Some(tx.as_ref()))
-            .add_cost(cost)
-            .map_err(Into::into)
-            .map_ok(|_| tx.commit_local())
-            .flatten()
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
+                .map_err(Into::into)
+        );
+
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Get op for aux storage
@@ -109,15 +113,17 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
         let tx = TxRef::new(&self.db, transaction);
 
-        let storage = self
+        let aux_storage = self
             .db
-            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), tx.as_ref())
+            .get_transactional_storage_context(SubtreePath::empty(), None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        storage.get_aux(key).map_err(|e| e.into()).add_cost(cost)
+        aux_storage
+            .get_aux(key.as_ref())
+            .map_err(|e| e.into())
+            .add_cost(cost)
     }
 
     // TODO: dumb traversal should not be tolerated
@@ -131,8 +137,6 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
         let mut cost = OperationCost::default();
-
-        let tx = TxRef::new(&self.db, transaction);
 
         // TODO: remove conversion to vec;
         // However, it's not easy for a reason:
@@ -148,6 +152,8 @@ impl GroveDb {
         let mut queue: Vec<Vec<Vec<u8>>> = vec![path.to_vec()];
         let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
 
+        let tx = TxRef::new(&self.db, transaction);
+
         while let Some(q) = queue.pop() {
             let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
             // Get the correct subtree with q_ref as path
@@ -155,7 +161,6 @@ impl GroveDb {
                 .db
                 .get_transactional_storage_context(subtree_path, None, tx.as_ref())
                 .unwrap_add_cost(&mut cost);
-
             let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
             while let Some((key, value)) =
                 cost_return_on_error!(&mut cost, raw_iter.next_element(grove_version))
