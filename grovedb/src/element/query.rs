@@ -230,76 +230,9 @@ where
 
 impl Element {
     #[cfg(feature = "minimal")]
-    /// Returns a vector of result elements based on given query
-    pub fn get_query(
-        storage: &RocksDbStorage,
-        merk_path: &[&[u8]],
-        query: &Query,
-        query_options: QueryOptions,
-        result_type: QueryResultType,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<QueryResultElements, Error> {
-        check_grovedb_v0_with_cost!(
-            "insert_subtree_into_batch_operations",
-            grove_version.grovedb_versions.element.get_query
-        );
-
-        let sized_query = SizedQuery::new(query.clone(), None, None);
-        Element::get_sized_query(
-            storage,
-            merk_path,
-            &sized_query,
-            query_options,
-            result_type,
-            transaction,
-            grove_version,
-        )
-        .map_ok(|(elements, _)| elements)
-    }
-
-    #[cfg(feature = "minimal")]
-    /// Get values of result elements coming from given query
-    pub fn get_query_values(
-        storage: &RocksDbStorage,
-        merk_path: &[&[u8]],
-        query: &Query,
-        query_options: QueryOptions,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<Element>, Error> {
-        check_grovedb_v0_with_cost!(
-            "get_query_values",
-            grove_version.grovedb_versions.element.get_query_values
-        );
-
-        Element::get_query(
-            storage,
-            merk_path,
-            query,
-            query_options,
-            QueryElementResultType,
-            transaction,
-            grove_version,
-        )
-        .flat_map_ok(|result_items| {
-            let elements: Vec<Element> = result_items
-                .elements
-                .into_iter()
-                .filter_map(|result_item| match result_item {
-                    QueryResultElement::ElementResultItem(element) => Some(element),
-                    QueryResultElement::KeyElementPairResultItem(_) => None,
-                    QueryResultElement::PathKeyElementTrioResultItem(_) => None,
-                })
-                .collect();
-            Ok(elements).wrap_with_cost(OperationCost::default())
-        })
-    }
-
-    #[cfg(feature = "minimal")]
     /// Returns a vector of result elements and the number of skipped items
     /// based on given query
-    pub fn get_query_apply_function(
+    pub(crate) fn get_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
@@ -384,7 +317,7 @@ impl Element {
     #[cfg(feature = "minimal")]
     /// Returns a vector of elements excluding trees, and the number of skipped
     /// elements
-    pub fn get_path_query(
+    pub(crate) fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
         query_options: QueryOptions,
@@ -406,34 +339,6 @@ impl Element {
             storage,
             path_slices.as_slice(),
             &path_query.query,
-            query_options,
-            result_type,
-            transaction,
-            Element::path_query_push,
-            grove_version,
-        )
-    }
-
-    #[cfg(feature = "minimal")]
-    /// Returns a vector of elements, and the number of skipped elements
-    pub fn get_sized_query(
-        storage: &RocksDbStorage,
-        path: &[&[u8]],
-        sized_query: &SizedQuery,
-        query_options: QueryOptions,
-        result_type: QueryResultType,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(QueryResultElements, u16), Error> {
-        check_grovedb_v0_with_cost!(
-            "get_sized_query",
-            grove_version.grovedb_versions.element.get_sized_query
-        );
-
-        Element::get_query_apply_function(
-            storage,
-            path,
-            sized_query,
             query_options,
             result_type,
             transaction,
@@ -953,7 +858,7 @@ impl Element {
 
     #[cfg(feature = "minimal")]
     /// Iterator
-    pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
+    pub(crate) fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         let mut cost = OperationCost::default();
         raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
         ElementsIterator::new(raw_iter).wrap_with_cost(cost)
@@ -963,19 +868,78 @@ impl Element {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use grovedb_costs::{CostResult, CostsExt};
     use grovedb_merk::proofs::Query;
-    use grovedb_storage::{Storage, StorageBatch};
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
     use grovedb_version::version::GroveVersion;
 
     use crate::{
         element::{query::QueryOptions, *},
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
-            QueryResultType::{QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType},
+            QueryResultType::{
+                self, QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
+            },
         },
         tests::{make_test_grovedb, TEST_LEAF},
-        SizedQuery,
+        Error, SizedQuery, TransactionArg,
     };
+
+    // This function is kept to preserve test cases we already have
+    fn get_query(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        query: &Query,
+        query_options: QueryOptions,
+        result_type: QueryResultType,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<QueryResultElements, Error> {
+        let sized_query = SizedQuery::new(query.clone(), None, None);
+        Element::get_query_apply_function(
+            storage,
+            merk_path,
+            &sized_query,
+            query_options,
+            result_type,
+            transaction,
+            Element::path_query_push,
+            grove_version,
+        )
+        .map_ok(|(elements, _)| elements)
+    }
+
+    // This function is kept to preserve test cases we already have
+    fn get_query_values(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        query: &Query,
+        query_options: QueryOptions,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<Element>, Error> {
+        get_query(
+            storage,
+            merk_path,
+            query,
+            query_options,
+            QueryResultType::QueryElementResultType,
+            transaction,
+            grove_version,
+        )
+        .flat_map_ok(|result_items| {
+            let elements: Vec<Element> = result_items
+                .elements
+                .into_iter()
+                .filter_map(|result_item| match result_item {
+                    QueryResultElement::ElementResultItem(element) => Some(element),
+                    QueryResultElement::KeyElementPairResultItem(_) => None,
+                    QueryResultElement::PathKeyElementTrioResultItem(_) => None,
+                })
+                .collect();
+            Ok(elements).wrap_with_cost(OperationCost::default())
+        })
+    }
 
     #[test]
     fn test_get_query() {
@@ -1029,7 +993,7 @@ mod tests {
         query.insert_key(b"a".to_vec());
 
         assert_eq!(
-            Element::get_query_values(
+            get_query_values(
                 &db.db,
                 &[TEST_LEAF],
                 &query,
@@ -1050,7 +1014,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(
+            get_query_values(
                 &db.db,
                 &[TEST_LEAF],
                 &query,
@@ -1072,7 +1036,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(
+            get_query_values(
                 &db.db,
                 &[TEST_LEAF],
                 &query,
@@ -1095,7 +1059,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(
+            get_query_values(
                 &db.db,
                 &[TEST_LEAF],
                 &query,
@@ -1164,7 +1128,7 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
         assert_eq!(
-            Element::get_query(
+            get_query(
                 &db.db,
                 &[TEST_LEAF],
                 &query,
@@ -1239,13 +1203,14 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"d".to_vec());
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             storage,
             &[TEST_LEAF],
             &ascending_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1274,13 +1239,14 @@ mod tests {
         query.left_to_right = false;
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             storage,
             &[TEST_LEAF],
             &backwards_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1374,13 +1340,14 @@ mod tests {
         }
 
         check_elements_no_skipped(
-            Element::get_sized_query(
+            Element::get_query_apply_function(
                 storage,
                 &[TEST_LEAF],
                 &ascending_query,
                 QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
+                Element::path_query_push,
                 grove_version,
             )
             .unwrap()
@@ -1392,13 +1359,14 @@ mod tests {
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
-            Element::get_sized_query(
+            Element::get_query_apply_function(
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
                 QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
+                Element::path_query_push,
                 grove_version,
             )
             .unwrap()
@@ -1413,13 +1381,14 @@ mod tests {
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
-            Element::get_sized_query(
+            Element::get_query_apply_function(
                 storage,
                 &[TEST_LEAF],
                 &backwards_query,
                 QueryOptions::default(),
                 QueryKeyElementPairResultType,
                 None,
+                Element::path_query_push,
                 grove_version,
             )
             .unwrap()
@@ -1481,13 +1450,14 @@ mod tests {
 
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1508,13 +1478,14 @@ mod tests {
 
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1530,13 +1501,14 @@ mod tests {
 
         // The limit will mean we will only get back 1 item
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &limit_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1552,13 +1524,14 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         let limit_query = SizedQuery::new(query.clone(), Some(2), None);
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &limit_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1573,13 +1546,14 @@ mod tests {
         assert_eq!(skipped, 0);
 
         let limit_offset_query = SizedQuery::new(query.clone(), Some(2), Some(1));
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &limit_offset_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1599,13 +1573,14 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1624,13 +1599,14 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_full_query = SizedQuery::new(query.clone(), Some(5), Some(0));
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &limit_full_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1650,13 +1626,14 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1676,13 +1653,14 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
-        let (elements, skipped) = Element::get_sized_query(
+        let (elements, skipped) = Element::get_query_apply_function(
             &db.db,
             &[TEST_LEAF],
             &limit_backwards_query,
             QueryOptions::default(),
             QueryKeyElementPairResultType,
             None,
+            Element::path_query_push,
             grove_version,
         )
         .unwrap()
@@ -1705,11 +1683,11 @@ pub struct ElementsIterator<I: RawIterator> {
 
 #[cfg(feature = "minimal")]
 impl<I: RawIterator> ElementsIterator<I> {
-    pub fn new(raw_iter: I) -> Self {
+    pub(crate) fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next_element(
+    pub(crate) fn next_element(
         &mut self,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<KeyElementPair>, Error> {
@@ -1733,16 +1711,5 @@ impl<I: RawIterator> ElementsIterator<I> {
             None
         })
         .wrap_with_cost(cost)
-    }
-
-    pub fn fast_forward(&mut self, key: &[u8]) -> Result<(), Error> {
-        while self.raw_iter.valid().unwrap() {
-            if self.raw_iter.key().unwrap().unwrap() == key {
-                break;
-            } else {
-                self.raw_iter.next().unwrap();
-            }
-        }
-        Ok(())
     }
 }
