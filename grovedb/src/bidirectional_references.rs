@@ -88,11 +88,9 @@ impl BidirectionalReference {
 
         cost_return_on_error!(
             &mut cost,
-            target_merk
-                .for_merk(
-                    |m| m.put_meta(prefix.clone(), bits.into_inner()[0].to_be_bytes().to_vec())
-                )
-                .map_err(Error::MerkError)
+            target_merk.for_merk(|m| m
+                .put_meta(prefix.clone(), bits.into_inner()[0].to_be_bytes().to_vec())
+                .map_err(Error::MerkError))
         );
 
         let mut indexed_prefix = prefix;
@@ -100,9 +98,7 @@ impl BidirectionalReference {
 
         cost_return_on_error!(
             &mut cost,
-            target_merk
-                .for_merk(|m| m.delete_meta(&indexed_prefix))
-                .map_err(Error::MerkError)
+            target_merk.for_merk(|m| m.delete_meta(&indexed_prefix).map_err(Error::MerkError))
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -263,8 +259,9 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
             let prefix = make_meta_prefix(key);
             cost_return_on_error!(
                 &mut cost,
-                merk.for_merk(|m| m.put_meta(prefix, 0u32.to_be_bytes().to_vec()))
-                    .map_err(Error::MerkError)
+                merk.for_merk(|m| m
+                    .put_meta(prefix, 0u32.to_be_bytes().to_vec())
+                    .map_err(Error::MerkError))
             );
         }
         // If regular item/sum item was overwritten then no actions needed
@@ -446,8 +443,8 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
         todo!()
         // cost_return_on_error!(
         //     &mut cost,
-        //     current_merk.for_merk(|m| Element::delete_with_sectioned_removal_bytes(
-        //         m,
+        //     current_merk.for_merk(|m|
+        // Element::delete_with_sectioned_removal_bytes(         m,
         //         current_key,
         //         None,
         //         false,
@@ -563,8 +560,8 @@ fn get_backward_references_bitvec<'db, 'c>(
         &mut cost,
         merk.for_merk(|m| m
             .get_meta(backrefs_for_key.clone())
-            .map_ok(|opt_v| opt_v.map(|v| v.to_vec())))
-            .map_err(Error::MerkError)
+            .map_ok(|opt_v| opt_v.map(|v| v.to_vec()))
+            .map_err(Error::MerkError))
     );
 
     let bits: BitArray<[u32; 1], Lsb0> = if let Some(bytes) = stored_bytes {
@@ -607,18 +604,18 @@ fn add_backward_reference<'db, 'c>(
         let serialized_ref = cost_return_on_error_no_add!(cost, backward_reference.serialize());
         cost_return_on_error!(
             &mut cost,
-            target_merk
-                .for_merk(|m| m.put_meta(idx_prefix, serialized_ref))
-                .map_err(Error::MerkError)
+            target_merk.for_merk(|m| m
+                .put_meta(idx_prefix, serialized_ref)
+                .map_err(Error::MerkError))
         );
 
         bits.set(free_index, true);
 
         cost_return_on_error!(
             &mut cost,
-            target_merk
-                .for_merk(|m| m.put_meta(prefix, bits.into_inner()[0].to_be_bytes().to_vec()))
-                .map_err(Error::MerkError)
+            target_merk.for_merk(|m| m
+                .put_meta(prefix, bits.into_inner()[0].to_be_bytes().to_vec())
+                .map_err(Error::MerkError))
         );
 
         Ok(free_index)
@@ -650,8 +647,8 @@ fn get_backward_references<'db, 'c>(
             &mut cost,
             merk.for_merk(|m| m
                 .get_meta(indexed_prefix)
-                .map_ok(|opt_v| opt_v.map(|v| v.to_vec())))
                 .map_err(Error::MerkError)
+                .map_ok(|opt_v| opt_v.map(|v| v.to_vec())))
         );
 
         let bytes = cost_return_on_error_no_add!(
