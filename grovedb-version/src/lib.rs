@@ -42,12 +42,32 @@ macro_rules! check_grovedb_v0_or_v1 {
         const EXPECTED_VERSION_V0: u16 = 0;
         const EXPECTED_VERSION_V1: u16 = 1;
         if $version != EXPECTED_VERSION_V0 && $version != EXPECTED_VERSION_V1 {
-            return Err(GroveVersionError::UnknownVersionMismatch {
+            return Err($crate::error::GroveVersionError::UnknownVersionMismatch {
                 method: $method.to_string(),
                 known_versions: vec![EXPECTED_VERSION_V0, EXPECTED_VERSION_V1],
                 received: $version,
             }
             .into());
+        }
+        $version
+    }};
+}
+
+#[macro_export]
+macro_rules! check_grovedb_v0_or_v1_with_cost {
+    ($method:expr, $version:expr) => {{
+        const EXPECTED_VERSION_V0: u16 = 0;
+        const EXPECTED_VERSION_V1: u16 = 1;
+        if $version != EXPECTED_VERSION_V0 && $version != EXPECTED_VERSION_V1 {
+            return grovedb_costs::CostsExt::wrap_with_cost(
+                Err($crate::error::GroveVersionError::UnknownVersionMismatch {
+                    method: $method.to_string(),
+                    known_versions: vec![EXPECTED_VERSION_V0, EXPECTED_VERSION_V1],
+                    received: $version,
+                }
+                .into()),
+                Default::default(),
+            );
         }
         $version
     }};

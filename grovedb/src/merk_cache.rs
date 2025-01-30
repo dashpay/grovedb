@@ -397,7 +397,8 @@ impl<'db> MerkHandle<'db, '_> {
 
 #[cfg(test)]
 mod tests {
-    use grovedb_costs::CostsExt;
+    use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostsExt};
+    use grovedb_merk::TreeType;
     use grovedb_path::{SubtreePath, SubtreePathBuilder};
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
@@ -534,5 +535,109 @@ mod tests {
         drop(merk);
 
         assert!(cache.into_batch().unwrap().unwrap().len() > no_propagation_ops_count);
+    }
+
+    #[test]
+    fn deleted_subtree_can_be_reinserted() {
+        let version = GroveVersion::latest();
+        let db = make_deep_tree(&version);
+        let tx = db.start_transaction();
+        let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);
+
+        let mut parent_merk = cache
+            .get_merk(SubtreePathBuilder::owned_from_iter([TEST_LEAF]))
+            .unwrap()
+            .unwrap();
+
+        // Delete child subtree element
+        parent_merk
+            .for_merk(|m| {
+                Element::delete_with_sectioned_removal_bytes(
+                    m,
+                    b"innertree",
+                    None,
+                    true,
+                    TreeType::NormalTree,
+                    &mut |_, removed_key_bytes, removed_value_bytes| {
+                        Ok((
+                            StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
+                            StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
+                        ))
+                    },
+                    version,
+                )
+            })
+            .unwrap()
+            .unwrap();
+
+        // Mark child subtree as deleted in cache (should be done by deletion in
+        // GroveDb, but we keep it local for now, emulating the logic)
+        cache.mark_deleted(SubtreePathBuilder::owned_from_iter([
+            TEST_LEAF,
+            b"innertree",
+        ]));
+
+        // Attempt to open merk that was deleted shall fail
+        assert!(matches!(
+            cache
+                .get_merk(SubtreePathBuilder::owned_from_iter([
+                    TEST_LEAF,
+                    b"innertree"
+                ]))
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+
+        // Let's insert empty tree at that old place in parent
+        parent_merk
+            .for_merk(|m| Element::empty_tree().insert(m, b"innertree", None, version))
+            .unwrap()
+            .unwrap();
+
+        // Shall be able to have a merk handle now (note it won't be empty, because we
+        // applied no operations to clean it up):
+        assert!(cache
+            .get_merk(SubtreePathBuilder::owned_from_iter([
+                TEST_LEAF,
+                b"innertree",
+            ]))
+            .unwrap()
+            .is_ok());
+    }
+
+    #[test]
+    fn open_subtree_checks_on_parent() {
+        let version = GroveVersion::latest();
+        let db = make_deep_tree(&version);
+        let tx = db.start_transaction();
+
+        let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);
+        let cost_with_no_cached_parent = cache
+            .get_merk(SubtreePathBuilder::owned_from_iter([
+                TEST_LEAF,
+                b"innertree",
+            ]))
+            .cost;
+
+        // This time with fresh cache we load parent first:
+
+        let cache = MerkCache::<[u8; 0]>::new(&db, &tx, version);
+
+        cache
+            .get_merk(SubtreePathBuilder::owned_from_iter([TEST_LEAF]))
+            .unwrap()
+            .unwrap();
+
+        let cost_with_cached_parent = cache
+            .get_merk(SubtreePathBuilder::owned_from_iter([
+                TEST_LEAF,
+                b"innertree",
+            ]))
+            .cost;
+
+        assert!(
+            cost_with_cached_parent.storage_loaded_bytes
+                < cost_with_no_cached_parent.storage_loaded_bytes
+        );
     }
 }
