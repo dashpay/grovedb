@@ -1,7 +1,10 @@
 //! Insert operations
 
+mod v0;
+mod v1;
+
 #[cfg(feature = "minimal")]
-use std::{collections::HashMap, option::Option::None};
+use std::option::Option::None;
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
@@ -13,7 +16,7 @@ use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_storage::{Storage, StorageBatch};
-use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0_with_cost, dispatch_version, version::GroveVersion};
 
 use crate::util::TxRef;
 #[cfg(feature = "minimal")]
@@ -75,11 +78,6 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_grovedb_v0_with_cost!(
-            "insert",
-            grove_version.grovedb_versions.operations.insert.insert
-        );
-
         let subtree_path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
 
@@ -120,45 +118,38 @@ impl GroveDb {
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
+        dispatch_version!(
             "insert_on_transaction",
             grove_version
                 .grovedb_versions
                 .operations
                 .insert
-                .insert_on_transaction
-        );
-
-        let mut cost = OperationCost::default();
-
-        let mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
-
-        let merk = cost_return_on_error!(
-            &mut cost,
-            self.add_element_on_transaction(
-                path.clone(),
-                key,
-                element,
-                options,
-                transaction,
-                batch,
-                grove_version
-            )
-        );
-        merk_cache.insert(path.clone(), merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                path,
-                transaction,
-                batch,
-                grove_version
-            )
-        );
-
-        Ok(()).wrap_with_cost(cost)
+                .insert_on_transaction,
+            0 => {
+                v0::insert_on_transaction(
+                    self,
+                    path,
+                    key,
+                    element,
+                    options,
+                    transaction,
+                    batch,
+                    grove_version
+                )
+            }
+            1 => {
+                v1::insert_on_transaction(
+                    self,
+                    path,
+                    key,
+                    element,
+                    options,
+                    transaction,
+                    batch,
+                    grove_version
+                )
+            }
+        )
     }
 
     /// Add subtree to another subtree.
