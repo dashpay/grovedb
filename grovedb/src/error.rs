@@ -59,6 +59,10 @@ pub enum Error {
     #[error("corrupted referenced path key not found: {0}")]
     CorruptedReferencePathParentLayerNotFound(String),
 
+    /// Bidirectional references rule was violated
+    #[error("bidirectional reference rule violation: {0}")]
+    BidirectionalReferenceRule(String),
+
     /// The invalid parent layer path represents a logical error from the client
     /// library
     #[error("invalid parent layer path: {0}")]

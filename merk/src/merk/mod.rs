@@ -37,6 +37,7 @@ pub mod apply;
 pub mod clear;
 pub mod committer;
 pub mod get;
+mod meta;
 pub mod open;
 pub mod prove;
 pub mod restore;
@@ -44,7 +45,7 @@ pub mod source;
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, BTreeSet, LinkedList},
+    collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
     fmt,
 };
 
@@ -282,6 +283,9 @@ pub struct Merk<S> {
     pub storage: S,
     /// Merk type
     pub merk_type: MerkType,
+    /// Metadata storage cache. As well as trees work in-memory until committed,
+    /// meta KV storage shall be able to work the same way.
+    meta_cache: HashMap<Vec<u8>, Option<Vec<u8>>>,
     /// The tree type
     pub tree_type: TreeType,
 }

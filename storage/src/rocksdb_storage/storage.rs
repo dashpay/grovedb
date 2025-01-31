@@ -614,7 +614,7 @@ mod tests {
         right.put(b"c", b"c", None, None).unwrap().unwrap();
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 
@@ -660,7 +660,7 @@ mod tests {
         drop(iter);
 
         storage
-            .commit_multi_context_batch(batch, None)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit batch");
 

@@ -15,7 +15,7 @@ pub use delete_up_tree::DeleteUpTreeOptions;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error,
-    storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    storage_cost::removal::StorageRemovedBytes::{self, BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
@@ -167,8 +167,15 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        self.clear_subtree_with_costs(path, options, transaction, grove_version)
-            .unwrap()
+        let tx = TxRef::new(&self.db, transaction);
+        if self
+            .clear_subtree_with_costs(path, options, tx.as_ref(), grove_version)
+            .unwrap()?
+        {
+            tx.commit_local()?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Delete all elements in a specified subtree and get back costs
@@ -179,7 +186,7 @@ impl GroveDb {
         &self,
         path: P,
         options: Option<ClearOptions>,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where
@@ -195,8 +202,6 @@ impl GroveDb {
                 .clear_subtree
         );
 
-        let tx = TxRef::new(&self.db, transaction);
-
         let subtree_path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let batch = StorageBatch::new();
@@ -207,7 +212,7 @@ impl GroveDb {
             &mut cost,
             self.open_transactional_merk_at_path(
                 subtree_path.clone(),
-                tx.as_ref(),
+                transaction,
                 Some(&batch),
                 grove_version,
             )
@@ -237,7 +242,7 @@ impl GroveDb {
                                     deleting_non_empty_trees_returns_error: false,
                                     ..Default::default()
                                 }),
-                                Some(tx.as_ref()),
+                                Some(transaction),
                                 grove_version,
                             )
                         );
@@ -265,7 +270,7 @@ impl GroveDb {
             self.propagate_changes_with_transaction(
                 merk_cache,
                 subtree_path.clone(),
-                tx.as_ref(),
+                transaction,
                 &batch,
                 grove_version,
             )
@@ -274,11 +279,11 @@ impl GroveDb {
         cost_return_on_error!(
             &mut cost,
             self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
+                .commit_multi_context_batch(batch, Some(transaction))
                 .map_err(Into::into)
         );
 
-        tx.commit_local().map(|_| true).wrap_with_cost(cost)
+        Ok(true).wrap_with_cost(cost)
     }
 
     /// Delete element with sectional storage function
@@ -716,11 +721,11 @@ impl GroveDb {
                 merk_cache.insert(path.clone(), merk_to_delete_tree_from);
                 cost_return_on_error!(
                     &mut cost,
-                    self.propagate_changes_with_batch_transaction(
-                        batch,
+                    self.propagate_changes_with_transaction(
                         merk_cache,
-                        &path,
+                        path,
                         transaction,
+                        batch,
                         grove_version,
                     )
                 );

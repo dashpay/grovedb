@@ -11,10 +11,14 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "minimal")]
 use crate::element::SumValue;
+#[cfg(feature = "minimal")]
+use crate::util::TxRef;
 use crate::{
+    bidirectional_references::BidirectionalReference,
     element::{BigSumValue, CountValue, QueryOptions},
     operations::proof::ProveOptions,
     query_result_type::PathKeyOptionalElementTrio,
+    Transaction,
 };
 #[cfg(feature = "minimal")]
 use crate::{
@@ -61,6 +65,7 @@ impl GroveDb {
         );
 
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let elements = cost_return_on_error!(
             &mut cost,
@@ -88,7 +93,7 @@ impl GroveDb {
                                 .follow_reference(
                                     absolute_path.as_slice().into(),
                                     allow_cache,
-                                    transaction,
+                                    tx.as_ref(),
                                     grove_version,
                                 )
                                 .unwrap_add_cost(&mut cost)?;
@@ -187,7 +192,7 @@ where {
         element: Element,
         allow_cache: bool,
         cost: &mut OperationCost,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         grove_version: &GroveVersion,
     ) -> Result<Element, Error> {
         check_grovedb_v0!(
@@ -199,7 +204,14 @@ where {
                 .follow_element
         );
         match element {
-            Element::Reference(reference_path, ..) => {
+            Element::Reference(reference_path, ..)
+            | Element::BidirectionalReference(
+                BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    ..
+                },
+                ..,
+            ) => {
                 match reference_path {
                     ReferencePathType::AbsolutePathReference(absolute_path) => {
                         // While `map` on iterator is lazy, we should accumulate costs
@@ -232,7 +244,9 @@ where {
             | Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountTree(..)
-            | Element::CountSumTree(..) => Ok(element),
+            | Element::CountSumTree(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::SumItemWithBackwardsReferences(..) => Ok(element),
             Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
         }
     }
@@ -253,6 +267,7 @@ where {
             grove_version.grovedb_versions.operations.query.query
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -271,7 +286,7 @@ where {
             .into_iterator()
             .map(|result_item| {
                 result_item.map_element(|element| {
-                    self.follow_element(element, allow_cache, &mut cost, transaction, grove_version)
+                    self.follow_element(element, allow_cache, &mut cost, tx.as_ref(), grove_version)
                 })
             })
             .collect::<Result<Vec<QueryResultElement>, Error>>();
@@ -300,6 +315,7 @@ where {
                 .query_item_value
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -319,7 +335,14 @@ where {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        Element::Reference(reference_path, ..)
+                        | Element::BidirectionalReference(
+                            BidirectionalReference {
+                                forward_reference_path: reference_path,
+                                ..
+                            },
+                            ..,
+                        ) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -331,7 +354,7 @@ where {
                                         .follow_reference(
                                             absolute_path.as_slice().into(),
                                             allow_cache,
-                                            transaction,
+                                            tx.as_ref(),
                                             grove_version,
                                         )
                                         .unwrap_add_cost(&mut cost)?;
@@ -349,8 +372,13 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(item),
-                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                        Element::Item(item, _) | Element::ItemWithBackwardsReferences(item, ..) => {
+                            Ok(item)
+                        }
+                        Element::SumItem(item, _)
+                        | Element::SumItemWithBackwardsReferences(item, ..) => {
+                            Ok(item.encode_var_vec())
+                        }
                         Element::Tree(..)
                         | Element::SumTree(..)
                         | Element::BigSumTree(..)
@@ -390,6 +418,7 @@ where {
                 .query_item_value_or_sum
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -409,7 +438,14 @@ where {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        Element::Reference(reference_path, ..)
+                        | Element::BidirectionalReference(
+                            BidirectionalReference {
+                                forward_reference_path: reference_path,
+                                ..
+                            },
+                            ..,
+                        ) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -421,7 +457,7 @@ where {
                                         .follow_reference(
                                             absolute_path.as_slice().into(),
                                             allow_cache,
-                                            transaction,
+                                            tx.as_ref(),
                                             grove_version,
                                         )
                                         .unwrap_add_cost(&mut cost)?;
@@ -458,8 +494,11 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(QueryItemOrSumReturnType::ItemData(item)),
-                        Element::SumItem(sum_value, _) => {
+                        Element::Item(item, _) | Element::ItemWithBackwardsReferences(item, ..) => {
+                            Ok(QueryItemOrSumReturnType::ItemData(item))
+                        }
+                        Element::SumItem(sum_value, _)
+                        | Element::SumItemWithBackwardsReferences(sum_value, ..) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
                         Element::SumTree(_, sum_value, _) => {
@@ -505,6 +544,7 @@ where {
             grove_version.grovedb_versions.operations.query.query_sums
         );
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
@@ -524,7 +564,14 @@ where {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        Element::Reference(reference_path, ..)
+                        | Element::BidirectionalReference(
+                            BidirectionalReference {
+                                forward_reference_path: reference_path,
+                                ..
+                            },
+                            ..,
+                        ) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -536,7 +583,7 @@ where {
                                         .follow_reference(
                                             absolute_path.as_slice().into(),
                                             allow_cache,
-                                            transaction,
+                                            tx.as_ref(),
                                             grove_version,
                                         )
                                         .unwrap_add_cost(&mut cost)?;
@@ -554,13 +601,15 @@ where {
                                 )),
                             }
                         }
-                        Element::SumItem(item, _) => Ok(item),
+                        Element::SumItem(item, _)
+                        | Element::SumItemWithBackwardsReferences(item, ..) => Ok(item),
                         Element::Tree(..)
                         | Element::SumTree(..)
                         | Element::BigSumTree(..)
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
-                        | Element::Item(..) => Err(Error::InvalidQuery(
+                        | Element::Item(..)
+                        | Element::ItemWithBackwardsReferences(..) => Err(Error::InvalidQuery(
                             "path_queries over sum items can only refer to sum items and \
                              references",
                         )),

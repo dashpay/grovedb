@@ -22,6 +22,24 @@ macro_rules! check_grovedb_v0_with_cost {
 }
 
 #[macro_export]
+macro_rules! check_grovedb_v1_with_cost {
+    ($method:expr, $version:expr) => {{
+        const EXPECTED_VERSION: u16 = 1;
+        if $version != EXPECTED_VERSION {
+            return grovedb_costs::CostsExt::wrap_with_cost(
+                Err($crate::error::GroveVersionError::UnknownVersionMismatch {
+                    method: $method.to_string(),
+                    known_versions: vec![EXPECTED_VERSION],
+                    received: $version,
+                }
+                .into()),
+                Default::default(),
+            );
+        }
+    }};
+}
+
+#[macro_export]
 macro_rules! check_grovedb_v0 {
     ($method:expr, $version:expr) => {{
         const EXPECTED_VERSION: u16 = 0;
@@ -42,7 +60,7 @@ macro_rules! check_grovedb_v0_or_v1 {
         const EXPECTED_VERSION_V0: u16 = 0;
         const EXPECTED_VERSION_V1: u16 = 1;
         if $version != EXPECTED_VERSION_V0 && $version != EXPECTED_VERSION_V1 {
-            return Err(GroveVersionError::UnknownVersionMismatch {
+            return Err($crate::error::GroveVersionError::UnknownVersionMismatch {
                 method: $method.to_string(),
                 known_versions: vec![EXPECTED_VERSION_V0, EXPECTED_VERSION_V1],
                 received: $version,
@@ -51,6 +69,31 @@ macro_rules! check_grovedb_v0_or_v1 {
         }
         $version
     }};
+}
+
+#[macro_export]
+macro_rules! dispatch_version {
+    ($method:expr, $version:expr, $($($version_num:literal)|+ => {$($body:tt)*})+) => {
+        {
+            let version = $version;
+            if $($(version != $version_num)&&*)&&* {
+                return grovedb_costs::CostsExt::wrap_with_cost(
+                    Err($crate::error::GroveVersionError::UnknownVersionMismatch {
+                        method: $method.to_string(),
+                        known_versions: vec![$($($version_num),*),*],
+                        received: $version,
+                    }
+                    .into()),
+                    Default::default(),
+                );
+            }
+
+            match version {
+                $($($version_num)|+ => {$($body)*})*
+                _ => unreachable!()
+            }
+        }
+    };
 }
 
 #[macro_export]
