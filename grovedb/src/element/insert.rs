@@ -220,20 +220,22 @@ impl Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<Delta, Error> {
-        check_grovedb_v0_with_cost!(
+        use grovedb_version::dispatch_version;
+
+        let mut cost = OperationCost::default();
+
+        let previous_element_res = dispatch_version!(
             "insert_if_changed_value",
             grove_version
                 .grovedb_versions
                 .element
-                .insert_if_changed_value
+                .insert_if_changed_value,
+                0 => { Self::get_optional_from_storage(&merk.storage, key, grove_version) }
+                1 => { Self::get_optional(&merk, key, true, grove_version) }
         );
 
-        let mut cost = OperationCost::default();
-        let previous_element = cost_return_on_error!(
-            &mut cost,
-            // TODO: keep it like that for v0, v1 shall do `get_optional`
-            Self::get_optional_from_storage(&merk.storage, key, grove_version)
-        );
+        let previous_element = cost_return_on_error!(&mut cost, previous_element_res);
+
         let delta = Delta {
             new: self,
             old: previous_element,

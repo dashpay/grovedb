@@ -48,7 +48,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             insert_into_batch_operations: 0,
             insert_if_not_exists: 0,
             insert_if_not_exists_into_batch_operations: 0,
-            insert_if_changed_value: 0,
+            insert_if_changed_value: 1,
             insert_subtree_if_changed: 0,
             insert_if_changed_value_into_batch_operations: 0,
             insert_reference: 0,

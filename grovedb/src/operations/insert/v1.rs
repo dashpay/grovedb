@@ -579,8 +579,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, /* 1 to get tree, 1 to get the previous value, 1 to insert, 1 to
-                                * insert into root tree */
+                seek_count: 3, // TODO: verify, caching happens
                 storage_cost: StorageCost {
                     added_bytes: 149,
                     replaced_bytes: 0,
@@ -647,7 +646,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6,
+                seek_count: 5,
                 storage_cost: StorageCost {
                     added_bytes: 170,
                     replaced_bytes: 84, // todo: verify
@@ -730,7 +729,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 8,
+                seek_count: 7,
                 storage_cost: StorageCost {
                     added_bytes: 170,
                     replaced_bytes: 217,
@@ -809,7 +808,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 8,
+                seek_count: 7,
                 storage_cost: StorageCost {
                     added_bytes: 170,
                     replaced_bytes: 217, // todo: verify
@@ -870,8 +869,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, /* 1 to get tree, 1 to get previous data, 1 to insert, 1 to insert
-                                * into root tree */
+                seek_count: 3, // TODO: verify, caching happens
                 storage_cost: StorageCost {
                     added_bytes: 153,
                     replaced_bytes: 0,
@@ -1136,7 +1134,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 150,
                     replaced_bytes: 78,
@@ -1217,7 +1215,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 166,
                     replaced_bytes: 87,
@@ -1282,7 +1280,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, // todo: verify this
+                seek_count: 3, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 156,
                     replaced_bytes: 0,
@@ -1376,7 +1374,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 156,
                     replaced_bytes: 78,
@@ -1472,7 +1470,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 156,
                     replaced_bytes: 82,
@@ -1541,13 +1539,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, // todo: verify this
+                seek_count: 3, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 112,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 124,
+                storage_loaded_bytes: 77,
                 hash_node_calls: 2,
             }
         );
@@ -1595,13 +1593,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 7, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 190,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 277, // todo verify this
+                storage_loaded_bytes: 230, // todo verify this
                 hash_node_calls: 8,
             }
         );
@@ -1649,13 +1647,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 7, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 248,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 427, // todo verify this
+                storage_loaded_bytes: 266, // todo verify this
                 hash_node_calls: 9,
             }
         );
@@ -1721,7 +1719,7 @@ mod tests {
                     replaced_bytes: 409, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 648, // todo verify this
+                storage_loaded_bytes: 558, // todo verify this
                 hash_node_calls: 11,
             }
         );
@@ -1769,13 +1767,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 7, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 248,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 437, // todo verify this
+                storage_loaded_bytes: 276, // todo verify this
                 hash_node_calls: 9,
             }
         );
@@ -1823,13 +1821,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 7, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 1,
                     replaced_bytes: 191, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 279,
+                storage_loaded_bytes: 231,
                 hash_node_calls: 8,
             }
         );
