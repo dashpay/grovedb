@@ -15,7 +15,7 @@ use std::{
     option::Option::None,
 };
 
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v1::GROVE_V1, v2::GROVE_V2, GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
@@ -4159,6 +4159,8 @@ mod tests {
 #[test]
 fn subtrees_cant_be_referenced() {
     let db = make_deep_tree(&GroveVersion::latest());
+
+    // It used to be possible, yet it was an error:
     assert!(db
         .insert(
             SubtreePath::empty(),
@@ -4168,7 +4170,22 @@ fn subtrees_cant_be_referenced() {
             ])),
             None,
             None,
-            &GroveVersion::latest(),
+            &GROVE_V1,
+        )
+        .unwrap()
+        .is_ok());
+
+    // And now it's not:
+    assert!(db
+        .insert(
+            SubtreePath::empty(),
+            b"test_ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec()
+            ])),
+            None,
+            None,
+            &GROVE_V2,
         )
         .unwrap()
         .is_err());

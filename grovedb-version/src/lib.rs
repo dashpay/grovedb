@@ -73,14 +73,14 @@ macro_rules! check_grovedb_v0_or_v1 {
 
 #[macro_export]
 macro_rules! dispatch_version {
-    ($method:expr, $version:expr, $($version_num:literal => {$($body:tt)*})+) => {
+    ($method:expr, $version:expr, $($($version_num:literal)|+ => {$($body:tt)*})+) => {
         {
             let version = $version;
-            if $(version != $version_num)&&* {
+            if $($(version != $version_num)&&*)&&* {
                 return grovedb_costs::CostsExt::wrap_with_cost(
                     Err($crate::error::GroveVersionError::UnknownVersionMismatch {
                         method: $method.to_string(),
-                        known_versions: vec![$($version_num),*],
+                        known_versions: vec![$($($version_num),*),*],
                         received: $version,
                     }
                     .into()),
@@ -89,7 +89,7 @@ macro_rules! dispatch_version {
             }
 
             match version {
-                $($version_num => {$($body)*})*
+                $($($version_num)|+ => {$($body)*})*
                 _ => unreachable!()
             }
         }

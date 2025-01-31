@@ -4,7 +4,10 @@ use std::{collections::VecDeque, io::Write};
 
 use bincode::{config, Decode, Encode};
 use bitvec::{array::BitArray, order::Lsb0};
-use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
+    CostResult, CostsExt,
+};
 use grovedb_merk::CryptoHash;
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 
@@ -272,7 +275,8 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
 }
 
 /// Post-processing of possible backward references relationships after
-/// insertion of anything but bidirectional reference
+/// insertion of anything but bidirectional reference (because there is
+/// [process_bidirectional_reference_insertion] for that).
 pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
     merk_cache: &'c MerkCache<'db, 'b, B>,
     merk: MerkHandle<'db, 'c>,
@@ -440,18 +444,23 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
         }
 
         // ... and the element altogether
-        todo!()
-        // cost_return_on_error!(
-        //     &mut cost,
-        //     current_merk.for_merk(|m|
-        // Element::delete_with_sectioned_removal_bytes(         m,
-        //         current_key,
-        //         None,
-        //         false,
-        //         false,
-        //         &merk_cache.version
-        //     ))
-        // );
+        cost_return_on_error!(
+            &mut cost,
+            current_merk.for_merk(|m| Element::delete_with_sectioned_removal_bytes(
+                m,
+                current_key,
+                None,
+                false,
+                m.tree_type,
+                &mut |_, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
+                        StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
+                &merk_cache.version
+            ))
+        );
     }
 
     Ok(()).wrap_with_cost(cost)

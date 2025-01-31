@@ -640,14 +640,17 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
     key: &[u8],
     ref_path: ReferencePathType,
 ) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
-    grovedb_version::check_grovedb_v0_or_v1_with_cost!(
+    use grovedb_version::dispatch_version;
+
+    dispatch_version!(
         "follow_reference_once",
         merk_cache
             .version
             .grovedb_versions
             .operations
             .get
-            .follow_reference_once
+            .follow_reference_once,
+        0 | 1 => {}
     );
 
     let mut cost = Default::default();

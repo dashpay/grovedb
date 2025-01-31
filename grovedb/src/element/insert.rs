@@ -38,7 +38,13 @@ impl Element {
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!("insert", grove_version.grovedb_versions.element.insert);
+        use grovedb_version::dispatch_version;
+
+        dispatch_version!(
+            "element.insert",
+            grove_version.grovedb_versions.element.insert,
+            0 | 1 => {}
+        );
 
         let serialized = cost_return_on_error_default!(self.serialize(grove_version));
 
@@ -498,6 +504,92 @@ impl Element {
     }
 
     #[cfg(feature = "minimal")]
+    /// Insert a tree element in Merk under a key, returning delta.
+    /// If a meaningful overwrite happens the delta will represent it.
+    pub fn insert_subtree_if_changed<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        subtree_root_hash: Hash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Delta, Error> {
+        use grovedb_version::dispatch_version;
+
+        dispatch_version!(
+            "insert_subtree_if_changed",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_subtree_if_changed,
+            0 => {}
+        );
+
+        let serialized = match self.serialize(grove_version) {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        let mut cost = OperationCost::default();
+
+        let previous_element = cost_return_on_error!(
+            &mut cost,
+            Self::get_optional(&merk, &key, true, grove_version)
+        );
+
+        let delta = Delta {
+            new: self,
+            old: previous_element,
+        };
+
+        if delta.has_changed() {
+            let merk_feature_type =
+                cost_return_on_error_no_add!(cost, self.get_feature_type(merk.tree_type));
+
+            let tree_cost =
+                cost_return_on_error_no_add!(cost, self.get_specialized_cost(grove_version));
+
+            let specialized_cost = tree_cost
+                + self.get_flags().as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+            let batch_operations = [(
+                key,
+                Op::PutLayeredReference(
+                    serialized,
+                    specialized_cost,
+                    subtree_root_hash,
+                    merk_feature_type,
+                ),
+            )];
+            let tree_type = merk.tree_type;
+            cost_return_on_error!(
+                &mut cost,
+                merk.apply_with_specialized_costs::<_, Vec<u8>>(
+                    &batch_operations,
+                    &[],
+                    options,
+                    &|key, value| {
+                        Self::specialized_costs_for_key_value(
+                            key,
+                            value,
+                            tree_type.inner_node_type(),
+                            grove_version,
+                        )
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                    },
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+        }
+
+        Ok(delta).wrap_with_cost(cost)
+    }
+
+    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations for a subtree and key
     pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
@@ -546,7 +638,7 @@ impl Element {
     }
 }
 
-#[cfg(all(feature = "minimal", feature = "test_utils"))]
+#[cfg(all(feature = "minimal"))]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};
@@ -615,7 +707,7 @@ mod tests {
         let batch = StorageBatch::new();
         let tx = storage.start_transaction();
 
-        let mut merk = empty_path_merk(&*storage, &batch, &tx, grove_version);
+        let mut merk = empty_path_merk(&*storage, &tx, &batch, grove_version);
 
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None, grove_version)
@@ -632,7 +724,7 @@ mod tests {
             .unwrap();
 
         let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch, &tx, grove_version);
+        let mut merk = empty_path_merk(&*storage, &tx, &batch, grove_version);
         let element = Element::new_item(b"value2".to_vec());
         let delta = element
             .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)

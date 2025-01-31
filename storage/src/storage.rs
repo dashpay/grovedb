@@ -452,7 +452,7 @@ impl StorageBatch {
     }
 
     /// Merge batch into this one
-    pub(crate) fn merge(&self, other: StorageBatch) {
+    pub fn merge(&self, other: StorageBatch) {
         for op in other.into_iter() {
             match op {
                 AbstractBatchOperation::Put {

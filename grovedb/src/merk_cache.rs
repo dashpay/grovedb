@@ -299,7 +299,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     }
 
     /// Consumes `MerkCache` into accumulated batch of uncommited operations
-    /// with subtrees' root hash  propagation done.
+    /// with subtrees' root hash propagation done.
     pub(crate) fn into_batch(mut self) -> CostResult<Box<StorageBatch>, Error> {
         let mut cost = Default::default();
         cost_return_on_error!(&mut cost, self.propagate_subtrees());
