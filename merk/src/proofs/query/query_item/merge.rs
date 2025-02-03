@@ -8,6 +8,10 @@ use crate::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl QueryItem {
     pub(crate) fn merge(&self, other: &Self) -> Self {
+        if self.is_key() && other.is_key() && self == other {
+            return self.clone();
+        }
+
         let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
         let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
 
@@ -69,5 +73,27 @@ impl QueryItem {
 
     pub(crate) fn merge_assign(&mut self, other: &Self) {
         *self = self.merge(other);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assert_matches::assert_matches;
+
+    use super::*;
+
+    #[test]
+    fn test_merge_of_two_equal_keys_must_be_the_same_key() {
+        let value = vec![
+            3, 207, 99, 250, 114, 92, 207, 167, 120, 9, 236, 164, 124, 63, 102, 237, 201, 35, 86,
+            5, 23, 169, 147, 150, 61, 132, 155, 33, 225, 145, 85, 138,
+        ];
+
+        let key1 = QueryItem::Key(value.clone());
+        let key2 = key1.clone();
+
+        let merged = key1.merge(&key2);
+
+        assert_matches!(merged, QueryItem::Key(v) if v == value);
     }
 }

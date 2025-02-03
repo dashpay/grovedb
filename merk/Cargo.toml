@@ -11,7 +11,7 @@ readme = "README.md"
 documentation = "https://docs.rs/grovedb-merk"
 
 [dependencies]
-grovedb-costs = { version = "3.0.0" , path = "../costs" }
+grovedb-costs = { version = "3.0.0", path = "../costs" }
 grovedb-path = { version = "3.0.0", path = "../path" }
 grovedb-storage = { version = "3.0.0", path = "../storage", optional = true }
 grovedb-version = { version = "3.0.0", path = "../grovedb-version" }
@@ -47,26 +47,27 @@ default = ["full"]
 proof_debug = []
 serde = ["dep:serde", "indexmap/serde"]
 minimal = ["num_cpus",
-        "ed",
-        "blake3",
-        "grovedb-storage",
-        "grovedb-storage/rocksdb_storage"
+    "ed",
+    "blake3",
+    "grovedb-storage",
+    "grovedb-storage/rocksdb_storage"
 ]
 full = ["minimal",
-        "test_utils",
-        "colored_debug",
+    "test_utils",
+    "colored_debug",
 ]
 test_utils = ["rand"]
 colored_debug = ["colored"]
 verify = [
-        "ed",
-        "blake3"
+    "ed",
+    "blake3"
 ]
 grovedbg = ["full"]
 
 [dev-dependencies]
 tempfile = "3.10.1"
 criterion = "0.5.1"
+assert_matches = "1.5.0"
 
 [[bench]]
 name = "merk"
