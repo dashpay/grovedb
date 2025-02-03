@@ -299,7 +299,10 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
     match (old, delta.new) {
         (
             Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..),
-            Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..),
+            Some(
+                new @ (Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..)),
+            ),
         ) => {
             // Update with another backward references-compatible element variant, that
             // means value hash propagation across backward references' chains:
@@ -310,7 +313,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
                     merk,
                     path.derive_owned(),
                     key.to_vec(),
-                    cost_return_on_error!(&mut cost, delta.new.value_hash(&merk_cache.version))
+                    cost_return_on_error!(&mut cost, new.value_hash(&merk_cache.version))
                 )
             );
         }
@@ -318,8 +321,8 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
             Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..),
             _,
         ) => {
-            // Update with non backward references-compatible element, equals to cascade
-            // deletion of references' chains:
+            // Update with non backward references-compatible element (or deletion), equals
+            // to cascade deletion of references' chains:
             cost_return_on_error!(
                 &mut cost,
                 delete_backward_references_recursively(
@@ -333,7 +336,10 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
 
         (
             Element::BidirectionalReference(reference),
-            Element::ItemWithBackwardsReferences(..) | Element::SumItemWithBackwardsReferences(..),
+            Some(
+                new @ (Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..)),
+            ),
         ) => {
             // Overwrite of bidirectional reference with backward references-compatible
             // elements triggers propagation and removes one backward reference because of
@@ -346,7 +352,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
                     merk,
                     path.derive_owned(),
                     key.to_vec(),
-                    cost_return_on_error!(&mut cost, delta.new.value_hash(&merk_cache.version))
+                    cost_return_on_error!(&mut cost, new.value_hash(&merk_cache.version))
                 )
             );
 
@@ -357,9 +363,9 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
         }
         (Element::BidirectionalReference(reference), _) => {
             // Overwrite of bidirectional reference with non backward
-            // references-compatible element shall trigger recursive deletion
-            // and removal of backward refrence from the element where the bidi
-            // ref in question used to point to
+            // references-compatible element (or with nothing aka deletion)
+            // shall trigger recursive deletion and removal of backward refrence
+            // from the element where the bidi ref in question used to point to
 
             // Since we're overwriting with backward references-incompatible element we
             // issue a recursive deletion of backward references chains:
@@ -999,7 +1005,7 @@ mod tests {
             target_path.clone(),
             target_key,
             Delta {
-                new: &inserted_item,
+                new: Some(&inserted_item),
                 old: None,
             },
         )
@@ -1137,7 +1143,7 @@ mod tests {
             target_path.clone(),
             target_key,
             Delta {
-                new: &inserted_item,
+                new: Some(&inserted_item),
                 old: None,
             },
         )
@@ -1150,7 +1156,7 @@ mod tests {
             target_path2.clone(),
             target_key2,
             Delta {
-                new: &inserted_item2,
+                new: Some(&inserted_item2),
                 old: None,
             },
         )
@@ -1318,7 +1324,7 @@ mod tests {
             target_path.clone(),
             target_key,
             Delta {
-                new: &inserted_item,
+                new: Some(&inserted_item),
                 old: None,
             },
         )
@@ -1451,7 +1457,7 @@ mod tests {
             target_path.clone(),
             target_key,
             Delta {
-                new: &inserted_item,
+                new: Some(&inserted_item),
                 old: None,
             },
         )
@@ -1579,7 +1585,7 @@ mod tests {
             target_path.clone(),
             target_key,
             Delta {
-                new: &inserted_item,
+                new: Some(&inserted_item),
                 old: None,
             },
         )
@@ -1636,7 +1642,7 @@ mod tests {
             target_path.clone(),
             target_key,
             Delta {
-                new: &inserted_item,
+                new: Some(&inserted_item),
                 old: None,
             },
         )
@@ -1777,7 +1783,7 @@ mod tests {
             target_path.clone(),
             target_key,
             Delta {
-                new: &inserted_item,
+                new: Some(&inserted_item),
                 old: None,
             },
         )

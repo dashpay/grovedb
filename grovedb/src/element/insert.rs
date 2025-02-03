@@ -14,13 +14,18 @@ use crate::{Element, Element::SumItem, Error, Hash};
 
 #[derive(Debug)]
 pub struct Delta<'e> {
-    pub new: &'e Element,
+    pub new: Option<&'e Element>,
     pub old: Option<Element>,
 }
 
 impl Delta<'_> {
     pub(crate) fn has_changed(&self) -> bool {
-        self.old.as_ref().map(|o| o != self.new).unwrap_or(true)
+        match (self.old.as_ref(), self.new) {
+            (None, None) => false,
+            (None, Some(_)) => true,
+            (Some(_), None) => true,
+            (Some(old), Some(new)) => old != new,
+        }
     }
 }
 
@@ -237,7 +242,7 @@ impl Element {
         let previous_element = cost_return_on_error!(&mut cost, previous_element_res);
 
         let delta = Delta {
-            new: self,
+            new: Some(self),
             old: previous_element,
         };
 
@@ -376,7 +381,7 @@ impl Element {
             Self::get_optional(&merk, &key, true, grove_version)
         );
         let delta = Delta {
-            new: self,
+            new: Some(self),
             old: previous_element,
         };
 
@@ -540,7 +545,7 @@ impl Element {
         );
 
         let delta = Delta {
-            new: self,
+            new: Some(self),
             old: previous_element,
         };
 
