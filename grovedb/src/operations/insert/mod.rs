@@ -35,6 +35,11 @@ pub struct InsertOptions {
     pub validate_insertion_does_not_override_tree: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
+    /// Ensure proper maintenance of backward references when
+    /// updating/overwriting/ deleting items that use bidirectional
+    /// reference functionality of GroveDB. Since it requires additional
+    /// seeks and checks by default we turn it off.
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -44,6 +49,7 @@ impl Default for InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
             base_root_storage_is_free: true,
+            propagate_backward_references: false,
         }
     }
 }

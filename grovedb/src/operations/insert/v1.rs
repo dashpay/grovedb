@@ -95,46 +95,15 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
                 .wrap_with_cost(cost);
             }
 
-            let delta = cost_return_on_error!(
-                &mut cost,
-                subtree_to_insert_into.for_merk(|m| element.insert_reference_if_changed_value(
-                    m,
-                    key,
-                    resolved_reference.target_node_value_hash,
-                    Some(options.as_merk_options()),
-                    grove_version,
-                ))
-            );
-
-            cost_return_on_error!(
-                &mut cost,
-                process_update_element_with_backward_references(
-                    &cache,
-                    subtree_to_insert_into.clone(),
-                    path,
-                    key,
-                    delta
-                )
-            );
-        }
-        Element::Tree(ref value, _)
-        | Element::SumTree(ref value, ..)
-        | Element::BigSumTree(ref value, ..)
-        | Element::CountTree(ref value, ..) => {
-            if value.is_some() {
-                return Err(Error::InvalidCodeExecution(
-                    "a tree should be empty at the moment of insertion when not using batches",
-                ))
-                .wrap_with_cost(cost);
-            } else {
+            if options.propagate_backward_references {
                 let delta = cost_return_on_error!(
                     &mut cost,
-                    subtree_to_insert_into.for_merk(|m| element.insert_subtree_if_changed(
+                    subtree_to_insert_into.for_merk(|m| element.insert_reference_if_changed_value(
                         m,
                         key,
-                        NULL_HASH,
+                        resolved_reference.target_node_value_hash,
                         Some(options.as_merk_options()),
-                        grove_version
+                        grove_version,
                     ))
                 );
 
@@ -148,6 +117,63 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
                         delta
                     )
                 );
+            } else {
+                cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| element.insert_reference(
+                        m,
+                        key,
+                        resolved_reference.target_node_value_hash,
+                        Some(options.as_merk_options()),
+                        grove_version,
+                    ))
+                );
+            }
+        }
+        Element::Tree(ref value, _)
+        | Element::SumTree(ref value, ..)
+        | Element::BigSumTree(ref value, ..)
+        | Element::CountTree(ref value, ..) => {
+            if value.is_some() {
+                return Err(Error::InvalidCodeExecution(
+                    "a tree should be empty at the moment of insertion when not using batches",
+                ))
+                .wrap_with_cost(cost);
+            } else {
+                if options.propagate_backward_references {
+                    let delta = cost_return_on_error!(
+                        &mut cost,
+                        subtree_to_insert_into.for_merk(|m| element.insert_subtree_if_changed(
+                            m,
+                            key,
+                            NULL_HASH,
+                            Some(options.as_merk_options()),
+                            grove_version
+                        ))
+                    );
+
+                    cost_return_on_error!(
+                        &mut cost,
+                        process_update_element_with_backward_references(
+                            &cache,
+                            subtree_to_insert_into.clone(),
+                            path,
+                            key,
+                            delta
+                        )
+                    );
+                } else {
+                    cost_return_on_error!(
+                        &mut cost,
+                        subtree_to_insert_into.for_merk(|m| element.insert_subtree(
+                            m,
+                            key,
+                            NULL_HASH,
+                            Some(options.as_merk_options()),
+                            grove_version
+                        ))
+                    );
+                }
             }
         }
 
@@ -164,25 +190,37 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
             );
         }
         _ => {
-            let delta = cost_return_on_error!(
-                &mut cost,
-                subtree_to_insert_into.for_merk(|m| element.insert_if_changed_value(
-                    m,
-                    key,
-                    Some(options.as_merk_options()),
-                    grove_version
-                ))
-            );
-            cost_return_on_error!(
-                &mut cost,
-                process_update_element_with_backward_references(
-                    &cache,
-                    subtree_to_insert_into.clone(),
-                    path,
-                    key,
-                    delta
-                )
-            );
+            if options.propagate_backward_references {
+                let delta = cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| element.insert_if_changed_value(
+                        m,
+                        key,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    ))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    process_update_element_with_backward_references(
+                        &cache,
+                        subtree_to_insert_into.clone(),
+                        path,
+                        key,
+                        delta
+                    )
+                );
+            } else {
+                cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| element.insert(
+                        m,
+                        key,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    ))
+                );
+            }
         }
     }
 
@@ -1713,13 +1751,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 10, // todo: verify this
+                seek_count: 9, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 409, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 558, // todo verify this
+                storage_loaded_bytes: 487, // todo verify this
                 hash_node_calls: 11,
             }
         );
@@ -1870,6 +1908,7 @@ mod tests {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: false,
                     base_root_storage_is_free: true,
+                    propagate_backward_references: false,
                 }),
                 Some(&tx),
                 grove_version,

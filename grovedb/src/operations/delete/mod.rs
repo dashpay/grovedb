@@ -621,8 +621,30 @@ impl GroveDb {
                 .operations
                 .delete
                 .delete_internal_on_transaction,
-            0 => { v0::delete_internal_on_transaction(self, path, key, options, transaction, sectioned_removal, batch, grove_version) }
-            1 => { v1::delete_internal_on_transaction(self, path, key, options, transaction, sectioned_removal, batch, grove_version) }
+            0 => {
+                v0::delete_internal_on_transaction(
+                    self,
+                    path,
+                    key,
+                    options,
+                    transaction,
+                    sectioned_removal,
+                    batch,
+                    grove_version
+                )
+            }
+            1 => {
+                v1::delete_internal_on_transaction(
+                    self,
+                    path,
+                    key,
+                    options,
+                    transaction,
+                    sectioned_removal,
+                    batch,
+                    grove_version
+                )
+            }
         )
     }
 }

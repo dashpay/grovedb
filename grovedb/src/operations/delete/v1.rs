@@ -8,9 +8,8 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
 use grovedb_version::{dispatch_version, version::GroveVersion};
 
-use crate::{Element, Error, GroveDb, Transaction};
-
 use super::DeleteOptions;
+use crate::{Element, Error, GroveDb, Transaction};
 
 pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
     db: &GroveDb,
@@ -71,7 +70,7 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
             return if options.deleting_non_empty_trees_returns_error {
                 Err(Error::DeletingNonEmptyTree(
                     "trying to do a delete operation for a non empty tree, but options not \
-                         allowing this",
+                     allowing this",
                 ))
                 .wrap_with_cost(cost)
             } else {

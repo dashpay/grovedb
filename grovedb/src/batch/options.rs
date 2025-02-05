@@ -51,6 +51,7 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
             base_root_storage_is_free: self.base_root_storage_is_free,
+            propagate_backward_references: false,
         }
     }
 
