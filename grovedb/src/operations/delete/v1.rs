@@ -9,7 +9,7 @@ use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storag
 use grovedb_version::{dispatch_version, version::GroveVersion};
 
 use super::DeleteOptions;
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{merk_cache::MerkCache, Element, Error, GroveDb, Transaction};
 
 pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
     db: &GroveDb,
@@ -40,31 +40,29 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
 
     let mut cost = Default::default();
 
+    let cache = MerkCache::<B>::new(db, transaction, grove_version);
+
+    let subtree_to_delete_from =
+        cost_return_on_error!(&mut cost, cache.get_merk(path.derive_owned()));
+
     let element = cost_return_on_error!(
         &mut cost,
-        db.get_raw(path.clone(), key.as_ref(), Some(transaction), grove_version)
+        subtree_to_delete_from.for_merk(|m| Element::get(m, key, true, grove_version))
     );
-    let mut subtree_to_delete_from = cost_return_on_error!(
-        &mut cost,
-        db.open_transactional_merk_at_path(path.clone(), transaction, Some(batch), grove_version)
-    );
-    let uses_sum_tree = subtree_to_delete_from.tree_type;
+
+    let subtree_to_delete_from_type =
+        subtree_to_delete_from.for_merk(|m| m.tree_type.wrap_cost_ok());
+
     if let Some(tree_type) = element.tree_type() {
         let subtree_merk_path = path.derive_owned_with_child(key);
         let subtree_merk_path_ref = SubtreePath::from(&subtree_merk_path);
 
-        let subtree_of_tree_we_are_deleting = cost_return_on_error!(
+        let merk_to_delete =
+            cost_return_on_error!(&mut cost, cache.get_merk(path.derive_owned_with_child(key)));
+        let is_empty = cost_return_on_error!(
             &mut cost,
-            db.open_transactional_merk_at_path(
-                subtree_merk_path_ref.clone(),
-                transaction,
-                Some(batch),
-                grove_version,
-            )
+            merk_to_delete.for_merk(|m| m.is_empty_tree().map(Ok))
         );
-        let is_empty = subtree_of_tree_we_are_deleting
-            .is_empty_tree()
-            .unwrap_add_cost(&mut cost);
 
         if !options.allow_deleting_non_empty_trees && !is_empty {
             return if options.deleting_non_empty_trees_returns_error {
@@ -122,7 +120,7 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
                     key,
                     Some(options.as_merk_options()),
                     true,
-                    uses_sum_tree,
+                    subtree_to_delete_from_type,
                     sectioned_removal,
                     grove_version,
                 )
@@ -149,7 +147,7 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
                     key,
                     Some(options.as_merk_options()),
                     true,
-                    uses_sum_tree,
+                    subtree_to_delete_from_type,
                     sectioned_removal,
                     grove_version,
                 )
@@ -176,7 +174,7 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
                 key,
                 Some(options.as_merk_options()),
                 false,
-                uses_sum_tree,
+                subtree_to_delete_from_type,
                 sectioned_removal,
                 grove_version,
             )

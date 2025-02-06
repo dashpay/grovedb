@@ -1,3 +1,15 @@
+//! The compatibility module.
+//!
+//! It serves as a compatibility layer to ensure that GroveDB maintains
+//! consistent behavior for older versions of its API. This consistency is
+//! crucial for replayability, ensuring that identical inputs yield the same
+//! outputs (including costs and errors) within any given API version.
+//! Historically, some operations have been implemented in various ways,
+//! sometimes due to mistakes. The goal of this module is to encapsulate such
+//! compatibility adjustments in one place,  allowing developers to manage
+//! legacy behaviors without cluttering the main codebase with outdated or
+//! redundant logic.
+
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt};
 use grovedb_merk::{Merk, TreeType};
 use grovedb_path::SubtreePath;
