@@ -92,7 +92,7 @@ impl SizedQuery {
     pub fn new_single_key(key: Vec<u8>) -> Self {
         Self {
             query: Query::new_single_key(key),
-            limit: None,
+            limit: Some(1),
             offset: None,
         }
     }
