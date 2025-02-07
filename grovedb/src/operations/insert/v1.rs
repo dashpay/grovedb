@@ -112,7 +112,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
                     process_update_element_with_backward_references(
                         &cache,
                         subtree_to_insert_into.clone(),
-                        path,
+                        path.derive_owned(),
                         key,
                         delta
                     )
@@ -157,7 +157,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
                         process_update_element_with_backward_references(
                             &cache,
                             subtree_to_insert_into.clone(),
-                            path,
+                            path.derive_owned(),
                             key,
                             delta
                         )
@@ -205,7 +205,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
                     process_update_element_with_backward_references(
                         &cache,
                         subtree_to_insert_into.clone(),
-                        path,
+                        path.derive_owned(),
                         key,
                         delta
                     )

@@ -5,7 +5,10 @@ use grovedb_costs::{
 };
 use grovedb_merk::Merk;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
+use grovedb_storage::{
+    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
+    Storage, StorageBatch, StorageContext,
+};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use super::DeleteOptions;
@@ -78,7 +81,7 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
         } else if !is_empty {
             let subtrees_paths = cost_return_on_error!(
                 &mut cost,
-                db.find_subtrees(&subtree_merk_path_ref, Some(transaction), grove_version)
+                find_subtrees(&db.db, &subtree_merk_path_ref, transaction, grove_version)
             );
             for subtree_path in subtrees_paths {
                 let p: SubtreePath<_> = subtree_path.as_slice().into();
@@ -196,4 +199,36 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
     }
 
     Ok(true).wrap_with_cost(cost)
+}
+
+fn find_subtrees<B: AsRef<[u8]>>(
+    storage: &RocksDbStorage,
+    path: &SubtreePath<B>,
+    transaction: &Transaction,
+    grove_version: &GroveVersion,
+) -> CostResult<Vec<Vec<Vec<u8>>>, Error> {
+    let mut cost = Default::default();
+
+    let mut queue: Vec<Vec<Vec<u8>>> = vec![path.to_vec()];
+    let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
+
+    while let Some(q) = queue.pop() {
+        let subtree_path: SubtreePath<Vec<u8>> = q.as_slice().into();
+        // Get the correct subtree with q_ref as path
+        let storage = storage
+            .get_transactional_storage_context(subtree_path, None, transaction)
+            .unwrap_add_cost(&mut cost);
+        let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
+        while let Some((key, value)) =
+            cost_return_on_error!(&mut cost, raw_iter.next_element(grove_version))
+        {
+            if value.is_any_tree() {
+                let mut sub_path = q.clone();
+                sub_path.push(key.to_vec());
+                queue.push(sub_path.clone());
+                result.push(sub_path);
+            }
+        }
+    }
+    Ok(result).wrap_with_cost(cost)
 }

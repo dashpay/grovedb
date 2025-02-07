@@ -280,7 +280,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
 pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
     merk_cache: &'c MerkCache<'db, 'b, B>,
     merk: MerkHandle<'db, 'c>,
-    path: SubtreePath<'b, B>,
+    path: SubtreePathBuilder<'b, B>,
     key: &[u8],
     delta: Delta,
 ) -> CostResult<(), Error> {
@@ -311,7 +311,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
                 propagate_backward_references(
                     merk_cache,
                     merk,
-                    path.derive_owned(),
+                    path,
                     key.to_vec(),
                     cost_return_on_error!(&mut cost, new.value_hash(&merk_cache.version))
                 )
@@ -325,12 +325,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
             // to cascade deletion of references' chains:
             cost_return_on_error!(
                 &mut cost,
-                delete_backward_references_recursively(
-                    merk_cache,
-                    merk,
-                    path.derive_owned(),
-                    key.to_vec()
-                )
+                delete_backward_references_recursively(merk_cache, merk, path, key.to_vec())
             );
         }
 
@@ -350,7 +345,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
                 propagate_backward_references(
                     merk_cache,
                     merk,
-                    path.derive_owned(),
+                    path.clone(),
                     key.to_vec(),
                     cost_return_on_error!(&mut cost, new.value_hash(&merk_cache.version))
                 )
@@ -358,7 +353,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
 
             cost_return_on_error!(
                 &mut cost,
-                reference.remove_backward_reference(merk_cache, path.derive_owned(), key)
+                reference.remove_backward_reference(merk_cache, path, key)
             );
         }
         (Element::BidirectionalReference(reference), _) => {
@@ -374,14 +369,14 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
                 delete_backward_references_recursively(
                     merk_cache,
                     merk,
-                    path.derive_owned(),
+                    path.clone(),
                     key.to_vec()
                 )
             );
 
             cost_return_on_error!(
                 &mut cost,
-                reference.remove_backward_reference(merk_cache, path.derive_owned(), key)
+                reference.remove_backward_reference(merk_cache, path, key)
             );
         }
         _ => {
@@ -1002,7 +997,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             Delta {
                 new: Some(&inserted_item),
@@ -1140,7 +1135,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             Delta {
                 new: Some(&inserted_item),
@@ -1153,7 +1148,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk2,
-            target_path2.clone(),
+            target_path2.derive_owned(),
             target_key2,
             Delta {
                 new: Some(&inserted_item2),
@@ -1321,7 +1316,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             Delta {
                 new: Some(&inserted_item),
@@ -1401,7 +1396,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             ref_merk,
-            ref_path,
+            ref_path.derive_owned(),
             ref_key,
             delta,
         )
@@ -1454,7 +1449,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             Delta {
                 new: Some(&inserted_item),
@@ -1529,7 +1524,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             ref_merk,
-            ref_path,
+            ref_path.derive_owned(),
             ref_key,
             delta,
         )
@@ -1582,7 +1577,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             Delta {
                 new: Some(&inserted_item),
@@ -1639,7 +1634,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             Delta {
                 new: Some(&inserted_item),
@@ -1740,7 +1735,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             delta,
         )
@@ -1780,7 +1775,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             Delta {
                 new: Some(&inserted_item),
@@ -1877,7 +1872,7 @@ mod tests {
         process_update_element_with_backward_references(
             &merk_cache,
             target_merk,
-            target_path.clone(),
+            target_path.derive_owned(),
             target_key,
             delta,
         )

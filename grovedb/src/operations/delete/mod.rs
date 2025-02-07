@@ -78,6 +78,9 @@ pub struct DeleteOptions {
     pub base_root_storage_is_free: bool,
     /// Validate tree at path exists
     pub validate_tree_at_path_exists: bool,
+    /// Perform Trigger cascade deletions of backward references' chains
+    /// or raise an error if specific references disallow it.
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -88,6 +91,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate_tree_at_path_exists: false,
+            propagate_backward_references: false,
         }
     }
 }
