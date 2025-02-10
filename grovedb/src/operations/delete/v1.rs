@@ -3,14 +3,17 @@ use grovedb_costs::{
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch, StorageContext,
+    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
 };
 use grovedb_version::{dispatch_version, version::GroveVersion};
 
 use super::{ClearOptions, DeleteOptions};
 use crate::{
-    bidirectional_references, element::Delta, merk_cache::MerkCache, util, Element, Error, GroveDb,
-    Transaction,
+    bidirectional_references,
+    element::Delta,
+    merk_cache::MerkCache,
+    util::{self, WalkResult},
+    Element, Error, GroveDb, Transaction,
 };
 
 pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
@@ -84,13 +87,16 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
             let visitor = util::GroveVisitor::new(
                 &db.db,
                 transaction,
-                DeletionVisitor::new(&cache, options.propagate_backward_references),
+                DeletionVisitor::new(&cache, options.propagate_backward_references, true),
+                true,
                 grove_version,
             );
 
             let subtree_merk_path = path.derive_owned_with_child(key);
-            let (deletion_batch, _) =
-                cost_return_on_error!(&mut cost, visitor.walk_from(subtree_merk_path));
+            let WalkResult {
+                batch: deletion_batch,
+                ..
+            } = cost_return_on_error!(&mut cost, visitor.walk_from(subtree_merk_path));
 
             Some(deletion_batch)
         } else {
@@ -152,21 +158,27 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
 /// merging with final deletions batches.
 struct DeletionVisitor<'c, 'db, 'b, B: AsRef<[u8]>> {
     propagate_backward_references: bool,
+    allow_deleting_subtrees: bool,
     cache: &'c MerkCache<'db, 'b, B>,
 }
 
 impl<'c, 'db, 'b, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, B> {
-    fn new(cache: &'c MerkCache<'db, 'b, B>, propagate_backward_references: bool) -> Self {
+    fn new(
+        cache: &'c MerkCache<'db, 'b, B>,
+        propagate_backward_references: bool,
+        allow_deleting_subtrees: bool,
+    ) -> Self {
         Self {
             propagate_backward_references,
+            allow_deleting_subtrees,
             cache,
         }
     }
 }
 
 impl<'c, 'db, 'b, B: AsRef<[u8]>> util::Visit<'b, B> for DeletionVisitor<'c, 'db, 'b, B> {
-    fn visit_merk(&mut self, _path: SubtreePathBuilder<'b, B>) -> CostResult<(), Error> {
-        ().wrap_cost_ok()
+    fn visit_merk(&mut self, _path: SubtreePathBuilder<'b, B>) -> CostResult<bool, Error> {
+        false.wrap_cost_ok()
     }
 
     fn visit_element(
@@ -175,7 +187,7 @@ impl<'c, 'db, 'b, B: AsRef<[u8]>> util::Visit<'b, B> for DeletionVisitor<'c, 'db
         key: &[u8],
         storage: &PrefixedRocksDbTransactionContext,
         element: Element,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<bool, Error> {
         // The process involves two main tasks during traversal: cleaning up elements
         // and optionally propagating backward references, possibly outside the
         // deletion area. To achieve this efficiently within a single traversal,
@@ -185,7 +197,12 @@ impl<'c, 'db, 'b, B: AsRef<[u8]>> util::Visit<'b, B> for DeletionVisitor<'c, 'db
 
         // Step 1: Delete visited element, "deletion" is deferred and stays inside of
         // batch that will be returned after traversal:
-        cost_return_on_error!(&mut cost, storage.delete(key, None).map_err(Into::into));
+        if element.is_any_tree() && !self.allow_deleting_subtrees {
+            // If we're not allowing subtrees deletion, then quick way out with a report
+            return Ok(true).wrap_with_cost(cost);
+        } else {
+            cost_return_on_error!(&mut cost, storage.delete(key, None).map_err(Into::into));
+        }
 
         // Step 2: perform backward references' deletion on top of cached data:
         if self.propagate_backward_references
@@ -213,7 +230,7 @@ impl<'c, 'db, 'b, B: AsRef<[u8]>> util::Visit<'b, B> for DeletionVisitor<'c, 'db
             );
         }
 
-        Ok(()).wrap_with_cost(cost)
+        Ok(false).wrap_with_cost(cost)
     }
 }
 
@@ -221,16 +238,15 @@ impl<'c, 'db, 'b, B: AsRef<[u8]>> util::Visit<'b, B> for DeletionVisitor<'c, 'db
 /// Warning: The costs for this operation are not yet correct, hence we
 /// should keep this private for now
 /// Returns true if we successfully cleared the subtree
-pub(super) fn clear_subtree_with_costs<'b, B, P>(
+pub(super) fn clear_subtree_with_costs<'b, B>(
     db: &GroveDb,
-    path: P,
+    path: SubtreePathBuilder<'b, B>,
     options: Option<ClearOptions>,
     transaction: &Transaction,
     grove_version: &GroveVersion,
 ) -> CostResult<bool, Error>
 where
     B: AsRef<[u8]> + 'b,
-    P: Into<SubtreePath<'b, B>>,
 {
     dispatch_version!(
         "clear_subtree",
@@ -242,89 +258,77 @@ where
         1 => {}
     );
 
-    todo!()
+    let mut cost = Default::default();
 
-    // let subtree_path: SubtreePath<B> = path.into();
-    // let mut cost = Default::default();
-    // let batch = StorageBatch::new();
-    //
-    // let options = options.unwrap_or_default();
-    //
-    // let mut merk_to_clear = cost_return_on_error!(
-    // &mut cost,
-    // db.open_transactional_merk_at_path(
-    // subtree_path.clone(),
-    // transaction,
-    // Some(&batch),
-    // grove_version,
-    // )
-    // );
-    //
-    // if options.check_for_subtrees {
-    // let mut all_query = Query::new();
-    // all_query.insert_all();
-    //
-    // let mut element_iterator =
-    // KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
-    //
-    // delete all nested subtrees
-    // while let Some((key, element_value)) =
-    // element_iterator.next_kv().unwrap_add_cost(&mut cost) {
-    // let element = raw_decode(&element_value, grove_version).unwrap();
-    // if element.is_any_tree() {
-    // if options.allow_deleting_subtrees {
-    // cost_return_on_error!(
-    // &mut cost,
-    // db.delete(
-    // subtree_path.clone(),
-    // key.as_slice(),
-    // Some(DeleteOptions {
-    // allow_deleting_non_empty_trees: true,
-    // deleting_non_empty_trees_returns_error: false,
-    // ..Default::default()
-    // }),
-    // Some(transaction),
-    // grove_version,
-    // )
-    // );
-    // } else if options.trying_to_clear_with_subtrees_returns_error {
-    // return Err(Error::ClearingTreeWithSubtreesNotAllowed(
-    // "options do not allow to clear this merk tree as it contains subtrees",
-    // ))
-    // .wrap_with_cost(cost);
-    // } else {
-    // return Ok(false).wrap_with_cost(cost);
-    // }
-    // }
-    // }
-    // }
-    //
-    // delete non subtree values
-    // cost_return_on_error!(&mut cost,
-    // merk_to_clear.clear().map_err(Error::MerkError));
-    //
-    // propagate changes
-    // let mut merk_cache: HashMap<SubtreePath<B>,
-    // Merk<PrefixedRocksDbTransactionContext>> = HashMap::default();
-    // merk_cache.insert(subtree_path.clone(), merk_to_clear);
-    // cost_return_on_error!(
-    // &mut cost,
-    // db.propagate_changes_with_transaction(
-    // merk_cache,
-    // subtree_path.clone(),
-    // transaction,
-    // &batch,
-    // grove_version,
-    // )
-    // );
-    //
-    // cost_return_on_error!(
-    // &mut cost,
-    // db.db
-    // .commit_multi_context_batch(batch, Some(transaction))
-    // .map_err(Into::into)
-    // );
-    //
-    // Ok(true).wrap_with_cost(cost)
-    //
+    let options = options.unwrap_or_default();
+
+    let cache = MerkCache::<B>::new(db, transaction, grove_version);
+
+    let deletion_batch = if !options.check_for_subtrees {
+        // If we're not concerned about subtrees, then we can perform shallow
+        // cleanup on top of an Element deletion, how regular `delete` would do:
+        let visitor = util::GroveVisitor::new(
+            &db.db,
+            transaction,
+            DeletionVisitor::new(
+                &cache,
+                options.propagate_backward_references,
+                true, // allowing subtrees deletion because we have "don't care" flag
+            ),
+            false, // do not recurse
+            grove_version,
+        );
+
+        let WalkResult {
+            batch: deletion_batch,
+            ..
+        } = cost_return_on_error!(&mut cost, visitor.walk_from(path));
+        deletion_batch
+    } else {
+        // This time we don't ignore subtrees existence
+        let visitor = util::GroveVisitor::new(
+            &db.db,
+            transaction,
+            DeletionVisitor::new(
+                &cache,
+                options.propagate_backward_references,
+                options.allow_deleting_subtrees,
+            ),
+            true,
+            grove_version,
+        );
+
+        let WalkResult {
+            batch: deletion_batch,
+            short_circuited,
+            ..
+        } = cost_return_on_error!(&mut cost, visitor.walk_from(path));
+
+        if short_circuited {
+            // Deletion visitor will short circuit if it hits a subtree, but we're not
+            // allowing deletion of those, based on another flag we decide what to do:
+            return if options.trying_to_clear_with_subtrees_returns_error {
+                Err(Error::ClearingTreeWithSubtreesNotAllowed(
+                    "options do not allow to clear this merk tree as it contains subtrees",
+                ))
+            } else {
+                Ok(false)
+            }
+            .wrap_with_cost(cost);
+        }
+
+        deletion_batch
+    };
+
+    let batch = cost_return_on_error!(&mut cost, cache.into_batch());
+    batch.merge(deletion_batch);
+
+    cost_return_on_error!(
+        &mut cost,
+        db.db
+            .commit_multi_context_batch(*batch, Some(transaction))
+            .map_err(Into::into)
+    );
+
+    Ok(true).wrap_with_cost(cost)
 }

@@ -24,7 +24,14 @@ pub(crate) struct GroveVisitor<'db, 'b, B, V: Visit<'b, B>> {
     visitor: V,
     grove_version: &'db GroveVersion,
     batch: StorageBatch,
+    recursive: bool,
     _base: PhantomData<&'b B>,
+}
+
+pub(crate) struct WalkResult<V> {
+    pub short_circuited: bool,
+    pub visitor: V,
+    pub batch: StorageBatch,
 }
 
 impl<'db, 'b, B, V> GroveVisitor<'db, 'b, B, V>
@@ -35,12 +42,14 @@ where
         storage: &'db RocksDbStorage,
         transaction: &'db Transaction<'db>,
         visitor: V,
+        recursive: bool,
         grove_version: &'db GroveVersion,
     ) -> Self {
         Self {
             storage,
             transaction,
             visitor,
+            recursive,
             grove_version,
             batch: Default::default(),
             _base: PhantomData,
@@ -50,7 +59,7 @@ where
     pub(crate) fn walk_from(
         mut self,
         from: SubtreePathBuilder<'b, B>,
-    ) -> CostResult<(StorageBatch, V), Error>
+    ) -> CostResult<WalkResult<V>, Error>
     where
         B: AsRef<[u8]>,
     {
@@ -69,40 +78,67 @@ where
                 )
                 .unwrap_add_cost(&mut cost);
 
-            cost_return_on_error!(&mut cost, self.visitor.visit_merk(subtree_path.clone()));
+            if cost_return_on_error!(&mut cost, self.visitor.visit_merk(subtree_path.clone())) {
+                return Ok(WalkResult {
+                    short_circuited: true,
+                    visitor: self.visitor,
+                    batch: self.batch,
+                })
+                .wrap_with_cost(cost);
+            }
 
             let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
 
-            while let Some((key, value)) =
-                cost_return_on_error!(&mut cost, raw_iter.next_element(self.grove_version))
-            {
-                if value.is_any_tree() {
+            while let Some((key, value)) = cost_return_on_error!(
+                &mut cost,
+                raw_iter
+                    .next_element(self.grove_version)
+                    .map_err(Into::into)
+            ) {
+                if self.recursive && value.is_any_tree() {
                     let mut path = subtree_path.clone();
                     path.push_segment(&key);
                     queue.push_back(path);
                 }
 
-                cost_return_on_error!(
+                if cost_return_on_error!(
                     &mut cost,
                     self.visitor
                         .visit_element(subtree_path.clone(), &key, &storage, value)
-                );
+                ) {
+                    drop(raw_iter);
+                    return Ok(WalkResult {
+                        short_circuited: true,
+                        visitor: self.visitor,
+                        batch: self.batch,
+                    })
+                    .wrap_with_cost(cost);
+                };
             }
         }
 
-        Ok((self.batch, self.visitor)).wrap_with_cost(cost)
+        Ok(WalkResult {
+            short_circuited: false,
+            visitor: self.visitor,
+            batch: self.batch,
+        })
+        .wrap_with_cost(cost)
     }
 }
 
 /// Configurable logic to execute during a traversal process.
 pub(crate) trait Visit<'b, B> {
-    fn visit_merk(&mut self, path: SubtreePathBuilder<'b, B>) -> CostResult<(), Error>;
+    /// Called on entering a subtree, if wish to stop traversal `true` shall be
+    /// returned.
+    fn visit_merk(&mut self, path: SubtreePathBuilder<'b, B>) -> CostResult<bool, Error>;
 
+    /// Called on each element of a current subtree, if wish to stop traversal
+    /// `true` shall be returned.
     fn visit_element(
         &mut self,
         path: SubtreePathBuilder<'b, B>,
         key: &[u8],
         storage: &PrefixedRocksDbTransactionContext,
         element: Element,
-    ) -> CostResult<(), Error>;
+    ) -> CostResult<bool, Error>;
 }

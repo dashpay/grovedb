@@ -101,7 +101,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,
-                clear_subtree: 0,
+                clear_subtree: 1,
                 delete_with_sectional_storage_function: 0,
                 delete_if_empty_tree: 0,
                 delete_if_empty_tree_with_sectional_storage_function: 0,

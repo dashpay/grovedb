@@ -214,7 +214,7 @@ impl GroveDb {
             1 => {
                 v1::clear_subtree_with_costs(
                     self,
-                    path,
+                    path.into().derive_owned(),
                     options,
                     transaction,
                     grove_version,
