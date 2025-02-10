@@ -3155,68 +3155,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_subtrees() {
-        let grove_version = GroveVersion::latest();
-        let element = Element::new_item(b"ayy".to_vec());
-        let db = make_test_grovedb(grove_version);
-        // Insert some nested subtrees
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"key1",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful subtree 1 insert");
-        db.insert(
-            [TEST_LEAF, b"key1"].as_ref(),
-            b"key2",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful subtree 2 insert");
-        // Insert an element into subtree
-        db.insert(
-            [TEST_LEAF, b"key1", b"key2"].as_ref(),
-            b"key3",
-            element,
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful value insert");
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"key4",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful subtree 3 insert");
-        let subtrees = db
-            .find_subtrees(&[TEST_LEAF].as_ref().into(), None, grove_version)
-            .unwrap()
-            .expect("cannot get subtrees");
-        assert_eq!(
-            vec![
-                vec![TEST_LEAF],
-                vec![TEST_LEAF, b"key1"],
-                vec![TEST_LEAF, b"key4"],
-                vec![TEST_LEAF, b"key1", b"key2"],
-            ],
-            subtrees
-        );
-    }
-
-    #[test]
     fn test_root_subtree_has_root_key() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);

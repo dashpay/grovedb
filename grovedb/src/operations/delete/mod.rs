@@ -11,7 +11,7 @@ mod delete_up_tree;
 mod worst_case;
 
 #[cfg(feature = "minimal")]
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 #[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
@@ -22,24 +22,19 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
-use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
+use grovedb_merk::MaybeTree;
 #[cfg(feature = "minimal")]
-use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
+use grovedb_merk::{Error as MerkError, MerkOptions};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
-use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
-};
+use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, dispatch_version, version::GroveVersion};
 
+use crate::util::{compat, TxRef};
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
-};
-use crate::{
-    raw_decode,
-    util::{compat, TxRef},
 };
 
 #[cfg(feature = "minimal")]
@@ -53,6 +48,8 @@ pub struct ClearOptions {
     /// If we check for subtrees, and we don't allow deleting and there are
     /// some, should we error?
     pub trying_to_clear_with_subtrees_returns_error: bool,
+    /// Trigger cascade deletions of backward references' chains
+    pub propagate_backward_references: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -62,6 +59,7 @@ impl Default for ClearOptions {
             check_for_subtrees: true,
             allow_deleting_subtrees: false,
             trying_to_clear_with_subtrees_returns_error: true,
+            propagate_backward_references: false,
         }
     }
 }
@@ -78,8 +76,7 @@ pub struct DeleteOptions {
     pub base_root_storage_is_free: bool,
     /// Validate tree at path exists
     pub validate_tree_at_path_exists: bool,
-    /// Perform Trigger cascade deletions of backward references' chains
-    /// or raise an error if specific references disallow it.
+    /// Trigger cascade deletions of backward references' chains
     pub propagate_backward_references: bool,
 }
 
@@ -187,10 +184,6 @@ impl GroveDb {
         Ok(false)
     }
 
-    /// Delete all elements in a specified subtree and get back costs
-    /// Warning: The costs for this operation are not yet correct, hence we
-    /// should keep this private for now
-    /// Returns if we successfully cleared the subtree
     fn clear_subtree_with_costs<'b, B, P>(
         &self,
         path: P,
@@ -202,97 +195,32 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        check_grovedb_v0_with_cost!(
+        dispatch_version!(
             "clear_subtree",
             grove_version
                 .grovedb_versions
                 .operations
                 .delete
-                .clear_subtree
-        );
-
-        let subtree_path: SubtreePath<B> = path.into();
-        let mut cost = OperationCost::default();
-        let batch = StorageBatch::new();
-
-        let options = options.unwrap_or_default();
-
-        let mut merk_to_clear = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                subtree_path.clone(),
-                transaction,
-                Some(&batch),
-                grove_version,
-            )
-        );
-
-        if options.check_for_subtrees {
-            let mut all_query = Query::new();
-            all_query.insert_all();
-
-            let mut element_iterator =
-                KVIterator::new(merk_to_clear.storage.raw_iter(), &all_query).unwrap();
-
-            // delete all nested subtrees
-            while let Some((key, element_value)) =
-                element_iterator.next_kv().unwrap_add_cost(&mut cost)
-            {
-                let element = raw_decode(&element_value, grove_version).unwrap();
-                if element.is_any_tree() {
-                    if options.allow_deleting_subtrees {
-                        cost_return_on_error!(
-                            &mut cost,
-                            self.delete(
-                                subtree_path.clone(),
-                                key.as_slice(),
-                                Some(DeleteOptions {
-                                    allow_deleting_non_empty_trees: true,
-                                    deleting_non_empty_trees_returns_error: false,
-                                    ..Default::default()
-                                }),
-                                Some(transaction),
-                                grove_version,
-                            )
-                        );
-                    } else if options.trying_to_clear_with_subtrees_returns_error {
-                        return Err(Error::ClearingTreeWithSubtreesNotAllowed(
-                            "options do not allow to clear this merk tree as it contains subtrees",
-                        ))
-                        .wrap_with_cost(cost);
-                    } else {
-                        return Ok(false).wrap_with_cost(cost);
-                    }
-                }
+                .clear_subtree,
+            0 => {
+                v0::clear_subtree_with_costs(
+                    self,
+                    path,
+                    options,
+                    transaction,
+                    grove_version,
+                )
             }
-        }
-
-        // delete non subtree values
-        cost_return_on_error!(&mut cost, merk_to_clear.clear().map_err(Error::MerkError));
-
-        // propagate changes
-        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-            HashMap::default();
-        merk_cache.insert(subtree_path.clone(), merk_to_clear);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                subtree_path.clone(),
-                transaction,
-                &batch,
-                grove_version,
-            )
-        );
-
-        cost_return_on_error!(
-            &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(transaction))
-                .map_err(Into::into)
-        );
-
-        Ok(true).wrap_with_cost(cost)
+            1 => {
+                v1::clear_subtree_with_costs(
+                    self,
+                    path,
+                    options,
+                    transaction,
+                    grove_version,
+                )
+            }
+        )
     }
 
     /// Delete element with sectional storage function
@@ -1569,6 +1497,7 @@ mod tests {
                     check_for_subtrees: true,
                     allow_deleting_subtrees: false,
                     trying_to_clear_with_subtrees_returns_error: false,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version,
@@ -1583,6 +1512,7 @@ mod tests {
                     check_for_subtrees: true,
                     allow_deleting_subtrees: true,
                     trying_to_clear_with_subtrees_returns_error: false,
+                    propagate_backward_references: false,
                 }),
                 None,
                 grove_version,
