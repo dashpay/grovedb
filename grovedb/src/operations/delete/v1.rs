@@ -282,7 +282,7 @@ where
         let WalkResult {
             batch: deletion_batch,
             ..
-        } = cost_return_on_error!(&mut cost, visitor.walk_from(path));
+        } = cost_return_on_error!(&mut cost, visitor.walk_from(path.clone()));
         deletion_batch
     } else {
         // This time we don't ignore subtrees existence
@@ -302,7 +302,7 @@ where
             batch: deletion_batch,
             short_circuited,
             ..
-        } = cost_return_on_error!(&mut cost, visitor.walk_from(path));
+        } = cost_return_on_error!(&mut cost, visitor.walk_from(path.clone()));
 
         if short_circuited {
             // Deletion visitor will short circuit if it hits a subtree, but we're not
@@ -319,6 +319,21 @@ where
 
         deletion_batch
     };
+
+    // Last step before assembling the batch is to mark the subtree as empty by
+    // clearing the root key info on a parent element:
+    if let Some((parent_path, parent_key)) = path.derive_parent_owned() {
+        let mut parent = cost_return_on_error!(&mut cost, cache.get_merk(parent_path));
+        cost_return_on_error!(
+            &mut cost,
+            parent.for_merk(|m| {
+                Element::get(m, &parent_key, true, grove_version).flat_map_ok(|mut element| {
+                    element.set_root_key(None);
+                    element.insert(m, parent_key, None, grove_version)
+                })
+            })
+        );
+    }
 
     let batch = cost_return_on_error!(&mut cost, cache.into_batch());
     batch.merge(deletion_batch);

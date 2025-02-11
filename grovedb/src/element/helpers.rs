@@ -182,6 +182,19 @@ impl Element {
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// In case of a tree this method sets root key to a provided one
+    pub fn set_root_key(&mut self, new_root_key: Option<Vec<u8>>) {
+        match self {
+            Element::Tree(root_key, ..) => *root_key = new_root_key,
+            Element::SumTree(root_key, ..) => *root_key = new_root_key,
+            Element::BigSumTree(root_key, ..) => *root_key = new_root_key,
+            Element::CountTree(root_key, ..) => *root_key = new_root_key,
+            Element::CountSumTree(root_key, ..) => *root_key = new_root_key,
+            _ => {}
+        }
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the flags and the tree type
     pub fn tree_flags_and_type(&self) -> Option<(&Option<ElementFlags>, TreeType)> {
         match self {
