@@ -63,8 +63,9 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
     if element.is_any_tree() {
         // A subtree deletion was requested:
 
+        let merk_to_delete_path = path.derive_owned_with_child(key);
         let mut merk_to_delete =
-            cost_return_on_error!(&mut cost, cache.get_merk(path.derive_owned_with_child(key)));
+            cost_return_on_error!(&mut cost, cache.get_merk(merk_to_delete_path.clone()));
         let is_empty = cost_return_on_error!(
             &mut cost,
             merk_to_delete.for_merk(|m| m.is_empty_tree().map(Ok))
@@ -116,6 +117,8 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
                 grove_version,
             ))
         );
+        // And marking the subtree as deleted in the cache:
+        cache.mark_deleted(merk_to_delete_path);
 
         // Processing the given batch:
         // 1. add deferred operations from the cache, such as reference and regular
@@ -125,8 +128,10 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
         //    (from the cache) have already removed all connections to this data, no
         //    special handling is needed -- just cleanup.
 
-        batch.merge(*cost_return_on_error!(&mut cost, cache.into_batch()));
-        deletion_batch.into_iter().for_each(|b| batch.merge(b));
+        batch.merge_overwriting(*cost_return_on_error!(&mut cost, cache.into_batch()));
+        deletion_batch
+            .into_iter()
+            .for_each(|b| batch.merge_overwriting(b));
         Ok(true).wrap_with_cost(cost)
     } else {
         // An non-tree element deletion was requested:
@@ -144,7 +149,7 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
         );
 
         // Fill the provied batch with what we ended up with after deletion using cache:
-        batch.merge(*cost_return_on_error!(&mut cost, cache.into_batch()));
+        batch.merge_overwriting(*cost_return_on_error!(&mut cost, cache.into_batch()));
         Ok(true).wrap_with_cost(cost)
     }
 }
@@ -329,14 +334,14 @@ where
             parent.for_merk(|m| {
                 Element::get(m, &parent_key, true, grove_version).flat_map_ok(|mut element| {
                     element.set_root_key(None);
-                    element.insert(m, parent_key, None, grove_version)
+                    element.insert_subtree(m, parent_key, Default::default(), None, grove_version)
                 })
             })
         );
     }
 
     let batch = cost_return_on_error!(&mut cost, cache.into_batch());
-    batch.merge(deletion_batch);
+    batch.merge_overwriting(deletion_batch);
 
     cost_return_on_error!(
         &mut cost,
@@ -346,4 +351,279 @@ where
     );
 
     Ok(true).wrap_with_cost(cost)
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::{storage_cost::StorageCost, OperationCost};
+    use grovedb_version::version::v2::GROVE_V2;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::tests::{common::EMPTY_PATH, make_empty_grovedb};
+
+    #[test]
+    fn test_delete_one_sum_item_cost() {
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert");
+
+        let insertion_cost = db
+            .insert(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                Element::new_sum_item(15000),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+
+        let cost = db
+            .delete(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to delete");
+
+        assert_eq!(
+            insertion_cost.storage_cost.added_bytes,
+            cost.storage_cost.removed_bytes.total_removed_bytes()
+        );
+
+        assert_eq!(
+            db.root_hash(Some(&tx), grove_version).unwrap().unwrap(),
+            [
+                140, 110, 203, 30, 191, 33, 89, 2, 187, 18, 14, 63, 161, 217, 202, 46, 122, 109,
+                83, 75, 231, 212, 120, 176, 57, 153, 88, 81, 179, 93, 225, 11
+            ]
+        );
+
+        // Explanation for 171 storage removed bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 85
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type sum item
+        //   9 for the sum item
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for the feature type
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Summed Merk 9
+
+        // Total 37 + 85 + 48 = 170
+
+        // Hash node calls
+        // everything is empty, so no need for hashes?
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 91,
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(170)
+                },
+                storage_loaded_bytes: 252, // todo: verify this
+                hash_node_calls: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn test_delete_one_item_in_sum_tree_cost() {
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert");
+
+        let insertion_cost = db
+            .insert(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                Element::new_item(b"hello".to_vec()),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+
+        let cost = db
+            .delete(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to delete");
+
+        assert_eq!(
+            db.root_hash(Some(&tx), grove_version).unwrap().unwrap(),
+            [
+                140, 110, 203, 30, 191, 33, 89, 2, 187, 18, 14, 63, 161, 217, 202, 46, 122, 109,
+                83, 75, 231, 212, 120, 176, 57, 153, 88, 81, 179, 93, 225, 11
+            ]
+        );
+
+        assert_eq!(
+            insertion_cost.storage_cost.added_bytes,
+            cost.storage_cost.removed_bytes.total_removed_bytes()
+        );
+        // Explanation for 171 storage removed bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 82
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type sum item
+        //   5 for the item
+        //   1 for the item len
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for the feature type
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Summed Merk 9
+
+        // Total 37 + 82 + 48 = 167
+
+        // Hash node calls
+        // everything is empty, so no need for hashes?
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 91,
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(167)
+                },
+                storage_loaded_bytes: 251, // todo: verify this
+                hash_node_calls: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn test_delete_one_item_cost() {
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let insertion_cost = db
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::new_item(b"cat".to_vec()),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+
+        let cost = db
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("expected to delete");
+
+        assert_eq!(
+            db.root_hash(Some(&tx), grove_version).unwrap().unwrap(),
+            [0; 32]
+        );
+
+        assert_eq!(
+            insertion_cost.storage_cost.added_bytes,
+            cost.storage_cost.removed_bytes.total_removed_bytes()
+        );
+        // Explanation for 147 storage removed bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 72
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   3 for "cat"
+        //   1 for cat length
+        //   1 for Basic Merk
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 40
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Sum 1
+
+        // Total 37 + 72 + 40 = 149
+
+        // Hash node calls
+        // everything is empty, so no need for hashes?
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 4, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 0,
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(149)
+                },
+                storage_loaded_bytes: 77, // todo: verify this
+                hash_node_calls: 0,
+            }
+        );
+    }
 }

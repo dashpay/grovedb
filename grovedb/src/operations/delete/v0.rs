@@ -339,3 +339,278 @@ where
 
     Ok(true).wrap_with_cost(cost)
 }
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::{storage_cost::StorageCost, OperationCost};
+    use grovedb_version::version::v1::GROVE_V1;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::tests::{common::EMPTY_PATH, make_empty_grovedb};
+
+    #[test]
+    fn test_delete_one_sum_item_cost() {
+        let grove_version = &GROVE_V1;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert");
+
+        let insertion_cost = db
+            .insert(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                Element::new_sum_item(15000),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+
+        let cost = db
+            .delete(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to delete");
+
+        assert_eq!(
+            insertion_cost.storage_cost.added_bytes,
+            cost.storage_cost.removed_bytes.total_removed_bytes()
+        );
+
+        assert_eq!(
+            db.root_hash(Some(&tx), grove_version).unwrap().unwrap(),
+            [
+                140, 110, 203, 30, 191, 33, 89, 2, 187, 18, 14, 63, 161, 217, 202, 46, 122, 109,
+                83, 75, 231, 212, 120, 176, 57, 153, 88, 81, 179, 93, 225, 11
+            ]
+        );
+
+        // Explanation for 171 storage removed bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 85
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type sum item
+        //   9 for the sum item
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for the feature type
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Summed Merk 9
+
+        // Total 37 + 85 + 48 = 170
+
+        // Hash node calls
+        // everything is empty, so no need for hashes?
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 8, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 91,
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(170)
+                },
+                storage_loaded_bytes: 418, // todo: verify this
+                hash_node_calls: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn test_delete_one_item_in_sum_tree_cost() {
+        let grove_version = &GROVE_V1;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected to insert");
+
+        let insertion_cost = db
+            .insert(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                Element::new_item(b"hello".to_vec()),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+
+        let cost = db
+            .delete(
+                [b"sum_tree".as_slice()].as_ref(),
+                b"key1",
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to delete");
+
+        assert_eq!(
+            db.root_hash(Some(&tx), grove_version).unwrap().unwrap(),
+            [
+                140, 110, 203, 30, 191, 33, 89, 2, 187, 18, 14, 63, 161, 217, 202, 46, 122, 109,
+                83, 75, 231, 212, 120, 176, 57, 153, 88, 81, 179, 93, 225, 11
+            ]
+        );
+
+        assert_eq!(
+            insertion_cost.storage_cost.added_bytes,
+            cost.storage_cost.removed_bytes.total_removed_bytes()
+        );
+        // Explanation for 171 storage removed bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 82
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type sum item
+        //   5 for the item
+        //   1 for the item len
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for the feature type
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Summed Merk 9
+
+        // Total 37 + 82 + 48 = 167
+
+        // Hash node calls
+        // everything is empty, so no need for hashes?
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 8, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 91,
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(167)
+                },
+                storage_loaded_bytes: 418, // todo: verify this
+                hash_node_calls: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn test_delete_one_item_cost() {
+        let grove_version = &GROVE_V1;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let insertion_cost = db
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::new_item(b"cat".to_vec()),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+
+        let cost = db
+            .delete(EMPTY_PATH, b"key1", None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("expected to delete");
+
+        assert_eq!(
+            db.root_hash(Some(&tx), grove_version).unwrap().unwrap(),
+            [0; 32]
+        );
+
+        assert_eq!(
+            insertion_cost.storage_cost.added_bytes,
+            cost.storage_cost.removed_bytes.total_removed_bytes()
+        );
+        // Explanation for 147 storage removed bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 72
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   3 for "cat"
+        //   1 for cat length
+        //   1 for Basic Merk
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 40
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Sum 1
+
+        // Total 37 + 72 + 40 = 149
+
+        // Hash node calls
+        // everything is empty, so no need for hashes?
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 0,
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(149)
+                },
+                storage_loaded_bytes: 154, // todo: verify this
+                hash_node_calls: 0,
+            }
+        );
+    }
+}
