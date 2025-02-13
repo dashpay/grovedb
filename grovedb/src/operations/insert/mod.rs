@@ -466,12 +466,16 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
+    use grovedb_path::SubtreePath;
     use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
     use crate::{
         operations::insert::InsertOptions,
-        tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        tests::{
+            common::{make_tree_with_bidi_references, EMPTY_PATH},
+            make_empty_grovedb, make_test_grovedb, TEST_LEAF,
+        },
         Element, Error,
     };
 
@@ -2186,5 +2190,87 @@ mod tests {
                 hash_node_calls: 9, // todo: verify this
             }
         );
+    }
+
+    #[test]
+    fn update_item_with_backward_references() {
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        let get_hash = || {
+            Element::get_value_hash(
+                &db.open_transactional_merk_at_path(
+                    SubtreePath::from(&[TEST_LEAF, b"innertree"]),
+                    &transaction,
+                    None,
+                    version,
+                )
+                .unwrap()
+                .unwrap(),
+                b"ref",
+                true,
+                version,
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        };
+
+        let hash_before = get_hash();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Element::new_item_allowing_bidirectional_references(b"certainly new value".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let hash_after = get_hash();
+
+        assert_ne!(hash_before, hash_after);
+    }
+
+    #[test]
+    fn update_item_with_backward_references_with_no_support() {
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Element::new_item(b"hello".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            db.get(
+                &[TEST_LEAF, b"innertree"],
+                b"ref",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
     }
 }

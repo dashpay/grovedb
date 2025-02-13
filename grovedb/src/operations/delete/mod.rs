@@ -589,12 +589,10 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{
-        bidirectional_references::BidirectionalReference,
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
-        reference_path::ReferencePathType,
         tests::{
-            common::EMPTY_PATH, make_deep_tree, make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF,
-            TEST_LEAF,
+            common::{make_tree_with_bidi_references, EMPTY_PATH},
+            make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
         Element, Error,
     };
@@ -1314,126 +1312,6 @@ mod tests {
 
         let root_hash_after_clear = db.root_hash(None, grove_version).unwrap().unwrap();
         assert_ne!(root_hash_before_clear, root_hash_after_clear);
-    }
-
-    fn make_tree_with_bidi_references(version: &GroveVersion) -> TempGroveDb {
-        let db = make_deep_tree(&version);
-
-        let transaction = db.start_transaction();
-
-        // Let's say we're deleting `deep_leaf` with an existing references chain
-        // that goes like
-        // test_leaf/innertree:ref -> another_test_leaf/innertree2:ref2 ->
-        //   -> deep_leaf/deep_node_1/deeper_1:ref3 ->
-        //   -> deep_leaf/deep_node_2/deeper_3:ref4 ->
-        //   -> deep_leaf/deep_node_1/deeper_2:key5
-        //
-
-        db.insert(
-            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
-            b"key5",
-            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
-            None,
-            Some(&transaction),
-            version,
-        )
-        .unwrap()
-        .unwrap();
-
-        db.insert(
-            &[b"deep_leaf".as_ref(), b"deep_node_2", b"deeper_3"],
-            b"ref4",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
-                    1,
-                    vec![
-                        b"deep_node_1".to_vec(),
-                        b"deeper_2".to_vec(),
-                        b"key5".to_vec(),
-                    ],
-                ),
-                backward_reference_slot: 0,
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
-            None,
-            Some(&transaction),
-            version,
-        )
-        .unwrap()
-        .unwrap();
-
-        db.insert(
-            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_1"],
-            b"ref3",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
-                    1,
-                    vec![
-                        b"deep_node_2".to_vec(),
-                        b"deeper_3".to_vec(),
-                        b"ref4".to_vec(),
-                    ],
-                ),
-                backward_reference_slot: 0,
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
-            None,
-            Some(&transaction),
-            version,
-        )
-        .unwrap()
-        .unwrap();
-
-        db.insert(
-            &[ANOTHER_TEST_LEAF, b"innertree2"],
-            b"ref2",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                    b"deep_leaf".to_vec(),
-                    b"deep_node_1".to_vec(),
-                    b"deeper_1".to_vec(),
-                    b"ref3".to_vec(),
-                ]),
-                backward_reference_slot: 0,
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
-            None,
-            Some(&transaction),
-            version,
-        )
-        .unwrap()
-        .unwrap();
-
-        db.insert(
-            &[TEST_LEAF, b"innertree"],
-            b"ref",
-            Element::BidirectionalReference(BidirectionalReference {
-                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
-                    ANOTHER_TEST_LEAF.to_vec(),
-                    b"innertree2".to_vec(),
-                    b"ref2".to_vec(),
-                ]),
-                backward_reference_slot: 0,
-                cascade_on_update: true,
-                max_hop: None,
-                flags: None,
-            }),
-            None,
-            Some(&transaction),
-            version,
-        )
-        .unwrap()
-        .unwrap();
-
-        db.commit_transaction(transaction).unwrap().unwrap();
-
-        db
     }
 
     #[test]
