@@ -84,7 +84,11 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
         }
 
         let deletion_batch = if !is_empty {
-            // Perform recursive deletion of everything below the element we're deleting
+            // Perform recursive deletion of everything below the element we're deleting.
+            // During traversal bidirectional references are also cleaned up with all
+            // required procedures if the flag is set, altering the cache state. However,
+            // the rest of the deletion is done outside of the cache and is accumulated
+            // into a different batch that is returned by the end of this block
             let visitor = util::GroveVisitor::new(
                 &db.db,
                 transaction,
@@ -93,11 +97,10 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
                 grove_version,
             );
 
-            let subtree_merk_path = path.derive_owned_with_child(key);
             let WalkResult {
                 batch: deletion_batch,
                 ..
-            } = cost_return_on_error!(&mut cost, visitor.walk_from(subtree_merk_path));
+            } = cost_return_on_error!(&mut cost, visitor.walk_from(merk_to_delete_path.clone()));
 
             Some(deletion_batch)
         } else {
@@ -135,18 +138,62 @@ pub(super) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
         Ok(true).wrap_with_cost(cost)
     } else {
         // An non-tree element deletion was requested:
-        cost_return_on_error!(
-            &mut cost,
-            subtree_to_delete_from.for_merk(|m| Element::delete_with_sectioned_removal_bytes(
-                m,
-                key,
-                Some(options.as_merk_options()),
-                false,
-                subtree_to_delete_from_type,
-                sectioned_removal,
-                grove_version,
-            ))
-        );
+        if options.propagate_backward_references {
+            // With backward references propagation flag set, a removed element must be
+            // loaded for possible references propagation:
+            let old = cost_return_on_error!(
+                &mut cost,
+                subtree_to_delete_from.for_merk(|m| {
+                    let mut inner_cost = Default::default();
+
+                    let old = cost_return_on_error!(
+                        &mut inner_cost,
+                        Element::get_optional(m, key, true, grove_version)
+                    );
+
+                    cost_return_on_error!(
+                        &mut inner_cost,
+                        Element::delete_with_sectioned_removal_bytes(
+                            m,
+                            key,
+                            Some(options.as_merk_options()),
+                            false,
+                            subtree_to_delete_from_type,
+                            sectioned_removal,
+                            grove_version,
+                        )
+                    );
+
+                    Ok(old).wrap_with_cost(inner_cost)
+                })
+            );
+
+            cost_return_on_error!(
+                &mut cost,
+                bidirectional_references::process_update_element_with_backward_references(
+                    &cache,
+                    subtree_to_delete_from,
+                    path.derive_owned(),
+                    key,
+                    Delta { new: None, old },
+                )
+            );
+        } else {
+            // The user decided not to pay for handling bidirectional references. So, we're
+            // just removing it with no extra steps.
+            cost_return_on_error!(
+                &mut cost,
+                subtree_to_delete_from.for_merk(|m| Element::delete_with_sectioned_removal_bytes(
+                    m,
+                    key,
+                    Some(options.as_merk_options()),
+                    false,
+                    subtree_to_delete_from_type,
+                    sectioned_removal,
+                    grove_version,
+                ))
+            );
+        }
 
         // Fill the provied batch with what we ended up with after deletion using cache:
         batch.merge_overwriting(*cost_return_on_error!(&mut cost, cache.into_batch()));

@@ -584,17 +584,17 @@ impl GroveDb {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use grovedb_costs::{
-        storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
-        OperationCost,
-    };
+    use grovedb_path::SubtreePath;
     use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
     use crate::{
+        bidirectional_references::BidirectionalReference,
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
+        reference_path::ReferencePathType,
         tests::{
-            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+            common::EMPTY_PATH, make_deep_tree, make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF,
+            TEST_LEAF,
         },
         Element, Error,
     };
@@ -1314,5 +1314,218 @@ mod tests {
 
         let root_hash_after_clear = db.root_hash(None, grove_version).unwrap().unwrap();
         assert_ne!(root_hash_before_clear, root_hash_after_clear);
+    }
+
+    fn make_tree_with_bidi_references(version: &GroveVersion) -> TempGroveDb {
+        let db = make_deep_tree(&version);
+
+        let transaction = db.start_transaction();
+
+        // Let's say we're deleting `deep_leaf` with an existing references chain
+        // that goes like
+        // test_leaf/innertree:ref -> another_test_leaf/innertree2:ref2 ->
+        //   -> deep_leaf/deep_node_1/deeper_1:ref3 ->
+        //   -> deep_leaf/deep_node_2/deeper_3:ref4 ->
+        //   -> deep_leaf/deep_node_1/deeper_2:key5
+        //
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+            None,
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_2", b"deeper_3"],
+            b"ref4",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
+                    1,
+                    vec![
+                        b"deep_node_1".to_vec(),
+                        b"deeper_2".to_vec(),
+                        b"key5".to_vec(),
+                    ],
+                ),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            None,
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_1"],
+            b"ref3",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::UpstreamRootHeightReference(
+                    1,
+                    vec![
+                        b"deep_node_2".to_vec(),
+                        b"deeper_3".to_vec(),
+                        b"ref4".to_vec(),
+                    ],
+                ),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            None,
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[ANOTHER_TEST_LEAF, b"innertree2"],
+            b"ref2",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    b"deep_leaf".to_vec(),
+                    b"deep_node_1".to_vec(),
+                    b"deeper_1".to_vec(),
+                    b"ref3".to_vec(),
+                ]),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            None,
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF, b"innertree"],
+            b"ref",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::AbsolutePathReference(vec![
+                    ANOTHER_TEST_LEAF.to_vec(),
+                    b"innertree2".to_vec(),
+                    b"ref2".to_vec(),
+                ]),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            None,
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        db
+    }
+
+    #[test]
+    fn delete_item_with_backward_references() {
+        // Deletion of an item with backward references shall trigger cascade
+        // deletions if the flag is set
+        let version = GroveVersion::latest();
+        let db = make_tree_with_bidi_references(version);
+
+        assert!(db
+            .get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+            .unwrap()
+            .is_ok());
+
+        db.delete(
+            &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_2"],
+            b"key5",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: false,
+                deleting_non_empty_trees_returns_error: true,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            db.get(&[TEST_LEAF, b"innertree"], b"ref", None, version)
+                .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn recursive_deletion_with_bidirectional_references() {
+        // The purpose of this test is to check if bidirectional references chain
+        // propagation works properly when a part of it happen to be under a recursive
+        // deletion effect.
+        // The expected result is that  references inside test_leaf and
+        // another_test_leaf shall be deleted as well, also those that happened
+        // to be inside of deep_leaf shall be checked too, that they were
+        // deleted.
+
+        let version = GroveVersion::latest();
+
+        let db = make_tree_with_bidi_references(version);
+
+        let transaction = db.start_transaction();
+
+        // Perform recursive deletion:
+        db.delete(
+            SubtreePath::empty(),
+            b"deep_leaf",
+            Some(DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                base_root_storage_is_free: true,
+                validate_tree_at_path_exists: true,
+                propagate_backward_references: true,
+            }),
+            Some(&transaction),
+            version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Outside of deletion area:
+        assert!(matches!(
+            db.get(
+                &[TEST_LEAF, b"innertree"],
+                b"ref",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+
+        // Inside:
+        assert!(matches!(
+            db.get(
+                &[b"deep_leaf".as_ref(), b"deep_node_1", b"deeper_1"],
+                b"ref3",
+                Some(&transaction),
+                version
+            )
+            .unwrap(),
+            Err(Error::PathParentLayerNotFound(_))
+        ));
     }
 }

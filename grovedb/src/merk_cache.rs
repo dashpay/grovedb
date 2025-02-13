@@ -136,7 +136,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                 }
             }
             Subtree::Deleted => {
-                return Err(Error::CorruptedData("parent was deleted".to_owned()))
+                return Err(Error::MerkCacheSubtreeDeleted("parent was deleted"))
                     .wrap_with_cost(cost)
             }
         };
@@ -319,8 +319,19 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
             let Subtree::LoadedMerk(merk) = flag_and_merk.1 else {
                 continue;
             };
+
             if let Some((parent_path, parent_key)) = path.derive_parent_owned() {
-                let mut parent_merk = cost_return_on_error!(&mut cost, self.get_merk(parent_path));
+                // Error handling here ensures that it is not a major issue if the
+                // parent Merk was marked as deleted. `MerkCache` is not responsible for
+                // determining how a subtree ended up deleted, especially when some of its
+                // child subtrees still have changes. This situation can arise when a more
+                // efficient deletion process occurs outside the cache without spending
+                // extra time marking entries within it.
+                let mut parent_merk = match self.get_merk(parent_path).unwrap_add_cost(&mut cost) {
+                    Ok(merk) => merk,
+                    Err(Error::MerkCacheSubtreeDeleted(_)) => continue,
+                    Err(e) => return Err(e).wrap_with_cost(cost),
+                };
 
                 let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
                     &mut cost,
@@ -496,7 +507,7 @@ mod tests {
             cache
                 .get_merk(SubtreePathBuilder::owned_from_iter([TEST_LEAF]))
                 .unwrap(),
-            Err(Error::CorruptedData(_))
+            Err(Error::MerkCacheSubtreeDeleted(_))
         ));
     }
 

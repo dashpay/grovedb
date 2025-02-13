@@ -49,28 +49,39 @@ impl BidirectionalReference {
     ) -> CostResult<(), Error> {
         let mut cost = Default::default();
 
-        let ResolvedReference {
-            mut target_merk,
-            target_key,
-            ..
-        } = cost_return_on_error!(
-            &mut cost,
-            follow_reference_once(
-                merk_cache,
-                current_path,
-                current_key,
-                self.forward_reference_path
-            )
-        );
-
-        cost_return_on_error!(
-            &mut cost,
-            Self::remove_backward_reference_resolved(
-                &mut target_merk,
-                &target_key,
-                self.backward_reference_slot
-            )
-        );
+        match follow_reference_once(
+            merk_cache,
+            current_path,
+            current_key,
+            self.forward_reference_path,
+        )
+        .unwrap_add_cost(&mut cost)
+        {
+            Ok(ResolvedReference {
+                mut target_merk,
+                target_key,
+                ..
+            }) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::remove_backward_reference_resolved(
+                        &mut target_merk,
+                        &target_key,
+                        self.backward_reference_slot
+                    )
+                );
+            }
+            // 1. We tolerate missing references because consistency can be bypassed,
+            // and out-of-sync situations might be common.
+            // 2. Recursive deletions occur in their predefined order, and any cascade
+            // deletions triggered by bidirectional reference chains do not alter
+            // this order. As a result, the original recursive deletion may attempt
+            // to delete a part of the reference chain that was already handled by a
+            // previously triggered cascade deletion, so we need to ignore such errors
+            // to proceeed.
+            Err(Error::CorruptedReferencePathKeyNotFound(_)) => {}
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        }
 
         Ok(()).wrap_with_cost(cost)
     }

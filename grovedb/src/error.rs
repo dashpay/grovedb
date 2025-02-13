@@ -96,6 +96,9 @@ pub enum Error {
     /// Corrupted data
     CorruptedData(String),
 
+    #[error("merk cache, accessing deleted subtree: {0}")]
+    MerkCacheSubtreeDeleted(&'static str),
+
     #[error("data storage error: {0}")]
     /// Corrupted storage
     CorruptedStorage(String),
