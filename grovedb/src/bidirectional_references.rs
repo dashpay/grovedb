@@ -15,7 +15,9 @@ use crate::{
     element::{Delta, MaxReferenceHop},
     merk_cache::{MerkCache, MerkHandle},
     operations::insert::InsertOptions,
-    reference_path::{follow_reference_once, ReferencePathType, ResolvedReference},
+    reference_path::{
+        follow_reference, follow_reference_once, ReferencePathType, ResolvedReference,
+    },
     Element, ElementFlags, Error,
 };
 
@@ -137,7 +139,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
         target_key,
         target_element,
         target_node_value_hash,
-        ..
+        target_path,
     } = cost_return_on_error!(
         &mut cost,
         follow_reference_once(
@@ -161,9 +163,16 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
         .wrap_with_cost(cost);
     }
 
-    // If target item is a bidirectional reference itself, we limit the number of
-    // backward references it supports by 1:
-    if let Element::BidirectionalReference(..) = target_element {
+    // If the closest target item is a bidirectional reference itself, a few
+    // additional steps are required:
+    // 1. We limit the number of backward references it supports by 1.
+    // 2. We ignore the value hash of the reference and continue following the
+    //    chain.
+    let target_value_hash = if let Element::BidirectionalReference(BidirectionalReference {
+        forward_reference_path,
+        ..
+    }) = target_element
+    {
         let (_, bitvec) = cost_return_on_error!(
             &mut cost,
             get_backward_references_bitvec(&mut target_merk, &target_key)
@@ -177,9 +186,17 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
             ))
             .wrap_with_cost(cost);
         }
-    }
 
-    // If the target element passes the first check, attempt to add backward
+        cost_return_on_error!(
+            &mut cost,
+            follow_reference(merk_cache, target_path, &target_key, forward_reference_path)
+        )
+        .target_node_value_hash
+    } else {
+        target_node_value_hash
+    };
+
+    // If the closest target element passes the first check, attempt to add backward
     // reference:
     let inverted_reference = cost_return_on_error_no_add!(
         cost,
@@ -226,7 +243,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
             Element::BidirectionalReference(reference).insert_reference(
                 m,
                 key,
-                target_node_value_hash,
+                target_value_hash,
                 options.map(|o| o.as_merk_options()),
                 &merk_cache.version,
             )
@@ -410,6 +427,7 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
     let mut queue = VecDeque::new();
 
     queue.push_back((merk, path, key));
+    let mut first = true;
 
     // Just like with propagation we follow all references chains...
     while let Some((mut current_merk, current_path, current_key)) = queue.pop_front() {
@@ -455,24 +473,29 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
             queue.push_back((origin_bidi_merk, origin_bidi_path, origin_bidi_key));
         }
 
-        // ... and the element altogether
-        cost_return_on_error!(
-            &mut cost,
-            current_merk.for_merk(|m| Element::delete_with_sectioned_removal_bytes(
-                m,
-                current_key,
-                None,
-                false,
-                m.tree_type,
-                &mut |_, removed_key_bytes, removed_value_bytes| {
-                    Ok((
-                        StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
-                        StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
-                    ))
-                },
-                &merk_cache.version
-            ))
-        );
+        // ... and the element altogether, if it is later down the cascade (the original
+        // item was overwritten or deleted, no need to delete it here)
+        if !first {
+            cost_return_on_error!(
+                &mut cost,
+                current_merk.for_merk(|m| Element::delete_with_sectioned_removal_bytes(
+                    m,
+                    current_key,
+                    None,
+                    false,
+                    m.tree_type,
+                    &mut |_, removed_key_bytes, removed_value_bytes| {
+                        Ok((
+                            StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
+                            StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
+                        ))
+                    },
+                    &merk_cache.version
+                ))
+            );
+        } else {
+            first = false;
+        }
     }
 
     Ok(()).wrap_with_cost(cost)

@@ -23,7 +23,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "minimal")]
 use crate::error::GroveDbErrorExt;
-use crate::util::TxRef;
+use crate::{bidirectional_references::BidirectionalReference, util::TxRef};
 #[cfg(feature = "minimal")]
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
@@ -164,7 +164,11 @@ impl GroveDb {
             }
             visited.insert(current_path.clone());
             match current_element {
-                Element::Reference(reference_path, ..) => {
+                Element::Reference(reference_path, ..)
+                | Element::BidirectionalReference(BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    ..
+                }) => {
                     current_path = cost_return_on_error!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)

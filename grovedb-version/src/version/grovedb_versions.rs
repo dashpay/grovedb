@@ -48,6 +48,7 @@ pub struct GroveDBOperationsGetVersions {
     pub get: FeatureVersion,
     pub get_caching_optional: FeatureVersion,
     pub follow_reference: FeatureVersion,
+    pub ref_path_follow_reference: FeatureVersion,
     pub follow_reference_once: FeatureVersion,
     pub get_raw: FeatureVersion,
     pub get_raw_caching_optional: FeatureVersion,

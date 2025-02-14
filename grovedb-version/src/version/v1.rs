@@ -74,6 +74,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 get: 0,
                 get_caching_optional: 0,
                 follow_reference: 0,
+                ref_path_follow_reference: 0,
                 follow_reference_once: 0,
                 get_raw: 0,
                 get_raw_caching_optional: 0,

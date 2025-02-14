@@ -762,6 +762,7 @@ pub fn make_deep_tree_with_sum_trees(grove_version: &GroveVersion) -> TempGroveD
 mod tests {
     use batch::QualifiedGroveDbOp;
     use grovedb_merk::proofs::query::SubqueryBranch;
+    use operations::insert::InsertOptions;
 
     use super::*;
 
@@ -4092,39 +4093,147 @@ mod tests {
             .unwrap()
             .is_empty());
     }
-}
 
-#[test]
-fn subtrees_cant_be_referenced() {
-    let db = make_deep_tree(&GroveVersion::latest());
+    #[test]
+    fn test_verify_bidirectional_references_dont_corrupt() {
+        // Opposed to regular references, usage of bidirectional references with flags
+        // enabling them to work will prevent such inconsistencies:
 
-    // It used to be possible, yet it was an error:
-    assert!(db
-        .insert(
-            SubtreePath::empty(),
-            b"test_ref",
-            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
-                TEST_LEAF.to_vec()
-            ])),
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let transaction = db.start_transaction();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
             None,
-            None,
-            &GROVE_V1,
+            Some(&transaction),
+            grove_version,
         )
         .unwrap()
-        .is_ok());
+        .unwrap();
 
-    // And now it's not:
-    assert!(db
-        .insert(
-            SubtreePath::empty(),
-            b"test_ref",
-            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
-                TEST_LEAF.to_vec()
-            ])),
-            None,
-            None,
-            &GROVE_V2,
+        db.insert(
+            &[TEST_LEAF],
+            b"refc",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
         )
         .unwrap()
-        .is_err());
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refb",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"refc".to_vec()),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refa",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"refb".to_vec()),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+
+        // "Breaking" things there:
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // But they're not broken!
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn subtrees_cant_be_referenced() {
+        let db = make_deep_tree(&GroveVersion::latest());
+
+        // It used to be possible, yet it was an error:
+        assert!(db
+            .insert(
+                SubtreePath::empty(),
+                b"test_ref",
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec()
+                ])),
+                None,
+                None,
+                &GROVE_V1,
+            )
+            .unwrap()
+            .is_ok());
+
+        // And now it's not:
+        assert!(db
+            .insert(
+                SubtreePath::empty(),
+                b"test_ref",
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec()
+                ])),
+                None,
+                None,
+                &GROVE_V2,
+            )
+            .unwrap()
+            .is_err());
+    }
 }

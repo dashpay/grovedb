@@ -85,10 +85,7 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
             );
             let referenced_item: Element = resolved_reference.target_element;
 
-            if matches!(
-                referenced_item,
-                Element::Tree(_, _) | Element::SumTree(_, _, _)
-            ) {
+            if referenced_item.is_any_tree() {
                 return Err(Error::NotSupported(
                     "References cannot point to subtrees".to_owned(),
                 ))
