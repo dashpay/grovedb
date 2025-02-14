@@ -490,8 +490,9 @@ impl StorageBatch {
         }
     }
 
-    /// Merge batch into this one prioritizing operations of the provided batch for deletions.
-    /// The original [[merge]] doesn't overwrite operations with deletions keeping keys if they were inserted before.
+    /// Merge batch into this one prioritizing operations of the provided batch
+    /// for deletions. The original [[merge]] doesn't overwrite operations
+    /// with deletions keeping keys if they were inserted before.
     pub fn merge_overwriting(&self, other: StorageBatch) {
         let other_ops = other.operations.into_inner();
         let mut ops = self.operations.borrow_mut();
