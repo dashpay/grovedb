@@ -228,7 +228,7 @@ impl<'c, 'db, 'b, B: AsRef<[u8]>> DeletionVisitor<'c, 'db, 'b, B> {
     }
 }
 
-impl<'c, 'db, 'b, B: AsRef<[u8]>> util::Visit<'b, B> for DeletionVisitor<'c, 'db, 'b, B> {
+impl<'b, B: AsRef<[u8]>> util::Visit<'b, B> for DeletionVisitor<'_, '_, 'b, B> {
     fn visit_merk(&mut self, _path: SubtreePathBuilder<'b, B>) -> CostResult<bool, Error> {
         false.wrap_cost_ok()
     }

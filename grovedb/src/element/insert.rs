@@ -236,7 +236,7 @@ impl Element {
                 .element
                 .insert_if_changed_value,
                 0 => { Self::get_optional_from_storage(&merk.storage, key, grove_version) }
-                1 => { Self::get_optional(&merk, key, true, grove_version) }
+                1 => { Self::get_optional(merk, key, true, grove_version) }
         );
 
         let previous_element = cost_return_on_error!(&mut cost, previous_element_res);
@@ -378,7 +378,7 @@ impl Element {
 
         let previous_element = cost_return_on_error!(
             &mut cost,
-            Self::get_optional(&merk, &key, true, grove_version)
+            Self::get_optional(merk, &key, true, grove_version)
         );
         let delta = Delta {
             new: Some(self),
@@ -541,7 +541,7 @@ impl Element {
 
         let previous_element = cost_return_on_error!(
             &mut cost,
-            Self::get_optional(&merk, &key, true, grove_version)
+            Self::get_optional(merk, &key, true, grove_version)
         );
 
         let delta = Delta {
@@ -645,7 +645,7 @@ impl Element {
     }
 }
 
-#[cfg(all(feature = "minimal"))]
+#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};

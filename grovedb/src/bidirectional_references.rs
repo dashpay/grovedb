@@ -1,16 +1,16 @@
 //! Bidirectional references management module.
 
-// Bidirectional references definitions shall be visible in `Element` thus they're
-// left out of feature gate, the implementation though is not required for `verify`.
+// Bidirectional references definitions shall be visible in `Element` thus
+// they're left out of feature gate, the implementation though is not required
+// for `verify`.
 #[cfg(feature = "minimal")]
 mod handling;
 
 use bincode::{Decode, Encode};
-
-use crate::{element::MaxReferenceHop, reference_path::ReferencePathType, ElementFlags};
-
 #[cfg(feature = "minimal")]
 pub(crate) use handling::*;
+
+use crate::{element::MaxReferenceHop, reference_path::ReferencePathType, ElementFlags};
 
 const META_BACKWARD_REFERENCES_PREFIX: &[u8] = b"refs";
 

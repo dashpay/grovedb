@@ -343,7 +343,7 @@ fn query_result_to_grovedbg(
                         path.clone(),
                         db.open_transactional_merk_at_path(
                             path.as_slice().into(),
-                            &tx,
+                            tx,
                             None,
                             GroveVersion::latest(),
                         )

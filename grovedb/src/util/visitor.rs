@@ -28,9 +28,8 @@ pub(crate) struct GroveVisitor<'db, 'b, B, V: Visit<'b, B>> {
     _base: PhantomData<&'b B>,
 }
 
-pub(crate) struct WalkResult<V> {
+pub(crate) struct WalkResult {
     pub short_circuited: bool,
-    pub visitor: V,
     pub batch: StorageBatch,
 }
 
@@ -59,7 +58,7 @@ where
     pub(crate) fn walk_from(
         mut self,
         from: SubtreePathBuilder<'b, B>,
-    ) -> CostResult<WalkResult<V>, Error>
+    ) -> CostResult<WalkResult, Error>
     where
         B: AsRef<[u8]>,
     {
@@ -81,7 +80,6 @@ where
             if cost_return_on_error!(&mut cost, self.visitor.visit_merk(subtree_path.clone())) {
                 return Ok(WalkResult {
                     short_circuited: true,
-                    visitor: self.visitor,
                     batch: self.batch,
                 })
                 .wrap_with_cost(cost);
@@ -109,7 +107,6 @@ where
                     drop(raw_iter);
                     return Ok(WalkResult {
                         short_circuited: true,
-                        visitor: self.visitor,
                         batch: self.batch,
                     })
                     .wrap_with_cost(cost);
@@ -119,7 +116,6 @@ where
 
         Ok(WalkResult {
             short_circuited: false,
-            visitor: self.visitor,
             batch: self.batch,
         })
         .wrap_with_cost(cost)

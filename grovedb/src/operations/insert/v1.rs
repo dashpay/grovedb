@@ -14,13 +14,13 @@ use crate::{
     Element, Error, GroveDb, Transaction,
 };
 
-pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
+pub(super) fn insert_on_transaction<B: AsRef<[u8]>>(
     db: &GroveDb,
-    path: SubtreePath<'b, B>,
+    path: SubtreePath<'_, B>,
     key: &[u8],
     element: Element,
     options: InsertOptions,
-    transaction: &'db Transaction,
+    transaction: &Transaction,
     batch: &StorageBatch,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
@@ -136,41 +136,39 @@ pub(super) fn insert_on_transaction<'db, 'b, B: AsRef<[u8]>>(
                     "a tree should be empty at the moment of insertion when not using batches",
                 ))
                 .wrap_with_cost(cost);
-            } else {
-                if options.propagate_backward_references {
-                    let delta = cost_return_on_error!(
-                        &mut cost,
-                        subtree_to_insert_into.for_merk(|m| element.insert_subtree_if_changed(
-                            m,
-                            key,
-                            NULL_HASH,
-                            Some(options.as_merk_options()),
-                            grove_version
-                        ))
-                    );
+            } else if options.propagate_backward_references {
+                let delta = cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| element.insert_subtree_if_changed(
+                        m,
+                        key,
+                        NULL_HASH,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    ))
+                );
 
-                    cost_return_on_error!(
-                        &mut cost,
-                        process_update_element_with_backward_references(
-                            &cache,
-                            subtree_to_insert_into.clone(),
-                            path.derive_owned(),
-                            key,
-                            delta
-                        )
-                    );
-                } else {
-                    cost_return_on_error!(
-                        &mut cost,
-                        subtree_to_insert_into.for_merk(|m| element.insert_subtree(
-                            m,
-                            key,
-                            NULL_HASH,
-                            Some(options.as_merk_options()),
-                            grove_version
-                        ))
-                    );
-                }
+                cost_return_on_error!(
+                    &mut cost,
+                    process_update_element_with_backward_references(
+                        &cache,
+                        subtree_to_insert_into.clone(),
+                        path.derive_owned(),
+                        key,
+                        delta
+                    )
+                );
+            } else {
+                cost_return_on_error!(
+                    &mut cost,
+                    subtree_to_insert_into.for_merk(|m| element.insert_subtree(
+                        m,
+                        key,
+                        NULL_HASH,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    ))
+                );
             }
         }
 

@@ -111,7 +111,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
             Subtree::LoadedMerk(merk) => {
                 if let Some((root_key, tree_type)) = cost_return_on_error!(
                     &mut cost,
-                    Element::get(&merk, parent_key, true, &self.version)
+                    Element::get(merk, parent_key, true, self.version)
                         .map_ok(|element| element.root_key_and_tree_type_owned())
                 ) {
                     let storage = self
@@ -251,7 +251,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
                                 (&path).into(),
                                 self.tx,
                                 Some(batch),
-                                &self.version,
+                                self.version,
                             )
                         )),
                     )))

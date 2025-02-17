@@ -497,10 +497,10 @@ impl StorageBatch {
         let other_ops = other.operations.into_inner();
         let mut ops = self.operations.borrow_mut();
 
-        ops.data.extend(other_ops.data.into_iter());
-        ops.meta.extend(other_ops.meta.into_iter());
-        ops.aux.extend(other_ops.aux.into_iter());
-        ops.roots.extend(other_ops.roots.into_iter());
+        ops.data.extend(other_ops.data);
+        ops.meta.extend(other_ops.meta);
+        ops.aux.extend(other_ops.aux);
+        ops.roots.extend(other_ops.roots);
     }
 }
 

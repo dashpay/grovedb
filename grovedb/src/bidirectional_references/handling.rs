@@ -12,6 +12,7 @@ use grovedb_costs::{
 use grovedb_merk::CryptoHash;
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 
+use super::{BidirectionalReference, SlotIdx, META_BACKWARD_REFERENCES_PREFIX};
 use crate::{
     element::Delta,
     merk_cache::{MerkCache, MerkHandle},
@@ -22,14 +23,12 @@ use crate::{
     Element, Error,
 };
 
-use super::{BidirectionalReference, SlotIdx, META_BACKWARD_REFERENCES_PREFIX};
-
 impl BidirectionalReference {
     /// Given current path removes backward reference from the merk and key
     /// where this bidirectional references points to
-    fn remove_backward_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
+    fn remove_backward_reference<'b, B: AsRef<[u8]>>(
         self,
-        merk_cache: &'c MerkCache<'db, 'b, B>,
+        merk_cache: &MerkCache<'_, 'b, B>,
         current_path: SubtreePathBuilder<'b, B>,
         current_key: &[u8],
     ) -> CostResult<(), Error> {
@@ -72,8 +71,8 @@ impl BidirectionalReference {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn remove_backward_reference_resolved<'db, 'c>(
-        target_merk: &mut MerkHandle<'db, 'c>,
+    fn remove_backward_reference_resolved(
+        target_merk: &mut MerkHandle<'_, '_>,
         target_key: &[u8],
         slot_idx: SlotIdx,
     ) -> CostResult<(), Error> {
@@ -81,7 +80,7 @@ impl BidirectionalReference {
 
         let (prefix, mut bits) = cost_return_on_error!(
             &mut cost,
-            get_backward_references_bitvec(target_merk, &target_key)
+            get_backward_references_bitvec(target_merk, target_key)
         );
 
         bits.set(slot_idx, false);
@@ -107,8 +106,8 @@ impl BidirectionalReference {
 
 /// Insert bidirectional reference at specified location performing required
 /// checks and updates
-pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u8]>>(
-    merk_cache: &MerkCache<'db, 'b, B>,
+pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
+    merk_cache: &MerkCache<'_, 'b, B>,
     path: SubtreePath<'b, B>,
     key: &[u8],
     mut reference: BidirectionalReference,
@@ -229,7 +228,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'db, 'b, 'k, B: AsRef<[u
                 key,
                 target_value_hash,
                 options.map(|o| o.as_merk_options()),
-                &merk_cache.version,
+                merk_cache.version,
             )
         })
     );
@@ -325,7 +324,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
                     merk,
                     path,
                     key.to_vec(),
-                    cost_return_on_error!(&mut cost, new.value_hash(&merk_cache.version))
+                    cost_return_on_error!(&mut cost, new.value_hash(merk_cache.version))
                 )
             );
         }
@@ -359,7 +358,7 @@ pub(crate) fn process_update_element_with_backward_references<'db, 'b, 'c, B: As
                     merk,
                     path.clone(),
                     key.to_vec(),
-                    cost_return_on_error!(&mut cost, new.value_hash(&merk_cache.version))
+                    cost_return_on_error!(&mut cost, new.value_hash(merk_cache.version))
                 )
             );
 
@@ -474,7 +473,7 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
                             StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
                         ))
                     },
-                    &merk_cache.version
+                    merk_cache.version
                 ))
             );
         } else {
@@ -576,8 +575,8 @@ fn make_meta_prefix(key: &[u8]) -> Vec<u8> {
 /// Prefix for a Merk's meta storage is made of constant keyword, lenght of the
 /// key and the key itself. Under the prefix GroveDB stores bitvec, and slots
 /// for backward references are integers appended to the prefix.
-fn get_backward_references_bitvec<'db, 'c>(
-    merk: &mut MerkHandle<'db, 'c>,
+fn get_backward_references_bitvec(
+    merk: &mut MerkHandle<'_, '_>,
     key: &[u8],
 ) -> CostResult<(Prefix, BitArray<[u32; 1], Lsb0>), Error> {
     let mut cost = Default::default();
@@ -615,8 +614,8 @@ fn get_backward_references_bitvec<'db, 'c>(
 /// bitvec to locate them. That way the bits is stored under
 /// [META_BACKWARD_REFERENCES_PREFIX] with key and references themselves are
 /// located under this prefix with index (0-31) appended.
-fn add_backward_reference<'db, 'c>(
-    target_merk: &mut MerkHandle<'db, 'c>,
+fn add_backward_reference(
+    target_merk: &mut MerkHandle<'_, '_>,
     key: &[u8],
     backward_reference: BackwardReference,
 ) -> CostResult<SlotIdx, Error> {
@@ -656,8 +655,8 @@ fn add_backward_reference<'db, 'c>(
 }
 
 /// Return a vector of backward references to the item
-fn get_backward_references<'db, 'c>(
-    merk: &mut MerkHandle<'db, 'c>,
+fn get_backward_references(
+    merk: &mut MerkHandle<'_, '_>,
     key: &[u8],
 ) -> CostResult<Vec<(SlotIdx, BackwardReference)>, Error> {
     let mut cost = Default::default();
