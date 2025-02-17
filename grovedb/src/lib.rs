@@ -127,7 +127,6 @@
 
 #[cfg(feature = "minimal")]
 pub mod batch;
-#[cfg(feature = "full")]
 mod bidirectional_references;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
@@ -161,6 +160,7 @@ use std::sync::Arc;
 #[cfg(feature = "minimal")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+#[cfg(feature = "minimal")]
 use bidirectional_references::BidirectionalReference;
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;

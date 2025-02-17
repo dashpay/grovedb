@@ -36,15 +36,15 @@ use grovedb_merk::estimated_costs::{
 use grovedb_merk::tree_type::TreeType;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::visualize_to_vec;
+#[cfg(feature = "minimal")]
 pub(crate) use insert::Delta;
 
+use crate::bidirectional_references::BidirectionalReference;
+use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::reference_path::ReferencePathType;
 #[cfg(feature = "minimal")]
 use crate::OperationCost;
-use crate::{
-    bidirectional_references::BidirectionalReference, operations::proof::util::hex_to_ascii,
-};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Optional meta-data to be stored per element
