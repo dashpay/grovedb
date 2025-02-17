@@ -41,7 +41,7 @@ Although `get` may be an exception when no references are involved, data still n
 loaded first, and isolation might be required. Therefore, transactions should be provided
 from the start.
 
-Since transaction arguments in the release function are optional, we internally start a
+Since the first release transaction arguments are optional, now we internally start a
 transaction if none is provided. To facilitate this, `crate::utils::TxRef` was introduced.
 
 `TxRef` wraps a transactions provided from user if any, otherwise starts a new one. The

@@ -50,16 +50,16 @@ Fetching the previous item on every modification introduces additional overhead,
 would be unfair to applications that do not use this feature or for database sections that
 do not require it. To address this, the flag was introduced.
 
-# Rules
+## Rules
 
 Next, we’ll go over the rules and limitations for using bidirectional references.
 
 Note that for the rules to apply, the `propagate_backward_references` flag needs to be
 set.
 
-An 'Element with backward references' refers to ItemWithBackwardReferences,
-SumItemWithBackwardReferences, and BidirectionalReference, as all these types contain a
-list of backward references associated with them.
+An 'Element with backward references' refers to `ItemWithBackwardReferences`,
+`SumItemWithBackwardReferences`, and `BidirectionalReference`, as all these types contain
+a list of backward references associated with them.
 
 - __Only elements with backward references can be targets of bidirectional references.__
 Trying to create a bidirectional reference to a regular item will result in an error. And
@@ -83,3 +83,87 @@ backward references support or deleted entirely), a cascade deletion of bidirect
 references occurs.__ This requires the `cascade_on_update` setting for each affected
 bidirectional reference. If this setting is not enabled, an error will be raised,
 preventing the operation from completing successfully.
+
+## Implementation
+
+_Work in progress: Support for bidirectional references in `apply_batch` is not yet
+implemented._
+
+Bidirectional references are optional for each call to GroveDB's public API, and a flag is
+used to enable their functionality for that specific call. Essentially, when the flag is
+present, it modifies the regular execution process in two ways:
+
+1. Modifications (both writes and deletions) will fetch the data being updated.
+2. If the fetched item is an element with backward references, control is passed to the
+   `bidirectional_references` module in the GroveDB root for post-processing. This occurs for
+   bidirectional reference insertion regardless of whether the flag is set.
+
+Quite a lot happens behind this "post-processing," and we'll go into the details shortly.
+
+### Meta Storage
+
+Bidirectional references do not alter the state of the elements they point to, as that
+could unintentionally trigger a cascade of propagations. Since backward references are
+not stored directly with the element's data, the meta column family is used to store them
+instead.
+
+Meta storage follows the same scheme as regular storage, using prefixes. By employing
+prefixes, we achieve a local meta storage for each Merk. This prefix is extended with a
+"namespace" to separate the backward references domain from any other possible usages of
+meta storage and the element's key is appended.
+
+Under the key made by that concatenation, a 32-bit integer is stored, representing
+a bit vector. Each bit set corresponds to a backward reference stored under the prefix,
+with the index added to the prefix to create a new key. This key is used to store the
+actual backward reference data. When inserting or changing a bidirectional reference,
+which alters the backward references list of an element, the integer (bitvec) is modified
+to set or unset a slot. The value under the new key, composed of the prefix and the slot
+index, is updated without affecting other slots, maintaining determinism.
+
+The backward reference is defined as:
+
+```rust
+pub(crate) struct BackwardReference {
+    pub(crate) inverted_reference: ReferencePathType,
+    pub(crate) cascade_on_update: bool,
+}
+```
+
+For example, the data for a subtree `[a, b]` with key `c`, which contains
+`ItemWithBackwardReferences` and is referenced by two bidirectional references from `[d]`
+with keys `e` and `f`, could look like this:
+
+```
+* [a,b] prefix = ba1337ab
+* [d] prefix = ee322322
+
+Data:
+  ba1337abc : TreeNode { .. Element::ItemWithBackwardReferences(..)} // approx
+  ee322322e : TreeNode { .. Element::BidirectionalReference(/* reference path [a,b,c] */) }
+  ee322322f : TreeNode { .. Element::BidirectionalReference(/* reference path [a,b,c] */) }
+
+Meta:
+  ba1337abrefsc  : b00000000000000000000000000000011
+  ba1337abrefsc0 : BackwardReference(/* reference path [d,e] */)
+  ba1337abrefsc1 : BackwardReference(/* reference path [d,f] */)
+```
+
+### Propagation
+
+Previous read: [[merk_cache]].
+
+Deletion or an update of an element with backward references triggers a cascade hash
+update or a deletion, both of which alter the state of affected subtrees, leading to
+regular hash propagation to ancestor subtrees up to the GroveDB root. In short, operations
+with the required flag enabled can trigger updates across several subtrees simultaneously.
+
+Thus, there are two ongoing propagations:
+
+1. Backward references chain hash propagation / cascade deletion.
+2. Regular hash propagation of subtrees.
+
+It is possible that a reference propagation could impact a subtree that is also affected
+by regular propagation from one of its descendants. This is difficult to predict. Since
+these propagations happen at different steps, they can result in multiple Merk openings
+causing issues. To manage this, caching becomes mandatory. This led to the introduction of
+`MerkCache`, which has become a crucial component for handling bidirectional references.
