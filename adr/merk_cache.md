@@ -2,7 +2,7 @@
 
 An easy to use answer to GroveDB's implementation challenges.
 
-Previous read: [[atomicity]].
+Previous read: [atomicity](./atomicity.md).
 
 Mandatory operation batching and deferred application, which are used for all GroveDB
 updates, separate the state into two perspectives: one is the current state reflected in

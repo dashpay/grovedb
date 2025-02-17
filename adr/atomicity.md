@@ -58,12 +58,12 @@ user to decide what to do with it.
 _Not to be confused with GroveDB batches!_
 
 In general, if an operation fails, it doesn't necessarily mean that the entire transaction
-should be aborted, unless previous operations were destructive. At least, this is not the
+should be aborted, unless it came into an inconsisent state. At least, this is not the
 desired behavior in GroveDB, as it is used in Dash Platform: a transaction should live
 for the duration of a block, with operations happening seamlessly -- even those that
 may fail.
 
-As stated before, an operation that changes the state of GroveDB consists of many
+As stated before, an operation that changes the state of GroveDB consists of many RocksDB
 operations. However, we do not apply them directly to the provided transaction. Instead,
 we aggregate them into a RocksDB batch, which is applied to the transaction all at once
 at the end of the GroveDB operation. This approach allows for failure without aborting

@@ -150,7 +150,7 @@ Meta:
 
 ### Propagation
 
-Previous read: [[merk_cache]].
+Previous read: [Merk cache](./merk_cache.md).
 
 Deletion or an update of an element with backward references triggers a cascade hash
 update or a deletion, both of which alter the state of affected subtrees, leading to
