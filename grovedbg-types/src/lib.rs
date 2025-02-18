@@ -153,12 +153,24 @@ pub enum Element {
         #[serde_as(as = "Option<Base64>")]
         element_flags: Option<Vec<u8>>,
     },
+    ItemWithBackwardReferences {
+        #[serde_as(as = "Base64")]
+        value: Vec<u8>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
     SumItem {
         value: i64,
         #[serde_as(as = "Option<Base64>")]
         element_flags: Option<Vec<u8>>,
     },
+    SumItemWithBackwardReferences {
+        value: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
     Reference(Reference),
+    BidirectionalReference(Reference),
 }
 
 #[serde_as]
