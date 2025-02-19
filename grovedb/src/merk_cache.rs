@@ -323,10 +323,12 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
             if let Some((parent_path, parent_key)) = path.derive_parent_owned() {
                 // Error handling here ensures that it is not a major issue if the
                 // parent Merk was marked as deleted. `MerkCache` is not responsible for
-                // determining how a subtree ended up deleted, especially when some of its
-                // child subtrees still have changes. This situation can arise when a more
-                // efficient deletion process occurs outside the cache without spending
-                // extra time marking entries within it.
+                // determining how a subtree ended up deleted, especially when some of
+                // its child subtrees still have changes. This situation can arise when
+                // a more efficient deletion process occurs outside the cache without
+                // spending extra time marking entries within it, but still marking the
+                // root of deletion as gone to prevent further propagations and wrong
+                // re-insertions.
                 let mut parent_merk = match self.get_merk(parent_path).unwrap_add_cost(&mut cost) {
                     Ok(merk) => merk,
                     Err(Error::MerkCacheSubtreeDeleted(_)) => continue,

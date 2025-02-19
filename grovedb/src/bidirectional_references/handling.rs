@@ -56,14 +56,8 @@ impl BidirectionalReference {
                     )
                 );
             }
-            // 1. We tolerate missing references because consistency can be bypassed,
+            // We tolerate missing references because consistency can be bypassed,
             // and out-of-sync situations might be common.
-            // 2. Recursive deletions occur in their predefined order, and any cascade
-            // deletions triggered by bidirectional reference chains do not alter
-            // this order. As a result, the original recursive deletion may attempt
-            // to delete a part of the reference chain that was already handled by a
-            // previously triggered cascade deletion, so we need to ignore such errors
-            // to proceeed.
             Err(Error::CorruptedReferencePathKeyNotFound(_)) => {}
             Err(e) => return Err(e).wrap_with_cost(cost),
         }
