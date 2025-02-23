@@ -281,7 +281,7 @@ fn sync_db_demo(
         num_chunks += 1;
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
 
-        let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+        let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), &ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
         chunk_queue.extend(more_chunks);
     }
     println!("num_chunks: {}", num_chunks);

@@ -7,7 +7,11 @@ use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 pub use self::state_sync_session::MultiStateSyncSession;
-use crate::{util::TxRef, Error, GroveDb, TransactionArg};
+use crate::{
+    replication::utils::{pack_nested_bytes, unpack_nested_bytes},
+    util::TxRef,
+    Error, GroveDb, TransactionArg,
+};
 
 /// Type alias representing a chunk identifier in the state synchronization
 /// process.
@@ -15,8 +19,14 @@ use crate::{util::TxRef, Error, GroveDb, TransactionArg};
 /// - `SubtreePrefix`: The prefix of the subtree (32 bytes).
 /// - `Option<Vec<u8>>`: The root key, which may be `None` if not present.
 /// - `bool`: Indicates whether the tree is a sum tree.
-/// - `Vec<u8>`: The chunk ID representing traversal instructions.
-pub type ChunkIdentifier = (crate::SubtreePrefix, Option<Vec<u8>>, TreeType, Vec<u8>);
+/// - `Vec<Vec<u8>>`: Vector containing the chunk ID representing traversal
+///   instructions.
+pub type ChunkIdentifier = (
+    crate::SubtreePrefix,
+    Option<Vec<u8>>,
+    TreeType,
+    Vec<Vec<u8>>,
+);
 
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
@@ -37,35 +47,57 @@ impl GroveDb {
         }
     }
 
-    /// Fetch a chunk by global chunk ID (should be called by ABCI when the
-    /// `LoadSnapshotChunk` method is invoked).
+    /// Fetches a chunk of data from the database based on the given global
+    /// chunk ID.
+    ///
+    /// This function retrieves the requested chunk using the provided packed
+    /// global chunk ID and the specified transaction. It validates the
+    /// protocol version before proceeding.
     ///
     /// # Parameters
-    /// - `global_chunk_id`: Global chunk ID in the following format:
-    ///   `[SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]`
-    ///   - **SUBTREE_PREFIX**: 32 bytes (mandatory) - All zeros indicate the
-    ///     Root subtree.
-    ///   - **SIZE_ROOT_KEY**: 1 byte - Size of `ROOT_KEY` in bytes.
-    ///   - **ROOT_KEY**: `SIZE_ROOT_KEY` bytes (optional).
-    ///   - **IS_SUM_TREE**: 1 byte (mandatory) - Marks if the tree is a sum
-    ///     tree or not.
-    ///   - **CHUNK_ID**: 0 or more bytes (optional) - Traversal instructions to
-    ///     the root of the given chunk. Traversal instructions are represented
-    ///     as "1" for left and "0" for right.
-    ///     - TODO: Compact `CHUNK_ID` into a bitset for size optimization as a
-    ///       subtree can be large, and traversal instructions for the deepest
-    ///       chunks could consume significant space.
     ///
-    /// - `transaction`: The transaction used to fetch the chunk.
-    /// - `version`: The version of the state sync protocol.
-    /// - `grove_version`: The version of GroveDB.
+    /// - `packed_global_chunk_id`: A reference to a byte slice representing the
+    ///   packed global chunk ID.
+    /// - `transaction`: The transaction context used for database operations.
+    /// - `version`: The protocol version for state synchronization.
+    /// - `grove_version`: A reference to the GroveDB versioning structure.
     ///
     /// # Returns
-    /// Returns the chunk proof operators for the requested chunk, encoded as
-    /// bytes.
+    ///
+    /// - `Ok(Vec<u8>)`: A packed byte vector containing the requested chunk
+    ///   data.
+    /// - `Err(Error)`: An error if the fetch operation fails.
+    ///
+    /// # Errors
+    ///
+    /// - Returns `Error::CorruptedData` if the protocol version is unsupported.
+    /// - Returns `Error::CorruptedData` if an issue occurs while opening the
+    ///   database transaction.
+    /// - Returns `Error::CorruptedData` if chunk encoding or retrieval fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let chunk = fetch_chunk(
+    ///     &packed_global_chunk_id,
+    ///     transaction,
+    ///     CURRENT_STATE_SYNC_VERSION,
+    ///     &grove_version,
+    /// )?;
+    /// ```
+    ///
+    /// # Notes
+    ///
+    /// - Only `CURRENT_STATE_SYNC_VERSION` is supported.
+    /// - If the `packed_global_chunk_id` matches the `root_app_hash` length, it
+    ///   is treated as a single ID.
+    /// - Otherwise, it is unpacked into multiple nested chunk IDs.
+    /// - The function opens a `Merk` tree for each chunk and retrieves the
+    ///   associated data.
+    /// - Empty trees return an empty byte vector.
     pub fn fetch_chunk(
         &self,
-        global_chunk_id: &[u8],
+        packed_global_chunk_id: &[u8],
         transaction: TransactionArg,
         version: u16,
         grove_version: &GroveVersion,
@@ -84,57 +116,78 @@ impl GroveDb {
             ));
         }
 
-        let root_app_hash = self.root_hash(Some(tx.as_ref()), grove_version).value?;
-        let (chunk_prefix, root_key, tree_type, chunk_id) =
-            utils::decode_global_chunk_id(global_chunk_id, &root_app_hash)?;
-
-        // TODO: Refactor this by writing fetch_chunk_inner (as only merk constructor
-        // and type are different)
-        let merk = self
-            .open_transactional_merk_by_prefix(
-                chunk_prefix,
-                root_key,
-                tree_type,
-                tx.as_ref(),
-                None,
-                grove_version,
-            )
-            .value
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "failed to open merk by prefix tx:{} with:{}",
-                    hex::encode(chunk_prefix),
-                    e
-                ))
-            })?;
-        if merk.is_empty_tree().unwrap() {
-            return Ok(vec![]);
+        let mut global_chunk_ids: Vec<Vec<u8>> = vec![];
+        let root_app_hash = self.root_hash(None, grove_version).value?;
+        if packed_global_chunk_id.len() == root_app_hash.len() {
+            global_chunk_ids.push(packed_global_chunk_id.to_vec());
+        } else {
+            global_chunk_ids.extend(unpack_nested_bytes(packed_global_chunk_id)?);
         }
 
-        let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
-            Error::CorruptedData(format!(
-                "failed to create chunk producer by prefix tx:{} with:{}",
-                hex::encode(chunk_prefix),
-                e
-            ))
-        })?;
-        let (chunk, _) = chunk_producer
-            .chunk(&chunk_id, grove_version)
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "failed to apply chunk:{} with:{}",
-                    hex::encode(chunk_prefix),
-                    e
-                ))
-            })?;
-        let op_bytes = utils::encode_vec_ops(chunk).map_err(|e| {
-            Error::CorruptedData(format!(
-                "failed to encode chunk ops:{} with:{}",
-                hex::encode(chunk_prefix),
-                e
-            ))
-        })?;
-        Ok(op_bytes)
+        let mut global_chunk_bytes: Vec<Vec<u8>> = vec![];
+        for global_chunk_id in global_chunk_ids {
+            let (chunk_prefix, root_key, tree_type, nested_chunk_ids) =
+                utils::decode_global_chunk_id(global_chunk_id.as_slice(), &root_app_hash)?;
+
+            let mut local_chunk_bytes: Vec<Vec<u8>> = vec![];
+
+            let merk = self
+                .open_transactional_merk_by_prefix(
+                    chunk_prefix,
+                    root_key,
+                    tree_type,
+                    tx.as_ref(),
+                    None,
+                    grove_version,
+                )
+                .value
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "failed to open merk by prefix tx:{} with:{}",
+                        hex::encode(chunk_prefix),
+                        e
+                    ))
+                })?;
+            if merk.is_empty_tree().unwrap() {
+                local_chunk_bytes.push(vec![]);
+            } else {
+                let mut chunk_producer = ChunkProducer::new(&merk).map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "failed to create chunk producer by prefix tx:{} with:{}",
+                        hex::encode(chunk_prefix),
+                        e
+                    ))
+                })?;
+                // Ensure we iterate once with vec![] if it's empty
+                let iter: Box<dyn Iterator<Item = Vec<u8>>> = if nested_chunk_ids.is_empty() {
+                    Box::new(std::iter::once(vec![]))
+                } else {
+                    Box::new(nested_chunk_ids.into_iter())
+                };
+                for chunk_id in iter {
+                    let (chunk, _) =
+                        chunk_producer
+                            .chunk(&chunk_id, grove_version)
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "failed to apply chunk:{} with:{}",
+                                    hex::encode(chunk_prefix),
+                                    e
+                                ))
+                            })?;
+                    let op_bytes = utils::encode_vec_ops(chunk).map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "failed to encode chunk ops:{} with:{}",
+                            hex::encode(chunk_prefix),
+                            e
+                        ))
+                    })?;
+                    local_chunk_bytes.push(op_bytes);
+                }
+            }
+            global_chunk_bytes.push(pack_nested_bytes(local_chunk_bytes));
+        }
+        Ok(pack_nested_bytes(global_chunk_bytes))
     }
 
     /// Starts a state synchronization process for a snapshot with the given
@@ -250,24 +303,36 @@ pub(crate) mod utils {
         subtree_path_str
     }
 
-    /// Decodes a given global chunk ID into its components:
-    /// `[SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]`.
+    /// Decodes a global chunk identifier into its constituent parts.
     ///
-    /// # Parameters
-    /// - `global_chunk_id`: A byte slice representing the global chunk ID to
-    ///   decode.
-    /// - `app_hash`: The application hash, which may be required for validation
-    ///   or context.
+    /// This function takes a `global_chunk_id` and an `app_hash` and extracts
+    /// the chunk prefix, root key (if any), tree type, and any nested chunk
+    /// IDs.
+    ///
+    /// # Arguments
+    ///
+    /// * `global_chunk_id` - A byte slice representing the global chunk
+    ///   identifier.
+    /// * `app_hash` - A byte slice representing the application hash.
     ///
     /// # Returns
-    /// - `Ok(ChunkIdentifier)`: A tuple containing the decoded components:
-    ///   - `SUBTREE_PREFIX`: A 32-byte prefix of the subtree.
-    ///   - `SIZE_ROOT_KEY`: Size of the root key (derived from `ROOT_KEY`
-    ///     length).
-    ///   - `ROOT_KEY`: Optional root key as a byte vector.
-    ///   - `IS_SUM_TREE`: A boolean indicating whether the tree is a sum tree.
-    ///   - `CHUNK_ID`: Traversal instructions as a byte vector.
-    /// - `Err(Error)`: An error if the global chunk ID could not be decoded.
+    ///
+    /// Returns a `Result` containing a tuple of:
+    /// - `SubtreePrefix`: The chunk prefix key.
+    /// - `Option<Vec<u8>>`: The optional root key.
+    /// - `TreeType`: The type of tree associated with the chunk.
+    /// - `Vec<Vec<u8>>`: A list of nested chunk IDs.
+    ///
+    /// Returns an `Error` if decoding fails due to incorrect input format.
+    ///
+    /// # Errors
+    ///
+    /// This function returns an error if:
+    /// - The `global_chunk_id` is shorter than 32 bytes.
+    /// - The root key size cannot be decoded.
+    /// - The root key cannot be fully extracted.
+    /// - The tree type cannot be decoded.
+    /// - The subtree prefix cannot be constructed.
     pub fn decode_global_chunk_id(
         global_chunk_id: &[u8],
         app_hash: &[u8],
@@ -299,15 +364,16 @@ pub(crate) mod utils {
             ));
         }
         let (root_key, remaining) = remaining.split_at(root_key_size[0] as usize);
-        let is_sum_tree_length: usize = 1;
-        if remaining.len() < is_sum_tree_length {
+        let tree_type_length: usize = 1;
+        if remaining.len() < tree_type_length {
             return Err(Error::CorruptedData(
                 "unable to decode root key".to_string(),
             ));
         }
-        let (is_sum_tree, chunk_id) = remaining.split_at(is_sum_tree_length);
+        let (tree_type_byte, packed_chunk_ids) = remaining.split_at(tree_type_length);
+        let tree_type = tree_type_byte[0].try_into()?;
 
-        let tree_type = is_sum_tree[0].try_into()?;
+        let nested_chunk_ids = unpack_nested_bytes(packed_chunk_ids)?;
 
         let subtree_prefix: crate::SubtreePrefix = chunk_prefix_key
             .try_into()
@@ -318,30 +384,35 @@ pub(crate) mod utils {
                 subtree_prefix,
                 Some(root_key.to_vec()),
                 tree_type,
-                chunk_id.to_vec(),
+                nested_chunk_ids,
             ))
         } else {
-            Ok((subtree_prefix, None, tree_type, chunk_id.to_vec()))
+            Ok((subtree_prefix, None, tree_type, nested_chunk_ids))
         }
     }
 
-    /// Encodes the given components into a global chunk ID in the format:
-    /// `[SUBTREE_PREFIX:SIZE_ROOT_KEY:ROOT_KEY:IS_SUM_TREE:CHUNK_ID]`.
+    /// Encodes a global chunk identifier from its components.
     ///
-    /// # Parameters
-    /// - `subtree_prefix`: A 32-byte array representing the prefix of the
-    ///   subtree.
-    /// - `root_key_opt`: An optional root key as a byte vector.
-    /// - `is_sum_tree`: A boolean indicating whether the tree is a sum tree.
-    /// - `chunk_id`: A byte vector representing the traversal instructions.
+    /// This function constructs a global chunk identifier by concatenating the
+    /// given subtree prefix, root key (if any), tree type, and nested chunk
+    /// IDs into a single byte vector.
+    ///
+    /// # Arguments
+    ///
+    /// * `subtree_prefix` - A fixed-size byte array representing the subtree
+    ///   prefix (Blake3 hash output length).
+    /// * `root_key_opt` - An optional root key represented as a `Vec<u8>`.
+    /// * `tree_type` - The type of tree associated with the chunk.
+    /// * `chunk_ids` - A vector of nested chunk IDs to be packed.
     ///
     /// # Returns
-    /// - A `Vec<u8>` containing the encoded global chunk ID.
+    ///
+    /// Returns a `Vec<u8>` representing the encoded global chunk identifier.
     pub fn encode_global_chunk_id(
         subtree_prefix: [u8; blake3::OUT_LEN],
         root_key_opt: Option<Vec<u8>>,
         tree_type: TreeType,
-        chunk_id: Vec<u8>,
+        chunk_ids: Vec<Vec<u8>>,
     ) -> Vec<u8> {
         let mut res = vec![];
 
@@ -356,7 +427,7 @@ pub(crate) mod utils {
 
         res.push(tree_type as u8);
 
-        res.extend(chunk_id.to_vec());
+        res.extend(pack_nested_bytes(chunk_ids));
 
         res
     }
@@ -386,7 +457,7 @@ pub(crate) mod utils {
     /// # Returns
     /// - `Ok(Vec<Op>)`: A vector of decoded `Op` operations.
     /// - `Err(Error)`: An error if the decoding process fails.
-    pub fn decode_vec_ops(chunk: Vec<u8>) -> Result<Vec<Op>, Error> {
+    pub fn decode_vec_ops(chunk: &[u8]) -> Result<Vec<Op>, Error> {
         let decoder = Decoder::new(&chunk);
         let mut res = vec![];
         for op in decoder {
@@ -401,5 +472,125 @@ pub(crate) mod utils {
             }
         }
         Ok(res)
+    }
+
+    /// Packs a vector of byte vectors (`Vec<Vec<u8>>`) into a single byte
+    /// vector.
+    ///
+    /// The encoding format is as follows:
+    /// 1. The first byte stores the number of elements.
+    /// 2. Each element is prefixed with its length as a 2-byte (`u16`) value in
+    ///    big-endian format.
+    /// 3. The actual byte sequence of the element is then appended.
+    ///
+    /// # Arguments
+    ///
+    /// * `nested_bytes` - A vector of byte vectors (`Vec<Vec<u8>>`) to be
+    ///   packed.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` containing the encoded representation of the nested byte
+    /// vectors.
+    pub fn pack_nested_bytes(nested_bytes: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut packed_data = Vec::new();
+
+        // Store the number of elements (2 bytes)
+        packed_data.extend_from_slice(&(nested_bytes.len() as u16).to_be_bytes());
+
+        for bytes in nested_bytes {
+            // Store length as 4 bytes (big-endian)
+            packed_data.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+
+            // Append the actual byte sequence
+            packed_data.extend(bytes);
+        }
+
+        packed_data
+    }
+
+    /// Unpacks a byte vector into a vector of byte vectors (`Vec<Vec<u8>>`).
+    ///
+    /// This function reverses the encoding performed by `pack_nested_bytes`,
+    /// extracting the original nested structure from the packed byte
+    /// representation.
+    ///
+    /// # Encoding Format:
+    /// - The first byte represents the number of nested byte arrays.
+    /// - Each nested array is prefixed with a **2-byte (u16) length** in
+    ///   big-endian format.
+    /// - The byte sequence of each nested array follows.
+    ///
+    /// # Arguments
+    ///
+    /// * `packed_data` - A byte slice (`&[u8]`) that represents the packed
+    ///   nested byte arrays.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<Vec<u8>>)` - The successfully unpacked byte arrays.
+    /// * `Err(String)` - An error message if the input data is malformed.
+    ///
+    /// # Errors
+    ///
+    /// This function returns an error if:
+    /// - The input is empty.
+    /// - The number of expected chunks does not match the actual data length.
+    /// - The data is truncated or malformed.
+    pub fn unpack_nested_bytes(packed_data: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+        if packed_data.is_empty() {
+            return Err(Error::CorruptedData("Input data is empty".to_string()));
+        }
+
+        // Read num_elements as u16 (big-endian)
+        let num_elements = u16::from_be_bytes([packed_data[0], packed_data[1]]) as usize;
+        let mut nested_bytes = Vec::with_capacity(num_elements);
+        let mut index = 2;
+
+        for i in 0..num_elements {
+            // Ensure there is enough data to read the 2-byte length
+            if index + 1 >= packed_data.len() {
+                return Err(Error::CorruptedData(format!(
+                    "Unexpected end of data while reading length of nested array {}",
+                    i
+                )));
+            }
+
+            // Read length as u32 (big-endian)
+            let byte_length = u32::from_be_bytes([
+                packed_data[index],
+                packed_data[index + 1],
+                packed_data[index + 2],
+                packed_data[index + 3],
+            ]) as usize;
+            index += 4; // Move past the length bytes
+
+            // Ensure there's enough data for the byte sequence
+            if index + byte_length > packed_data.len() {
+                return Err(Error::CorruptedData(format!(
+                    "Unexpected end of data while reading nested array {} (expected length: {})",
+                    i, byte_length
+                )));
+            }
+
+            // Extract the byte sequence
+            let byte_sequence = packed_data[index..index + byte_length].to_vec();
+            index += byte_length;
+
+            // Push into the result
+            nested_bytes.push(byte_sequence);
+        }
+
+        // Ensure no extra unexpected data remains
+        if index != packed_data.len() {
+            return Err(Error::CorruptedData(format!(
+                "Extra unexpected bytes found at the end of input (expected length: {}, actual: \
+                 {})",
+                index,
+                packed_data.len()
+            )));
+        }
+
+        Ok(nested_bytes)
     }
 }
