@@ -27,6 +27,9 @@ use crate::{
     Element, Error, GroveDb, Transaction,
 };
 
+/// Number of elements packed together
+pub const CONST_GROUP_PACKING_SIZE: usize = 32;
+
 pub(crate) type SubtreePrefix = [u8; 32];
 
 /// Struct governing the state synchronization of one subtree.
@@ -420,7 +423,7 @@ impl<'db> MultiStateSyncSession<'db> {
             }
 
             if !next_local_chunk_ids.is_empty() {
-                for grouped_ids in next_local_chunk_ids.chunks(32) {
+                for grouped_ids in next_local_chunk_ids.chunks(CONST_GROUP_PACKING_SIZE) {
                     next_chunk_ids.push(encode_global_chunk_id(
                         chunk_prefix,
                         subtree_state_sync.root_key.clone(),
@@ -470,7 +473,7 @@ impl<'db> MultiStateSyncSession<'db> {
         }
 
         let mut res: Vec<Vec<u8>> = vec![];
-        for grouped_next_global_chunk_ids in next_global_chunk_ids.chunks(32) {
+        for grouped_next_global_chunk_ids in next_global_chunk_ids.chunks(CONST_GROUP_PACKING_SIZE) {
             res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
         }
         Ok(res)
