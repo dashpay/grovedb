@@ -75,17 +75,6 @@ impl GroveDb {
     ///   database transaction.
     /// - Returns `Error::CorruptedData` if chunk encoding or retrieval fails.
     ///
-    /// # Example
-    ///
-    /// ```rust
-    /// let chunk = fetch_chunk(
-    ///     &packed_global_chunk_id,
-    ///     transaction,
-    ///     CURRENT_STATE_SYNC_VERSION,
-    ///     &grove_version,
-    /// )?;
-    /// ```
-    ///
     /// # Notes
     ///
     /// - Only `CURRENT_STATE_SYNC_VERSION` is supported.
@@ -516,7 +505,7 @@ pub(crate) mod utils {
     /// representation.
     ///
     /// # Encoding Format:
-    /// - The first byte represents the number of nested byte arrays.
+    /// - The first two bytes represents the number of nested byte arrays.
     /// - Each nested array is prefixed with a **2-byte (u16) length** in
     ///   big-endian format.
     /// - The byte sequence of each nested array follows.
