@@ -36,7 +36,7 @@ use crate::{
     operations::proof::{GroveDBProof, LayerProof, ProveOptions},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
-    ElementFlags, GroveDb, Transaction,
+    GroveDb, Transaction,
 };
 
 const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
@@ -559,16 +559,23 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
         }
 
         crate::Element::Reference(reference, _, element_flags) => {
-            grovedbg_types::Element::Reference(reference_path_to_grovedbg(reference, element_flags))
+            grovedbg_types::Element::Reference {
+                reference_path: reference_path_to_grovedbg(reference),
+                element_flags,
+            }
         }
         crate::Element::BidirectionalReference(BidirectionalReference {
             forward_reference_path,
             flags,
+            backward_reference_slot,
+            cascade_on_update,
             ..
-        }) => grovedbg_types::Element::Reference(reference_path_to_grovedbg(
-            forward_reference_path,
-            flags,
-        )),
+        }) => grovedbg_types::Element::BidirectionalReference {
+            reference_path: reference_path_to_grovedbg(forward_reference_path),
+            element_flags: flags,
+            slot_idx: backward_reference_slot as u8,
+            cascade_on_update,
+        },
 
         crate::Element::Tree(root_key, element_flags) => grovedbg_types::Element::Subtree {
             root_key,
@@ -604,57 +611,39 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
     }
 }
 
-fn reference_path_to_grovedbg(
-    reference: ReferencePathType,
-    element_flags: Option<ElementFlags>,
-) -> grovedbg_types::Reference {
+fn reference_path_to_grovedbg(reference: ReferencePathType) -> grovedbg_types::ReferencePath {
     match reference {
         ReferencePathType::AbsolutePathReference(path) => {
-            grovedbg_types::Reference::AbsolutePathReference {
-                path,
-                element_flags,
-            }
+            grovedbg_types::ReferencePath::AbsolutePathReference { path }
         }
 
         ReferencePathType::UpstreamRootHeightReference(n_keep, path_append) => {
-            grovedbg_types::Reference::UpstreamRootHeightReference {
+            grovedbg_types::ReferencePath::UpstreamRootHeightReference {
                 n_keep: n_keep.into(),
                 path_append,
-                element_flags,
             }
         }
         ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
             n_keep,
             path_append,
-        ) => grovedbg_types::Reference::UpstreamRootHeightWithParentPathAdditionReference {
+        ) => grovedbg_types::ReferencePath::UpstreamRootHeightWithParentPathAdditionReference {
             n_keep: n_keep.into(),
             path_append,
-            element_flags,
         },
         ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append) => {
-            grovedbg_types::Reference::UpstreamFromElementHeightReference {
+            grovedbg_types::ReferencePath::UpstreamFromElementHeightReference {
                 n_remove: n_remove.into(),
                 path_append,
-                element_flags,
             }
         }
         ReferencePathType::CousinReference(swap_parent) => {
-            grovedbg_types::Reference::CousinReference {
-                swap_parent,
-                element_flags,
-            }
+            grovedbg_types::ReferencePath::CousinReference { swap_parent }
         }
         ReferencePathType::RemovedCousinReference(swap_parent) => {
-            grovedbg_types::Reference::RemovedCousinReference {
-                swap_parent,
-                element_flags,
-            }
+            grovedbg_types::ReferencePath::RemovedCousinReference { swap_parent }
         }
         ReferencePathType::SiblingReference(sibling_key) => {
-            grovedbg_types::Reference::SiblingReference {
-                sibling_key,
-                element_flags,
-            }
+            grovedbg_types::ReferencePath::SiblingReference { sibling_key }
         }
     }
 }
