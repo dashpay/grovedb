@@ -104,7 +104,7 @@ impl SubtreeStateSyncInfo<'_> {
         }
         self.pending_chunks.remove(chunk_id);
         if !chunk_data.is_empty() {
-            match decode_vec_ops(&chunk_data) {
+            match decode_vec_ops(chunk_data) {
                 Ok(ops) => {
                     match self.restorer.process_chunk(chunk_id, ops, grove_version) {
                         Ok(next_chunk_ids) => {
@@ -360,7 +360,7 @@ impl<'db> MultiStateSyncSession<'db> {
             nested_global_chunks.extend(unpack_nested_bytes(packed_global_chunks)?);
         }
 
-        if (nested_global_chunk_ids.len() != nested_global_chunks.len()) {
+        if nested_global_chunk_ids.len() != nested_global_chunks.len() {
             return Err(Error::InternalError(
                 "Packed num of global chunkIDs and chunks are not matching".to_string(),
             ));
@@ -373,10 +373,9 @@ impl<'db> MultiStateSyncSession<'db> {
 
         let mut next_global_chunk_ids: Vec<Vec<u8>> = vec![];
 
-        for (_, (iter_global_chunk_id, iter_packed_chunks)) in nested_global_chunk_ids
+        for (iter_global_chunk_id, iter_packed_chunks) in nested_global_chunk_ids
             .iter()
             .zip(nested_global_chunks.iter())
-            .enumerate()
         {
             let mut next_chunk_ids = vec![];
 
@@ -394,7 +393,7 @@ impl<'db> MultiStateSyncSession<'db> {
 
             let current_nested_chunk_data = unpack_nested_bytes(iter_packed_chunks.as_slice())?;
 
-            if (it_chunk_ids.len() != current_nested_chunk_data.len()) {
+            if it_chunk_ids.len() != current_nested_chunk_data.len() {
                 return Err(Error::InternalError(
                     "Packed num of chunkIDs and chunks are not matching #2".to_string(),
                 ));
@@ -408,10 +407,8 @@ impl<'db> MultiStateSyncSession<'db> {
             };
 
             let mut next_local_chunk_ids = vec![];
-            for (_, (current_local_chunk_id, current_local_chunks)) in it_chunk_ids
-                .iter()
-                .zip(current_nested_chunk_data.iter())
-                .enumerate()
+            for (current_local_chunk_id, current_local_chunks) in
+                it_chunk_ids.iter().zip(current_nested_chunk_data.iter())
             {
                 next_local_chunk_ids.extend(subtree_state_sync.apply_inner_chunk(
                     current_local_chunk_id.as_slice(),
@@ -430,42 +427,40 @@ impl<'db> MultiStateSyncSession<'db> {
                     ));
                 }
                 next_global_chunk_ids.extend(next_chunk_ids);
-            } else {
-                if subtree_state_sync.pending_chunks.is_empty() {
-                    let completed_path = subtree_state_sync.current_path.clone();
+            } else if subtree_state_sync.pending_chunks.is_empty() {
+                let completed_path = subtree_state_sync.current_path.clone();
 
-                    // Subtree is finished. We can save it.
-                    if subtree_state_sync.num_processed_chunks > 0 {
-                        if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
-                            if let Err(err) = prefix_data.restorer.finalize(grove_version) {
-                                return Err(Error::InternalError(format!(
-                                    "Unable to finalize Merk: {:?}",
-                                    err
-                                )));
-                            }
-                        } else {
+                // Subtree is finished. We can save it.
+                if subtree_state_sync.num_processed_chunks > 0 {
+                    if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
+                        if let Err(err) = prefix_data.restorer.finalize(grove_version) {
                             return Err(Error::InternalError(format!(
-                                "Prefix {:?} does not exist in current_prefixes",
-                                chunk_prefix
+                                "Unable to finalize Merk: {:?}",
+                                err
                             )));
                         }
-                    }
-
-                    self.as_mut().processed_prefixes().insert(chunk_prefix);
-
-                    let new_subtrees_metadata =
-                        self.discover_new_subtrees_metadata(db, &completed_path, grove_version)?;
-
-                    if let Ok(res) =
-                        self.prepare_sync_state_sessions(db, new_subtrees_metadata, grove_version)
-                    {
-                        next_chunk_ids.extend(res);
-                        next_global_chunk_ids.extend(next_chunk_ids);
                     } else {
-                        return Err(Error::InternalError(
-                            "Unable to discover Subtrees".to_string(),
-                        ));
+                        return Err(Error::InternalError(format!(
+                            "Prefix {:?} does not exist in current_prefixes",
+                            chunk_prefix
+                        )));
                     }
+                }
+
+                self.as_mut().processed_prefixes().insert(chunk_prefix);
+
+                let new_subtrees_metadata =
+                    self.discover_new_subtrees_metadata(db, &completed_path, grove_version)?;
+
+                if let Ok(res) =
+                    self.prepare_sync_state_sessions(db, new_subtrees_metadata, grove_version)
+                {
+                    next_chunk_ids.extend(res);
+                    next_global_chunk_ids.extend(next_chunk_ids);
+                } else {
+                    return Err(Error::InternalError(
+                        "Unable to discover Subtrees".to_string(),
+                    ));
                 }
             }
         }

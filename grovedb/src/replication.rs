@@ -149,7 +149,7 @@ impl GroveDb {
                 })?;
                 for chunk_id in nested_chunk_ids
                     .is_empty()
-                    .then(|| vec![])
+                    .then(|| Vec::new())
                     .into_iter()
                     .chain(nested_chunk_ids.into_iter())
                 {
@@ -446,7 +446,7 @@ pub(crate) mod utils {
     /// - `Ok(Vec<Op>)`: A vector of decoded `Op` operations.
     /// - `Err(Error)`: An error if the decoding process fails.
     pub fn decode_vec_ops(chunk: &[u8]) -> Result<Vec<Op>, Error> {
-        let decoder = Decoder::new(&chunk);
+        let decoder = Decoder::new(chunk);
         let mut res = vec![];
         for op in decoder {
             match op {
