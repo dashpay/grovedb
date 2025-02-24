@@ -373,7 +373,7 @@ impl<'db> MultiStateSyncSession<'db> {
 
         let mut next_global_chunk_ids: Vec<Vec<u8>> = vec![];
 
-        for (index, (iter_global_chunk_id, iter_packed_chunks)) in nested_global_chunk_ids
+        for (_, (iter_global_chunk_id, iter_packed_chunks)) in nested_global_chunk_ids
             .iter()
             .zip(nested_global_chunks.iter())
             .enumerate()
@@ -386,13 +386,11 @@ impl<'db> MultiStateSyncSession<'db> {
                     &self.app_hash,
                 )?;
 
-            let iter_chunk_ds: Box<dyn Iterator<Item = Vec<u8>>> =
-                if nested_local_chunk_ids.is_empty() {
-                    Box::new(std::iter::once(vec![]))
-                } else {
-                    Box::new(nested_local_chunk_ids.into_iter())
-                };
-            let it_chunk_ids = iter_chunk_ds.collect::<Vec<_>>();
+            let it_chunk_ids = if nested_local_chunk_ids.is_empty() {
+                vec![vec![]]
+            } else {
+                nested_local_chunk_ids
+            };
 
             let current_nested_chunk_data = unpack_nested_bytes(iter_packed_chunks.as_slice())?;
 
@@ -410,7 +408,7 @@ impl<'db> MultiStateSyncSession<'db> {
             };
 
             let mut next_local_chunk_ids = vec![];
-            for (index, (current_local_chunk_id, current_local_chunks)) in it_chunk_ids
+            for (_, (current_local_chunk_id, current_local_chunks)) in it_chunk_ids
                 .iter()
                 .zip(current_nested_chunk_data.iter())
                 .enumerate()

@@ -106,7 +106,7 @@ impl GroveDb {
         }
 
         let mut global_chunk_ids: Vec<Vec<u8>> = vec![];
-        let root_app_hash = self.root_hash(None, grove_version).value?;
+        let root_app_hash = self.root_hash(Some(tx.as_ref()), grove_version).value?;
         if packed_global_chunk_id.len() == root_app_hash.len() {
             global_chunk_ids.push(packed_global_chunk_id.to_vec());
         } else {
@@ -147,13 +147,12 @@ impl GroveDb {
                         e
                     ))
                 })?;
-                // Ensure we iterate once with vec![] if it's empty
-                let iter: Box<dyn Iterator<Item = Vec<u8>>> = if nested_chunk_ids.is_empty() {
-                    Box::new(std::iter::once(vec![]))
-                } else {
-                    Box::new(nested_chunk_ids.into_iter())
-                };
-                for chunk_id in iter {
+                for chunk_id in nested_chunk_ids
+                    .is_empty()
+                    .then(|| vec![])
+                    .into_iter()
+                    .chain(nested_chunk_ids.into_iter())
+                {
                     let (chunk, _) =
                         chunk_producer
                             .chunk(&chunk_id, grove_version)
