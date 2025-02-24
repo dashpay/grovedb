@@ -473,7 +473,8 @@ impl<'db> MultiStateSyncSession<'db> {
         }
 
         let mut res: Vec<Vec<u8>> = vec![];
-        for grouped_next_global_chunk_ids in next_global_chunk_ids.chunks(CONST_GROUP_PACKING_SIZE) {
+        for grouped_next_global_chunk_ids in next_global_chunk_ids.chunks(CONST_GROUP_PACKING_SIZE)
+        {
             res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
         }
         Ok(res)
