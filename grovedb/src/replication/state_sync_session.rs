@@ -221,12 +221,11 @@ impl<'db> MultiStateSyncSession<'db> {
         unsafe { Pin::into_inner_unchecked(self) }.transaction
     }
 
-    pub unsafe fn set_new_transaction(
-        self: Pin<&mut Self>,
-        new_tx: Transaction<'db>,
-    ) -> Transaction<'db> {
-        let this = self.get_unchecked_mut();
-        mem::replace(&mut this.transaction, new_tx)
+    pub fn set_new_transaction(self: Pin<&mut Self>, new_tx: Transaction<'db>) -> Transaction<'db> {
+        unsafe {
+            let this = self.get_unchecked_mut();
+            mem::replace(&mut this.transaction, new_tx)
+        }
     }
 
     /// Adds synchronization information for a subtree into the current
