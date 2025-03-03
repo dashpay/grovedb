@@ -123,6 +123,9 @@ pub enum Error {
 
     #[error("unknown tree type {0}")]
     UnknownTreeType(String),
+
+    #[error("query item intersection not allowed {0}")]
+    QueryItemIntersectionError(String),
 }
 
 impl From<grovedb_version::error::GroveVersionError> for Error {

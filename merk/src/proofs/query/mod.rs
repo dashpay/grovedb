@@ -17,7 +17,7 @@ mod verify;
 #[cfg(feature = "minimal")]
 use std::cmp::Ordering;
 use std::{collections::HashSet, fmt, ops::RangeFull};
-
+use std::collections::BTreeSet;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use bincode::{
     enc::write::Writer,
@@ -30,6 +30,7 @@ use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, Ope
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use indexmap::IndexMap;
+use rand::seq::index::BTreeSet;
 #[cfg(feature = "minimal")]
 pub use map::*;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -50,6 +51,7 @@ use super::Node;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::error::Error;
 use crate::proofs::hex_to_ascii;
+use crate::proofs::query::query_item::intersect::{RangeSetBorrowed, RangeSetItem, RangeSetItemBorrowed};
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
@@ -701,6 +703,102 @@ impl Link {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ClosestItemNextTo<'a> {
+    key: &'a Vec<u8>,
+    current_closest: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProofStatus<'a> {
+    key_query_items: BTreeSet<&'a Vec<u8>>,
+    range_query_items: Vec<RangeSetBorrowed<'a>>,
+    closest_items_after: Vec<ClosestItemNextTo<'a>>,
+    closest_items_before: Vec<ClosestItemNextTo<'a>>,
+    limit: Option<u16>,
+}
+
+impl ProofStatus {
+    pub fn has_no_query_items(&self) -> bool {
+        self.key_query_items.is_empty() && self.range_query_items.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProofParams {
+    searching_for_first: bool,
+    searching_for_last: bool,
+    only_gone_left: bool,
+    only_gone_right: bool,
+    left_to_right: bool,
+}
+
+impl ProofParams {
+    pub fn going_right(mut self) -> Self {
+        if self.only_gone_left {
+            self.only_gone_left = false;
+        }
+        self
+    }
+    pub fn going_left(mut self) -> Self {
+        if self.only_gone_right {
+            self.only_gone_right = false;
+        }
+        self
+    }
+}
+
+impl ProofStatus {
+    pub fn new_with_query_items(query_items: &[QueryItem], limit: Option<u16>, left_to_right: bool) -> (ProofStatus, ProofParams) {
+        let mut closest_items_after = vec![];
+        let mut closest_items_before = vec![];
+        let mut key_query_items = BTreeSet::new();
+        let mut range_query_items = vec![];
+        let mut searching_for_first = false;
+        let mut searching_for_last = false;
+        for query_item in query_items {
+            match query_item {
+                QueryItem::OneAfter(key) => {
+                    closest_items_after.push(ClosestItemNextTo {
+                        key,
+                        current_closest: None,
+                    })
+                }
+                QueryItem::OneBefore(key) => {
+                    closest_items_before.push(ClosestItemNextTo {
+                        key,
+                        current_closest: None,
+                    })
+                }
+                QueryItem::First => searching_for_first |= true,
+                QueryItem::Last => searching_for_last |= true,
+                QueryItem::Key(key) => {
+                    key_query_items.insert(key);
+                }
+                query_item => {
+                    // These are all ranges
+                    range_query_items.push(query_item.to_range_set_borrowed().expect("all query items at this point should be ranges"));
+                }
+            }
+        }
+        let status = ProofStatus {
+            key_query_items,
+            range_query_items,
+            closest_items_after,
+            closest_items_before,
+            limit,
+        };
+        let params = ProofParams {
+            searching_for_first,
+            searching_for_last,
+            only_gone_left: false,
+            only_gone_right: false,
+            left_to_right,
+        };
+        (status, params)
+    }
+}
+
 #[cfg(feature = "minimal")]
 impl<S> RefWalker<'_, S>
 where
@@ -752,12 +850,6 @@ where
         self.tree().hash().map(Node::Hash)
     }
 
-    /// Generates a proof for the list of queried keys. Returns a tuple
-    /// containing the generated proof operators, and a tuple representing if
-    /// any keys were queried were less than the left edge or greater than the
-    /// right edge, respectively.
-    ///
-    /// TODO: Generalize logic and get code to better represent logic
     #[cfg(feature = "minimal")]
     pub(crate) fn create_proof(
         &mut self,
@@ -766,10 +858,27 @@ where
         left_to_right: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
+        let (proof_status, proof_params) = ProofStatus::new_with_query_items(query, limit, left_to_right);
+        self.create_proof_internal(proof_status, proof_params, grove_version)
+    }
+
+    /// Generates a proof for the list of queried items. Returns a tuple
+    /// containing the generated proof operators, and a tuple representing if
+    /// any keys were queried were less than the left edge or greater than the
+    /// right edge, respectively.
+    ///
+    #[cfg(feature = "minimal")]
+    pub(crate) fn create_proof_internal(
+        &mut self,
+        proof_status: ProofStatus,
+        proof_params: ProofParams,
+        grove_version: &GroveVersion,
+    ) -> CostResult<ProofAbsenceLimit, Error> {
         let mut cost = OperationCost::default();
 
-        // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
+        let has_left = self.tree().inner.left.is_some();
+        let has_right = self.tree().inner.right.is_some();
         let mut search = query.binary_search_by(|key| {
             // TODO: change to contains more efficient
             //  left here to catch potential errors with the intersect function
@@ -969,12 +1078,11 @@ where
     fn create_child_proof(
         &mut self,
         left: bool,
-        query: &[QueryItem],
-        limit: Option<u16>,
-        left_to_right: bool,
+        status: &ProofStatus,
+        params: &ProofParams,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
-        if !query.is_empty() {
+        if status.has_no_query_items() {
             self.walk(
                 left,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -982,21 +1090,21 @@ where
             )
             .flat_map_ok(|child_opt| {
                 if let Some(mut child) = child_opt {
-                    child.create_proof(query, limit, left_to_right, grove_version)
+                    child.create_proof_internal(status, params, grove_version)
                 } else {
-                    Ok((LinkedList::new(), (true, true), limit)).wrap_with_cost(Default::default())
+                    Ok((LinkedList::new(), (true, true), status.limit)).wrap_with_cost(Default::default())
                 }
             })
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
-            proof.push_back(if left_to_right {
+            proof.push_back(if params.left_to_right {
                 Op::Push(link.to_hash_node())
             } else {
                 Op::PushInverted(link.to_hash_node())
             });
-            Ok((proof, (false, false), limit)).wrap_with_cost(Default::default())
+            Ok((proof, (false, false), status.limit)).wrap_with_cost(Default::default())
         } else {
-            Ok((LinkedList::new(), (false, false), limit)).wrap_with_cost(Default::default())
+            Ok((LinkedList::new(), (false, false), status.limit)).wrap_with_cost(Default::default())
         }
     }
 }

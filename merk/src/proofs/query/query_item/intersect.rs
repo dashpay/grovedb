@@ -2,7 +2,7 @@ use std::{
     cmp::Ordering,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
-
+use crate::Error;
 use crate::proofs::query::query_item::{
     intersect::RangeSetItem::{
         ExclusiveEnd, ExclusiveStart, Inclusive, UnboundedEnd, UnboundedStart,
@@ -23,6 +23,94 @@ pub struct RangeSetIntersection {
 pub struct RangeSet {
     pub start: RangeSetItem,
     pub end: RangeSetItem,
+}
+
+/// Concise query item representation
+#[derive(Clone, Debug)]
+pub struct RangeSetBorrowed<'a> {
+    pub start: RangeSetSimpleItemBorrowed<'a>,
+    pub end: RangeSetSimpleItemBorrowed<'a>,
+}
+
+/// Specifies whether we are checking if there's at least one key
+/// strictly less than (`LeftOf`) or strictly greater than (`RightOf`) a given key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Checking if there's an item < `key`
+    LeftOf,
+    /// Checking if there's an item > `key`
+    RightOf,
+}
+
+impl RangeSetBorrowed {
+    /// Returns `true` if `key` is within [start, end] boundaries, respecting
+    /// inclusive/exclusive semantics. If `start` is `Unbounded`, it is treated
+    /// like -∞ (lowest possible). If `end` is `Unbounded`, it is treated like
+    /// +∞ (highest possible).
+    pub fn could_contain_key<K: AsRef<[u8]>>(&self, key: K) -> bool {
+        use RangeSetSimpleItemBorrowed::*;
+        let key_bytes = key.as_ref();
+
+        // 1) Check lower boundary (start)
+        let passes_start = match &self.start {
+            RangeSetSimpleItemBorrowed::Unbounded => true, // -∞ => all keys are >= -∞
+            RangeSetSimpleItemBorrowed::Inclusive(bound_bytes) => key_bytes >= bound_bytes.as_slice(),
+            RangeSetSimpleItemBorrowed::Exclusive(bound_bytes) => key_bytes > bound_bytes.as_slice(),
+        };
+
+        // 2) Check upper boundary (end)
+        let passes_end = match &self.end {
+            RangeSetSimpleItemBorrowed::Unbounded => true, // +∞ => all keys are <= +∞
+            RangeSetSimpleItemBorrowed::Inclusive(bound_bytes) => key_bytes <= bound_bytes.as_slice(),
+            RangeSetSimpleItemBorrowed::Exclusive(bound_bytes) => key_bytes < bound_bytes.as_slice(),
+        };
+
+        // 3) Key is contained only if it satisfies both constraints
+        passes_start && passes_end
+    }
+
+    /// Checks if there's at least one item in [start, end] that is strictly
+    /// to the *left* (< `key`) or *right* (> `key`) of `key`, depending on `direction`.
+    ///
+    /// - `Direction::LeftOf` => returns true if [start..end] might contain an item < key.
+    /// - `Direction::RightOf` => returns true if [start..end] might contain an item > key.
+    pub fn could_have_items_in_direction<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        direction: Direction,
+    ) -> bool {
+        let key_bytes = key.as_ref();
+        match direction {
+            Direction::LeftOf => {
+                // We want to know if there's any item in [start, end] that is < key.
+                // That is possible if the start boundary is strictly less than `key`.
+                match &self.start {
+                    // Unbounded => effectively -∞ => definitely < key
+                    RangeSetSimpleItemBorrowed::Unbounded => true,
+                    // Inclusive(b) => items start at b. If b >= key, then no item is < key.
+                    // Only if b < key, we might have something < key.
+                    RangeSetSimpleItemBorrowed::Inclusive(b) => b.as_slice() < key_bytes,
+                    // Exclusive(b) => items start strictly after b => if b < key,
+                    // we still might have item < key. However if b == key, we start after key => no item < key.
+                    RangeSetSimpleItemBorrowed::Exclusive(b) => b.as_slice() < key_bytes,
+                }
+            }
+            Direction::RightOf => {
+                // We want to know if there's any item in [start, end] that is > key.
+                // That is possible if the end boundary is strictly greater than `key`.
+                match &self.end {
+                    // Unbounded => effectively +∞ => definitely > key
+                    RangeSetSimpleItemBorrowed::Unbounded => true,
+                    // Inclusive(b) => items extend up to b. If b <= key, then no item is > key.
+                    // Only if b > key, we might have something > key.
+                    RangeSetSimpleItemBorrowed::Inclusive(b) => b.as_slice() > key_bytes,
+                    // Exclusive(b) => items extend up to but not including b.
+                    // If b > key => there's space for an item > key. If b == key => no item > key.
+                    RangeSetSimpleItemBorrowed::Exclusive(b) => b.as_slice() > key_bytes,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -288,6 +376,13 @@ pub enum RangeSetItem {
     ExclusiveEnd(Vec<u8>),
 }
 
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub enum RangeSetSimpleItemBorrowed<'a> {
+    Unbounded,
+    Inclusive(&'a Vec<u8>),
+    Exclusive(&'a Vec<u8>),
+}
+
 impl RangeSetItem {
     pub fn invert(&self, is_start: bool) -> RangeSetItem {
         match &self {
@@ -317,6 +412,10 @@ impl RangeSetItem {
             _ => (item_two, item_one),
         }
     }
+}
+
+impl RangeSetSimpleItemBorrowed {
+
 }
 
 impl PartialOrd for RangeSetItem {
@@ -370,53 +469,316 @@ impl Ord for RangeSetItem {
 }
 
 impl QueryItem {
-    pub fn intersect(&self, other: &Self) -> QueryItemIntersectionResult {
-        self.to_range_set().intersect(other.to_range_set()).into()
+    pub fn matches_key(&self, key: &Vec<u8>) -> Result<bool, Error> {
+        if let Some(range_set) = key.to_range_set() {
+
+        }
+    }
+    pub fn intersect(&self, other: &Self) -> Result<QueryItemIntersectionResult, Error> {
+        match (self.to_range_set(), other.to_range_set()) {
+            (Some(left_range), Some(right_range)) => {
+                // Both items can be converted to `RangeSet`, perform a standard intersection
+                Ok(left_range.intersect(right_range).into())
+            }
+            (None, None) => match (self, other) {
+                // ✅ `First ∩ First = First`
+                (QueryItem::First, QueryItem::First) => Ok(QueryItemIntersectionResult {
+                    in_both: Some(QueryItem::First),
+                    ours_left: None,
+                    ours_right: None,
+                    theirs_left: None,
+                    theirs_right: None,
+                }),
+
+                // ✅ `Last ∩ Last = Last`
+                (QueryItem::Last, QueryItem::Last) => Ok(QueryItemIntersectionResult {
+                    in_both: Some(QueryItem::Last),
+                    ours_left: None,
+                    ours_right: None,
+                    theirs_left: None,
+                    theirs_right: None,
+                }),
+
+                // ✅ `OneAfter(X) ∩ OneAfter(Y)` must match exactly
+                (QueryItem::OneAfter(our_value), QueryItem::OneAfter(their_value)) => {
+                    if our_value != their_value {
+                        Err(Error::QueryItemIntersectionError(
+                            "QueryItem::OneAfter cannot intersect with different values".to_string(),
+                        ))
+                    } else {
+                        Ok(QueryItemIntersectionResult {
+                            in_both: Some(QueryItem::OneAfter(our_value.clone())),
+                            ours_left: None,
+                            ours_right: None,
+                            theirs_left: None,
+                            theirs_right: None,
+                        })
+                    }
+                }
+
+                // ✅ `OneBefore(X) ∩ OneBefore(Y)` must match exactly
+                (QueryItem::OneBefore(our_value), QueryItem::OneBefore(their_value)) => {
+                    if our_value != their_value {
+                        Err(Error::QueryItemIntersectionError(
+                            "QueryItem::OneBefore cannot intersect with different values".to_string(),
+                        ))
+                    } else {
+                        Ok(QueryItemIntersectionResult {
+                            in_both: Some(QueryItem::OneBefore(our_value.clone())),
+                            ours_left: None,
+                            ours_right: None,
+                            theirs_left: None,
+                            theirs_right: None,
+                        })
+                    }
+                }
+                _ => Err(Error::QueryItemIntersectionError(format!(
+                    "Query items {} and {} cannot be intersected",
+                    self, other
+                ))),
+            },
+            (None, Some(_)) => match self {
+                // ❌ `First` should NOT intersect with left-bounded query items.
+                QueryItem::First => match other {
+                    QueryItem::Key(_)
+                    | QueryItem::RangeFrom(_)
+                    | QueryItem::Range(_)
+                    | QueryItem::OneAfter(_) => Err(Error::QueryItemIntersectionError(
+                        "QueryItem::First cannot intersect with left-bounded items".to_string(),
+                    )),
+                    _ => Ok(QueryItemIntersectionResult {
+                        in_both: Some(other.clone()),
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right: None,
+                    }),
+                },
+
+                // ❌ `Last` should NOT intersect with right-bounded query items.
+                QueryItem::Last => match other {
+                    QueryItem::Key(_)
+                    | QueryItem::RangeTo(_)
+                    | QueryItem::Range(_)
+                    | QueryItem::OneBefore(_) => Err(Error::QueryItemIntersectionError(
+                        "QueryItem::Last cannot intersect with right-bounded items".to_string(),
+                    )),
+                    _ => Ok(QueryItemIntersectionResult {
+                        in_both: Some(other.clone()),
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right: None,
+                    }),
+                },
+
+                QueryItem::OneAfter(after) => match other {
+                    QueryItem::RangeAfter(other_after) if &other_after.start == after => {
+                        Ok(QueryItemIntersectionResult {
+                            in_both: Some(other.clone()),
+                            ours_left: None,
+                            ours_right: None,
+                            theirs_left: None,
+                            theirs_right: None,
+                        })
+                    }
+                    _ => Err(Error::QueryItemIntersectionError(format!(
+                        "QueryItem::OneAfter cannot intersect with {}",
+                        other
+                    )))
+                }
+
+                QueryItem::OneBefore(before) => match other {
+                    QueryItem::RangeTo(other_before) if &other_before.end == before => {
+                        Ok(QueryItemIntersectionResult {
+                            in_both: Some(other.clone()),
+                            ours_left: None,
+                            ours_right: None,
+                            theirs_left: None,
+                            theirs_right: None,
+                        })
+                    }
+                    _ => Err(Error::QueryItemIntersectionError(format!(
+                        "QueryItem::OneBefore cannot intersect with {}",
+                        other
+                    )))
+                }
+
+                _ => Err(Error::QueryItemIntersectionError(format!(
+                    "QueryItem::First or QueryItem::Last cannot intersect {}",
+                    other
+                ))),
+            },
+            (Some(_), None) => match other {
+                // ❌ `First` should NOT intersect with left-bounded query items.
+                QueryItem::First => match self {
+                    QueryItem::Key(_)
+                    | QueryItem::RangeFrom(_)
+                    | QueryItem::Range(_)
+                    | QueryItem::OneAfter(_) => Err(Error::QueryItemIntersectionError(
+                        "QueryItem::First cannot intersect with left-bounded items".to_string(),
+                    )),
+                    _ => Ok(QueryItemIntersectionResult {
+                        in_both: Some(self.clone()),
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right: None,
+                    }),
+                },
+
+                // ❌ `Last` should NOT intersect with right-bounded query items.
+                QueryItem::Last => match self {
+                    QueryItem::Key(_)
+                    | QueryItem::RangeTo(_)
+                    | QueryItem::Range(_)
+                    | QueryItem::OneBefore(_) => Err(Error::QueryItemIntersectionError(
+                        "QueryItem::Last cannot intersect with right-bounded items".to_string(),
+                    )),
+                    _ => Ok(QueryItemIntersectionResult {
+                        in_both: Some(self.clone()),
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right: None,
+                    }),
+                },
+
+                QueryItem::OneAfter(after) => match self {
+                    QueryItem::RangeAfter(self_after) if &self_after.start == after => {
+                        Ok(QueryItemIntersectionResult {
+                            in_both: Some(self.clone()),
+                            ours_left: None,
+                            ours_right: None,
+                            theirs_left: None,
+                            theirs_right: None,
+                        })
+                    }
+                    _ => Err(Error::QueryItemIntersectionError(format!(
+                        "QueryItem::OneAfter cannot intersect with {}",
+                        self
+                    ))),
+                },
+
+                QueryItem::OneBefore(before) => match self {
+                    QueryItem::RangeTo(self_before) if &self_before.end == before => {
+                        Ok(QueryItemIntersectionResult {
+                            in_both: Some(self.clone()),
+                            ours_left: None,
+                            ours_right: None,
+                            theirs_left: None,
+                            theirs_right: None,
+                        })
+                    }
+                    _ => Err(Error::QueryItemIntersectionError(format!(
+                        "QueryItem::OneBefore cannot intersect with {}",
+                        self
+                    ))),
+                },
+
+                _ => Err(Error::QueryItemIntersectionError(format!(
+                    "QueryItem::First or QueryItem::Last cannot intersect {}",
+                    self
+                ))),
+            },
+        }
     }
 
     // TODO: convert to impl of From/To trait
-    pub fn to_range_set(&self) -> RangeSet {
+    pub fn to_range_set(&self) -> Option<RangeSet> {
         match self {
-            QueryItem::Key(start) => RangeSet {
+            QueryItem::Key(start) => Some(RangeSet {
                 start: RangeSetItem::Inclusive(start.clone()),
                 end: RangeSetItem::Inclusive(start.clone()),
-            },
-            QueryItem::Range(range) => RangeSet {
+            }),
+            QueryItem::Range(range) => Some(RangeSet {
                 start: RangeSetItem::Inclusive(range.start.clone()),
                 end: RangeSetItem::ExclusiveEnd(range.end.clone()),
-            },
-            QueryItem::RangeInclusive(range) => RangeSet {
+            }),
+            QueryItem::RangeInclusive(range) => Some(RangeSet {
                 start: RangeSetItem::Inclusive(range.start().clone()),
                 end: RangeSetItem::Inclusive(range.end().clone()),
-            },
-            QueryItem::RangeFull(..) => RangeSet {
+            }),
+            QueryItem::RangeFull(..) => Some(RangeSet {
                 start: RangeSetItem::UnboundedStart,
                 end: RangeSetItem::UnboundedEnd,
-            },
-            QueryItem::RangeFrom(range) => RangeSet {
+            }),
+            QueryItem::RangeFrom(range) => Some(RangeSet {
                 start: RangeSetItem::Inclusive(range.start.clone()),
                 end: RangeSetItem::UnboundedEnd,
-            },
-            QueryItem::RangeTo(range) => RangeSet {
+            }),
+            QueryItem::RangeTo(range) => Some(RangeSet {
                 start: RangeSetItem::UnboundedStart,
                 end: RangeSetItem::ExclusiveEnd(range.end.clone()),
-            },
-            QueryItem::RangeToInclusive(range) => RangeSet {
+            }),
+            QueryItem::RangeToInclusive(range) => Some(RangeSet {
                 start: RangeSetItem::UnboundedStart,
                 end: RangeSetItem::Inclusive(range.end.clone()),
-            },
-            QueryItem::RangeAfter(range) => RangeSet {
+            }),
+            QueryItem::RangeAfter(range) => Some(RangeSet {
                 start: RangeSetItem::ExclusiveStart(range.start.clone()),
                 end: RangeSetItem::UnboundedEnd,
-            },
-            QueryItem::RangeAfterTo(range) => RangeSet {
+            }),
+            QueryItem::RangeAfterTo(range) => Some(RangeSet {
                 start: RangeSetItem::ExclusiveStart(range.start.clone()),
                 end: RangeSetItem::ExclusiveEnd(range.end.clone()),
-            },
-            QueryItem::RangeAfterToInclusive(range) => RangeSet {
+            }),
+            QueryItem::RangeAfterToInclusive(range) => Some(RangeSet {
                 start: RangeSetItem::ExclusiveStart(range.start().clone()),
                 end: RangeSetItem::Inclusive(range.end().clone()),
-            },
+            }),
+
+            // These do not translate to a valid range set
+            QueryItem::First | QueryItem::Last | QueryItem::OneAfter(_) | QueryItem::OneBefore(_) => None,
+        }
+    }
+
+    // TODO: convert to impl of From/To trait
+    pub fn to_range_set_borrowed(&self) -> Option<RangeSetBorrowed> {
+        match self {
+            QueryItem::Key(start) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(start),
+                end: RangeSetSimpleItemBorrowed::Inclusive(start),
+            }),
+            QueryItem::Range(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Exclusive(&range.end),
+            }),
+            QueryItem::RangeInclusive(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(range.start()),
+                end: RangeSetSimpleItemBorrowed::Inclusive(range.end()),
+            }),
+            QueryItem::RangeFull(..) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Unbounded,
+                end: RangeSetSimpleItemBorrowed::Unbounded,
+            }),
+            QueryItem::RangeFrom(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Unbounded,
+            }),
+            QueryItem::RangeTo(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Unbounded,
+                end: RangeSetSimpleItemBorrowed::Exclusive(&range.end),
+            }),
+            QueryItem::RangeToInclusive(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Unbounded,
+                end: RangeSetSimpleItemBorrowed::Inclusive(&range.end),
+            }),
+            QueryItem::RangeAfter(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Exclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Unbounded,
+            }),
+            QueryItem::RangeAfterTo(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Exclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Exclusive(&range.end),
+            }),
+            QueryItem::RangeAfterToInclusive(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Exclusive(range.start()),
+                end: RangeSetSimpleItemBorrowed::Inclusive(range.end()),
+            }),
+
+            // These do not translate to a valid range set
+            QueryItem::First | QueryItem::Last | QueryItem::OneAfter(_) | QueryItem::OneBefore(_) => None,
         }
     }
 
@@ -424,7 +786,7 @@ impl QueryItem {
     pub fn intersect_many_ordered(
         ours: &mut Vec<Self>,
         theirs: Vec<Self>,
-    ) -> QueryItemManyIntersectionResult {
+    ) -> Result<QueryItemManyIntersectionResult, Error> {
         let mut result = QueryItemManyIntersectionResult::default();
         for our_item in ours.drain(..) {
             // We create an intersection result for this one item
@@ -440,7 +802,7 @@ impl QueryItem {
                     let mut maybe_temp_their_item = Some(their_item);
                     for our_partial_item in our_item_split_sections {
                         if let Some(temp_their_item) = maybe_temp_their_item {
-                            let intersection_result = our_partial_item.intersect(&temp_their_item);
+                            let intersection_result = our_partial_item.intersect(&temp_their_item)?;
                             // ours and in both are guaranteed to be unique
                             let theirs_leftovers = one_item_pair_intersections
                                 .push_ours_and_in_both_from_result(intersection_result);
@@ -466,7 +828,7 @@ impl QueryItem {
             }
             result.merge_in(one_item_pair_intersections)
         }
-        result
+        Ok(result)
     }
 }
 
@@ -482,7 +844,7 @@ mod test {
     #[test]
     pub fn test_range_set_query_item_conversion() {
         assert_eq!(
-            QueryItem::Key(vec![5]).to_range_set().to_query_item(),
+            QueryItem::Key(vec![5]).to_range_set().expect("expected a range set").to_query_item(),
             QueryItem::Key(vec![5])
         );
         assert_eq!(
@@ -490,7 +852,7 @@ mod test {
                 start: vec![2],
                 end: vec![5]
             })
-            .to_range_set()
+            .to_range_set().expect("expected a range set")
             .to_query_item(),
             QueryItem::Range(Range {
                 start: vec![2],
@@ -499,45 +861,45 @@ mod test {
         );
         assert_eq!(
             QueryItem::RangeInclusive(RangeInclusive::new(vec![2], vec![5]))
-                .to_range_set()
+                .to_range_set().expect("expected a range set")
                 .to_query_item(),
             QueryItem::RangeInclusive(RangeInclusive::new(vec![2], vec![5]))
         );
         assert_eq!(
-            QueryItem::RangeFull(..).to_range_set().to_query_item(),
+            QueryItem::RangeFull(..).to_range_set().expect("expected a range set").to_query_item(),
             QueryItem::RangeFull(..)
         );
         assert_eq!(
             QueryItem::RangeFrom(vec![5]..)
-                .to_range_set()
+                .to_range_set().expect("expected a range set")
                 .to_query_item(),
             QueryItem::RangeFrom(vec![5]..)
         );
         assert_eq!(
-            QueryItem::RangeTo(..vec![3]).to_range_set().to_query_item(),
+            QueryItem::RangeTo(..vec![3]).to_range_set().expect("expected a range set").to_query_item(),
             QueryItem::RangeTo(..vec![3])
         );
         assert_eq!(
             QueryItem::RangeToInclusive(..=vec![3])
-                .to_range_set()
+                .to_range_set().expect("expected a range set")
                 .to_query_item(),
             QueryItem::RangeToInclusive(..=vec![3])
         );
         assert_eq!(
             QueryItem::RangeAfter(vec![4]..)
-                .to_range_set()
+                .to_range_set().expect("expected a range set")
                 .to_query_item(),
             QueryItem::RangeAfter(vec![4]..)
         );
         assert_eq!(
             QueryItem::RangeAfterTo(vec![3]..vec![6])
-                .to_range_set()
+                .to_range_set().expect("expected a range set")
                 .to_query_item(),
             QueryItem::RangeAfterTo(vec![3]..vec![6])
         );
         assert_eq!(
             QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])
-                .to_range_set()
+                .to_range_set().expect("expected a range set")
                 .to_query_item(),
             QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])
         );

@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-
+use crate::Error;
 use crate::proofs::{
     query::{
         common_path::CommonPathResult, query_item::QueryItem, QueryItemIntersectionResult,
@@ -12,28 +12,28 @@ impl SubqueryBranch {
     fn merge_subquery(
         &self,
         other_default_branch_subquery: Option<Box<Query>>,
-    ) -> Option<Box<Query>> {
+    ) -> Result<Option<Box<Query>>, Error> {
         match (&self.subquery, other_default_branch_subquery) {
-            (None, None) => None,
-            (Some(subquery), None) => Some(subquery.clone()),
-            (None, Some(subquery)) => Some(subquery),
+            (None, None) => Ok(None),
+            (Some(subquery), None) => Ok(Some(subquery.clone())),
+            (None, Some(subquery)) => Ok(Some(subquery)),
             (Some(subquery), Some(other_subquery)) => {
                 let mut merged_subquery = subquery.clone();
-                merged_subquery.merge_with(*other_subquery);
-                Some(merged_subquery)
+                merged_subquery.merge_with(*other_subquery)?;
+                Ok(Some(merged_subquery))
             }
         }
     }
 
-    pub fn merge(&self, other: &Self) -> Self {
+    pub fn merge(&self, other: &Self) -> Result<Self, Error> {
         match (&self.subquery_path, &other.subquery_path) {
             (None, None) => {
                 // they both just have subqueries without paths
-                let subquery = self.merge_subquery(other.subquery.clone());
-                SubqueryBranch {
+                let subquery = self.merge_subquery(other.subquery.clone())?;
+                Ok(SubqueryBranch {
                     subquery_path: None,
                     subquery,
-                }
+                })
             }
             (Some(our_subquery_path), Some(their_subquery_path)) => {
                 // They both have subquery paths
@@ -41,11 +41,11 @@ impl SubqueryBranch {
                 if our_subquery_path.eq(their_subquery_path) {
                     // The subquery paths are the same
                     // We just need to merge the subqueries together
-                    let subquery = self.merge_subquery(other.subquery.clone());
-                    SubqueryBranch {
+                    let subquery = self.merge_subquery(other.subquery.clone())?;
+                    Ok(SubqueryBranch {
                         subquery_path: Some(our_subquery_path.clone()),
                         subquery,
-                    }
+                    })
                 } else {
                     // We need to find the common path between the two subqueries
                     let CommonPathResult {
@@ -87,7 +87,7 @@ impl SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
                                 subquery: self.subquery.clone(),
                             },
-                        );
+                        )?;
                         let right_top_key = right_path_leftovers.remove(0);
                         let maybe_right_path_leftovers = if right_path_leftovers.is_empty() {
                             None
@@ -102,11 +102,11 @@ impl SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
                                 subquery: other.subquery.clone(),
                             },
-                        );
-                        SubqueryBranch {
+                        )?;
+                        Ok(SubqueryBranch {
                             subquery_path,
                             subquery: Some(Box::new(merged_query)),
-                        }
+                        })
                     } else if right_path_leftovers.is_empty() {
                         // this means our subquery path was longer
                         // which means we need to set the default to the right (other)
@@ -127,11 +127,11 @@ impl SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
                                 subquery: self.subquery.clone(),
                             },
-                        );
-                        SubqueryBranch {
+                        )?;
+                        Ok(SubqueryBranch {
                             subquery_path,
                             subquery: Some(merged_query),
-                        }
+                        })
                     } else if left_path_leftovers.is_empty() {
                         let mut merged_query = self.subquery.clone().unwrap_or_default();
                         // this means our subquery path shorter
@@ -152,11 +152,11 @@ impl SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
                                 subquery: other.subquery.clone(),
                             },
-                        );
-                        SubqueryBranch {
+                        )?;
+                        Ok(SubqueryBranch {
                             subquery_path,
                             subquery: Some(merged_query),
-                        }
+                        })
                     } else {
                         unreachable!("Unreachable as both paths being equal already covered");
                     }
@@ -191,12 +191,12 @@ impl SubqueryBranch {
                         subquery_path: maybe_our_subquery_path,
                         subquery: self.subquery.clone(),
                     },
-                );
+                )?;
 
-                SubqueryBranch {
+                Ok(SubqueryBranch {
                     subquery_path: None,
                     subquery: Some(merged_subquery),
-                }
+                })
             }
             (None, Some(their_subquery_path)) => {
                 // They have a subquery path, we does not.
@@ -227,12 +227,12 @@ impl SubqueryBranch {
                         subquery_path: maybe_their_subquery_path,
                         subquery: other.subquery.clone(),
                     },
-                );
+                )?;
 
-                SubqueryBranch {
+                Ok(SubqueryBranch {
                     subquery_path: None,
                     subquery: Some(merged_subquery),
-                }
+                })
             }
         }
     }
@@ -243,14 +243,17 @@ impl Query {
     fn merge_default_subquerys_branch_subquery(
         &mut self,
         other_default_branch_subquery: Option<Box<Query>>,
-    ) {
+    ) -> Result<(), Error> {
         if let Some(current_subquery) = self.default_subquery_branch.subquery.as_mut() {
             if let Some(other_subquery) = other_default_branch_subquery {
-                current_subquery.merge_with(*other_subquery);
+                current_subquery.merge_with(*other_subquery)
+            } else {
+                Ok(())
             }
         } else {
             // None existed yet
             self.default_subquery_branch.subquery = other_default_branch_subquery.clone();
+            Ok(())
         }
     }
 
@@ -259,7 +262,7 @@ impl Query {
     /// or subqueried to the subquery_path/subquery if a subquery is
     /// present. Merging involves creating conditional subqueries in the
     /// subqueries subqueries and paths.
-    pub fn merge_default_subquery_branch(&mut self, other_default_subquery_branch: SubqueryBranch) {
+    pub fn merge_default_subquery_branch(&mut self, other_default_subquery_branch: SubqueryBranch) -> Result<(), Error> {
         match (
             &self.default_subquery_branch.subquery_path,
             &other_default_subquery_branch.subquery_path,
@@ -268,7 +271,7 @@ impl Query {
                 // they both just have subqueries without paths
                 self.merge_default_subquerys_branch_subquery(
                     other_default_subquery_branch.subquery,
-                );
+                )
             }
             (Some(our_subquery_path), Some(their_subquery_path)) => {
                 // They both have subquery paths
@@ -278,7 +281,7 @@ impl Query {
                     // We just need to merge the subqueries together
                     self.merge_default_subquerys_branch_subquery(
                         other_default_subquery_branch.subquery,
-                    );
+                    )
                 } else {
                     // We need to find the common path between the two subqueries
                     let CommonPathResult {
@@ -314,7 +317,7 @@ impl Query {
                                 subquery_path: maybe_left_path_leftovers,
                                 subquery: self.default_subquery_branch.subquery.clone(),
                             },
-                        );
+                        )?;
                         let right_top_key = right_path_leftovers.remove(0);
                         let maybe_right_path_leftovers = if right_path_leftovers.is_empty() {
                             None
@@ -328,7 +331,7 @@ impl Query {
                                 subquery_path: maybe_right_path_leftovers,
                                 subquery: other_default_subquery_branch.subquery.clone(),
                             },
-                        );
+                        )
                     } else if right_path_leftovers.is_empty() {
                         let left_subquery = self.default_subquery_branch.subquery.clone();
                         // this means our subquery path was longer
@@ -350,7 +353,7 @@ impl Query {
                                 subquery_path: maybe_left_path_leftovers,
                                 subquery: left_subquery,
                             },
-                        );
+                        )
                     } else if left_path_leftovers.is_empty() {
                         // this means our subquery path shorter
                         // we should keep our subquery
@@ -369,7 +372,7 @@ impl Query {
                                 subquery_path: maybe_right_path_leftovers,
                                 subquery: other_default_subquery_branch.subquery.clone(),
                             },
-                        );
+                        )
                     } else {
                         unreachable!("Unreachable as both paths being equal already covered");
                     }
@@ -401,7 +404,7 @@ impl Query {
                         subquery_path: maybe_our_subquery_path,
                         subquery: other_default_subquery_branch.subquery.clone(),
                     },
-                );
+                )
             }
             (None, Some(their_subquery_path)) => {
                 // They have a subquery path, we does not.
@@ -426,14 +429,14 @@ impl Query {
                         subquery_path: maybe_their_subquery_path,
                         subquery: other_default_subquery_branch.subquery.clone(),
                     },
-                );
+                )
             }
         }
     }
 
-    pub fn merge_multiple(mut queries: Vec<Query>) -> Self {
+    pub fn merge_multiple(mut queries: Vec<Query>) -> Result<Self, Error> {
         if queries.is_empty() {
-            return Query::new();
+            return Ok(Query::new());
         }
         // slight performance increase with swap remove as we don't care about the
         // ordering
@@ -478,10 +481,10 @@ impl Query {
                     merged_query.merge_conditional_boxed_subquery(
                         conditional_item.clone(),
                         conditional_subquery_branch,
-                    );
+                    )?;
                     if !items.is_empty() {
                         let intersection_result =
-                            QueryItem::intersect_many_ordered(&mut items, vec![conditional_item]);
+                            QueryItem::intersect_many_ordered(&mut items, vec![conditional_item])?;
                         items = intersection_result.ours.unwrap_or_default();
                     }
                 }
@@ -491,13 +494,13 @@ impl Query {
             // query
             for item in items {
                 merged_query
-                    .merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+                    .merge_conditional_boxed_subquery(item, default_subquery_branch.clone())?;
             }
         }
-        merged_query
+        Ok(merged_query)
     }
 
-    pub fn merge_with(&mut self, other: Query) {
+    pub fn merge_with(&mut self, other: Query) -> Result<(), Error> {
         let Query {
             mut items,
             default_subquery_branch,
@@ -518,18 +521,19 @@ impl Query {
                 self.merge_conditional_boxed_subquery(
                     conditional_item.clone(),
                     conditional_subquery_branch,
-                );
+                )?;
 
                 if !items.is_empty() {
                     let intersection_result =
-                        QueryItem::intersect_many_ordered(&mut items, vec![conditional_item]);
+                        QueryItem::intersect_many_ordered(&mut items, vec![conditional_item])?;
                     items = intersection_result.ours.unwrap_or_default();
                 }
             }
         }
         for item in items {
-            self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+            self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone())?;
         }
+        Ok(())
     }
 
     /// Adds a conditional subquery. A conditional subquery replaces the default
@@ -540,7 +544,7 @@ impl Query {
         &mut self,
         query_item_merging_in: QueryItem,
         subquery_branch_merging_in: SubqueryBranch,
-    ) {
+    ) -> Result<(), Error> {
         if subquery_branch_merging_in.subquery.is_some()
             || subquery_branch_merging_in.subquery_path.is_some()
         {
@@ -549,9 +553,10 @@ impl Query {
                     self.conditional_subquery_branches.take(),
                     query_item_merging_in,
                     subquery_branch_merging_in,
-                ),
+                )?,
             );
         }
+        Ok(())
     }
 
     /// Adds a conditional subquery. A conditional subquery replaces the default
@@ -562,7 +567,7 @@ impl Query {
         conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
         query_item_merging_in: QueryItem,
         subquery_branch_merging_in: SubqueryBranch,
-    ) -> IndexMap<QueryItem, SubqueryBranch> {
+    ) -> Result<IndexMap<QueryItem, SubqueryBranch>, Error> {
         let mut merged_items: IndexMap<QueryItem, SubqueryBranch> = IndexMap::new();
         // first we need to check if there are already conditional subquery branches
         // because if there are none then we just assign the new conditional subquery
@@ -596,14 +601,14 @@ impl Query {
                         ours_right,
                         theirs_left,
                         theirs_right,
-                    } = original_query_item.intersect(&sub_query_item_merging_in);
+                    } = original_query_item.intersect(&sub_query_item_merging_in)?;
                     if let Some(in_both) = in_both {
                         if !hit {
                             hit = true;
                         }
                         // merge the overlapping subquery branches
                         let merged_subquery_branch =
-                            subquery_branch.merge(&subquery_branch_merging_in);
+                            subquery_branch.merge(&subquery_branch_merging_in)?;
                         merged_items.insert(in_both, merged_subquery_branch);
 
                         match (ours_left, ours_right, theirs_left, theirs_right) {
@@ -694,6 +699,6 @@ impl Query {
         } else {
             merged_items.insert(query_item_merging_in, subquery_branch_merging_in);
         }
-        merged_items
+        Ok(merged_items)
     }
 }

@@ -1,5 +1,5 @@
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
-
+use crate::Error;
 use crate::proofs::{query::query_item::QueryItem, Query};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
