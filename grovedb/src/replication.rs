@@ -32,8 +32,12 @@ pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
 #[cfg(feature = "minimal")]
 impl GroveDb {
-    pub fn start_syncing_session(&self, app_hash: [u8; 32]) -> Pin<Box<MultiStateSyncSession>> {
-        MultiStateSyncSession::new(self.start_transaction(), app_hash)
+    pub fn start_syncing_session(
+        &self,
+        app_hash: [u8; 32],
+        subtrees_batch_size: usize,
+    ) -> Pin<Box<MultiStateSyncSession>> {
+        MultiStateSyncSession::new(self.start_transaction(), app_hash, subtrees_batch_size)
     }
 
     pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) -> Result<(), Error> {
@@ -184,6 +188,8 @@ impl GroveDb {
     ///
     /// # Parameters
     /// - `app_hash`: The root hash of the application state to synchronize.
+    /// - `subtrees_batch_size`: Maximum number of subtrees that can be
+    ///   processed in a single batch.
     /// - `version`: The version of the state sync protocol to use.
     /// - `grove_version`: The version of GroveDB being used.
     ///
@@ -216,6 +222,7 @@ impl GroveDb {
     pub fn start_snapshot_syncing(
         &self,
         app_hash: CryptoHash,
+        subtrees_batch_size: usize,
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Pin<Box<MultiStateSyncSession>>, Error> {
@@ -235,7 +242,7 @@ impl GroveDb {
 
         let root_prefix = [0u8; 32];
 
-        let mut session = self.start_syncing_session(app_hash);
+        let mut session = self.start_syncing_session(app_hash, subtrees_batch_size);
 
         session.add_subtree_sync_info(
             self,
