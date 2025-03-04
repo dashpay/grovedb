@@ -1,11 +1,14 @@
 use indexmap::IndexMap;
-use crate::Error;
-use crate::proofs::{
-    query::{
-        common_path::CommonPathResult, query_item::QueryItem, QueryItemIntersectionResult,
-        SubqueryBranch,
+
+use crate::{
+    proofs::{
+        query::{
+            common_path::CommonPathResult, query_item::QueryItem, QueryItemIntersectionResult,
+            SubqueryBranch,
+        },
+        Query,
     },
-    Query,
+    Error,
 };
 
 impl SubqueryBranch {
@@ -262,16 +265,17 @@ impl Query {
     /// or subqueried to the subquery_path/subquery if a subquery is
     /// present. Merging involves creating conditional subqueries in the
     /// subqueries subqueries and paths.
-    pub fn merge_default_subquery_branch(&mut self, other_default_subquery_branch: SubqueryBranch) -> Result<(), Error> {
+    pub fn merge_default_subquery_branch(
+        &mut self,
+        other_default_subquery_branch: SubqueryBranch,
+    ) -> Result<(), Error> {
         match (
             &self.default_subquery_branch.subquery_path,
             &other_default_subquery_branch.subquery_path,
         ) {
             (None, None) => {
                 // they both just have subqueries without paths
-                self.merge_default_subquerys_branch_subquery(
-                    other_default_subquery_branch.subquery,
-                )
+                self.merge_default_subquerys_branch_subquery(other_default_subquery_branch.subquery)
             }
             (Some(our_subquery_path), Some(their_subquery_path)) => {
                 // They both have subquery paths

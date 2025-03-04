@@ -11,13 +11,13 @@ use crate::proofs::{
 };
 use crate::{
     error::Error,
-    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
+    proofs::{hex_to_ascii, query::ProofStatus, tree::execute, Decoder, Node, Query},
     tree::value_hash,
     CryptoHash as MerkHash, CryptoHash,
 };
 
 #[cfg(feature = "minimal")]
-pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), Option<u16>);
+pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), ProofStatus);
 
 #[cfg(feature = "minimal")]
 /// Verify proof against expected hash
