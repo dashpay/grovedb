@@ -37,18 +37,13 @@ impl GroveDb {
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
     ) -> Pin<Box<MultiStateSyncSession>> {
-        MultiStateSyncSession::new(self.start_transaction(), app_hash, subtrees_batch_size)
+        MultiStateSyncSession::new(self, app_hash, subtrees_batch_size)
     }
 
     pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) -> Result<(), Error> {
-        match self.commit_transaction(session.into_transaction()).value {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                // Log the error or handle it as needed
-                eprintln!("Failed to commit session: {:?}", e);
-                Err(e)
-            }
-        }
+        session
+            .commit()
+            .inspect_err(|e| eprintln!("Failed to commit session: {:?}", e))
     }
 
     /// Fetches a chunk of data from the database based on the given global
@@ -251,7 +246,6 @@ impl GroveDb {
         let mut session = self.start_syncing_session(app_hash, subtrees_batch_size);
 
         session.add_subtree_sync_info(
-            self,
             SubtreePath::empty(),
             app_hash,
             None,

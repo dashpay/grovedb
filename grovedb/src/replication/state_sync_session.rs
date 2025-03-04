@@ -149,6 +149,9 @@ impl<'tx> SubtreeStateSyncInfo<'tx> {
 
 /// Struct governing the state synchronization process.
 pub struct MultiStateSyncSession<'db> {
+    /// GroveDb instance to apply changes to
+    db: &'db GroveDb,
+
     /// Map of currently processing subtrees.
     /// Keys are `SubtreePrefix` (path digests), and values are
     /// `SubtreeStateSyncInfo` for each subtree.
@@ -164,10 +167,6 @@ pub struct MultiStateSyncSession<'db> {
     /// Version of the state synchronization protocol.
     pub(crate) version: u16,
 
-    /// Transaction used for the synchronization process.
-    /// This is placed last to ensure it is dropped last.
-    transaction: Transaction<'db>,
-
     /// Maximum number of subtrees that can be processed in a single batch.
     subtrees_batch_size: usize,
 
@@ -177,19 +176,20 @@ pub struct MultiStateSyncSession<'db> {
     /// Metadata for newly discovered subtrees that are pending processing.
     pending_discovered_subtrees: Option<SubtreesMetadata>,
 
+    /// Transaction used for the synchronization process.
+    /// This is placed last to ensure it is dropped last.
+    transaction: Transaction<'db>,
+
     /// Marker to ensure this struct is not moved in memory.
     _pin: PhantomPinned,
 }
 
 impl<'db> MultiStateSyncSession<'db> {
     /// Initializes a new state sync session.
-    pub fn new(
-        transaction: Transaction<'db>,
-        app_hash: [u8; 32],
-        subtrees_batch_size: usize,
-    ) -> Pin<Box<Self>> {
+    pub fn new(db: &'db GroveDb, app_hash: [u8; 32], subtrees_batch_size: usize) -> Pin<Box<Self>> {
         Box::pin(MultiStateSyncSession {
-            transaction,
+            db,
+            transaction: db.start_transaction(),
             current_prefixes: Default::default(),
             processed_prefixes: Default::default(),
             app_hash,
@@ -219,17 +219,19 @@ impl<'db> MultiStateSyncSession<'db> {
         true
     }
 
-    pub fn into_transaction(self: Pin<Box<Self>>) -> Transaction<'db> {
-        // SAFETY: the struct isn't used anymore and no one will refer to transaction
-        // address again
-        unsafe { Pin::into_inner_unchecked(self) }.transaction
+    pub fn commit(self: Pin<Box<Self>>) -> Result<(), Error> {
+        // SAFETY: the struct isn't used anymore and no storage contexts would acccess transaction
+        let session = unsafe { Pin::into_inner_unchecked(self) };
+        session.db.commit_transaction(session.transaction).unwrap()
     }
 
-    pub fn set_new_transaction(self: Pin<&mut Self>, new_tx: Transaction<'db>) -> Transaction<'db> {
-        unsafe {
-            let this = self.get_unchecked_mut();
-            mem::replace(&mut this.transaction, new_tx)
-        }
+    // SAFETY: This is unsafe as it requires `self.current_prefixes` to be empty
+    unsafe fn set_new_transaction(
+        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
+    ) -> Result<(), Error> {
+        let this = Pin::as_mut(self).get_unchecked_mut();
+        let old_tx = mem::replace(&mut this.transaction, this.db.start_transaction());
+        self.db.commit_transaction(old_tx).unwrap()
     }
 
     /// Adds synchronization information for a subtree into the current
@@ -270,7 +272,6 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   lifetime guarantees are respected.
     pub fn add_subtree_sync_info<'b, B: AsRef<[u8]>>(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-        db: &'db GroveDb,
         path: SubtreePath<'b, B>,
         hash: CryptoHash,
         actual_hash: Option<CryptoHash>,
@@ -283,7 +284,8 @@ impl<'db> MultiStateSyncSession<'db> {
         };
 
         if let Ok((merk, root_key, tree_type)) =
-            db.open_merk_for_replication(path.clone(), transaction_ref, grove_version)
+            self.db
+                .open_merk_for_replication(path.clone(), transaction_ref, grove_version)
         {
             let restorer = Restorer::new(merk, hash, actual_hash);
             let mut sync_info = SubtreeStateSyncInfo::new(restorer);
@@ -353,10 +355,9 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   GroveDB version.
     ///
     /// # Returns
-    /// - `Ok((Vec<Vec<u8>>, bool))`: A tuple of: vector of global chunk IDs
+    /// - `Ok(Vec<Vec<u8>>)`: A tuple of: vector of global chunk IDs
     ///   (each represented as a vector of bytes) that can be fetched from
-    ///   sources for further synchronization, and boolean indicating wether the
-    ///   intermediate tx should be commited.
+    ///   sources for further synchronization.
     /// - `Err(Error)`: An error if the chunk application fails or if the chunk
     ///   proof is invalid.
     ///
@@ -375,12 +376,11 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   preserving consistency during the synchronization process.
     pub fn apply_chunk(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-        db: &'db GroveDb,
         packed_global_chunk_ids: &[u8],
         packed_global_chunks: &[u8],
         version: u16,
         grove_version: &GroveVersion,
-    ) -> Result<(Vec<Vec<u8>>, bool), Error> {
+    ) -> Result<Vec<Vec<u8>>, Error> {
         // For now, only CURRENT_STATE_SYNC_VERSION is supported
         if version != CURRENT_STATE_SYNC_VERSION {
             return Err(Error::CorruptedData(
@@ -496,7 +496,7 @@ impl<'db> MultiStateSyncSession<'db> {
                 *self.as_mut().num_processed_subtrees_in_batch() += 1;
 
                 let new_subtrees_metadata =
-                    self.discover_new_subtrees_metadata(db, &completed_path, grove_version)?;
+                    self.discover_new_subtrees_metadata(&completed_path, grove_version)?;
 
                 if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size {
                     match self.as_mut().pending_discovered_subtrees() {
@@ -512,7 +512,7 @@ impl<'db> MultiStateSyncSession<'db> {
                     }
                 } else {
                     if let Ok(res) =
-                        self.prepare_sync_state_sessions(db, new_subtrees_metadata, grove_version)
+                        self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
                     {
                         next_chunk_ids.extend(res);
                         next_global_chunk_ids.extend(next_chunk_ids);
@@ -531,11 +531,16 @@ impl<'db> MultiStateSyncSession<'db> {
             res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
         }
 
-        Ok((
-            res,
-            self.num_processed_subtrees_in_batch >= self.subtrees_batch_size
-                && self.current_prefixes.is_empty(),
-        ))
+        if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size
+            && self.current_prefixes.is_empty()
+        {
+            // SAFETY: we made sure `self.current_prefixes` is empty so there are no
+            // references to the transaction we're about to replace
+            unsafe {
+                self.set_new_transaction()?;
+            }
+        }
+        Ok(res)
     }
 
     /// Resumes the state synchronization process.
@@ -581,7 +586,6 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   returning them.
     pub fn resume_sync(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-        db: &'db GroveDb,
         version: u16,
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
@@ -610,7 +614,7 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut next_global_chunk_ids: Vec<Vec<u8>> = vec![];
 
         if let Ok(discovered_chunk_ids) =
-            self.prepare_sync_state_sessions(db, new_subtrees_metadata, grove_version)
+            self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
         {
             next_chunk_ids.extend(discovered_chunk_ids);
             next_global_chunk_ids.extend(next_chunk_ids);
@@ -660,7 +664,6 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   should be used carefully to maintain session integrity.
     fn discover_new_subtrees_metadata(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-        db: &'db GroveDb,
         path_vec: &[Vec<u8>],
         grove_version: &GroveVersion,
     ) -> Result<SubtreesMetadata, Error> {
@@ -670,7 +673,8 @@ impl<'db> MultiStateSyncSession<'db> {
         };
         let subtree_path: Vec<&[u8]> = path_vec.iter().map(|vec| vec.as_slice()).collect();
         let path: &[&[u8]] = &subtree_path;
-        let merk = db
+        let merk = self
+            .db
             .open_transactional_merk_at_path(path.into(), transaction_ref, None, grove_version)
             .value
             .map_err(|e| Error::CorruptedData(format!("failed to open merk by path-tx:{}", e)))?;
@@ -750,7 +754,6 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   ensure seamless state synchronization.
     fn prepare_sync_state_sessions(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-        db: &'db GroveDb,
         subtrees_metadata: SubtreesMetadata,
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
@@ -767,7 +770,6 @@ impl<'db> MultiStateSyncSession<'db> {
                 let path: &[&[u8]] = &subtree_path;
 
                 let next_chunks_ids = self.add_subtree_sync_info(
-                    db,
                     path.into(),
                     *elem_value_hash,
                     Some(*actual_value_hash),
