@@ -57,13 +57,13 @@ impl Default for ProveOptions {
     }
 }
 
-#[derive(Encode, Decode)]
+#[derive(Clone, Encode, Decode)]
 pub struct LayerProof {
     pub merk_proof: Vec<u8>,
     pub lower_layers: BTreeMap<Key, LayerProof>,
 }
 
-#[derive(Encode, Decode)]
+#[derive(Clone, Encode, Decode)]
 pub enum GroveDBProof {
     V0(GroveDBProofV0),
 }
@@ -176,7 +176,7 @@ impl GroveDBProof {
     }
 }
 
-#[derive(Encode, Decode)]
+#[derive(Clone, Encode, Decode)]
 pub struct GroveDBProofV0 {
     pub root_layer: LayerProof,
     pub prove_options: ProveOptions,

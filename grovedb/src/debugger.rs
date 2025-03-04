@@ -325,6 +325,24 @@ async fn fetch_with_path_query(
     )?))
 }
 
+pub(crate) fn dump_proof_grovedbg_stdout(proof: GroveDBProof) {
+    let grovedbg_proof = proof_to_grovedbg(proof).map_err(|e| e.to_string());
+    let encoded = grovedbg_proof.and_then(|p| {
+        bincode::serde::encode_to_vec(p, bincode::config::standard()).map_err(|e| e.to_string())
+    });
+
+    match encoded {
+        Ok(p) => {
+            println!("==========GroveDBG proof dump starts after this line==========");
+            println!("{}", hex::encode(p));
+            println!("==========GroveDBG proof dump ends before this line===========");
+        }
+        Err(e) => {
+            eprintln!("Unable to dump proof to grovedbg: {e}");
+        }
+    }
+}
+
 fn query_result_to_grovedbg(
     db: &GroveDb,
     tx: &Transaction,
