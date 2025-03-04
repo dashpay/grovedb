@@ -220,7 +220,8 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     pub fn commit(self: Pin<Box<Self>>) -> Result<(), Error> {
-        // SAFETY: the struct isn't used anymore and no storage contexts would acccess transaction
+        // SAFETY: the struct isn't used anymore and no storage contexts would acccess
+        // transaction
         let session = unsafe { Pin::into_inner_unchecked(self) };
         session.db.commit_transaction(session.transaction).unwrap()
     }
@@ -355,9 +356,9 @@ impl<'db> MultiStateSyncSession<'db> {
     ///   GroveDB version.
     ///
     /// # Returns
-    /// - `Ok(Vec<Vec<u8>>)`: A tuple of: vector of global chunk IDs
-    ///   (each represented as a vector of bytes) that can be fetched from
-    ///   sources for further synchronization.
+    /// - `Ok(Vec<Vec<u8>>)`: A tuple of: vector of global chunk IDs (each
+    ///   represented as a vector of bytes) that can be fetched from sources for
+    ///   further synchronization.
     /// - `Err(Error)`: An error if the chunk application fails or if the chunk
     ///   proof is invalid.
     ///
@@ -510,25 +511,17 @@ impl<'db> MultiStateSyncSession<'db> {
                                 .extend(new_subtrees_metadata.data);
                         }
                     }
+                } else if let Ok(res) =
+                    self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
+                {
+                    next_chunk_ids.extend(res);
+                    next_global_chunk_ids.extend(next_chunk_ids);
                 } else {
-                    if let Ok(res) =
-                        self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
-                    {
-                        next_chunk_ids.extend(res);
-                        next_global_chunk_ids.extend(next_chunk_ids);
-                    } else {
-                        return Err(Error::InternalError(
-                            "Unable to discover Subtrees".to_string(),
-                        ));
-                    }
+                    return Err(Error::InternalError(
+                        "Unable to discover Subtrees".to_string(),
+                    ));
                 }
             }
-        }
-
-        let mut res: Vec<Vec<u8>> = vec![];
-        for grouped_next_global_chunk_ids in next_global_chunk_ids.chunks(CONST_GROUP_PACKING_SIZE)
-        {
-            res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
         }
 
         if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size
@@ -539,89 +532,28 @@ impl<'db> MultiStateSyncSession<'db> {
             unsafe {
                 self.set_new_transaction()?;
             }
-        }
-        Ok(res)
-    }
 
-    /// Resumes the state synchronization process.
-    ///
-    /// This function attempts to continue the state synchronization by
-    /// processing any pending discovered subtrees and preparing new
-    /// synchronization sessions.
-    ///
-    /// # Parameters
-    ///
-    /// - `self`: A pinned, boxed reference to `MultiStateSyncSession`, ensuring
-    ///   the struct remains in place during processing.
-    /// - `db`: A reference to the `GroveDb` instance used for querying the
-    ///   database.
-    /// - `version`: The state synchronization protocol version being used.
-    /// - `grove_version`: A reference to the `GroveVersion`, which represents
-    ///   the version of the underlying database structure.
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(Vec<Vec<u8>>)` if the synchronization process successfully
-    ///   discovers and prepares new subtree chunks.
-    /// - `Err(Error)`: An error if the synchronization process encounters
-    ///   issues, such as:
-    ///   - The provided `version` does not match the expected protocol version.
-    ///   - No pending discovered subtrees are available.
-    ///   - Failure to discover new subtrees in the database.
-    ///
-    /// # Errors
-    ///
-    /// - Returns `Error::CorruptedData` if an unsupported state sync protocol
-    ///   version is provided or if there are no pending discovered subtrees.
-    /// - Returns `Error::InternalError` if it fails to discover new subtrees.
-    ///
-    /// # Behavior
-    ///
-    /// - Validates that the provided protocol `version` matches the expected
-    ///   `CURRENT_STATE_SYNC_VERSION`.
-    /// - Retrieves and clears any pending discovered subtrees.
-    /// - Resets the processed subtrees counter for the current batch.
-    /// - Attempts to prepare new synchronization state sessions.
-    /// - Packs the discovered chunk IDs into nested byte vectors before
-    ///   returning them.
-    pub fn resume_sync(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-        version: u16,
-        grove_version: &GroveVersion,
-    ) -> Result<Vec<Vec<u8>>, Error> {
-        // For now, only CURRENT_STATE_SYNC_VERSION is supported
-        if version != CURRENT_STATE_SYNC_VERSION {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
-        }
-        if version != self.version {
-            return Err(Error::CorruptedData(
-                "Unsupported state sync protocol version".to_string(),
-            ));
-        }
+            let new_subtrees_metadata =
+                self.as_mut()
+                    .pending_discovered_subtrees()
+                    .take()
+                    .ok_or(Error::CorruptedData(
+                        "No pending subtrees available for resume_sync".to_string(),
+                    ))?;
+            *self.as_mut().num_processed_subtrees_in_batch() = 0;
 
-        let new_subtrees_metadata =
-            self.as_mut()
-                .pending_discovered_subtrees()
-                .take()
-                .ok_or(Error::CorruptedData(
-                    "No pending subtrees available for resume_sync".to_string(),
-                ))?;
-        *self.as_mut().num_processed_subtrees_in_batch() = 0;
+            let mut next_chunk_ids = vec![];
 
-        let mut next_chunk_ids = vec![];
-        let mut next_global_chunk_ids: Vec<Vec<u8>> = vec![];
-
-        if let Ok(discovered_chunk_ids) =
-            self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
-        {
-            next_chunk_ids.extend(discovered_chunk_ids);
-            next_global_chunk_ids.extend(next_chunk_ids);
-        } else {
-            return Err(Error::InternalError(
-                "Unable to discover Subtrees".to_string(),
-            ));
+            if let Ok(discovered_chunk_ids) =
+                self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
+            {
+                next_chunk_ids.extend(discovered_chunk_ids);
+                next_global_chunk_ids.extend(next_chunk_ids);
+            } else {
+                return Err(Error::InternalError(
+                    "Unable to discover Subtrees".to_string(),
+                ));
+            }
         }
 
         let mut res: Vec<Vec<u8>> = vec![];
@@ -629,6 +561,7 @@ impl<'db> MultiStateSyncSession<'db> {
         {
             res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
         }
+
         Ok(res)
     }
 

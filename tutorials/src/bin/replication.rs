@@ -269,7 +269,8 @@ fn sync_db_demo(
 ) -> Result<(), grovedb::Error> {
     let start_time = Instant::now();
     let app_hash = source_db.root_hash(None, grove_version).value.unwrap();
-    let mut session = target_db.start_snapshot_syncing(app_hash, 2, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+    const SUBTREES_BATCH_SIZE: u32 = 2; // Small value for demo purposes
+    let mut session = target_db.start_snapshot_syncing(app_hash, SUBTREES_BATCH_SIZE, CURRENT_STATE_SYNC_VERSION, grove_version)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
@@ -280,18 +281,8 @@ fn sync_db_demo(
     while let Some(chunk_id) = chunk_queue.pop_front() {
         num_chunks += 1;
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-        let (more_chunks, intermediate_commit) = session.apply_chunk(&target_db, chunk_id.as_slice(), &ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-        if intermediate_commit {
-            let old_tx = unsafe {
-                session.as_mut().set_new_transaction(target_db.start_transaction())
-            };
-            target_db.commit_transaction(old_tx).value?;
-            let more_new_chunks = session.resume_sync(&target_db, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-            chunk_queue.extend(more_new_chunks);
-        }
-        else {
-            chunk_queue.extend(more_chunks);
-        }
+        let more_chunks = session.apply_chunk(chunk_id.as_slice(), &ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+        chunk_queue.extend(more_chunks);
     }
     println!("num_chunks: {}", num_chunks);
 
