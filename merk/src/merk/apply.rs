@@ -14,7 +14,7 @@ use crate::{
     merk::NodeType,
     tree::{
         kv::{ValueDefinedCostType, KV},
-        AuxMerkBatch, Walker,
+        Walker,
     },
     Error, Merk, MerkBatch, MerkOptions,
 };
@@ -54,21 +54,20 @@ where
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None,grove_version).unwrap().expect("");
     /// ```
-    pub fn apply<KB, KA>(
+    pub fn apply<KB, KA, KM>(
         &mut self,
-        batch: &MerkBatch<KB>,
-        aux: &AuxMerkBatch<KA>,
+        batch: &MerkBatch<KB, KA, KM>,
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
+        KM: AsRef<[u8]>,
     {
         let node_type: NodeType = self.tree_type.inner_node_type();
         self.apply_with_costs_just_in_time_value_update(
             batch,
-            aux,
             options,
             &|key, value| {
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
@@ -121,10 +120,9 @@ where
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None,grove_version).unwrap().expect("");
     /// ```
-    pub fn apply_with_specialized_costs<KB, KA>(
+    pub fn apply_with_specialized_costs<KB, KA, KM>(
         &mut self,
-        batch: &MerkBatch<KB>,
-        aux: &AuxMerkBatch<KA>,
+        batch: &MerkBatch<KB, KA, KM>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         value_defined_cost_fn: Option<
@@ -135,10 +133,10 @@ where
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
+        KM: AsRef<[u8]>,
     {
         self.apply_with_costs_just_in_time_value_update(
             batch,
-            aux,
             options,
             old_specialized_cost,
             value_defined_cost_fn,
@@ -203,10 +201,9 @@ where
     ///     grove_version,
     /// ).unwrap().expect("");
     /// ```
-    pub fn apply_with_costs_just_in_time_value_update<KB, KA>(
+    pub fn apply_with_costs_just_in_time_value_update<KB, KA, KM>(
         &mut self,
-        batch: &MerkBatch<KB>,
-        aux: &AuxMerkBatch<KA>,
+        batch: &MerkBatch<KB, KA, KM>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         value_defined_cost_fn: Option<
@@ -237,10 +234,11 @@ where
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
+        KM: AsRef<[u8]>,
     {
         // ensure keys in batch are sorted and unique
         let mut maybe_prev_key: Option<&KB> = None;
-        for (key, ..) in batch.iter() {
+        for (key, ..) in batch.batch_entries.iter() {
             if let Some(prev_key) = maybe_prev_key {
                 match prev_key.as_ref().cmp(key.as_ref()) {
                     Ordering::Greater => {
@@ -259,7 +257,6 @@ where
 
         self.apply_unchecked(
             batch,
-            aux,
             options,
             old_specialized_cost,
             value_defined_cost_fn,
@@ -319,10 +316,9 @@ where
     /// ).unwrap().expect("");
     /// }
     /// ```
-    pub fn apply_unchecked<KB, KA, C, V, T, U, R>(
+    pub fn apply_unchecked<KB, KA, KM, C, V, T, U, R>(
         &mut self,
-        batch: &MerkBatch<KB>,
-        aux: &AuxMerkBatch<KA>,
+        batch: &MerkBatch<KB, KA, KM>,
         options: Option<MerkOptions>,
         old_specialized_cost: &C,
         value_defined_cost_fn: Option<&V>,
@@ -334,6 +330,7 @@ where
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
+        KM: AsRef<[u8]>,
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
         T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
@@ -352,7 +349,7 @@ where
 
         Walker::apply_to(
             maybe_walker,
-            batch,
+            batch.batch_entries,
             self.source(),
             old_specialized_cost,
             value_defined_cost_fn,
@@ -365,7 +362,13 @@ where
             // we set the new root node of the merk tree
             self.tree.set(maybe_tree);
             // commit changes to db
-            self.commit(key_updates, aux, options, old_specialized_cost)
+            self.commit(
+                key_updates,
+                batch.aux_batch_entries,
+                batch.meta_batch_entries,
+                options,
+                old_specialized_cost,
+            )
         })
     }
 }

@@ -42,7 +42,7 @@ pub use temp_merk::TempMerk;
 use crate::{
     tree::{
         kv::{ValueDefinedCostType, KV},
-        BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, TreeNode, Walker,
+        BatchEntry, MerkBatchEntries, NoopCommit, Op, PanicSource, TreeNode, Walker,
     },
     tree_type::TreeType,
     Merk,
@@ -78,7 +78,7 @@ pub fn assert_tree_invariants(tree: &TreeNode) {
 /// `assert_tree_invariants`. Return Tree.
 pub fn apply_memonly_unchecked(
     tree: TreeNode,
-    batch: &MerkBatch<Vec<u8>>,
+    batch: &MerkBatchEntries<Vec<u8>>,
     grove_version: &GroveVersion,
 ) -> TreeNode {
     let node_type = tree.node_type();
@@ -126,7 +126,7 @@ pub fn apply_memonly_unchecked(
 /// Perform checks using `assert_tree_invariants`. Return Tree.
 pub fn apply_memonly(
     tree: TreeNode,
-    batch: &MerkBatch<Vec<u8>>,
+    batch: &MerkBatchEntries<Vec<u8>>,
     grove_version: &GroveVersion,
 ) -> TreeNode {
     let tree = apply_memonly_unchecked(tree, batch, grove_version);
@@ -138,7 +138,7 @@ pub fn apply_memonly(
 /// commits to memory only.
 pub fn apply_to_memonly(
     maybe_tree: Option<TreeNode>,
-    batch: &MerkBatch<Vec<u8>>,
+    batch: &MerkBatchEntries<Vec<u8>>,
     tree_type: TreeType,
     grove_version: &GroveVersion,
 ) -> Option<TreeNode> {

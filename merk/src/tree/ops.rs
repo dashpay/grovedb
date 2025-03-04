@@ -108,12 +108,43 @@ pub type BatchEntry<K> = (K, Op);
 /// A single `(key, operation, cost)` triple.
 pub type AuxBatchEntry<K> = (K, Op, Option<KeyValueStorageCost>);
 
-/// A mapping of keys and operations. Keys should be sorted and unique.
-pub type MerkBatch<K> = [BatchEntry<K>];
+/// Batch entry for meta storage updates
+pub type MetaBatchEntry<K> = (K, MetaOp);
 
-/// A mapping of keys and operations with potential costs. Keys should be sorted
-/// and unique.
-pub type AuxMerkBatch<K> = [AuxBatchEntry<K>];
+/// A mapping of keys and operations. Keys should be sorted and unique.
+pub struct MerkBatch<'a, KB, KA, KM> {
+    pub batch_entries: &'a MerkBatchEntries<KB>,
+    pub aux_batch_entries: &'a MerkAuxBatchEntries<KA>,
+    pub meta_batch_entries: &'a MerkMetaBatchEntries<KM>,
+}
+
+impl<'a, B, KB, KA, KM> From<&'a B> for MerkBatch<'a, KB, KA, KM>
+where
+    B: AsRef<MerkBatchEntries<KB>>,
+{
+    fn from(batch_entries: &'a B) -> Self {
+        MerkBatch {
+            batch_entries: batch_entries.as_ref(),
+            aux_batch_entries: Default::default(),
+            meta_batch_entries: Default::default(),
+        }
+    }
+}
+
+/// Batch entries of a regular (not aux nor meta) storage updates
+pub type MerkBatchEntries<K> = [BatchEntry<K>];
+
+/// Batch entries of aux storage updates
+pub type MerkAuxBatchEntries<K> = [AuxBatchEntry<K>];
+
+/// Batch entries of meta storage updates
+pub type MerkMetaBatchEntries<K> = [MetaBatchEntry<K>];
+
+/// Meta storage operations
+pub enum MetaOp {
+    PutMeta(Vec<u8>),
+    DeleteMeta,
+}
 
 #[cfg(feature = "minimal")]
 /// A source of data which panics when called. Useful when creating a store
@@ -147,7 +178,7 @@ where
     /// Keys in batch must be sorted and unique.
     pub fn apply_to<K: AsRef<[u8]>, C, V, T, U, R>(
         maybe_tree: Option<Self>,
-        batch: &MerkBatch<K>,
+        batch: &MerkBatchEntries<K>,
         source: S,
         old_tree_cost: &C,
         value_defined_cost_fn: Option<&V>,
@@ -233,7 +264,7 @@ where
     ///
     /// Keys in batch must be sorted and unique.
     fn build<K: AsRef<[u8]>, C, V, T, U, R>(
-        batch: &MerkBatch<K>,
+        batch: &MerkBatchEntries<K>,
         source: S,
         old_tree_cost: &C,
         value_defined_cost_fn: Option<&V>,
@@ -389,7 +420,7 @@ where
 
     pub(crate) fn apply_sorted_without_costs<K: AsRef<[u8]>>(
         self,
-        batch: &MerkBatch<K>,
+        batch: &MerkBatchEntries<K>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error> {
         self.apply_sorted(
@@ -414,7 +445,7 @@ where
     /// Keys in batch must be sorted and unique.
     fn apply_sorted<K: AsRef<[u8]>, C, V, T, U, R>(
         self,
-        batch: &MerkBatch<K>,
+        batch: &MerkBatchEntries<K>,
         old_specialized_cost: &C,
         value_defined_cost_fn: Option<&V>,
         get_temp_new_value_with_old_flags: &T,
@@ -732,7 +763,7 @@ where
     /// will be dispatched to workers in other threads.
     fn recurse<K: AsRef<[u8]>, C, V, T, U, R>(
         self,
-        batch: &MerkBatch<K>,
+        batch: &MerkBatchEntries<K>,
         mid: usize,
         exclusive: bool,
         mut key_updates: KeyUpdates,

@@ -71,8 +71,8 @@ use crate::{
         Query,
     },
     tree::{
-        kv::ValueDefinedCostType, AggregateData, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode,
-        NULL_HASH,
+        kv::ValueDefinedCostType, AggregateData, CryptoHash, MerkAuxBatchEntries,
+        MerkMetaBatchEntries, Op, RefWalker, TreeNode, NULL_HASH,
     },
     tree_type::TreeType,
     Error::{CostsError, EdError, StorageError},
@@ -365,15 +365,17 @@ where
     }
 
     /// Commit tree changes
-    pub fn commit<K>(
+    pub fn commit<KA, KM>(
         &mut self,
         key_updates: KeyUpdates,
-        aux: &AuxMerkBatch<K>,
+        aux: &MerkAuxBatchEntries<KA>,
+        meta: &MerkMetaBatchEntries<KM>,
         options: Option<MerkOptions>,
         old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
     ) -> CostResult<(), Error>
     where
-        K: AsRef<[u8]>,
+        KA: AsRef<[u8]>,
+        KM: AsRef<[u8]>,
     {
         let mut cost = OperationCost::default();
         let options = options.unwrap_or_default();
@@ -825,7 +827,7 @@ mod test {
         let batch_size = 20;
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>>(&batch.into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
 
