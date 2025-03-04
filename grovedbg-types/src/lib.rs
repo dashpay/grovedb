@@ -61,51 +61,37 @@ pub struct NodeUpdate {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Reference {
+pub enum ReferencePath {
     AbsolutePathReference {
         #[serde_as(as = "Vec<Base64>")]
         path: Path,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
     },
     UpstreamRootHeightReference {
         n_keep: u32,
         #[serde_as(as = "Vec<Base64>")]
         path_append: Vec<PathSegment>,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
     },
     UpstreamRootHeightWithParentPathAdditionReference {
         n_keep: u32,
         #[serde_as(as = "Vec<Base64>")]
         path_append: Vec<PathSegment>,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
     },
     UpstreamFromElementHeightReference {
         n_remove: u32,
         #[serde_as(as = "Vec<Base64>")]
         path_append: Vec<PathSegment>,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
     },
     CousinReference {
         #[serde_as(as = "Base64")]
         swap_parent: PathSegment,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
     },
     RemovedCousinReference {
         #[serde_as(as = "Vec<Base64>")]
         swap_parent: Vec<PathSegment>,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
     },
     SiblingReference {
         #[serde_as(as = "Base64")]
         sibling_key: Key,
-        #[serde_as(as = "Option<Base64>")]
-        element_flags: Option<Vec<u8>>,
     },
 }
 
@@ -153,12 +139,34 @@ pub enum Element {
         #[serde_as(as = "Option<Base64>")]
         element_flags: Option<Vec<u8>>,
     },
+    ItemWithBackwardReferences {
+        #[serde_as(as = "Base64")]
+        value: Vec<u8>,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
     SumItem {
         value: i64,
         #[serde_as(as = "Option<Base64>")]
         element_flags: Option<Vec<u8>>,
     },
-    Reference(Reference),
+    SumItemWithBackwardReferences {
+        value: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    Reference {
+        reference_path: ReferencePath,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
+    BidirectionalReference {
+        reference_path: ReferencePath,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+        slot_idx: u8,
+        cascade_on_update: bool,
+    },
 }
 
 #[serde_as]
