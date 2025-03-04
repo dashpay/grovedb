@@ -240,6 +240,12 @@ impl GroveDb {
             ));
         }
 
+        if subtrees_batch_size == 0 {
+            return Err(Error::InternalError(
+                "subtrees_batch_size cannot be zero".to_string(),
+            ));
+        }
+
         let root_prefix = [0u8; 32];
 
         let mut session = self.start_syncing_session(app_hash, subtrees_batch_size);

@@ -277,30 +277,26 @@ fn sync_db_demo(
     chunk_queue.push_back(app_hash.to_vec());
 
     let mut num_chunks = 0;
-    let mut intermediate_commit = false;
-    while chunk_queue.front().is_some() || intermediate_commit {
-        if let Some(chunk_id) = chunk_queue.pop_front() {
-            num_chunks += 1;
-            let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-            let (more_chunks, need_to_commit) = session.apply_chunk(&target_db, chunk_id.as_slice(), &ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-            if need_to_commit {
-                intermediate_commit = true;
-            }
-            chunk_queue.extend(more_chunks);
-        } else {
+    while let Some(chunk_id) = chunk_queue.pop_front() {
+        num_chunks += 1;
+        let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+        let (more_chunks, intermediate_commit) = session.apply_chunk(&target_db, chunk_id.as_slice(), &ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+        if intermediate_commit {
             let old_tx = unsafe {
                 session.as_mut().set_new_transaction(target_db.start_transaction())
             };
             target_db.commit_transaction(old_tx).value?;
-            intermediate_commit = false;
             let more_new_chunks = session.resume_sync(&target_db, CURRENT_STATE_SYNC_VERSION, grove_version)?;
             chunk_queue.extend(more_new_chunks);
+        }
+        else {
+            chunk_queue.extend(more_chunks);
         }
     }
     println!("num_chunks: {}", num_chunks);
 
     if session.is_sync_completed() {
-        println!("is_sync_completed()");
+        println!("state_sync completed");
         target_db.commit_session(session)?;
     }
     let elapsed = start_time.elapsed();

@@ -212,6 +212,10 @@ impl<'db> MultiStateSyncSession<'db> {
             }
         }
 
+        if self.pending_discovered_subtrees.is_some() {
+            return false;
+        }
+
         true
     }
 
@@ -470,20 +474,21 @@ impl<'db> MultiStateSyncSession<'db> {
                 let completed_path = subtree_state_sync.current_path.clone();
 
                 // Subtree is finished. We can save it.
-                if subtree_state_sync.num_processed_chunks > 0 {
-                    if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
+                let is_subtree_empty = subtree_state_sync.num_processed_chunks == 0;
+                if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
+                    if !is_subtree_empty {
                         if let Err(err) = prefix_data.restorer.finalize(grove_version) {
                             return Err(Error::InternalError(format!(
                                 "Unable to finalize Merk: {:?}",
                                 err
                             )));
                         }
-                    } else {
-                        return Err(Error::InternalError(format!(
-                            "Prefix {:?} does not exist in current_prefixes",
-                            chunk_prefix
-                        )));
                     }
+                } else {
+                    return Err(Error::InternalError(format!(
+                        "Prefix {:?} does not exist in current_prefixes",
+                        chunk_prefix
+                    )));
                 }
 
                 self.as_mut().processed_prefixes().insert(chunk_prefix);
@@ -525,9 +530,11 @@ impl<'db> MultiStateSyncSession<'db> {
         {
             res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
         }
+
         Ok((
             res,
-            self.num_processed_subtrees_in_batch >= self.subtrees_batch_size,
+            self.num_processed_subtrees_in_batch >= self.subtrees_batch_size
+                && self.current_prefixes.is_empty(),
         ))
     }
 
@@ -595,7 +602,7 @@ impl<'db> MultiStateSyncSession<'db> {
                 .pending_discovered_subtrees()
                 .take()
                 .ok_or(Error::CorruptedData(
-                    "Unsupported state sync protocol version".to_string(),
+                    "No pending subtrees available for resume_sync".to_string(),
                 ))?;
         *self.as_mut().num_processed_subtrees_in_batch() = 0;
 
