@@ -21,24 +21,14 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
         }
     }
 
-    /// Set metadata under `key`. This doesn't affect the state (root hash).
-    pub fn put_meta(&mut self, key: Vec<u8>, value: Vec<u8>) -> CostResult<(), Error> {
-        self.storage
-            .put_meta(&key, &value, None)
-            .map_ok(|_| {
-                self.meta_cache.insert(key, Some(value));
-            })
-            .map_err(Error::StorageError)
+    /// Set metadata under `key` at the meta cache.
+    pub(crate) fn put_meta_cached(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.meta_cache.insert(key, Some(value));
     }
 
-    /// Delete metadata under `key`.
-    pub fn delete_meta(&mut self, key: &[u8]) -> CostResult<(), Error> {
-        self.storage
-            .delete_meta(key, None)
-            .map_ok(|_| {
-                self.meta_cache.remove(key);
-            })
-            .map_err(Error::StorageError)
+    /// Delete metadata under `key` from the meta cache.
+    pub(crate) fn delete_meta_cached(&mut self, key: &[u8]) {
+        self.meta_cache.remove(key);
     }
 }
 
@@ -47,16 +37,24 @@ mod tests {
     use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;
 
-    use crate::test_utils::TempMerk;
+    use crate::{test_utils::TempMerk, tree::MetaOp, MerkBatch};
 
     #[test]
     fn meta_storage_data_retrieval() {
         let version = GroveVersion::latest();
         let mut merk = TempMerk::new(&version);
 
-        merk.put_meta(b"key".to_vec(), b"value".to_vec())
-            .unwrap()
-            .unwrap();
+        merk.apply::<Vec<_>, Vec<_>, _>(
+            &MerkBatch {
+                batch_entries: Default::default(),
+                aux_batch_entries: Default::default(),
+                meta_batch_entries: &[(b"key".to_vec(), MetaOp::PutMeta(b"value".to_vec()), None)],
+            },
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
 
         let mut cost: OperationCost = Default::default();
         assert_eq!(
@@ -95,16 +93,34 @@ mod tests {
         let version = GroveVersion::latest();
         let mut merk = TempMerk::new(&version);
 
-        merk.put_meta(b"key".to_vec(), b"value".to_vec())
-            .unwrap()
-            .unwrap();
+        merk.apply::<Vec<_>, Vec<_>, _>(
+            &MerkBatch {
+                batch_entries: Default::default(),
+                aux_batch_entries: Default::default(),
+                meta_batch_entries: &[(b"key".to_vec(), MetaOp::PutMeta(b"value".to_vec()), None)],
+            },
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(
             merk.get_meta(b"key".to_vec()).unwrap().unwrap(),
             Some(b"value".as_slice())
         );
 
-        merk.delete_meta(b"key").unwrap().unwrap();
+        merk.apply::<Vec<_>, Vec<_>, _>(
+            &MerkBatch {
+                batch_entries: Default::default(),
+                aux_batch_entries: Default::default(),
+                meta_batch_entries: &[(b"key".to_vec(), MetaOp::DeleteMeta, None)],
+            },
+            None,
+            version,
+        )
+        .unwrap()
+        .unwrap();
 
         assert!(merk.get_meta(b"key".to_vec()).unwrap().unwrap().is_none());
     }

@@ -491,13 +491,19 @@ where
 
         for (key, value, storage_cost) in meta {
             match value {
-                MetaOp::PutMeta(value) => cost_return_on_error_no_add!(
-                    cost,
-                    batch
-                        .put_meta(key, value, storage_cost.clone())
-                        .map_err(CostsError)
-                ),
-                MetaOp::DeleteMeta => batch.delete_meta(key, storage_cost.clone()),
+                MetaOp::PutMeta(value) => {
+                    self.put_meta_cached(key.as_ref().to_vec(), value.to_vec());
+                    cost_return_on_error_no_add!(
+                        cost,
+                        batch
+                            .put_meta(key, value, storage_cost.clone())
+                            .map_err(CostsError)
+                    )
+                }
+                MetaOp::DeleteMeta => {
+                    self.delete_meta_cached(key.as_ref());
+                    batch.delete_meta(key, storage_cost.clone())
+                }
             };
         }
 

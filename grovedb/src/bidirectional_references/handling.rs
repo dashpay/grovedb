@@ -9,8 +9,9 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostResult, CostsExt,
 };
-use grovedb_merk::CryptoHash;
+use grovedb_merk::{tree::MetaOp, CryptoHash, MerkBatch};
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
+use grovedb_version::version::GroveVersion;
 
 use super::{BidirectionalReference, SlotIdx, META_BACKWARD_REFERENCES_PREFIX};
 use crate::{
@@ -52,7 +53,8 @@ impl BidirectionalReference {
                     Self::remove_backward_reference_resolved(
                         &mut target_merk,
                         &target_key,
-                        self.backward_reference_slot
+                        self.backward_reference_slot,
+                        merk_cache.version,
                     )
                 );
             }
@@ -69,6 +71,7 @@ impl BidirectionalReference {
         target_merk: &mut MerkHandle<'_, '_>,
         target_key: &[u8],
         slot_idx: SlotIdx,
+        version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = Default::default();
 
@@ -79,19 +82,29 @@ impl BidirectionalReference {
 
         bits.set(slot_idx, false);
 
-        cost_return_on_error!(
-            &mut cost,
-            target_merk.for_merk(|m| m
-                .put_meta(prefix.clone(), bits.into_inner()[0].to_be_bytes().to_vec())
-                .map_err(Error::MerkError))
-        );
-
-        let mut indexed_prefix = prefix;
+        let mut indexed_prefix = prefix.clone();
         write!(&mut indexed_prefix, "{}", slot_idx).expect("no io involved");
 
         cost_return_on_error!(
             &mut cost,
-            target_merk.for_merk(|m| m.delete_meta(&indexed_prefix).map_err(Error::MerkError))
+            target_merk.for_merk(|m| m
+                .apply::<Vec<_>, Vec<_>, _>(
+                    &MerkBatch {
+                        batch_entries: Default::default(),
+                        aux_batch_entries: Default::default(),
+                        meta_batch_entries: &[
+                            (
+                                prefix.clone(),
+                                MetaOp::PutMeta(bits.into_inner()[0].to_be_bytes().to_vec()),
+                                None
+                            ),
+                            (indexed_prefix, MetaOp::DeleteMeta, None)
+                        ]
+                    },
+                    None,
+                    version
+                )
+                .map_err(Error::MerkError))
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -193,6 +206,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
                 inverted_reference,
                 cascade_on_update: reference.cascade_on_update,
             },
+            merk_cache.version
         )
     );
 
@@ -268,7 +282,19 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
             cost_return_on_error!(
                 &mut cost,
                 merk.for_merk(|m| m
-                    .put_meta(prefix, 0u32.to_be_bytes().to_vec())
+                    .apply::<Vec<_>, Vec<_>, _>(
+                        &MerkBatch {
+                            batch_entries: Default::default(),
+                            aux_batch_entries: Default::default(),
+                            meta_batch_entries: &[(
+                                prefix.clone(),
+                                MetaOp::PutMeta(0u32.to_be_bytes().to_vec()),
+                                None
+                            )]
+                        },
+                        None,
+                        merk_cache.version
+                    )
                     .map_err(Error::MerkError))
             );
         }
@@ -443,7 +469,8 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
                 BidirectionalReference::remove_backward_reference_resolved(
                     &mut current_merk,
                     &current_key,
-                    idx
+                    idx,
+                    merk_cache.version,
                 )
             );
 
@@ -612,6 +639,7 @@ fn add_backward_reference(
     target_merk: &mut MerkHandle<'_, '_>,
     key: &[u8],
     backward_reference: BackwardReference,
+    version: &GroveVersion,
 ) -> CostResult<SlotIdx, Error> {
     let mut cost = Default::default();
 
@@ -623,19 +651,28 @@ fn add_backward_reference(
         write!(&mut idx_prefix, "{free_index}").expect("no io involved");
 
         let serialized_ref = cost_return_on_error_no_add!(cost, backward_reference.serialize());
-        cost_return_on_error!(
-            &mut cost,
-            target_merk.for_merk(|m| m
-                .put_meta(idx_prefix, serialized_ref)
-                .map_err(Error::MerkError))
-        );
 
         bits.set(free_index, true);
 
         cost_return_on_error!(
             &mut cost,
             target_merk.for_merk(|m| m
-                .put_meta(prefix, bits.into_inner()[0].to_be_bytes().to_vec())
+                .apply::<Vec<_>, Vec<_>, _>(
+                    &MerkBatch {
+                        batch_entries: Default::default(),
+                        aux_batch_entries: Default::default(),
+                        meta_batch_entries: &[
+                            (idx_prefix, MetaOp::PutMeta(serialized_ref), None),
+                            (
+                                prefix,
+                                MetaOp::PutMeta(bits.into_inner()[0].to_be_bytes().to_vec()),
+                                None
+                            ),
+                        ]
+                    },
+                    None,
+                    version
+                )
                 .map_err(Error::MerkError))
         );
 
@@ -720,6 +757,7 @@ mod tests {
                 ]),
                 cascade_on_update: false,
             },
+            version,
         )
         .unwrap()
         .unwrap();
@@ -733,6 +771,7 @@ mod tests {
                 ]),
                 cascade_on_update: false,
             },
+            version,
         )
         .unwrap()
         .unwrap();
@@ -746,6 +785,7 @@ mod tests {
                 ]),
                 cascade_on_update: false,
             },
+            version,
         )
         .unwrap()
         .unwrap();
@@ -794,6 +834,7 @@ mod tests {
                 ]),
                 cascade_on_update: false,
             },
+            version,
         )
         .unwrap()
         .unwrap();
@@ -807,6 +848,7 @@ mod tests {
                 ]),
                 cascade_on_update: false,
             },
+            version,
         )
         .unwrap()
         .unwrap();
@@ -820,6 +862,7 @@ mod tests {
                 ]),
                 cascade_on_update: false,
             },
+            version,
         )
         .unwrap()
         .unwrap();
@@ -828,9 +871,11 @@ mod tests {
         assert_eq!(slot1, 1);
         assert_eq!(slot2, 2);
 
-        BidirectionalReference::remove_backward_reference_resolved(&mut merk, TEST_LEAF, 1)
-            .unwrap()
-            .unwrap();
+        BidirectionalReference::remove_backward_reference_resolved(
+            &mut merk, TEST_LEAF, 1, version,
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(
             add_backward_reference(
@@ -842,6 +887,7 @@ mod tests {
                     ]),
                     cascade_on_update: false,
                 },
+                version
             )
             .unwrap()
             .unwrap(),
@@ -868,6 +914,7 @@ mod tests {
                     ]),
                     cascade_on_update: false,
                 },
+                version,
             )
             .unwrap()
             .unwrap();
@@ -882,6 +929,7 @@ mod tests {
                 ]),
                 cascade_on_update: false,
             },
+            version
         )
         .unwrap()
         .is_err());
