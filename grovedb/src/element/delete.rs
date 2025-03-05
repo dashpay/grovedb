@@ -58,9 +58,8 @@ impl Element {
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
         let tree_type = merk.tree_type;
-        merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
-            &batch,
-            &[],
+        merk.apply_with_costs_just_in_time_value_update::<_, Vec<_>, Vec<_>>(
+            &(&batch).into(),
             merk_options,
             &|key, value| {
                 Self::specialized_costs_for_key_value(

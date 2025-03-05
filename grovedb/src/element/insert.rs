@@ -77,9 +77,8 @@ impl Element {
             [(key, Op::Put(serialized, merk_feature_type))]
         };
         let tree_type = merk.tree_type;
-        merk.apply_with_specialized_costs::<_, Vec<u8>>(
-            &batch_operations,
-            &[],
+        merk.apply_with_specialized_costs::<_, Vec<_>, Vec<_>>(
+            &(&batch_operations).into(),
             options,
             &|key, value| {
                 // it is possible that a normal item was being replaced with a
@@ -335,9 +334,8 @@ impl Element {
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
         let tree_type = merk.tree_type;
-        merk.apply_with_specialized_costs::<_, Vec<u8>>(
-            &batch_operations,
-            &[],
+        merk.apply_with_specialized_costs::<_, Vec<_>, Vec<_>>(
+            &(&batch_operations).into(),
             options,
             &|key, value| {
                 Self::specialized_costs_for_key_value(
@@ -399,9 +397,8 @@ impl Element {
             let tree_type = merk.tree_type;
             cost_return_on_error!(
                 &mut cost,
-                merk.apply_with_specialized_costs::<_, Vec<u8>>(
-                    &batch_operations,
-                    &[],
+                merk.apply_with_specialized_costs::<_, Vec<_>, Vec<_>>(
+                    &(&batch_operations).into(),
                     options,
                     &|key, value| {
                         Self::specialized_costs_for_key_value(
@@ -491,9 +488,8 @@ impl Element {
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
         let tree_type = merk.tree_type;
-        merk.apply_with_specialized_costs::<_, Vec<u8>>(
-            &batch_operations,
-            &[],
+        merk.apply_with_specialized_costs::<_, Vec<_>, Vec<_>>(
+            &(&batch_operations).into(),
             options,
             &|key, value| {
                 Self::specialized_costs_for_key_value(
@@ -573,9 +569,8 @@ impl Element {
             let tree_type = merk.tree_type;
             cost_return_on_error!(
                 &mut cost,
-                merk.apply_with_specialized_costs::<_, Vec<u8>>(
-                    &batch_operations,
-                    &[],
+                merk.apply_with_specialized_costs::<_, Vec<u8>, Vec<u8>>(
+                    &(&batch_operations).into(),
                     options,
                     &|key, value| {
                         Self::specialized_costs_for_key_value(

@@ -650,7 +650,7 @@ mod test {
         .unwrap()
         .expect("cannot open merk");
         let merk_batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&merk_batch).into(), None, grove_version)
             .unwrap()
             .unwrap();
 

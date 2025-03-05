@@ -1633,9 +1633,8 @@ where
 
         cost_return_on_error!(
             &mut cost,
-            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _, _>(
-                &batch_operations,
-                &[],
+            merk.apply_unchecked::<_, Vec<_>, Vec<_>, _, _, _, _, _>(
+                &(&batch_operations).into(),
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
                     Element::specialized_costs_for_key_value(
