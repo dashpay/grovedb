@@ -1221,27 +1221,39 @@ where
                 Op::PushInverted(self.to_kv_value_hash_node())
             }
         } else if on_boundary_not_found {
-            println!("found boundary, pushing kv digest hash");
+            println!("found boundary, pushing kv digest hash for {}", hex::encode(&key));
             if proof_params.left_to_right {
                 Op::Push(self.to_kvdigest_node())
             } else {
                 Op::PushInverted(self.to_kvdigest_node())
             }
-        } else {
-            if left_absence.1 || right_absence.0 {
-                println!("found absence, pushing kv digest hash");
-                if proof_params.left_to_right {
-                    Op::Push(self.to_kvdigest_node())
-                } else {
-                    Op::PushInverted(self.to_kvdigest_node())
-                }
-            } else if proof_params.left_to_right {
-                println!("found kv hash for key {}", hex::encode(&key));
-                Op::Push(self.to_kvhash_node())
+        } else if proof_params.searching_for_first && proof_status.only_gone_left && !has_left {
+            println!("found first, pushing kv_value hash for {}", hex::encode(&key));
+            if proof_params.left_to_right {
+                Op::Push(self.to_kv_value_hash_node())
             } else {
-                println!("found kv hash for key {}", hex::encode(&key));
-                Op::PushInverted(self.to_kvhash_node())
+                Op::PushInverted(self.to_kv_value_hash_node())
             }
+        } else if proof_params.searching_for_last && proof_status.only_gone_right && !has_right {
+            println!("found last, pushing kv_value hash for {}", hex::encode(&key));
+            if proof_params.left_to_right {
+                Op::Push(self.to_kv_value_hash_node())
+            } else {
+                Op::PushInverted(self.to_kv_value_hash_node())
+            }
+        }else if left_absence.1 || right_absence.0 {
+            println!("found absence, pushing kv digest hash for {}", hex::encode(&key));
+            if proof_params.left_to_right {
+                Op::Push(self.to_kvdigest_node())
+            } else {
+                Op::PushInverted(self.to_kvdigest_node())
+            }
+        } else if proof_params.left_to_right {
+            println!("found kv hash for key {}", hex::encode(&key));
+            Op::Push(self.to_kvhash_node())
+        } else {
+            println!("found kv hash for key {}", hex::encode(&key));
+            Op::PushInverted(self.to_kvhash_node())
         };
 
         proof.push_back(proof_op);
@@ -1280,7 +1292,7 @@ where
         proof_closest_items: &mut ProofClosestItems,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
-        if !query_items.has_no_query_items() {
+        if !query_items.has_no_query_items() || params.searching_for_first && left && proof_status.only_gone_left || params.searching_for_last && !left && proof_status.only_gone_right {
             self.walk(
                 left,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1690,6 +1702,67 @@ mod test {
             .unwrap();
         assert!(res.result_set.is_empty());
     }
+
+    #[test]
+    fn first_item_proof() {
+        let grove_version = GroveVersion::latest();
+    let mut tree = make_3_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    let query_items = vec![
+        QueryItem::First,
+    ];
+    let (proof, absence, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("create_proof errored");
+
+    let mut iter = proof.iter();
+    assert_eq!(
+        iter.next(),
+        Some(&Op::Push(Node::KVValueHash(
+            vec![3],
+            vec![3],
+            [
+                210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+            ]
+        )))
+    );
+    assert_eq!(
+        iter.next(),
+        Some(&Op::Push(Node::KVHash(
+            [61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44, 165, 68, 87, 7, 52, 238, 68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88, 197]
+        )))
+    );
+    assert_eq!(iter.next(), Some(&Op::Parent));
+    assert_eq!(
+        iter.next(),
+        Some(&Op::Push(Node::Hash(
+            [
+                171, 95, 191, 1, 198, 99, 138, 43, 233, 158, 239, 50, 56, 86, 221, 125, 213, 84, 143, 196, 177, 139, 135, 144, 4, 86, 197, 9, 92, 30, 65, 41
+            ]
+        )))
+    );
+    assert_eq!(iter.next(), Some(&Op::Child));
+    assert!(iter.next().is_none());
+    assert_eq!(absence, (true, false));
+
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+    let mut query = Query::new();
+    for item in query_items {
+        query.insert_item(item);
+    }
+    let res = query
+        .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
+        .unwrap()
+        .unwrap();
+    compare_result_tuples_not_optional!(
+            res.result_set,
+            vec![(vec![3], vec![3])]
+        );
+}
 
     #[test]
     fn root_proof() {
