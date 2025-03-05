@@ -414,6 +414,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .map_err(StorageError)
     }
 
+    #[cfg(test)]
     /// Rebuild restoration state from partial storage state
     fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
         // TODO: think about the return type some more
@@ -674,7 +675,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -947,7 +948,7 @@ mod tests {
         .unwrap();
         let batch = make_batch_seq(0..batch_size);
         source_merk
-            .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
 
@@ -1020,7 +1021,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -1089,7 +1090,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -1171,7 +1172,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -1273,7 +1274,7 @@ mod tests {
         let mut source_merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..batch_size);
         source_merk
-            .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
 
@@ -1355,7 +1356,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));

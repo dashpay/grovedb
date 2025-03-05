@@ -17,6 +17,7 @@ pub struct PrefixedRocksDbBatch<'db> {
     pub(crate) batch: WriteBatchWithTransaction<true>,
     pub(crate) cf_aux: &'db ColumnFamily,
     pub(crate) cf_roots: &'db ColumnFamily,
+    pub(crate) cf_meta: &'db ColumnFamily,
 
     /// As a batch to be commited is a RocksDB batch and there is no way to get
     /// what it will do, we collect costs at the moment we append something to
@@ -108,6 +109,26 @@ impl Batch for PrefixedRocksDbBatch<'_> {
         Ok(())
     }
 
+    fn put_meta<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), grovedb_costs::error::Error> {
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
+
+        self.cost_acc.seek_count += 1;
+        self.cost_acc.add_key_value_storage_costs(
+            prefixed_key.len() as u32,
+            value.len() as u32,
+            None,
+            cost_info,
+        )?;
+
+        self.batch.put_cf(self.cf_meta, prefixed_key, value);
+        Ok(())
+    }
+
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(&self.prefix, key);
 
@@ -142,6 +163,18 @@ impl Batch for PrefixedRocksDbBatch<'_> {
         }
 
         self.batch.delete_cf(self.cf_roots, prefixed_key);
+    }
+
+    fn delete_meta<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
+        let prefixed_key = make_prefixed_key(&self.prefix, key);
+
+        self.cost_acc.seek_count += 1;
+
+        if let Some(removed_bytes) = cost_info {
+            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
+        }
+
+        self.batch.delete_cf(self.cf_meta, prefixed_key);
     }
 }
 
@@ -204,6 +237,20 @@ impl Batch for PrefixedMultiContextBatchPart {
         Ok(())
     }
 
+    fn put_meta<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), grovedb_costs::error::Error> {
+        self.batch.put_meta(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(())
+    }
+
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
             .delete(make_prefixed_key(&self.prefix, key), cost_info);
@@ -217,5 +264,10 @@ impl Batch for PrefixedMultiContextBatchPart {
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
             .delete_root(make_prefixed_key(&self.prefix, key), cost_info);
+    }
+
+    fn delete_meta<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
+        self.batch
+            .delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
     }
 }

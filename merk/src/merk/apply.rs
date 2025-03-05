@@ -34,10 +34,8 @@ where
     /// ```
     /// # let grove_version = GroveVersion::latest();
     /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
-    /// # store.apply::<_, Vec<_>>(
-    ///     &[(vec![4,5,6],
-    ///     Op::Put(vec![0], BasicMerkNode))],
-    ///     &[],
+    /// # store.apply::<_, Vec<_>, Vec<_>>(
+    ///     &(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))]).into(),
     ///     None,
     ///     grove_version
     ///  ).unwrap().expect("");
@@ -52,7 +50,7 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[], None,grove_version).unwrap().expect("");
+    /// store.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None,grove_version).unwrap().expect("");
     /// ```
     pub fn apply<KB, KA, KM>(
         &mut self,
@@ -100,10 +98,8 @@ where
     /// ```
     /// # let grove_version = GroveVersion::latest();
     /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
-    /// # store.apply::<_, Vec<_>>(
-    ///     &[(vec![4,5,6],
-    ///     Op::Put(vec![0], BasicMerkNode))],
-    ///     &[],
+    /// # store.apply::<_, Vec<_>, Vec<_>>(
+    ///     &(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))]).into(),
     ///     None,
     ///     grove_version
     /// ).unwrap().expect("");
@@ -118,7 +114,7 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[], None,grove_version).unwrap().expect("");
+    /// store.apply::<_, Vec<_>, Vec<_>>(&(batch).into(), None,grove_version).unwrap().expect("");
     /// ```
     pub fn apply_with_specialized_costs<KB, KA, KM>(
         &mut self,
@@ -164,9 +160,8 @@ where
     /// ```
     /// # let grove_version = GroveVersion::latest();
     /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
-    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(    /// /// /// ///
-    ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))],
-    ///     &[],
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>, Vec<_>>(
+    ///     &(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))]).into(),
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -189,9 +184,8 @@ where
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     ///
-    /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    /// batch,
-    ///     &[],
+    /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>, Vec<_>>(
+    ///     &(&batch).into(),
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -279,9 +273,8 @@ where
     /// ```
     /// # let grove_version = GroveVersion::latest();
     /// # let mut store = grovedb_merk::test_utils::TempMerk::new(grove_version);
-    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(    /// /// /// ///
-    ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))],
-    ///     &[],
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>, Vec<_>>(
+    ///     &(&[(vec![4,5,6], Op::Put(vec![0], BasicMerkNode))]).into(),
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -303,9 +296,8 @@ where
     ///     // deletes key [4,5,6]
     ///     (vec![4, 5, 6], Op::Delete),
     /// ];
-    /// unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _, _, _>(
-    /// batch,
-    ///     &[],
+    /// store.apply_unchecked::<_, Vec<_>, Vec<_>, _, _, _, _, _>(
+    ///     &(&batch).into(),
     ///     None,
     ///     &|k, v| Ok(0),
     ///     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -314,7 +306,6 @@ where
     ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval)),
     ///     grove_version,
     /// ).unwrap().expect("");
-    /// }
     /// ```
     pub fn apply_unchecked<KB, KA, KM, C, V, T, U, R>(
         &mut self,

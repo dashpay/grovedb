@@ -137,9 +137,8 @@ mod test {
         .unwrap()
         .unwrap();
 
-        merk.apply::<_, Vec<_>>(
-            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))],
-            &[],
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))]).into(),
             None,
             grove_version,
         )
@@ -193,9 +192,8 @@ mod test {
         ));
 
         let mut merk = merk_fee_context.unwrap().unwrap();
-        merk.apply::<_, Vec<_>>(
-            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))],
-            &[],
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode))]).into(),
             None,
             grove_version,
         )

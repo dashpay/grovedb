@@ -59,7 +59,7 @@ use kv::KV;
 pub use link::Link;
 #[cfg(feature = "minimal")]
 pub use ops::{
-    BatchEntry, MerkAuxBatchEntries, MerkBatch, MerkBatchEntries, MerkMetaBatchEntries, Op,
+    BatchEntry, MerkAuxBatchEntries, MerkBatch, MerkBatchEntries, MerkMetaBatchEntries, MetaOp, Op,
     PanicSource,
 };
 #[cfg(feature = "minimal")]

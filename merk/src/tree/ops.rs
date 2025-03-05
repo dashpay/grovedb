@@ -109,7 +109,7 @@ pub type BatchEntry<K> = (K, Op);
 pub type AuxBatchEntry<K> = (K, Op, Option<KeyValueStorageCost>);
 
 /// Batch entry for meta storage updates
-pub type MetaBatchEntry<K> = (K, MetaOp);
+pub type MetaBatchEntry<K> = (K, MetaOp, Option<KeyValueStorageCost>);
 
 /// A mapping of keys and operations. Keys should be sorted and unique.
 pub struct MerkBatch<'a, KB, KA, KM> {

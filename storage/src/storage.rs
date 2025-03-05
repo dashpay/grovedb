@@ -246,6 +246,14 @@ pub trait Batch {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), grovedb_costs::error::Error>;
 
+    /// Appends to the database batch a put operation for meta storage.
+    fn put_meta<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), grovedb_costs::error::Error>;
+
     /// Appends to the database batch a delete operation for a data record.
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>);
 
@@ -255,6 +263,9 @@ pub trait Batch {
     /// Appends to the database batch a delete operation for a record in subtree
     /// roots storage.
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>);
+
+    /// Appends to the database batch a delete operation for meta storage.
+    fn delete_meta<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>);
 }
 
 /// Allows to iterate over database record inside of storage context.

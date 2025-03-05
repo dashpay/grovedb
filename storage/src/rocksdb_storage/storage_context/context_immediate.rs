@@ -220,6 +220,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
             batch: WriteBatchWithTransaction::<true>::default(),
             cf_aux: self.cf_aux(),
             cf_roots: self.cf_roots(),
+            cf_meta: self.cf_meta(),
             cost_acc: Default::default(),
         }
     }

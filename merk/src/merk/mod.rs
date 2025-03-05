@@ -72,7 +72,7 @@ use crate::{
     },
     tree::{
         kv::ValueDefinedCostType, AggregateData, CryptoHash, MerkAuxBatchEntries,
-        MerkMetaBatchEntries, Op, RefWalker, TreeNode, NULL_HASH,
+        MerkMetaBatchEntries, MetaOp, Op, RefWalker, TreeNode, NULL_HASH,
     },
     tree_type::TreeType,
     Error::{CostsError, EdError, StorageError},
@@ -489,6 +489,18 @@ where
             };
         }
 
+        for (key, value, storage_cost) in meta {
+            match value {
+                MetaOp::PutMeta(value) => cost_return_on_error_no_add!(
+                    cost,
+                    batch
+                        .put_meta(key, value, storage_cost.clone())
+                        .map_err(CostsError)
+                ),
+                MetaOp::DeleteMeta => batch.delete_meta(key, storage_cost.clone()),
+            };
+        }
+
         // write to db
         self.storage
             .commit_batch(batch)
@@ -810,7 +822,7 @@ mod test {
     use super::{Merk, RefWalker};
     use crate::{
         merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType,
-        tree_type::TreeType, Op, TreeFeatureType::BasicMerkNode,
+        tree_type::TreeType, MerkBatch, Op, TreeFeatureType::BasicMerkNode,
     };
     // TODO: Close and then reopen test
 
@@ -827,7 +839,7 @@ mod test {
         let batch_size = 20;
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch.into(), None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
 
@@ -846,7 +858,7 @@ mod test {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..1);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(1));
@@ -854,7 +866,7 @@ mod test {
         // height 2
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..2);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(2));
@@ -863,7 +875,7 @@ mod test {
         // 2^5 - 1 = 31 (max number of elements in tree of height 5)
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(5));
@@ -871,7 +883,7 @@ mod test {
         // should still be height 5 for 29 elements
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..29);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(5));
@@ -884,13 +896,13 @@ mod test {
         let mut merk = TempMerk::new(grove_version);
 
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_invariants(&merk);
 
         let batch = make_batch_seq(batch_size..(batch_size * 2));
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_invariants(&merk);
@@ -905,7 +917,7 @@ mod test {
 
         for i in 0..(tree_size / batch_size) {
             let batch = make_batch_rand(batch_size, i);
-            merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
                 .unwrap()
                 .expect("apply failed");
         }
@@ -921,7 +933,7 @@ mod test {
         for i in 0..(tree_size / batch_size) {
             println!("i:{i}");
             let batch = make_batch_rand(batch_size, i);
-            merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
                 .unwrap()
                 .expect("apply failed");
         }
@@ -933,12 +945,13 @@ mod test {
         let mut merk = TempMerk::new(grove_version);
 
         let batch = make_batch_rand(10, 1);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
 
         let key = batch.first().unwrap().0.clone();
-        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], None, grove_version)
+        let batch = [(key.clone(), Op::Delete)];
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -950,9 +963,12 @@ mod test {
     fn aux_data() {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
-        merk.apply::<Vec<_>, _>(
-            &[],
-            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode), None)],
+        merk.apply::<Vec<_>, _, Vec<_>>(
+            &MerkBatch {
+                batch_entries: Default::default(),
+                aux_batch_entries: &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerkNode), None)],
+                meta_batch_entries: Default::default(),
+            },
             None,
             grove_version,
         )
@@ -982,9 +998,8 @@ mod test {
             .is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(
-            &[(vec![5, 5, 5], Op::Put(vec![], BasicMerkNode))],
-            &[],
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[(vec![5, 5, 5], Op::Put(vec![], BasicMerkNode))]).into(),
             None,
             grove_version,
         )
@@ -1002,13 +1017,13 @@ mod test {
             .is_none());
 
         // uncached
-        merk.apply::<_, Vec<_>>(
-            &[
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[
                 (vec![0, 0, 0], Op::Put(vec![], BasicMerkNode)),
                 (vec![1, 1, 1], Op::Put(vec![], BasicMerkNode)),
                 (vec![2, 2, 2], Op::Put(vec![], BasicMerkNode)),
-            ],
-            &[],
+            ])
+                .into(),
             None,
             grove_version,
         )
@@ -1046,11 +1061,11 @@ mod test {
         .unwrap()
         .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .unwrap();
         let batch = make_batch_seq(11..12);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .unwrap();
     }
@@ -1074,7 +1089,7 @@ mod test {
         .unwrap()
         .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .unwrap();
         drop(merk);
@@ -1136,7 +1151,7 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
             let merk_batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
+            merk.apply::<_, Vec<_>, Vec<_>>(&(&merk_batch).into(), None, grove_version)
                 .unwrap()
                 .unwrap();
 
@@ -1228,7 +1243,7 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
             let merk_batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(merk_batch.as_slice(), &[], None, grove_version)
+            merk.apply::<_, Vec<_>, Vec<_>>(&(&merk_batch).into(), None, grove_version)
                 .unwrap()
                 .unwrap();
 
@@ -1295,17 +1310,15 @@ mod test {
         .unwrap()
         .expect("cannot open merk");
 
-        merk.apply::<_, Vec<_>>(
-            &[(b"9".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))],
-            &[],
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[(b"9".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))]).into(),
             None,
             grove_version,
         )
         .unwrap()
         .expect("should insert successfully");
-        merk.apply::<_, Vec<_>>(
-            &[(b"10".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))],
-            &[],
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[(b"10".to_vec(), Op::Put(b"a".to_vec(), BasicMerkNode))]).into(),
             None,
             grove_version,
         )
@@ -1324,9 +1337,8 @@ mod test {
         assert_eq!(result, Some(b"a".to_vec()));
 
         // Update the node
-        merk.apply::<_, Vec<_>>(
-            &[(b"10".to_vec(), Op::Put(b"b".to_vec(), BasicMerkNode))],
-            &[],
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[(b"10".to_vec(), Op::Put(b"b".to_vec(), BasicMerkNode))]).into(),
             None,
             grove_version,
         )
@@ -1360,9 +1372,8 @@ mod test {
         .expect("cannot open merk");
 
         // Update the node after dropping merk
-        merk.apply::<_, Vec<_>>(
-            &[(b"10".to_vec(), Op::Put(b"c".to_vec(), BasicMerkNode))],
-            &[],
+        merk.apply::<_, Vec<_>, Vec<_>>(
+            &(&[(b"10".to_vec(), Op::Put(b"c".to_vec(), BasicMerkNode))]).into(),
             None,
             grove_version,
         )

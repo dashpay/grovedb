@@ -384,7 +384,7 @@ mod test {
 
         let batch = vec![batch_entry];
 
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("should ...");
 

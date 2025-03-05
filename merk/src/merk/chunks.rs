@@ -476,7 +476,7 @@ mod test {
         // total_chunk = 1 + 8 = 9 chunks
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..20);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(5));
@@ -489,7 +489,7 @@ mod test {
         // total = 341 chunks
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..1000);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(10));
@@ -514,7 +514,7 @@ mod test {
 
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -554,7 +554,7 @@ mod test {
 
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -771,7 +771,7 @@ mod test {
         // 5 chunks
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -808,7 +808,7 @@ mod test {
         // 5 chunks
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -948,7 +948,7 @@ mod test {
         // 5 chunks
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -986,7 +986,7 @@ mod test {
         // 5 chunks
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
@@ -1058,7 +1058,7 @@ mod test {
         // 5 chunks
         let mut merk = TempMerk::new(grove_version);
         let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+        merk.apply::<_, Vec<_>, Vec<_>>(&(&batch).into(), None, grove_version)
             .unwrap()
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
