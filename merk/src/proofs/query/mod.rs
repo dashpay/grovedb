@@ -820,8 +820,6 @@ impl<'a> ProofItems<'a> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ProofStatus {
-    pub only_gone_left: bool,
-    pub only_gone_right: bool,
     pub limit: Option<u16>,
 }
 
@@ -847,20 +845,7 @@ pub struct ProofParams {
 }
 
 impl ProofStatus {
-    pub fn going_right(mut self, new_limit: Option<u16>) -> Self {
-        if self.only_gone_left {
-            self.only_gone_left = false;
-        }
-        if let Some(new_limit) = new_limit {
-            self.limit = Some(new_limit)
-        }
-        self
-    }
-
-    pub fn going_left(mut self, new_limit: Option<u16>) -> Self {
-        if self.only_gone_right {
-            self.only_gone_right = false;
-        }
+    pub fn update_limit(mut self, new_limit: Option<u16>) -> Self {
         if let Some(new_limit) = new_limit {
             self.limit = Some(new_limit)
         }
@@ -1030,7 +1015,7 @@ where
 
         let proof_direction = !proof_direction; // search the opposite path on second pass
         let (mut right_proof, right_absence, new_limit) = if proof_params.left_to_right {
-            let new_proof_status = proof_status.going_left(new_limit);
+            let new_proof_status = proof_status.update_limit(new_limit);
             cost_return_on_error!(
                 &mut cost,
                 self.create_child_proof(
@@ -1042,7 +1027,7 @@ where
                 )
             )
         } else {
-            let new_proof_status = proof_status.going_right(new_limit);
+            let new_proof_status = proof_status.update_limit(new_limit);
             cost_return_on_error!(
                 &mut cost,
                 self.create_child_proof(
@@ -1078,7 +1063,6 @@ where
         } else if proof_params.left_to_right {
             Op::Push(self.to_kvhash_node())
         } else {
-            // println!("found kv hash for key {}", hex::encode(&key));
             Op::PushInverted(self.to_kvhash_node())
         };
 
