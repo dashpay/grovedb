@@ -770,15 +770,15 @@ impl<'a> ProofItems<'a> {
         let mut item_on_boundary = false;
 
         for &query_item_key in self.key_query_items.iter() {
-            if query_item_key < key {
-                left_key_query_items.insert(query_item_key);
-            } else if query_item_key > key {
-                right_key_query_items.insert(query_item_key);
-            } else {
-                item_is_present = true;
-            }
+            match query_item_key.cmp(&key) {
+                std::cmp::Ordering::Less => left_key_query_items.insert(query_item_key),
+                std::cmp::Ordering::Greater => right_key_query_items.insert(query_item_key),
+                std::cmp::Ordering::Equal => {
+                    item_is_present = true;
+                    false // `insert` returns a bool, but we don't use it here
+                }
+            };
         }
-
         // 2) Partition the user’s range-based queries
         let mut left_range_query_items = vec![];
         let mut right_range_query_items = vec![];
@@ -1042,13 +1042,7 @@ where
             } else {
                 Op::PushInverted(self.to_kv_value_hash_node())
             }
-        } else if on_boundary_not_found {
-            if proof_params.left_to_right {
-                Op::Push(self.to_kvdigest_node())
-            } else {
-                Op::PushInverted(self.to_kvdigest_node())
-            }
-        } else if left_absence.1 || right_absence.0 {
+        } else if on_boundary_not_found || left_absence.1 || right_absence.0 {
             if proof_params.left_to_right {
                 Op::Push(self.to_kvdigest_node())
             } else {
