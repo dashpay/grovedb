@@ -488,7 +488,7 @@ impl Query {
                     )?;
                     if !items.is_empty() {
                         let intersection_result =
-                            QueryItem::intersect_many_ordered(&mut items, vec![conditional_item])?;
+                            QueryItem::intersect_many_ordered(&mut items, vec![conditional_item]);
                         items = intersection_result.ours.unwrap_or_default();
                     }
                 }
@@ -529,7 +529,7 @@ impl Query {
 
                 if !items.is_empty() {
                     let intersection_result =
-                        QueryItem::intersect_many_ordered(&mut items, vec![conditional_item])?;
+                        QueryItem::intersect_many_ordered(&mut items, vec![conditional_item]);
                     items = intersection_result.ours.unwrap_or_default();
                 }
             }
@@ -605,7 +605,7 @@ impl Query {
                         ours_right,
                         theirs_left,
                         theirs_right,
-                    } = original_query_item.intersect(&sub_query_item_merging_in)?;
+                    } = original_query_item.intersect(&sub_query_item_merging_in);
                     if let Some(in_both) = in_both {
                         if !hit {
                             hit = true;

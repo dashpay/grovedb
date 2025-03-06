@@ -708,49 +708,17 @@ impl Link {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ClosestItemNextTo<'a> {
-    key: &'a Vec<u8>,
-    current_closest: Option<&'a Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProofClosestItems<'a> {
-    closest_items_after: BTreeMap<&'a Vec<u8>, Option<Vec<u8>>>,
-    closest_items_before: BTreeMap<&'a Vec<u8>, Option<Vec<u8>>>,
-}
-
-impl<'a> ProofClosestItems<'a> {
-    pub fn new_from_proof_items(proof_items: &ProofItems<'a>) -> Self {
-        Self {
-            closest_items_after: proof_items
-                .check_closest_items_after
-                .iter()
-                .map(|key| (*key, None))
-                .collect(),
-            closest_items_before: proof_items
-                .check_closest_items_before
-                .iter()
-                .map(|key| (*key, None))
-                .collect(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct ProofItems<'a> {
     key_query_items: BTreeSet<&'a Vec<u8>>,
     range_query_items: Vec<RangeSetBorrowed<'a>>,
-    check_closest_items_after: Vec<&'a Vec<u8>>,
-    check_closest_items_before: Vec<&'a Vec<u8>>,
 }
 
 impl<'a> fmt::Display for ProofItems<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "ProofItems:\n  Key Queries: {:?}\n  Range Queries: [{}]\n  Closest After: {:?}\n  \
-             Closest Before: {:?}",
+            "ProofItems:\n  Key Queries: {:?}\n  Range Queries: [{}]\n",
             self.key_query_items
                 .iter()
                 .map(|b| format!("{:X?}", b))
@@ -760,14 +728,6 @@ impl<'a> fmt::Display for ProofItems<'a> {
                 .map(|r| format!("{}", r))
                 .collect::<Vec<_>>()
                 .join(", "),
-            self.check_closest_items_after
-                .iter()
-                .map(|b| format!("{:X?}", b))
-                .collect::<Vec<_>>(),
-            self.check_closest_items_before
-                .iter()
-                .map(|b| format!("{:X?}", b))
-                .collect::<Vec<_>>(),
         )
     }
 }
@@ -775,11 +735,7 @@ impl<'a> fmt::Display for ProofItems<'a> {
 impl<'a> ProofItems<'a> {
     /// The point of process key is to take the current proof items that we have
     /// and split them left and right
-    fn process_key(
-        &'a self,
-        key: &'a Vec<u8>,
-        closest_items: &mut ProofClosestItems,
-    ) -> (bool, bool, ProofItems<'a>, ProofItems<'a>) {
+    fn process_key(&'a self, key: &'a Vec<u8>) -> (bool, bool, ProofItems<'a>, ProofItems<'a>) {
         // 1) Partition the user’s key-based queries
         let mut left_key_query_items = BTreeSet::new();
         let mut right_key_query_items = BTreeSet::new();
@@ -815,88 +771,14 @@ impl<'a> ProofItems<'a> {
             }
         }
 
-        let mut left_check_closest_items_after = vec![];
-        let mut right_check_closest_items_after = vec![];
-
-        for &closest_item_after in &self.check_closest_items_after {
-            // --- (a) Partitioning logic
-            if closest_item_after < key {
-                left_check_closest_items_after.push(closest_item_after);
-            } else {
-                right_check_closest_items_after.push(closest_item_after);
-            }
-
-            // --- (b) Update `closest_items`
-            let after_slot = closest_items
-                .closest_items_after
-                .get_mut(closest_item_after)
-                .expect("expected item in closest_items_after");
-
-            match after_slot {
-                // If there's already a "closest" known, see if `key` is strictly better:
-                Some(existing_val) => {
-                    // e.g. If `key` is in between (smaller than `existing_val` but bigger than
-                    // `closest_item_after`)
-                    if key < existing_val {
-                        *existing_val = key.clone();
-                    }
-                }
-                None => {
-                    // If we have no "closest" yet but `key` is strictly after `closest_item_after`,
-                    // we can set it
-                    if closest_item_after < key {
-                        *after_slot = Some(key.clone());
-                    }
-                }
-            }
-        }
-
-        let mut left_check_closest_items_before = Vec::new();
-        let mut right_check_closest_items_before = Vec::new();
-
-        for &closest_item_before in &self.check_closest_items_before {
-            // --- (a) Partitioning logic
-            if closest_item_before < key {
-                left_check_closest_items_before.push(closest_item_before);
-            } else {
-                right_check_closest_items_before.push(closest_item_before);
-            }
-
-            // --- (b) Update `closest_items`
-            let before_slot = closest_items
-                .closest_items_before
-                .get_mut(closest_item_before)
-                .expect("expected item in closest_items_before");
-
-            match before_slot {
-                Some(existing_val) => {
-                    // if `key` is bigger than the existing_val, we might set `existing_val = key`
-                    if key > existing_val {
-                        *existing_val = key.clone();
-                    }
-                }
-                None => {
-                    // If we have no "closest" yet but `key` is strictly before
-                    // `closest_item_before`, we can set it
-                    if key < closest_item_before {
-                        *before_slot = Some(key.clone());
-                    }
-                }
-            }
-        }
-
         let left = ProofItems {
             key_query_items: left_key_query_items,
             range_query_items: left_range_query_items,
-            check_closest_items_after: left_check_closest_items_after,
-            check_closest_items_before: left_check_closest_items_before,
         };
 
         let right = ProofItems {
             key_query_items: right_key_query_items,
             range_query_items: right_range_query_items,
-            check_closest_items_after: right_check_closest_items_after,
-            check_closest_items_before: right_check_closest_items_before,
         };
 
         (item_is_present, item_on_boundary, left, right)
@@ -934,8 +816,6 @@ impl ProofStatus {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ProofParams {
-    searching_for_first: bool,
-    searching_for_last: bool,
     left_to_right: bool,
 }
 
@@ -966,18 +846,10 @@ impl<'a> ProofItems<'a> {
         query_items: &[QueryItem],
         left_to_right: bool,
     ) -> (ProofItems, ProofParams) {
-        let mut check_closest_items_after = vec![];
-        let mut check_closest_items_before = vec![];
         let mut key_query_items = BTreeSet::new();
         let mut range_query_items = vec![];
-        let mut searching_for_first = false;
-        let mut searching_for_last = false;
         for query_item in query_items {
             match query_item {
-                QueryItem::OneAfter(key) => check_closest_items_after.push(key),
-                QueryItem::OneBefore(key) => check_closest_items_before.push(key),
-                QueryItem::First => searching_for_first |= true,
-                QueryItem::Last => searching_for_last |= true,
                 QueryItem::Key(key) => {
                     key_query_items.insert(key);
                 }
@@ -994,14 +866,8 @@ impl<'a> ProofItems<'a> {
         let status = ProofItems {
             key_query_items,
             range_query_items,
-            check_closest_items_after,
-            check_closest_items_before,
         };
-        let params = ProofParams {
-            searching_for_first,
-            searching_for_last,
-            left_to_right,
-        };
+        let params = ProofParams { left_to_right };
         (status, params)
     }
 }
@@ -1067,13 +933,11 @@ where
     ) -> CostResult<ProofAbsenceLimit, Error> {
         let (proof_query_items, proof_params) =
             ProofItems::new_with_query_items(query, left_to_right);
-        let mut proof_closest_items = ProofClosestItems::new_from_proof_items(&proof_query_items);
         let proof_status = ProofStatus::new_with_limit(limit);
         self.create_proof_internal(
             &proof_query_items,
             &proof_params,
             proof_status,
-            &mut proof_closest_items,
             grove_version,
         )
     }
@@ -1088,7 +952,6 @@ where
         proof_query_items: &ProofItems,
         proof_params: &ProofParams,
         proof_status: ProofStatus,
-        proof_closest_items: &mut ProofClosestItems,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
         let mut cost = OperationCost::default();
@@ -1112,7 +975,7 @@ where
         // items 1 to 4 it would not make sense to push this to the right of 6.
 
         let (mut found_item, on_boundary_not_found, mut left_proof_items, mut right_proof_items) =
-            proof_query_items.process_key(&key, proof_closest_items);
+            proof_query_items.process_key(&key);
 
         println!(
             "left are {}\n right are {}",
@@ -1136,7 +999,6 @@ where
                     &left_proof_items,
                     proof_params,
                     proof_status,
-                    proof_closest_items,
                     grove_version
                 )
             )
@@ -1148,7 +1010,6 @@ where
                     &right_proof_items,
                     proof_params,
                     proof_status,
-                    proof_closest_items,
                     grove_version
                 )
             )
@@ -1192,7 +1053,6 @@ where
                     &right_proof_items,
                     proof_params,
                     new_proof_status,
-                    proof_closest_items,
                     grove_version
                 )
             )
@@ -1205,7 +1065,6 @@ where
                     &left_proof_items,
                     proof_params,
                     new_proof_status,
-                    proof_closest_items,
                     grove_version
                 )
             )
@@ -1221,28 +1080,20 @@ where
                 Op::PushInverted(self.to_kv_value_hash_node())
             }
         } else if on_boundary_not_found {
-            println!("found boundary, pushing kv digest hash for {}", hex::encode(&key));
+            println!(
+                "found boundary, pushing kv digest hash for {}",
+                hex::encode(&key)
+            );
             if proof_params.left_to_right {
                 Op::Push(self.to_kvdigest_node())
             } else {
                 Op::PushInverted(self.to_kvdigest_node())
             }
-        } else if proof_params.searching_for_first && proof_status.only_gone_left && !has_left {
-            println!("found first, pushing kv_value hash for {}", hex::encode(&key));
-            if proof_params.left_to_right {
-                Op::Push(self.to_kv_value_hash_node())
-            } else {
-                Op::PushInverted(self.to_kv_value_hash_node())
-            }
-        } else if proof_params.searching_for_last && proof_status.only_gone_right && !has_right {
-            println!("found last, pushing kv_value hash for {}", hex::encode(&key));
-            if proof_params.left_to_right {
-                Op::Push(self.to_kv_value_hash_node())
-            } else {
-                Op::PushInverted(self.to_kv_value_hash_node())
-            }
-        }else if left_absence.1 || right_absence.0 {
-            println!("found absence, pushing kv digest hash for {}", hex::encode(&key));
+        } else if left_absence.1 || right_absence.0 {
+            println!(
+                "found absence, pushing kv digest hash for {}",
+                hex::encode(&key)
+            );
             if proof_params.left_to_right {
                 Op::Push(self.to_kvdigest_node())
             } else {
@@ -1289,10 +1140,9 @@ where
         query_items: &ProofItems,
         params: &ProofParams,
         proof_status: ProofStatus,
-        proof_closest_items: &mut ProofClosestItems,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
-        if !query_items.has_no_query_items() || params.searching_for_first && left && proof_status.only_gone_left || params.searching_for_last && !left && proof_status.only_gone_right {
+        if !query_items.has_no_query_items() {
             self.walk(
                 left,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1300,13 +1150,7 @@ where
             )
             .flat_map_ok(|child_opt| {
                 if let Some(mut child) = child_opt {
-                    child.create_proof_internal(
-                        query_items,
-                        params,
-                        proof_status,
-                        proof_closest_items,
-                        grove_version,
-                    )
+                    child.create_proof_internal(query_items, params, proof_status, grove_version)
                 } else {
                     Ok((LinkedList::new(), (true, true), proof_status))
                         .wrap_with_cost(Default::default())
@@ -1702,67 +1546,6 @@ mod test {
             .unwrap();
         assert!(res.result_set.is_empty());
     }
-
-    #[test]
-    fn first_item_proof() {
-        let grove_version = GroveVersion::latest();
-    let mut tree = make_3_node_tree();
-    let mut walker = RefWalker::new(&mut tree, PanicSource {});
-
-    let query_items = vec![
-        QueryItem::First,
-    ];
-    let (proof, absence, ..) = walker
-        .create_proof(query_items.as_slice(), None, true, grove_version)
-        .unwrap()
-        .expect("create_proof errored");
-
-    let mut iter = proof.iter();
-    assert_eq!(
-        iter.next(),
-        Some(&Op::Push(Node::KVValueHash(
-            vec![3],
-            vec![3],
-            [
-                210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-            ]
-        )))
-    );
-    assert_eq!(
-        iter.next(),
-        Some(&Op::Push(Node::KVHash(
-            [61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44, 165, 68, 87, 7, 52, 238, 68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88, 197]
-        )))
-    );
-    assert_eq!(iter.next(), Some(&Op::Parent));
-    assert_eq!(
-        iter.next(),
-        Some(&Op::Push(Node::Hash(
-            [
-                171, 95, 191, 1, 198, 99, 138, 43, 233, 158, 239, 50, 56, 86, 221, 125, 213, 84, 143, 196, 177, 139, 135, 144, 4, 86, 197, 9, 92, 30, 65, 41
-            ]
-        )))
-    );
-    assert_eq!(iter.next(), Some(&Op::Child));
-    assert!(iter.next().is_none());
-    assert_eq!(absence, (true, false));
-
-    let mut bytes = vec![];
-    encode_into(proof.iter(), &mut bytes);
-    let mut query = Query::new();
-    for item in query_items {
-        query.insert_item(item);
-    }
-    let res = query
-        .verify_proof(bytes.as_slice(), None, true, tree.hash().unwrap())
-        .unwrap()
-        .unwrap();
-    compare_result_tuples_not_optional!(
-            res.result_set,
-            vec![(vec![3], vec![3])]
-        );
-}
 
     #[test]
     fn root_proof() {

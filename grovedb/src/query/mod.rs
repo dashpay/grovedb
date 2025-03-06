@@ -2018,42 +2018,4 @@ mod tests {
 
         assert_eq!(path_query, decoded);
     }
-
-    #[test]
-    fn test_query_with_first_and_last() {
-        let grove_version = GroveVersion::latest();
-        let temp_db = make_deep_tree(grove_version);
-
-        // Query for the first key
-        let query_first = Query::new_single_query_item(QueryItem::First);
-        let path_query_first = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query_first);
-
-        let proof = temp_db
-            .prove_query(&path_query_first, None, grove_version)
-            .unwrap()
-            .unwrap();
-        println!("proof {}", hex::encode(&proof));
-        let (_, result_first) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query_first, grove_version)
-                .expect("should execute proof");
-
-        assert_eq!(result_first.len(), 1);
-
-        // Query for the last key
-        let mut query_last = Query::new_single_query_item(QueryItem::Last);
-        let path_query_last = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query_last);
-
-        let proof = temp_db
-            .prove_query(&path_query_last, None, grove_version)
-            .unwrap()
-            .unwrap();
-        let (_, result_last) =
-            GroveDb::verify_query_raw(proof.as_slice(), &path_query_last, grove_version)
-                .expect("should execute proof");
-
-        assert_eq!(result_last.len(), 1);
-
-        // Ensure first and last are different keys
-        assert_ne!(result_first, result_last);
-    }
 }

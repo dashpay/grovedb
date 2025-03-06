@@ -44,12 +44,6 @@ use crate::proofs::hex_to_ascii;
 /// - `RangeAfterTo(Range<Vec<u8>>)` → A range between two keys, starting after
 ///   the lower bound.
 /// - `RangeAfterToInclusive(RangeInclusive<Vec<u8>>)` → A range between two
-///   keys, starting after the lower bound and inclusive of the upper bound.
-/// - `First` → The first key in the dataset.
-/// - `Last` → The last key in the dataset.
-/// - `OneAfter(Vec<u8>)` → The key that comes immediately after the given key.
-/// - `OneBefore(Vec<u8>)` → The key that comes immediately before the given
-///   key.
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Clone, Debug, Hash)]
 pub enum QueryItem {
@@ -84,18 +78,6 @@ pub enum QueryItem {
     /// A range starting **after** a key and extending to another key,
     /// **inclusive**.
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
-
-    /// Selects **the first key** in the dataset.
-    First,
-
-    /// Selects **the last key** in the dataset.
-    Last,
-
-    /// Selects the **key that comes immediately after** the given key.
-    OneAfter(Vec<u8>),
-
-    /// Selects the **key that comes immediately before** the given key.
-    OneBefore(Vec<u8>),
 }
 
 #[cfg(feature = "serde")]
@@ -141,14 +123,6 @@ impl Serialize for QueryItem {
                     "RangeAfterToInclusive",
                     range_after_to_inclusive,
                 ),
-            QueryItem::First => serializer.serialize_unit_variant("QueryItem", 10, "First"),
-            QueryItem::Last => serializer.serialize_unit_variant("QueryItem", 11, "Last"),
-            QueryItem::OneAfter(key) => {
-                serializer.serialize_newtype_variant("QueryItem", 12, "OneAfter", key)
-            }
-            QueryItem::OneBefore(key) => {
-                serializer.serialize_newtype_variant("QueryItem", 13, "OneBefore", key)
-            }
         }
     }
 }
@@ -172,10 +146,6 @@ impl<'de> Deserialize<'de> for QueryItem {
             RangeAfter,
             RangeAfterTo,
             RangeAfterToInclusive,
-            First,
-            Last,
-            OneAfter,
-            OneBefore,
         }
 
         struct QueryItemVisitor;
@@ -232,16 +202,6 @@ impl<'de> Deserialize<'de> for QueryItem {
                         let range_after_to_inclusive = variant_access.newtype_variant()?;
                         Ok(QueryItem::RangeAfterToInclusive(range_after_to_inclusive))
                     }
-                    Field::First => Ok(QueryItem::First),
-                    Field::Last => Ok(QueryItem::Last),
-                    Field::OneAfter => {
-                        let key = variant_access.newtype_variant()?;
-                        Ok(QueryItem::OneAfter(key))
-                    }
-                    Field::OneBefore => {
-                        let key = variant_access.newtype_variant()?;
-                        Ok(QueryItem::OneBefore(key))
-                    }
                 }
             }
         }
@@ -257,10 +217,6 @@ impl<'de> Deserialize<'de> for QueryItem {
             "RangeAfter",
             "RangeAfterTo",
             "RangeAfterToInclusive",
-            "First",
-            "Last",
-            "OneAfter",
-            "OneBefore",
         ];
 
         deserializer.deserialize_enum("QueryItem", VARIANTS, QueryItemVisitor)
@@ -318,22 +274,6 @@ impl Encode for QueryItem {
                 range.start().encode(encoder)?;
                 range.end().encode(encoder)
             }
-            QueryItem::First => {
-                encoder.writer().write(&[10])?;
-                Ok(())
-            }
-            QueryItem::Last => {
-                encoder.writer().write(&[11])?;
-                Ok(())
-            }
-            QueryItem::OneAfter(key) => {
-                encoder.writer().write(&[12])?;
-                key.encode(encoder)
-            }
-            QueryItem::OneBefore(key) => {
-                encoder.writer().write(&[13])?;
-                key.encode(encoder)
-            }
         }
     }
 }
@@ -384,16 +324,6 @@ impl Decode for QueryItem {
                 let start = Vec::<u8>::decode(decoder)?;
                 let end = Vec::<u8>::decode(decoder)?;
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
-            }
-            10 => Ok(QueryItem::First),
-            11 => Ok(QueryItem::Last),
-            12 => {
-                let key = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::OneAfter(key))
-            }
-            13 => {
-                let key = Vec::<u8>::decode(decoder)?;
-                Ok(QueryItem::OneBefore(key))
             }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
@@ -453,16 +383,6 @@ impl<'de> BorrowDecode<'de> for QueryItem {
                 let end = Vec::<u8>::borrow_decode(decoder)?;
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
             }
-            10 => Ok(QueryItem::First),
-            11 => Ok(QueryItem::Last),
-            12 => {
-                let key = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::OneAfter(key))
-            }
-            13 => {
-                let key = Vec::<u8>::borrow_decode(decoder)?;
-                Ok(QueryItem::OneBefore(key))
-            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
                 allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 9 },
@@ -512,10 +432,6 @@ impl fmt::Display for QueryItem {
                 hex_to_ascii(range.start()),
                 hex_to_ascii(range.end())
             ),
-            QueryItem::First => write!(f, "First"),
-            QueryItem::Last => write!(f, "Last"),
-            QueryItem::OneAfter(key) => write!(f, "OneAfter({})", hex_to_ascii(key)),
-            QueryItem::OneBefore(key) => write!(f, "OneBefore({})", hex_to_ascii(key)),
         }
     }
 }
@@ -546,10 +462,6 @@ impl QueryItem {
             QueryItem::RangeAfter(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterTo(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.start().as_ref()), true),
-            QueryItem::First => (None, false), // No lower bound, it's the first item
-            QueryItem::Last => (None, false),  // No lower bound
-            QueryItem::OneAfter(key) => (Some(key.as_slice()), true), // Exclusive lower bound
-            QueryItem::OneBefore(_) => (None, false), // OneBefore has no lower bound
         }
     }
 
@@ -566,10 +478,6 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => false,
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
-            QueryItem::First => true,
-            QueryItem::Last => true,
-            QueryItem::OneAfter(_) => false,
-            QueryItem::OneBefore(_) => true,
         }
     }
 
@@ -586,11 +494,6 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => (None, true),
             QueryItem::RangeAfterTo(range) => (Some(range.end.as_ref()), false),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.end().as_ref()), true),
-            QueryItem::First => (None, false), // First has an upper bound, but not explicitly
-            // defined
-            QueryItem::Last => (None, true), // Last means it's the last possible key
-            QueryItem::OneAfter(_) => (None, false), // OneAfter has no specific upper bound
-            QueryItem::OneBefore(key) => (Some(key.as_slice()), false), // Exclusive upper bound
         }
     }
 
@@ -607,10 +510,6 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => true,
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
-            QueryItem::First => true,
-            QueryItem::Last => true,
-            QueryItem::OneAfter(_) => true, // OneAfter has an unbounded upper limit
-            QueryItem::OneBefore(_) => false, // OneBefore has a specific upper bound
         }
     }
 
@@ -639,10 +538,6 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => 7,
             QueryItem::RangeAfterTo(_) => 8,
             QueryItem::RangeAfterToInclusive(_) => 9,
-            QueryItem::First => 10,
-            QueryItem::Last => 11,
-            QueryItem::OneAfter(_) => 12,
-            QueryItem::OneBefore(_) => 13,
         }
     }
 
@@ -669,27 +564,14 @@ impl QueryItem {
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn is_single(&self) -> bool {
-        matches!(
-            self,
-            QueryItem::Key(_)
-                | QueryItem::First
-                | QueryItem::Last
-                | QueryItem::OneAfter(_)
-                | QueryItem::OneBefore(_)
-        )
+        matches!(self, QueryItem::Key(_))
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn is_unbounded_range(&self) -> bool {
         !matches!(
             self,
-            QueryItem::Key(_)
-                | QueryItem::Range(_)
-                | QueryItem::RangeInclusive(_)
-                | QueryItem::First
-                | QueryItem::Last
-                | QueryItem::OneAfter(_)
-                | QueryItem::OneBefore(_)
+            QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
         )
     }
 
@@ -890,28 +772,6 @@ impl QueryItem {
                     iter.seek_for_prev(end)
                 }
             }
-            QueryItem::First => iter.seek_to_first(),
-            QueryItem::Last => iter.seek_to_last(),
-            QueryItem::OneAfter(start) => {
-                let mut cost = OperationCost::default();
-                iter.seek(start).unwrap_add_cost(&mut cost);
-                if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                    if key == start {
-                        iter.next().unwrap_add_cost(&mut cost);
-                    }
-                }
-                ().wrap_with_cost(cost)
-            }
-            QueryItem::OneBefore(start) => {
-                let mut cost = OperationCost::default();
-                iter.seek(start).unwrap_add_cost(&mut cost);
-                if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                    if key == start {
-                        iter.prev().unwrap_add_cost(&mut cost);
-                    }
-                }
-                ().wrap_with_cost(cost)
-            }
         }
     }
 
@@ -1000,10 +860,6 @@ impl QueryItem {
                     }
                 }
             }
-            QueryItem::First => true,
-            QueryItem::Last => true,
-            QueryItem::OneAfter(value) => key > value,
-            QueryItem::OneBefore(value) => key < value,
         };
 
         is_valid.wrap_with_cost(cost)
@@ -1011,10 +867,7 @@ impl QueryItem {
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn collides_with(&self, other: &Self) -> bool {
-        match self.intersect(other) {
-            Ok(intersection) => intersection.in_both.is_some(),
-            Err(_) => false, // If intersection is structurally impossible, they do not collide
-        }
+        self.intersect(other).in_both.is_some()
     }
 }
 
@@ -1038,87 +891,17 @@ impl Eq for QueryItem {}
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self.to_range_set(), other.to_range_set()) {
-            (Some(self_range), Some(other_range)) => {
-                // First compare by start
-                let compare_start = self_range.start.cmp(&other_range.start);
+        let self_as_range_set = self.to_range_set();
+        let other_as_range_set = other.to_range_set();
 
-                // If start is the same, compare by end (smaller sets come first)
-                if compare_start == Ordering::Equal {
-                    self_range.end.cmp(&other_range.end)
-                } else {
-                    compare_start
-                }
-            }
+        let compare_start = self_as_range_set.start.cmp(&other_as_range_set.start);
 
-            // Special cases for `First` and `Last`
-            (None, None) => match (self, other) {
-                (QueryItem::First, QueryItem::First) => Ordering::Equal,
-                (QueryItem::First, _) => Ordering::Less,
-                (_, QueryItem::First) => Ordering::Greater,
-
-                (QueryItem::Last, QueryItem::Last) => Ordering::Equal,
-                (QueryItem::Last, _) => Ordering::Greater,
-                (_, QueryItem::Last) => Ordering::Less,
-
-                // `OneAfter(X)` should come **after** `OneBefore(X)`
-                (QueryItem::OneAfter(a), QueryItem::OneBefore(b)) => {
-                    if a < b {
-                        Ordering::Less
-                    } else {
-                        Ordering::Greater
-                    }
-                }
-                (QueryItem::OneBefore(a), QueryItem::OneAfter(b)) => {
-                    if a < b {
-                        Ordering::Less
-                    } else {
-                        Ordering::Greater
-                    }
-                }
-
-                // `OneAfter(X)` and `OneBefore(Y)` should follow standard ordering
-                (QueryItem::OneAfter(a), QueryItem::OneAfter(b)) => a.cmp(b),
-                (QueryItem::OneBefore(a), QueryItem::OneBefore(b)) => a.cmp(b),
-
-                _ => Ordering::Equal,
-            },
-
-            // If one item is `None`, check if it's `First` or `Last`
-            (None, Some(_)) => match self {
-                QueryItem::First => Ordering::Less, // `First` is always the smallest
-                QueryItem::Last => Ordering::Greater, // `Last` is always the largest
-                // `OneAfter(X) > Key(X)`
-                QueryItem::OneAfter(a) => match other {
-                    QueryItem::Key(b) if a == b => Ordering::Greater,
-                    _ => Ordering::Less, /* `OneAfter(X)` is smaller than any unrelated
-                                          * `RangeSet` item */
-                },
-
-                // `OneBefore(X) < Key(X)`
-                QueryItem::OneBefore(a) => match other {
-                    QueryItem::Key(b) if a == b => Ordering::Less,
-                    _ => Ordering::Greater, /* `OneBefore(X)` is larger than any unrelated
-                                             * `RangeSet` item */
-                },
-                _ => Ordering::Less, // Any other case is considered smaller
-            },
-            (Some(_), None) => match other {
-                QueryItem::First => Ordering::Greater, // Anything > `First`
-                QueryItem::Last => Ordering::Less,     // Anything < `Last`
-                // `Key(X) < OneAfter(X)`
-                QueryItem::OneAfter(b) => match self {
-                    QueryItem::Key(a) if a == b => Ordering::Less,
-                    _ => Ordering::Greater, // `Key(X)` is always greater than unrelated `OneAfter`
-                },
-
-                // `Key(X) > OneBefore(X)`
-                QueryItem::OneBefore(b) => match self {
-                    QueryItem::Key(a) if a == b => Ordering::Greater,
-                    _ => Ordering::Less, // `Key(X)` is always smaller than unrelated `OneBefore`
-                },
-                _ => Ordering::Greater,
-            },
+        // if start is equal then use the size of the set to compare
+        // the smaller set is considered less
+        if compare_start == Ordering::Equal {
+            self_as_range_set.end.cmp(&other_as_range_set.end)
+        } else {
+            compare_start
         }
     }
 }
@@ -1211,102 +994,5 @@ mod test {
             QueryItem::Range(vec![20]..vec![30])
         );
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
-    }
-
-    #[test]
-    fn query_item_first_last_comparisons() {
-        // `First` should be less than everything except itself
-        assert_eq!(QueryItem::First, QueryItem::First);
-        assert!(QueryItem::First < QueryItem::Key(vec![0]));
-        assert!(QueryItem::First < QueryItem::Range(vec![1]..vec![10]));
-        assert!(QueryItem::First < QueryItem::Last);
-
-        // `Last` should be greater than everything except itself
-        assert_eq!(QueryItem::Last, QueryItem::Last);
-        assert!(QueryItem::Last > QueryItem::Key(vec![255]));
-        assert!(QueryItem::Last > QueryItem::Range(vec![200]..vec![250]));
-        assert!(QueryItem::Last > QueryItem::First);
-    }
-
-    #[test]
-    fn query_item_one_after_one_before_comparisons() {
-        // `OneAfter` should be greater than its value but less than a larger key
-        assert!(QueryItem::OneAfter(vec![10]) > QueryItem::Key(vec![10]));
-        assert!(QueryItem::OneAfter(vec![10]) < QueryItem::Key(vec![11]));
-
-        // `OneBefore` should be less than its value but greater than a smaller key
-        assert!(QueryItem::OneBefore(vec![10]) < QueryItem::Key(vec![10]));
-        assert!(QueryItem::OneBefore(vec![10]) > QueryItem::Key(vec![9]));
-
-        // `OneAfter(X) > OneBefore(X)`
-        assert!(QueryItem::OneAfter(vec![10]) > QueryItem::OneBefore(vec![10]));
-
-        // `OneAfter(X)` and `OneBefore(Y)` where `X < Y` should be ordered correctly
-        assert!(QueryItem::OneAfter(vec![5]) < QueryItem::OneBefore(vec![10]));
-        assert!(QueryItem::OneBefore(vec![10]) > QueryItem::OneAfter(vec![5]));
-
-        // `OneAfter(X) > First` but < any key
-        assert!(QueryItem::OneAfter(vec![10]) > QueryItem::First);
-        assert!(QueryItem::OneAfter(vec![10]) < QueryItem::Key(vec![15]));
-
-        // `OneBefore(X) < Last` but > any key
-        assert!(QueryItem::OneBefore(vec![250]) < QueryItem::Last);
-        assert!(QueryItem::OneBefore(vec![250]) > QueryItem::Key(vec![240]));
-    }
-
-    #[test]
-    fn query_item_first_last_collisions() {
-        // `First` should collide with `First` but not any bounded range or key
-        assert!(QueryItem::First.collides_with(&QueryItem::First));
-        assert!(!QueryItem::First.collides_with(&QueryItem::Key(vec![0])));
-        assert!(!QueryItem::First.collides_with(&QueryItem::Range(vec![1]..vec![10])));
-
-        // `Last` should collide with `Last` but not any bounded range or key
-        assert!(QueryItem::Last.collides_with(&QueryItem::Last));
-        assert!(!QueryItem::Last.collides_with(&QueryItem::Key(vec![255])));
-        assert!(!QueryItem::Last.collides_with(&QueryItem::Range(vec![200]..vec![250])));
-    }
-
-    #[test]
-    fn query_item_one_after_one_before_collisions() {
-        // `OneAfter(X)` should collide only with `OneAfter(X)` or an inclusive range
-        // starting at `X + 1`
-        assert!(QueryItem::OneAfter(vec![10]).collides_with(&QueryItem::OneAfter(vec![10])));
-        assert!(!QueryItem::OneAfter(vec![10]).collides_with(&QueryItem::OneAfter(vec![11])));
-        // the following does not collide because one after could be bigger than 20
-        assert!(!QueryItem::OneAfter(vec![10]).collides_with(&QueryItem::Range(vec![11]..vec![20])));
-        assert!(QueryItem::OneAfter(vec![10]).collides_with(&QueryItem::RangeAfter(vec![10]..)));
-
-        // `OneBefore(X)` should collide only with `OneBefore(X)` or an inclusive range
-        // ending at `X - 1`
-        assert!(QueryItem::OneBefore(vec![10]).collides_with(&QueryItem::OneBefore(vec![10])));
-        assert!(!QueryItem::OneBefore(vec![10]).collides_with(&QueryItem::OneBefore(vec![9])));
-        assert!(!QueryItem::OneBefore(vec![10]).collides_with(&QueryItem::Range(vec![5]..vec![10])));
-        assert!(QueryItem::OneBefore(vec![10]).collides_with(&QueryItem::RangeTo(..vec![10])));
-    }
-
-    #[test]
-    fn query_item_first_last_intersection() {
-        // `First ∩ First = First`
-        let intersection = QueryItem::First
-            .intersect(&QueryItem::First)
-            .expect("Valid intersection");
-        assert_eq!(intersection.in_both, Some(QueryItem::First));
-
-        // `Last ∩ Last = Last`
-        let intersection = QueryItem::Last
-            .intersect(&QueryItem::Last)
-            .expect("Valid intersection");
-        assert_eq!(intersection.in_both, Some(QueryItem::Last));
-
-        // `First ∩ Key` is invalid
-        assert!(QueryItem::First
-            .intersect(&QueryItem::Key(vec![0]))
-            .is_err());
-
-        // `Last ∩ Key` is invalid
-        assert!(QueryItem::Last
-            .intersect(&QueryItem::Key(vec![255]))
-            .is_err());
     }
 }
