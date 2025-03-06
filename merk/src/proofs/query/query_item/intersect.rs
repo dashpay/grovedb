@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    fmt,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
@@ -23,6 +24,123 @@ pub struct RangeSetIntersection {
 pub struct RangeSet {
     pub start: RangeSetItem,
     pub end: RangeSetItem,
+}
+
+/// Concise query item representation
+#[derive(Clone, Copy, Debug)]
+pub struct RangeSetBorrowed<'a> {
+    pub start: RangeSetSimpleItemBorrowed<'a>,
+    pub end: RangeSetSimpleItemBorrowed<'a>,
+}
+
+impl fmt::Display for RangeSetBorrowed<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[{} .. {}]", self.start, self.end)
+    }
+}
+
+/// Specifies whether we are checking if there's at least one key
+/// strictly less than (`LeftOf`) or strictly greater than (`RightOf`) a given
+/// key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Checking if there's an item < `key`
+    LeftOf,
+    /// Checking if there's an item > `key`
+    RightOf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyContainmentResult {
+    pub included: bool,
+    pub on_bounds_not_included: bool,
+}
+
+impl RangeSetBorrowed<'_> {
+    /// Returns `true` if `key` is within [start, end] boundaries, respecting
+    /// inclusive/exclusive semantics. If `start` is `Unbounded`, it is treated
+    /// like -∞ (lowest possible). If `end` is `Unbounded`, it is treated like
+    /// +∞ (highest possible).
+    pub fn could_contain_key<K: AsRef<[u8]>>(&self, key: K) -> KeyContainmentResult {
+        let key_bytes = key.as_ref();
+
+        // 1) Check lower boundary (start)
+        let (passes_start, on_start_exclusive) = match &self.start {
+            RangeSetSimpleItemBorrowed::Unbounded => (true, false), // -∞ => all keys are >= -∞
+            RangeSetSimpleItemBorrowed::Inclusive(bound_bytes) => {
+                (key_bytes >= bound_bytes.as_slice(), false)
+            }
+            RangeSetSimpleItemBorrowed::Exclusive(bound_bytes) => (
+                key_bytes > bound_bytes.as_slice(),
+                key_bytes == bound_bytes.as_slice(),
+            ),
+        };
+
+        // 2) Check upper boundary (end)
+        let (passes_end, on_end_exclusive) = match &self.end {
+            RangeSetSimpleItemBorrowed::Unbounded => (true, false), // +∞ => all keys are <= +∞
+            RangeSetSimpleItemBorrowed::Inclusive(bound_bytes) => {
+                (key_bytes <= bound_bytes.as_slice(), false)
+            }
+            RangeSetSimpleItemBorrowed::Exclusive(bound_bytes) => (
+                key_bytes < bound_bytes.as_slice(),
+                key_bytes == bound_bytes.as_slice(),
+            ),
+        };
+
+        // 3) Key is contained only if it satisfies both constraints
+        KeyContainmentResult {
+            included: passes_start && passes_end,
+            on_bounds_not_included: on_start_exclusive || on_end_exclusive,
+        }
+    }
+
+    /// Checks if there's at least one item in [start, end] that is strictly
+    /// to the *left* (< `key`) or *right* (> `key`) of `key`, depending on
+    /// `direction`.
+    ///
+    /// - `Direction::LeftOf` => returns true if [start..end] might contain an
+    ///   item < key.
+    /// - `Direction::RightOf` => returns true if [start..end] might contain an
+    ///   item > key.
+    pub fn could_have_items_in_direction<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        direction: Direction,
+    ) -> bool {
+        let key_bytes = key.as_ref();
+        match direction {
+            Direction::LeftOf => {
+                // We want to know if there's any item in [start, end] that is < key.
+                // That is possible if the start boundary is strictly less than `key`.
+                match &self.start {
+                    // Unbounded => effectively -∞ => definitely < key
+                    RangeSetSimpleItemBorrowed::Unbounded => true,
+                    // Inclusive(b) => items start at b. If b >= key, then no item is < key.
+                    // Only if b < key, we might have something < key.
+                    RangeSetSimpleItemBorrowed::Inclusive(b) => b.as_slice() < key_bytes,
+                    // Exclusive(b) => items start strictly after b => if b < key,
+                    // we still might have item < key. However if b == key, we start after key => no
+                    // item < key.
+                    RangeSetSimpleItemBorrowed::Exclusive(b) => b.as_slice() < key_bytes,
+                }
+            }
+            Direction::RightOf => {
+                // We want to know if there's any item in [start, end] that is > key.
+                // That is possible if the end boundary is strictly greater than `key`.
+                match &self.end {
+                    // Unbounded => effectively +∞ => definitely > key
+                    RangeSetSimpleItemBorrowed::Unbounded => true,
+                    // Inclusive(b) => items extend up to b. If b <= key, then no item is > key.
+                    // Only if b > key, we might have something > key.
+                    RangeSetSimpleItemBorrowed::Inclusive(b) => b.as_slice() > key_bytes,
+                    // Exclusive(b) => items extend up to but not including b.
+                    // If b > key => there's space for an item > key. If b == key => no item > key.
+                    RangeSetSimpleItemBorrowed::Exclusive(b) => b.as_slice() > key_bytes,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -288,6 +406,22 @@ pub enum RangeSetItem {
     ExclusiveEnd(Vec<u8>),
 }
 
+#[derive(Eq, PartialEq, Clone, Copy, Debug)]
+pub enum RangeSetSimpleItemBorrowed<'a> {
+    Unbounded,
+    Inclusive(&'a Vec<u8>),
+    Exclusive(&'a Vec<u8>),
+}
+impl fmt::Display for RangeSetSimpleItemBorrowed<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RangeSetSimpleItemBorrowed::Unbounded => write!(f, "Unbounded"),
+            RangeSetSimpleItemBorrowed::Inclusive(b) => write!(f, "Inclusive({:X?})", b),
+            RangeSetSimpleItemBorrowed::Exclusive(b) => write!(f, "Exclusive({:X?})", b),
+        }
+    }
+}
+
 impl RangeSetItem {
     pub fn invert(&self, is_start: bool) -> RangeSetItem {
         match &self {
@@ -417,6 +551,52 @@ impl QueryItem {
                 start: RangeSetItem::ExclusiveStart(range.start().clone()),
                 end: RangeSetItem::Inclusive(range.end().clone()),
             },
+        }
+    }
+
+    // TODO: convert to impl of From/To trait
+    pub fn to_range_set_borrowed(&self) -> Option<RangeSetBorrowed> {
+        match self {
+            QueryItem::Key(start) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(start),
+                end: RangeSetSimpleItemBorrowed::Inclusive(start),
+            }),
+            QueryItem::Range(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Exclusive(&range.end),
+            }),
+            QueryItem::RangeInclusive(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(range.start()),
+                end: RangeSetSimpleItemBorrowed::Inclusive(range.end()),
+            }),
+            QueryItem::RangeFull(..) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Unbounded,
+                end: RangeSetSimpleItemBorrowed::Unbounded,
+            }),
+            QueryItem::RangeFrom(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Inclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Unbounded,
+            }),
+            QueryItem::RangeTo(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Unbounded,
+                end: RangeSetSimpleItemBorrowed::Exclusive(&range.end),
+            }),
+            QueryItem::RangeToInclusive(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Unbounded,
+                end: RangeSetSimpleItemBorrowed::Inclusive(&range.end),
+            }),
+            QueryItem::RangeAfter(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Exclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Unbounded,
+            }),
+            QueryItem::RangeAfterTo(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Exclusive(&range.start),
+                end: RangeSetSimpleItemBorrowed::Exclusive(&range.end),
+            }),
+            QueryItem::RangeAfterToInclusive(range) => Some(RangeSetBorrowed {
+                start: RangeSetSimpleItemBorrowed::Exclusive(range.start()),
+                end: RangeSetSimpleItemBorrowed::Inclusive(range.end()),
+            }),
         }
     }
 

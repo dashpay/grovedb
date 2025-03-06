@@ -24,19 +24,59 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::Error;
 use crate::proofs::hex_to_ascii;
 
+/// A `QueryItem` represents a key or a range of keys to be included in a proof.
+///
+/// This enum allows specifying different ways of selecting keys, including
+/// exact matches, open-ended ranges, and boundary-based selections.
+///
+/// # Variants:
+/// - `Key(Vec<u8>)` → A specific key.
+/// - `Range(Range<Vec<u8>>)` → A range of keys (exclusive upper bound).
+/// - `RangeInclusive(RangeInclusive<Vec<u8>>)` → A range of keys (inclusive
+///   upper bound).
+/// - `RangeFull(RangeFull)` → A full range, including all keys.
+/// - `RangeFrom(RangeFrom<Vec<u8>>)` → A range starting from a key (inclusive).
+/// - `RangeTo(RangeTo<Vec<u8>>)` → A range up to a key (exclusive).
+/// - `RangeToInclusive(RangeToInclusive<Vec<u8>>)` → A range up to a key
+///   (inclusive).
+/// - `RangeAfter(RangeFrom<Vec<u8>>)` → A range starting after a key
+///   (exclusive).
+/// - `RangeAfterTo(Range<Vec<u8>>)` → A range between two keys, starting after
+///   the lower bound.
+/// - `RangeAfterToInclusive(RangeInclusive<Vec<u8>>)` → A range between two
 #[cfg(any(feature = "minimal", feature = "verify"))]
-/// A `QueryItem` represents a key or range of keys to be included in a proof.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum QueryItem {
+    /// A specific key to be included in the proof.
     Key(Vec<u8>),
+
+    /// A range of keys, **excluding** the upper bound (`start..end`).
     Range(Range<Vec<u8>>),
+
+    /// A range of keys, **including** the upper bound (`start..=end`).
     RangeInclusive(RangeInclusive<Vec<u8>>),
+
+    /// Represents a **full range**, covering **all** possible keys.
     RangeFull(RangeFull),
+
+    /// A range starting **from** a key, **inclusive** (`start..`).
     RangeFrom(RangeFrom<Vec<u8>>),
+
+    /// A range **up to** a key, **exclusive** (`..end`).
     RangeTo(RangeTo<Vec<u8>>),
+
+    /// A range **up to** a key, **inclusive** (`..=end`).
     RangeToInclusive(RangeToInclusive<Vec<u8>>),
+
+    /// A range starting **after** a specific key, **exclusive** (`(key, ∞)`).
     RangeAfter(RangeFrom<Vec<u8>>),
+
+    /// A range starting **after** a key and extending to another key,
+    /// **exclusive**.
     RangeAfterTo(Range<Vec<u8>>),
+
+    /// A range starting **after** a key and extending to another key,
+    /// **inclusive**.
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
@@ -396,14 +436,6 @@ impl fmt::Display for QueryItem {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-impl Hash for QueryItem {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.enum_value().hash(state);
-        self.value_hash(state);
-    }
-}
-
 impl QueryItem {
     #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn processing_footprint(&self) -> u32 {
@@ -510,29 +542,29 @@ impl QueryItem {
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
-    fn value_hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            QueryItem::Key(key) => key.hash(state),
-            QueryItem::Range(range) => range.hash(state),
-            QueryItem::RangeInclusive(range) => range.hash(state),
-            QueryItem::RangeFull(range) => range.hash(state),
-            QueryItem::RangeFrom(range) => range.hash(state),
-            QueryItem::RangeTo(range) => range.hash(state),
-            QueryItem::RangeToInclusive(range) => range.hash(state),
-            QueryItem::RangeAfter(range) => range.hash(state),
-            QueryItem::RangeAfterTo(range) => range.hash(state),
-            QueryItem::RangeAfterToInclusive(range) => range.hash(state),
-        }
-    }
-
-    #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn is_key(&self) -> bool {
         matches!(self, QueryItem::Key(_))
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
     pub const fn is_range(&self) -> bool {
-        !matches!(self, QueryItem::Key(_))
+        matches!(
+            self,
+            QueryItem::Range(_)
+                | QueryItem::RangeInclusive(_)
+                | QueryItem::RangeFull(_)
+                | QueryItem::RangeFrom(_)
+                | QueryItem::RangeTo(_)
+                | QueryItem::RangeToInclusive(_)
+                | QueryItem::RangeAfter(_)
+                | QueryItem::RangeAfterTo(_)
+                | QueryItem::RangeAfterToInclusive(_)
+        )
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
+    pub const fn is_single(&self) -> bool {
+        matches!(self, QueryItem::Key(_))
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -840,21 +872,11 @@ impl QueryItem {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl PartialEq for QueryItem {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialEq<&[u8]> for QueryItem {
     fn eq(&self, other: &&[u8]) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
-
-#[cfg(any(feature = "minimal", feature = "verify"))]
-impl Eq for QueryItem {}
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl Ord for QueryItem {
