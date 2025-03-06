@@ -714,7 +714,7 @@ pub struct ProofItems<'a> {
     range_query_items: Vec<RangeSetBorrowed<'a>>,
 }
 
-impl<'a> fmt::Display for ProofItems<'a> {
+impl fmt::Display for ProofItems<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -733,6 +733,35 @@ impl<'a> fmt::Display for ProofItems<'a> {
 }
 
 impl<'a> ProofItems<'a> {
+    pub fn new_with_query_items(
+        query_items: &[QueryItem],
+        left_to_right: bool,
+    ) -> (ProofItems, ProofParams) {
+        let mut key_query_items = BTreeSet::new();
+        let mut range_query_items = vec![];
+        for query_item in query_items {
+            match query_item {
+                QueryItem::Key(key) => {
+                    key_query_items.insert(key);
+                }
+                query_item => {
+                    // These are all ranges
+                    range_query_items.push(
+                        query_item
+                            .to_range_set_borrowed()
+                            .expect("all query items at this point should be ranges"),
+                    );
+                }
+            }
+        }
+        let status = ProofItems {
+            key_query_items,
+            range_query_items,
+        };
+        let params = ProofParams { left_to_right };
+        (status, params)
+    }
+
     /// The point of process key is to take the current proof items that we have
     /// and split them left and right
     fn process_key(&'a self, key: &'a Vec<u8>) -> (bool, bool, ProofItems<'a>, ProofItems<'a>) {
@@ -783,9 +812,7 @@ impl<'a> ProofItems<'a> {
 
         (item_is_present, item_on_boundary, left, right)
     }
-}
 
-impl<'a> ProofItems<'a> {
     pub fn has_no_query_items(&self) -> bool {
         self.key_query_items.is_empty() && self.range_query_items.is_empty()
     }
@@ -838,37 +865,6 @@ impl ProofStatus {
             self.limit = Some(new_limit)
         }
         self
-    }
-}
-
-impl<'a> ProofItems<'a> {
-    pub fn new_with_query_items(
-        query_items: &[QueryItem],
-        left_to_right: bool,
-    ) -> (ProofItems, ProofParams) {
-        let mut key_query_items = BTreeSet::new();
-        let mut range_query_items = vec![];
-        for query_item in query_items {
-            match query_item {
-                QueryItem::Key(key) => {
-                    key_query_items.insert(key);
-                }
-                query_item => {
-                    // These are all ranges
-                    range_query_items.push(
-                        query_item
-                            .to_range_set_borrowed()
-                            .expect("all query items at this point should be ranges"),
-                    );
-                }
-            }
-        }
-        let status = ProofItems {
-            key_query_items,
-            range_query_items,
-        };
-        let params = ProofParams { left_to_right };
-        (status, params)
     }
 }
 

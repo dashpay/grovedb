@@ -45,7 +45,7 @@ use crate::proofs::hex_to_ascii;
 ///   the lower bound.
 /// - `RangeAfterToInclusive(RangeInclusive<Vec<u8>>)` → A range between two
 #[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum QueryItem {
     /// A specific key to be included in the proof.
     Key(Vec<u8>),
@@ -872,21 +872,11 @@ impl QueryItem {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl PartialEq for QueryItem {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialEq<&[u8]> for QueryItem {
     fn eq(&self, other: &&[u8]) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
-
-#[cfg(any(feature = "minimal", feature = "verify"))]
-impl Eq for QueryItem {}
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl Ord for QueryItem {

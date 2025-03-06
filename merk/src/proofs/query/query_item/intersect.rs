@@ -36,7 +36,7 @@ pub struct RangeSetBorrowed<'a> {
     pub end: RangeSetSimpleItemBorrowed<'a>,
 }
 
-impl<'a> fmt::Display for RangeSetBorrowed<'a> {
+impl fmt::Display for RangeSetBorrowed<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "[{} .. {}]", self.start, self.end)
     }
@@ -59,7 +59,7 @@ pub struct KeyContainmentResult {
     pub on_bounds_not_included: bool,
 }
 
-impl<'a> RangeSetBorrowed<'a> {
+impl RangeSetBorrowed<'_> {
     /// Returns `true` if `key` is within [start, end] boundaries, respecting
     /// inclusive/exclusive semantics. If `start` is `Unbounded`, it is treated
     /// like -∞ (lowest possible). If `end` is `Unbounded`, it is treated like
@@ -415,7 +415,7 @@ pub enum RangeSetSimpleItemBorrowed<'a> {
     Inclusive(&'a Vec<u8>),
     Exclusive(&'a Vec<u8>),
 }
-impl<'a> fmt::Display for RangeSetSimpleItemBorrowed<'a> {
+impl fmt::Display for RangeSetSimpleItemBorrowed<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             RangeSetSimpleItemBorrowed::Unbounded => write!(f, "Unbounded"),
