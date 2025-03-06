@@ -81,7 +81,7 @@ A database transaction in GroveDB is a wrapper around the ```OptimisticTransacti
 To query GroveDB, a path and a query item have to be supplied.
 The path specifies the subtree, and the query item determines which nodes are selected from the subtree.
 
-GroveDB currently supports 14 query item types:
+GroveDB currently supports 10 query item types:
 - Key(key_name)
 - Range(start..end)
 - RangeInclusive(start..=end)
@@ -92,10 +92,6 @@ GroveDB currently supports 14 query item types:
 - RangeAfter(prev..)
 - RangeAfterTo(prev..end)
 - RangeAfterToInclusive(prev..=end)
-- First
-- Last
-- OneAfter
-- OneBefore
 
 This describes a basic query system: select a subtree then select nodes from that subtree. The need to create more complex queries or add restrictions to the result set may arise, which leads us to the **PathQuery**.
 

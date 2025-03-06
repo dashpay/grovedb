@@ -215,7 +215,7 @@ impl PathQuery {
                 })
         })?;
 
-        let mut merged_query = Query::merge_multiple(queries_for_common_path_this_level)?;
+        let mut merged_query = Query::merge_multiple(queries_for_common_path_this_level);
         // add conditional subqueries
         for sub_path_query in queries_for_common_path_sub_level {
             let SubqueryBranch {
@@ -235,7 +235,7 @@ impl PathQuery {
                 subquery_path: rest_of_path,
                 subquery,
             };
-            merged_query.merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch)?;
+            merged_query.merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch);
         }
 
         Ok(PathQuery::new_unsized(common_path, merged_query))
