@@ -959,12 +959,6 @@ where
         // We get the key from the current node we are at
         let key = self.tree().key().to_vec(); // there is no escaping this clone
 
-        println!(
-            "key is 0x{}, items are {}",
-            hex::encode(&key),
-            proof_query_items
-        );
-
         // We check to see if that key matches our current proof items
         // We also split our proof items for query items that would be active on the
         // left of our node and other query items that would be active on the
@@ -976,11 +970,6 @@ where
 
         let (mut found_item, on_boundary_not_found, mut left_proof_items, mut right_proof_items) =
             proof_query_items.process_key(&key);
-
-        println!(
-            "left are {}\n right are {}",
-            left_proof_items, right_proof_items
-        );
 
         if let Some(current_limit) = proof_status.limit {
             if current_limit == 0 {
@@ -1073,37 +1062,27 @@ where
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
         let proof_op = if found_item {
-            println!("found item {}, pushing kv_value hash", hex::encode(&key));
             if proof_params.left_to_right {
                 Op::Push(self.to_kv_value_hash_node())
             } else {
                 Op::PushInverted(self.to_kv_value_hash_node())
             }
         } else if on_boundary_not_found {
-            println!(
-                "found boundary, pushing kv digest hash for {}",
-                hex::encode(&key)
-            );
             if proof_params.left_to_right {
                 Op::Push(self.to_kvdigest_node())
             } else {
                 Op::PushInverted(self.to_kvdigest_node())
             }
         } else if left_absence.1 || right_absence.0 {
-            println!(
-                "found absence, pushing kv digest hash for {}",
-                hex::encode(&key)
-            );
             if proof_params.left_to_right {
                 Op::Push(self.to_kvdigest_node())
             } else {
                 Op::PushInverted(self.to_kvdigest_node())
             }
         } else if proof_params.left_to_right {
-            println!("found kv hash for key {}", hex::encode(&key));
             Op::Push(self.to_kvhash_node())
         } else {
-            println!("found kv hash for key {}", hex::encode(&key));
+            // println!("found kv hash for key {}", hex::encode(&key));
             Op::PushInverted(self.to_kvhash_node())
         };
 
@@ -1111,7 +1090,6 @@ where
 
         if has_left {
             if proof_params.left_to_right {
-                println!("pushing parent");
                 proof.push_back(Op::Parent);
             } else {
                 proof.push_back(Op::ParentInverted);
@@ -1121,7 +1099,6 @@ where
         if has_right {
             proof.append(&mut right_proof);
             if proof_params.left_to_right {
-                println!("pushing child");
                 proof.push_back(Op::Child);
             } else {
                 proof.push_back(Op::ChildInverted);
