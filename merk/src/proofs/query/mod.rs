@@ -14,10 +14,8 @@ pub mod query_item;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
 
-#[cfg(feature = "minimal")]
-use std::cmp::Ordering;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeSet, HashSet},
     fmt,
     ops::RangeFull,
 };
@@ -831,11 +829,7 @@ impl ProofStatus {
 
 impl ProofStatus {
     fn new_with_limit(limit: Option<u16>) -> Self {
-        Self {
-            only_gone_left: true,
-            only_gone_right: true,
-            limit,
-        }
+        Self { limit }
     }
 }
 
@@ -961,7 +955,7 @@ where
         }
 
         let proof_direction = proof_params.left_to_right; // search the opposite path on second pass
-        let (mut proof, left_absence, mut proof_status) = if proof_params.left_to_right {
+        let (mut proof, left_absence, proof_status) = if proof_params.left_to_right {
             cost_return_on_error!(
                 &mut cost,
                 self.create_child_proof(

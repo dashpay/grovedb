@@ -4,14 +4,11 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use crate::{
-    proofs::query::query_item::{
-        intersect::RangeSetItem::{
-            ExclusiveEnd, ExclusiveStart, Inclusive, UnboundedEnd, UnboundedStart,
-        },
-        QueryItem,
+use crate::proofs::query::query_item::{
+    intersect::RangeSetItem::{
+        ExclusiveEnd, ExclusiveStart, Inclusive, UnboundedEnd, UnboundedStart,
     },
-    Error,
+    QueryItem,
 };
 
 pub struct RangeSetIntersection {
