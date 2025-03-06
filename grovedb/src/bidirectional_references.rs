@@ -4,16 +4,17 @@
 // they're left out of feature gate, the implementation though is not required
 // for `verify`.
 #[cfg(feature = "minimal")]
+mod compat_handling;
+#[cfg(feature = "minimal")]
 mod handling;
+#[cfg(feature = "minimal")]
+mod handling_common;
 
 use bincode::{Decode, Encode};
 #[cfg(feature = "minimal")]
 pub(crate) use handling::*;
 
 use crate::{element::MaxReferenceHop, reference_path::ReferencePathType, ElementFlags};
-
-const META_BACKWARD_REFERENCES_PREFIX: &[u8] = b"refs";
-
 pub type SlotIdx = usize;
 
 /// Flag to indicate whether the bidirectional reference should be deleted when

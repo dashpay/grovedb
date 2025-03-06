@@ -3,8 +3,6 @@
 
 use std::{collections::VecDeque, io::Write};
 
-use bincode::{config, Decode, Encode};
-use bitvec::{array::BitArray, order::Lsb0};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostResult, CostsExt,
@@ -13,14 +11,15 @@ use grovedb_merk::{tree::MetaOp, CryptoHash, MerkBatch};
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use grovedb_version::version::GroveVersion;
 
-use super::{BidirectionalReference, SlotIdx, META_BACKWARD_REFERENCES_PREFIX};
+use super::{
+    handling_common::{self, BackwardReference},
+    BidirectionalReference, SlotIdx,
+};
 use crate::{
     element::Delta,
     merk_cache::{MerkCache, MerkHandle},
     operations::insert::InsertOptions,
-    reference_path::{
-        follow_reference, follow_reference_once, ReferencePathType, ResolvedReference,
-    },
+    reference_path::{follow_reference, follow_reference_once, ResolvedReference},
     Element, Error,
 };
 
@@ -67,6 +66,9 @@ impl BidirectionalReference {
         Ok(()).wrap_with_cost(cost)
     }
 
+    /// "Resolved" means we know exactly where backward reference is located
+    /// to remove it from there opposed to non-"resolved" version that starts with
+    /// a forward reference resolution.
     fn remove_backward_reference_resolved(
         target_merk: &mut MerkHandle<'_, '_>,
         target_key: &[u8],
@@ -77,7 +79,7 @@ impl BidirectionalReference {
 
         let (prefix, mut bits) = cost_return_on_error!(
             &mut cost,
-            get_backward_references_bitvec(target_merk, target_key)
+            handling_common::get_backward_references_bitvec(target_merk, target_key)
         );
 
         bits.set(slot_idx, false);
@@ -165,7 +167,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
     {
         let (_, bitvec) = cost_return_on_error!(
             &mut cost,
-            get_backward_references_bitvec(&mut target_merk, &target_key)
+            handling_common::get_backward_references_bitvec(&mut target_merk, &target_key)
         );
 
         if !bitvec.not_any() {
@@ -278,7 +280,7 @@ pub(crate) fn process_bidirectional_reference_insertion<'b, B: AsRef<[u8]>>(
         }
         // Insertion into new place shall allocate empty bitvec of backward references
         None => {
-            let prefix = make_meta_prefix(key);
+            let prefix = handling_common::make_meta_prefix(key);
             cost_return_on_error!(
                 &mut cost,
                 merk.for_merk(|m| m
@@ -436,7 +438,7 @@ fn delete_backward_references_recursively<'db, 'b, 'c, B: AsRef<[u8]>>(
     while let Some((mut current_merk, current_path, current_key)) = queue.pop_front() {
         let backward_references = cost_return_on_error!(
             &mut cost,
-            get_backward_references(&mut current_merk, &current_key)
+            handling_common::get_backward_references(&mut current_merk, &current_key)
         );
         for (idx, backward_ref) in backward_references.into_iter() {
             if !backward_ref.cascade_on_update {
@@ -521,7 +523,7 @@ fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
     while let Some((mut current_merk, current_path, current_key)) = queue.pop_front() {
         let backward_references = cost_return_on_error!(
             &mut cost,
-            get_backward_references(&mut current_merk, &current_key)
+            handling_common::get_backward_references(&mut current_merk, &current_key)
         );
         for (_, backward_ref) in backward_references.into_iter() {
             let ResolvedReference {
@@ -560,75 +562,6 @@ fn propagate_backward_references<'db, 'b, 'c, B: AsRef<[u8]>>(
     Ok(()).wrap_with_cost(cost)
 }
 
-#[derive(Debug, Encode, Decode, PartialEq)]
-pub(crate) struct BackwardReference {
-    pub(crate) inverted_reference: ReferencePathType,
-    pub(crate) cascade_on_update: bool,
-}
-
-impl BackwardReference {
-    fn serialize(&self) -> Result<Vec<u8>, Error> {
-        let config = config::standard().with_big_endian().with_no_limit();
-        bincode::encode_to_vec(self, config).map_err(|e| {
-            Error::CorruptedData(format!("unable to serialize backward reference {}", e))
-        })
-    }
-
-    fn deserialize(bytes: &[u8]) -> Result<BackwardReference, Error> {
-        let config = config::standard().with_big_endian().with_no_limit();
-        Ok(bincode::decode_from_slice(bytes, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to deserialize element {}", e)))?
-            .0)
-    }
-}
-
-type Prefix = Vec<u8>;
-
-fn make_meta_prefix(key: &[u8]) -> Vec<u8> {
-    let mut backrefs_for_key = META_BACKWARD_REFERENCES_PREFIX.to_vec();
-    backrefs_for_key.extend_from_slice(&key.len().to_be_bytes());
-    backrefs_for_key.extend_from_slice(key);
-
-    backrefs_for_key
-}
-
-/// Get bitvec of backward references' slots for a key of a subtree.
-/// Prefix for a Merk's meta storage is made of constant keyword, lenght of the
-/// key and the key itself. Under the prefix GroveDB stores bitvec, and slots
-/// for backward references are integers appended to the prefix.
-fn get_backward_references_bitvec(
-    merk: &mut MerkHandle<'_, '_>,
-    key: &[u8],
-) -> CostResult<(Prefix, BitArray<[u32; 1], Lsb0>), Error> {
-    let mut cost = Default::default();
-
-    let backrefs_for_key = make_meta_prefix(key);
-
-    let stored_bytes = cost_return_on_error!(
-        &mut cost,
-        merk.for_merk(|m| m
-            .get_meta(backrefs_for_key.clone())
-            .map_ok(|opt_v| opt_v.map(|v| v.to_vec()))
-            .map_err(Error::MerkError))
-    );
-
-    let bits: BitArray<[u32; 1], Lsb0> = if let Some(bytes) = stored_bytes {
-        cost_return_on_error_no_add!(
-            cost,
-            bytes
-                .try_into()
-                .map(|b| BitArray::new([u32::from_be_bytes(b)]))
-                .map_err(|_| Error::InternalError(
-                    "backward references' bitvec is expected to be 4 bytes".to_owned()
-                ))
-        )
-    } else {
-        Default::default()
-    };
-
-    Ok((backrefs_for_key, bits)).wrap_with_cost(cost)
-}
-
 /// Adds backward reference to meta storage of a subtree.
 ///
 /// Only up to 32 backward references are allowed, for that reason we use a
@@ -643,8 +576,10 @@ fn add_backward_reference(
 ) -> CostResult<SlotIdx, Error> {
     let mut cost = Default::default();
 
-    let (prefix, mut bits) =
-        cost_return_on_error!(&mut cost, get_backward_references_bitvec(target_merk, key));
+    let (prefix, mut bits) = cost_return_on_error!(
+        &mut cost,
+        handling_common::get_backward_references_bitvec(target_merk, key)
+    );
 
     if let Some(free_index) = bits.first_zero() {
         let mut idx_prefix = prefix.clone();
@@ -685,48 +620,6 @@ fn add_backward_reference(
     .wrap_with_cost(cost)
 }
 
-/// Return a vector of backward references to the item
-fn get_backward_references(
-    merk: &mut MerkHandle<'_, '_>,
-    key: &[u8],
-) -> CostResult<Vec<(SlotIdx, BackwardReference)>, Error> {
-    let mut cost = Default::default();
-
-    let (prefix, bits) =
-        cost_return_on_error!(&mut cost, get_backward_references_bitvec(merk, key));
-
-    let mut backward_references = Vec::new();
-
-    for idx in bits.iter_ones() {
-        let mut indexed_prefix = prefix.clone();
-        write!(&mut indexed_prefix, "{idx}").expect("no io involved");
-
-        let bytes_opt = cost_return_on_error!(
-            &mut cost,
-            merk.for_merk(|m| m
-                .get_meta(indexed_prefix)
-                .map_err(Error::MerkError)
-                .map_ok(|opt_v| opt_v.map(|v| v.to_vec())))
-        );
-
-        let bytes = cost_return_on_error_no_add!(
-            cost,
-            bytes_opt.ok_or_else(|| {
-                Error::InternalError(
-                    "backward references bitvec and slot are out of sync".to_owned(),
-                )
-            })
-        );
-
-        backward_references.push((
-            idx,
-            cost_return_on_error_no_add!(cost, BackwardReference::deserialize(&bytes)),
-        ));
-    }
-
-    Ok(backward_references).wrap_with_cost(cost)
-}
-
 #[cfg(test)]
 mod tests {
     use grovedb_path::{SubtreePath, SubtreePathBuilder};
@@ -736,6 +629,7 @@ mod tests {
     use super::*;
     use crate::{
         merk_cache::MerkCache,
+        reference_path::ReferencePathType,
         tests::{make_deep_tree, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
     };
 
@@ -795,7 +689,7 @@ mod tests {
         assert_eq!(slot2, 2);
 
         assert_eq!(
-            get_backward_references(&mut merk, TEST_LEAF)
+            handling_common::get_backward_references(&mut merk, TEST_LEAF)
                 .unwrap()
                 .unwrap()
                 .into_iter()
@@ -1108,7 +1002,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let backward_reference1 = &get_backward_references(
+        let backward_reference1 = &handling_common::get_backward_references(
             &mut merk_cache
                 .get_merk(target_path.derive_owned())
                 .unwrap()
@@ -1119,7 +1013,7 @@ mod tests {
         .unwrap()[0]
             .1;
 
-        let backward_reference2 = &get_backward_references(
+        let backward_reference2 = &handling_common::get_backward_references(
             &mut merk_cache
                 .get_merk(target_path.derive_owned())
                 .unwrap()
@@ -1238,7 +1132,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let backward_reference = &get_backward_references(
+        let backward_reference = &handling_common::get_backward_references(
             &mut merk_cache
                 .get_merk(target_path.derive_owned())
                 .unwrap()
@@ -1316,7 +1210,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(&get_backward_references(
+        assert!(&handling_common::get_backward_references(
             &mut merk_cache
                 .get_merk(target_path.derive_owned())
                 .unwrap()
@@ -1327,7 +1221,7 @@ mod tests {
         .unwrap()
         .is_empty());
 
-        let backward_reference2 = &get_backward_references(
+        let backward_reference2 = &handling_common::get_backward_references(
             &mut merk_cache
                 .get_merk(target_path2.derive_owned())
                 .unwrap()
@@ -1471,7 +1365,7 @@ mod tests {
         assert_ne!(prev_value_hash, post_value_hash);
 
         // Old target has no backward references
-        assert!(get_backward_references(
+        assert!(handling_common::get_backward_references(
             &mut merk_cache
                 .get_merk(target_path.derive_owned())
                 .unwrap()
@@ -1599,7 +1493,7 @@ mod tests {
         assert!(latest_ref_element.is_none());
 
         // Old target has no backward references
-        assert!(get_backward_references(
+        assert!(handling_common::get_backward_references(
             &mut merk_cache
                 .get_merk(target_path.derive_owned())
                 .unwrap()
