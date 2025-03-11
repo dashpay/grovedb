@@ -186,7 +186,10 @@ impl Element {
                 .transpose()
         );
         match &element {
-            Some(Element::Item(..)) | Some(Element::Reference(..)) => {
+            Some(Element::Item(..))
+            | Some(Element::Reference(..))
+            | Some(Element::ItemWithBackwardsReferences(..))
+            | Some(Element::BidirectionalReference(..)) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
@@ -195,7 +198,8 @@ impl Element {
                     NodeType::NormalNode,
                 ) as u64
             }
-            Some(Element::SumItem(_, flags)) => {
+            Some(Element::SumItem(_, flags))
+            | Some(Element::SumItemWithBackwardsReferences(_, flags)) => {
                 let cost_size = SUM_ITEM_COST_SIZE;
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -270,7 +274,10 @@ impl Element {
             })
         );
         match &element {
-            Element::Item(..) | Element::Reference(..) => {
+            Element::Item(..)
+            | Element::Reference(..)
+            | Element::ItemWithBackwardsReferences(..)
+            | Element::BidirectionalReference(..) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
@@ -279,7 +286,7 @@ impl Element {
                     node_type,
                 ) as u64
             }
-            Element::SumItem(_, flags) => {
+            Element::SumItem(_, flags) | Element::SumItemWithBackwardsReferences(_, flags) => {
                 let cost_size = SUM_ITEM_COST_SIZE;
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;

@@ -9,7 +9,6 @@ use grovedb_costs::{cost_return_on_error, cost_return_on_error_no_add, CostResul
 use grovedb_merk::CryptoHash;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
-use grovedb_version::check_grovedb_v0_with_cost;
 #[cfg(any(feature = "minimal", feature = "visualize"))]
 use grovedb_visualize::visualize_to_vec;
 #[cfg(feature = "minimal")]
@@ -553,16 +552,19 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
     key: &[u8],
     ref_path: ReferencePathType,
 ) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
-    // TODO: this is a new version of follow reference
+    use grovedb_version::dispatch_version;
 
-    check_grovedb_v0_with_cost!(
-        "follow_reference",
+    use crate::bidirectional_references::BidirectionalReference;
+
+    dispatch_version!(
+        "ref_path_follow_reference",
         merk_cache
             .version
             .grovedb_versions
             .operations
             .get
-            .follow_reference
+            .ref_path_follow_reference,
+        0 => {}
     );
 
     let mut cost = Default::default();
@@ -609,7 +611,11 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
         );
 
         match element {
-            Element::Reference(ref_path, ..) => {
+            Element::Reference(ref_path, ..)
+            | Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ref_path,
+                ..
+            }) => {
                 current_path = referred_path;
                 current_key = referred_key;
                 current_ref = ref_path;
@@ -640,14 +646,17 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
     key: &[u8],
     ref_path: ReferencePathType,
 ) -> CostResult<ResolvedReference<'db, 'b, 'c, B>, Error> {
-    check_grovedb_v0_with_cost!(
+    use grovedb_version::dispatch_version;
+
+    dispatch_version!(
         "follow_reference_once",
         merk_cache
             .version
             .grovedb_versions
             .operations
             .get
-            .follow_reference_once
+            .follow_reference_once,
+        0 | 1 => {}
     );
 
     let mut cost = Default::default();

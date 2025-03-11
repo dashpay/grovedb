@@ -23,7 +23,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "minimal")]
 use crate::error::GroveDbErrorExt;
-use crate::util::TxRef;
+use crate::{bidirectional_references::BidirectionalReference, util::TxRef};
 #[cfg(feature = "minimal")]
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
@@ -75,6 +75,7 @@ impl GroveDb {
         );
 
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         match cost_return_on_error!(
             &mut cost,
@@ -82,7 +83,7 @@ impl GroveDb {
                 path.clone(),
                 key,
                 allow_cache,
-                transaction,
+                Some(tx.as_ref()),
                 grove_version
             )
         ) {
@@ -95,7 +96,7 @@ impl GroveDb {
                 self.follow_reference(
                     path_owned.as_slice().into(),
                     allow_cache,
-                    transaction,
+                    tx.as_ref(),
                     grove_version,
                 )
                 .add_cost(cost)
@@ -107,11 +108,11 @@ impl GroveDb {
     /// Return the Element that a reference points to.
     /// If the reference points to another reference, keep following until
     /// base element is reached.
-    pub fn follow_reference<B: AsRef<[u8]>>(
+    pub(crate) fn follow_reference<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
         allow_cache: bool,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         grove_version: &GroveVersion,
     ) -> CostResult<Element, Error> {
         check_grovedb_v0_with_cost!(
@@ -142,7 +143,7 @@ impl GroveDb {
                         path_slice.into(),
                         key,
                         allow_cache,
-                        transaction,
+                        Some(transaction),
                         grove_version
                     )
                     .map_err(|e| match e {
@@ -163,7 +164,11 @@ impl GroveDb {
             }
             visited.insert(current_path.clone());
             match current_element {
-                Element::Reference(reference_path, ..) => {
+                Element::Reference(reference_path, ..)
+                | Element::BidirectionalReference(BidirectionalReference {
+                    forward_reference_path: reference_path,
+                    ..
+                }) => {
                     current_path = cost_return_on_error!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)

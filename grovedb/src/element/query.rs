@@ -37,7 +37,7 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    Error, PathQuery, TransactionArg,
+    Error, PathQuery, Transaction, TransactionArg,
 };
 #[cfg(feature = "minimal")]
 use crate::{query_result_type::Path, SizedQuery};
@@ -309,6 +309,8 @@ impl Element {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error> {
+        use crate::util::TxRef;
+
         check_grovedb_v0_with_cost!(
             "get_query_apply_function",
             grove_version
@@ -325,6 +327,8 @@ impl Element {
         let original_offset = sized_query.offset;
         let mut offset = original_offset;
 
+        let tx = TxRef::new(storage, transaction);
+
         if sized_query.query.left_to_right {
             for item in sized_query.query.iter() {
                 cost_return_on_error!(
@@ -335,7 +339,7 @@ impl Element {
                         &mut results,
                         path,
                         sized_query,
-                        transaction,
+                        tx.as_ref(),
                         &mut limit,
                         &mut offset,
                         query_options,
@@ -358,7 +362,7 @@ impl Element {
                         &mut results,
                         path,
                         sized_query,
-                        transaction,
+                        tx.as_ref(),
                         &mut limit,
                         &mut offset,
                         query_options,
@@ -716,7 +720,7 @@ impl Element {
         results: &mut Vec<QueryResultElement>,
         path: &[&[u8]],
         sized_query: &SizedQuery,
-        transaction: TransactionArg,
+        transaction: &Transaction,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
         query_options: QueryOptions,
@@ -726,10 +730,7 @@ impl Element {
     ) -> CostResult<(), Error> {
         use grovedb_storage::Storage;
 
-        use crate::{
-            error::GroveDbErrorExt,
-            util::{compat, TxRef},
-        };
+        use crate::{error::GroveDbErrorExt, util::compat};
 
         check_grovedb_v0_with_cost!(
             "query_item",
@@ -737,7 +738,6 @@ impl Element {
         );
 
         let mut cost = OperationCost::default();
-        let tx = TxRef::new(storage, transaction);
 
         let subtree_path: SubtreePath<_> = path.into();
 
@@ -747,7 +747,7 @@ impl Element {
                 let subtree_res = compat::merk_optional_tx(
                     storage,
                     subtree_path,
-                    tx.as_ref(),
+                    transaction,
                     None,
                     grove_version,
                 );
@@ -774,7 +774,7 @@ impl Element {
                         match add_element_function(
                             PathQueryPushArgs {
                                 storage,
-                                transaction,
+                                transaction: Some(transaction),
                                 key: Some(key.as_slice()),
                                 element,
                                 path,
@@ -824,7 +824,7 @@ impl Element {
         } else {
             // this is a query on a range
             let ctx = storage
-                .get_transactional_storage_context(subtree_path, None, tx.as_ref())
+                .get_transactional_storage_context(subtree_path, None, transaction)
                 .unwrap_add_cost(&mut cost);
 
             let mut iter = ctx.raw_iter();
@@ -854,7 +854,7 @@ impl Element {
                 let result_with_cost = add_element_function(
                     PathQueryPushArgs {
                         storage,
-                        transaction,
+                        transaction: Some(transaction),
                         key: Some(key),
                         element,
                         path,

@@ -127,6 +127,7 @@
 
 #[cfg(feature = "minimal")]
 pub mod batch;
+mod bidirectional_references;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -159,6 +160,8 @@ use std::sync::Arc;
 #[cfg(feature = "minimal")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+#[cfg(feature = "minimal")]
+use bidirectional_references::BidirectionalReference;
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -446,17 +449,10 @@ impl GroveDb {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error> {
-        let mut cost = OperationCost {
-            ..Default::default()
-        };
-
         let tx = TxRef::new(&self.db, transaction);
 
-        let root_merk =
-            cost_return_on_error!(&mut cost, self.open_root_merk(tx.as_ref(), grove_version));
-
-        let root_key = root_merk.root_key();
-        Ok(root_key).wrap_with_cost(cost)
+        self.open_root_merk(tx.as_ref(), grove_version)
+            .map_ok(|merk| merk.root_key())
     }
 
     /// Returns root hash of GroveDb.
@@ -497,61 +493,6 @@ impl GroveDb {
                     })
                 })
             })
-    }
-
-    /// Method to propagate updated subtree key changes one level up inside a
-    /// transaction
-    fn propagate_changes_with_batch_transaction<'b, B: AsRef<[u8]>>(
-        &self,
-        storage_batch: &StorageBatch,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
-        path: &SubtreePath<'b, B>,
-        transaction: &Transaction,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-
-        let mut child_tree = cost_return_on_error_no_add!(
-            cost,
-            merk_cache.remove(path).ok_or(Error::CorruptedCodeExecution(
-                "Merk Cache should always contain the last path",
-            ))
-        );
-
-        let mut current_path = path.clone();
-
-        while let Some((parent_path, parent_key)) = current_path.derive_parent() {
-            let mut parent_tree = cost_return_on_error!(
-                &mut cost,
-                self.open_batch_transactional_merk_at_path(
-                    storage_batch,
-                    parent_path.clone(),
-                    transaction,
-                    false,
-                    grove_version,
-                )
-            );
-            let (root_hash, root_key, aggregate_data) = cost_return_on_error!(
-                &mut cost,
-                child_tree
-                    .root_hash_key_and_aggregate_data()
-                    .map_err(Error::MerkError)
-            );
-            cost_return_on_error!(
-                &mut cost,
-                Self::update_tree_item_preserve_flag(
-                    &mut parent_tree,
-                    parent_key,
-                    root_key,
-                    root_hash,
-                    aggregate_data,
-                    grove_version,
-                )
-            );
-            child_tree = parent_tree;
-            current_path = parent_path;
-        }
-        Ok(()).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree key changes one level up inside a
@@ -1059,7 +1000,10 @@ impl GroveDb {
                         grove_version,
                     )?);
                 }
-                Element::Item(..) | Element::SumItem(..) => {
+                Element::Item(..)
+                | Element::SumItem(..)
+                | Element::ItemWithBackwardsReferences(..)
+                | Element::SumItemWithBackwardsReferences(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1082,7 +1026,14 @@ impl GroveDb {
                         );
                     }
                 }
-                Element::Reference(ref reference_path, ..) => {
+                Element::Reference(ref reference_path, ..)
+                | Element::BidirectionalReference(
+                    BidirectionalReference {
+                        forward_reference_path: ref reference_path,
+                        ..
+                    },
+                    ..,
+                ) => {
                     // Skip this whole check if we don't `verify_references`
                     if !verify_references {
                         continue;
@@ -1113,7 +1064,7 @@ impl GroveDb {
                             .follow_reference(
                                 (full_path.as_slice()).into(),
                                 allow_cache,
-                                Some(transaction),
+                                transaction,
                                 grove_version,
                             )
                             .unwrap()?;

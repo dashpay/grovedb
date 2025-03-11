@@ -51,6 +51,7 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
             base_root_storage_is_free: self.base_root_storage_is_free,
+            propagate_backward_references: false,
         }
     }
 
@@ -61,6 +62,7 @@ impl BatchApplyOptions {
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: false,
+            propagate_backward_references: false,
         }
     }
 

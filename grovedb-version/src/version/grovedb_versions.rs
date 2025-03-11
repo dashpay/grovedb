@@ -48,6 +48,7 @@ pub struct GroveDBOperationsGetVersions {
     pub get: FeatureVersion,
     pub get_caching_optional: FeatureVersion,
     pub follow_reference: FeatureVersion,
+    pub ref_path_follow_reference: FeatureVersion,
     pub follow_reference_once: FeatureVersion,
     pub get_raw: FeatureVersion,
     pub get_raw_caching_optional: FeatureVersion,
@@ -132,9 +133,7 @@ pub struct GroveDBOperationsWorstCaseVersions {
 pub struct GroveDBOperationsInsertVersions {
     pub insert: FeatureVersion,
     pub insert_on_transaction: FeatureVersion,
-    pub insert_without_transaction: FeatureVersion,
     pub add_element_on_transaction: FeatureVersion,
-    pub add_element_without_transaction: FeatureVersion,
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_return_existing_element: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
@@ -149,7 +148,6 @@ pub struct GroveDBOperationsDeleteVersions {
     pub delete_if_empty_tree_with_sectional_storage_function: FeatureVersion,
     pub delete_operation_for_delete_internal: FeatureVersion,
     pub delete_internal_on_transaction: FeatureVersion,
-    pub delete_internal_without_transaction: FeatureVersion,
     pub average_case_delete_operation_for_delete: FeatureVersion,
     pub worst_case_delete_operation_for_delete: FeatureVersion,
 }
@@ -202,6 +200,7 @@ pub struct GroveDBElementMethodVersions {
     pub insert_if_not_exists: FeatureVersion,
     pub insert_if_not_exists_into_batch_operations: FeatureVersion,
     pub insert_if_changed_value: FeatureVersion,
+    pub insert_subtree_if_changed: FeatureVersion,
     pub insert_if_changed_value_into_batch_operations: FeatureVersion,
     pub insert_reference: FeatureVersion,
     pub insert_reference_into_batch_operations: FeatureVersion,

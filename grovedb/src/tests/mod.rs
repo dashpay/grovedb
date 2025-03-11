@@ -15,7 +15,7 @@ use std::{
     option::Option::None,
 };
 
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v1::GROVE_V1, v2::GROVE_V2, GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
@@ -112,39 +112,39 @@ pub fn make_deep_tree(grove_version: &GroveVersion) -> TempGroveDb {
     // root
     //     test_leaf
     //         innertree
-    //             k1,v1
-    //             k2,v2
-    //             k3,v3
+    //             key1,value1
+    //             key2,value2
+    //             key3,value3
     //         innertree4
-    //             k4,v4
-    //             k5,v5
+    //             key4,value4
+    //             key5,value5
     //     another_test_leaf
     //         innertree2
-    //             k3,v3
+    //             key3,value3
     //         innertree3
-    //             k4,v4
+    //             key4,value4
     //     deep_leaf
     //          deep_node_1
     //              deeper_1
-    //                  k1,v1
-    //                  k2,v2
-    //                  k3,v3
+    //                  key1,value1
+    //                  key2,value2
+    //                  key3,value3
     //              deeper_2
-    //                  k4,v4
-    //                  k5,v5
-    //                  k6,v6
+    //                  key4,value4
+    //                  key5,value5
+    //                  key6,value6
     //          deep_node_2
     //              deeper_3
-    //                  k7,v7
-    //                  k8,v8
-    //                  k9,v9
+    //                  key7,value7
+    //                  key8,value8
+    //                  key9,value9
     //              deeper_4
-    //                  k10,v10
-    //                  k11,v11
+    //                  key10,value10
+    //                  key11,value11
     //              deeper_5
-    //                  k12,v12
-    //                  k13,v13
-    //                  k14,v14
+    //                  key12,value12
+    //                  key13,value13
+    //                  key14,value14
 
     // Insert elements into grovedb instance
     let temp_db = make_test_grovedb(grove_version);
@@ -762,6 +762,7 @@ pub fn make_deep_tree_with_sum_trees(grove_version: &GroveVersion) -> TempGroveD
 mod tests {
     use batch::QualifiedGroveDbOp;
     use grovedb_merk::proofs::query::SubqueryBranch;
+    use operations::insert::InsertOptions;
 
     use super::*;
 
@@ -1191,8 +1192,6 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-
-        dbg!(&result);
 
         assert!(matches!(
             result,
@@ -3157,68 +3156,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_subtrees() {
-        let grove_version = GroveVersion::latest();
-        let element = Element::new_item(b"ayy".to_vec());
-        let db = make_test_grovedb(grove_version);
-        // Insert some nested subtrees
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"key1",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful subtree 1 insert");
-        db.insert(
-            [TEST_LEAF, b"key1"].as_ref(),
-            b"key2",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful subtree 2 insert");
-        // Insert an element into subtree
-        db.insert(
-            [TEST_LEAF, b"key1", b"key2"].as_ref(),
-            b"key3",
-            element,
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful value insert");
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"key4",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("successful subtree 3 insert");
-        let subtrees = db
-            .find_subtrees(&[TEST_LEAF].as_ref().into(), None, grove_version)
-            .unwrap()
-            .expect("cannot get subtrees");
-        assert_eq!(
-            vec![
-                vec![TEST_LEAF],
-                vec![TEST_LEAF, b"key1"],
-                vec![TEST_LEAF, b"key4"],
-                vec![TEST_LEAF, b"key1", b"key2"],
-            ],
-            subtrees
-        );
-    }
-
-    #[test]
     fn test_root_subtree_has_root_key() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -4155,5 +4092,148 @@ mod tests {
             .verify_grovedb(None, true, false, grove_version)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_verify_bidirectional_references_dont_corrupt() {
+        // Opposed to regular references, usage of bidirectional references with flags
+        // enabling them to work will prevent such inconsistencies:
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let transaction = db.start_transaction();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"hello".to_vec()),
+            None,
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refc",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"value".to_vec()),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refb",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"refc".to_vec()),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        db.insert(
+            &[TEST_LEAF],
+            b"refa",
+            Element::BidirectionalReference(BidirectionalReference {
+                forward_reference_path: ReferencePathType::SiblingReference(b"refb".to_vec()),
+                backward_reference_slot: 0,
+                cascade_on_update: true,
+                max_hop: None,
+                flags: None,
+            }),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+
+        // "Breaking" things there:
+        db.insert(
+            &[TEST_LEAF],
+            b"value",
+            Element::new_item_allowing_bidirectional_references(b"not hello >:(".to_vec()),
+            Some(InsertOptions {
+                propagate_backward_references: true,
+                ..Default::default()
+            }),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // But they're not broken!
+        assert!(db
+            .verify_grovedb(Some(&transaction), true, true, grove_version)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn subtrees_cant_be_referenced() {
+        let db = make_deep_tree(&GroveVersion::latest());
+
+        // It used to be possible, yet it was an error:
+        assert!(db
+            .insert(
+                SubtreePath::empty(),
+                b"test_ref",
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec()
+                ])),
+                None,
+                None,
+                &GROVE_V1,
+            )
+            .unwrap()
+            .is_ok());
+
+        // And now it's not:
+        assert!(db
+            .insert(
+                SubtreePath::empty(),
+                b"test_ref",
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec()
+                ])),
+                None,
+                None,
+                &GROVE_V2,
+            )
+            .unwrap()
+            .is_err());
     }
 }

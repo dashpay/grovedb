@@ -21,7 +21,7 @@ use crate::{
         util::hex_to_ascii, GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions,
     },
     reference_path::path_from_reference_path_type,
-    Element, Error, GroveDb, PathQuery,
+    Element, Error, GroveDb, PathQuery, Transaction,
 };
 
 impl GroveDb {
@@ -119,6 +119,8 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        let tx = self.start_transaction();
+
         #[cfg(feature = "proof_debug")]
         {
             // we want to query raw because we want the references to not be resolved at
@@ -132,7 +134,7 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
+                    Some(&tx),
                     grove_version,
                 )
             )
@@ -148,7 +150,7 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
+                    Some(&tx),
                     grove_version,
                 )
             )
@@ -167,6 +169,7 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 &prove_options,
+                &tx,
                 grove_version
             )
         );
@@ -186,11 +189,10 @@ impl GroveDb {
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        tx: &Transaction,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
-
-        let tx = self.start_transaction();
 
         let query = cost_return_on_error_no_add!(
             cost,
@@ -278,7 +280,7 @@ impl GroveDb {
                                     self.follow_reference(
                                         absolute_path.as_slice().into(),
                                         true,
-                                        None,
+                                        tx,
                                         grove_version
                                     )
                                 );
@@ -342,6 +344,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        tx,
                                         grove_version,
                                     )
                                 );

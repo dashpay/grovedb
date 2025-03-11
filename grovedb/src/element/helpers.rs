@@ -25,6 +25,8 @@ use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use integer_encoding::VarInt;
 
 #[cfg(feature = "minimal")]
+use crate::bidirectional_references::BidirectionalReference;
+#[cfg(feature = "minimal")]
 use crate::element::{
     BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, SUM_ITEM_COST_SIZE,
     SUM_TREE_COST_SIZE, TREE_COST_SIZE,
@@ -180,6 +182,19 @@ impl Element {
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// In case of a tree this method sets root key to a provided one
+    pub fn set_root_key(&mut self, new_root_key: Option<Vec<u8>>) {
+        match self {
+            Element::Tree(root_key, ..) => *root_key = new_root_key,
+            Element::SumTree(root_key, ..) => *root_key = new_root_key,
+            Element::BigSumTree(root_key, ..) => *root_key = new_root_key,
+            Element::CountTree(root_key, ..) => *root_key = new_root_key,
+            Element::CountSumTree(root_key, ..) => *root_key = new_root_key,
+            _ => {}
+        }
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the flags and the tree type
     pub fn tree_flags_and_type(&self) -> Option<(&Option<ElementFlags>, TreeType)> {
         match self {
@@ -294,6 +309,9 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags) => flags,
+            Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => flags,
         }
     }
 
@@ -307,8 +325,11 @@ impl Element {
             | Element::SumTree(.., flags)
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
-            | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags) => flags,
+            Element::SumItem(_, flags)
+            | Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => flags,
         }
     }
 
@@ -324,6 +345,9 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags) => flags,
+            Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => flags,
         }
     }
 
@@ -339,6 +363,11 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags) => *flags = new_flags,
+            Element::ItemWithBackwardsReferences(_, flags)
+            | Element::SumItemWithBackwardsReferences(_, flags)
+            | Element::BidirectionalReference(BidirectionalReference { flags, .. }) => {
+                *flags = new_flags
+            }
         }
     }
 

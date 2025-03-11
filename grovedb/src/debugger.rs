@@ -32,10 +32,11 @@ use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
 
 use crate::{
+    bidirectional_references::BidirectionalReference,
     operations::proof::{GroveDBProof, LayerProof, ProveOptions},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
-    GroveDb,
+    GroveDb, Transaction,
 };
 
 const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
@@ -301,6 +302,7 @@ async fn fetch_with_path_query(
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<Vec<grovedbg_types::NodeUpdate>>, AppError> {
     let db = state.get_snapshot(session_id).await?;
+    let tx = db.start_transaction();
 
     let path_query = path_query_to_grovedb(json_path_query);
 
@@ -311,20 +313,24 @@ async fn fetch_with_path_query(
             true,
             false,
             QueryResultType::QueryPathKeyElementTrioResultType,
-            None,
+            Some(&tx),
             GroveVersion::latest(),
         )
         .unwrap()?
         .0;
-    Ok(Json(query_result_to_grovedbg(&db, grovedb_query_result)?))
+    Ok(Json(query_result_to_grovedbg(
+        &db,
+        &tx,
+        grovedb_query_result,
+    )?))
 }
 
 fn query_result_to_grovedbg(
     db: &GroveDb,
+    tx: &Transaction,
     query_result: QueryResultElements,
 ) -> Result<Vec<NodeUpdate>, crate::Error> {
     let mut result = Vec::new();
-    let transaction = db.start_transaction();
 
     let mut last_merk: Option<(Vec<Vec<u8>>, grovedb_merk::Merk<_>)> = None;
 
@@ -337,7 +343,7 @@ fn query_result_to_grovedbg(
                         path.clone(),
                         db.open_transactional_merk_at_path(
                             path.as_slice().into(),
-                            &transaction,
+                            tx,
                             None,
                             GroveVersion::latest(),
                         )
@@ -530,10 +536,13 @@ fn query_item_to_grovedb(item: QueryItem) -> crate::QueryItem {
 
 fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
     match element {
-        crate::Element::Item(value, element_flags) => grovedbg_types::Element::Item {
-            value,
-            element_flags,
-        },
+        crate::Element::Item(value, element_flags)
+        | crate::Element::ItemWithBackwardsReferences(value, element_flags) => {
+            grovedbg_types::Element::Item {
+                value,
+                element_flags,
+            }
+        }
         crate::Element::Tree(root_key, element_flags) => grovedbg_types::Element::Subtree {
             root_key,
             element_flags,
@@ -542,15 +551,28 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ReferencePathType::AbsolutePathReference(path),
             _,
             element_flags,
-        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::AbsolutePathReference {
-            path,
-            element_flags,
-        }),
+        )
+        | crate::Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::AbsolutePathReference(path),
+            flags: element_flags,
+            ..
+        }) => {
+            grovedbg_types::Element::Reference(grovedbg_types::Reference::AbsolutePathReference {
+                path,
+                element_flags,
+            })
+        }
         crate::Element::Reference(
             ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
             _,
             element_flags,
-        ) => grovedbg_types::Element::Reference(
+        )
+        | crate::Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path:
+                ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
+            flags: element_flags,
+            ..
+        }) => grovedbg_types::Element::Reference(
             grovedbg_types::Reference::UpstreamRootHeightReference {
                 n_keep: n_keep.into(),
                 path_append,
@@ -564,7 +586,16 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ),
             _,
             element_flags,
-        ) => grovedbg_types::Element::Reference(
+        )
+        | crate::Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path:
+                ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+                    n_keep,
+                    path_append,
+                ),
+            flags: element_flags,
+            ..
+        }) => grovedbg_types::Element::Reference(
             grovedbg_types::Reference::UpstreamRootHeightWithParentPathAdditionReference {
                 n_keep: n_keep.into(),
                 path_append,
@@ -575,7 +606,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
             _,
             element_flags,
-        ) => grovedbg_types::Element::Reference(
+        )
+        | crate::Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path:
+                ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
+            flags: element_flags,
+            ..
+        }) => grovedbg_types::Element::Reference(
             grovedbg_types::Reference::UpstreamFromElementHeightReference {
                 n_remove: n_remove.into(),
                 path_append,
@@ -586,7 +623,12 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ReferencePathType::CousinReference(swap_parent),
             _,
             element_flags,
-        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::CousinReference {
+        )
+        | crate::Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::CousinReference(swap_parent),
+            flags: element_flags,
+            ..
+        }) => grovedbg_types::Element::Reference(grovedbg_types::Reference::CousinReference {
             swap_parent,
             element_flags,
         }),
@@ -594,7 +636,12 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ReferencePathType::RemovedCousinReference(swap_parent),
             _,
             element_flags,
-        ) => {
+        )
+        | crate::Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::RemovedCousinReference(swap_parent),
+            flags: element_flags,
+            ..
+        }) => {
             grovedbg_types::Element::Reference(grovedbg_types::Reference::RemovedCousinReference {
                 swap_parent,
                 element_flags,
@@ -604,14 +651,22 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             ReferencePathType::SiblingReference(sibling_key),
             _,
             element_flags,
-        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::SiblingReference {
+        )
+        | crate::Element::BidirectionalReference(BidirectionalReference {
+            forward_reference_path: ReferencePathType::SiblingReference(sibling_key),
+            flags: element_flags,
+            ..
+        }) => grovedbg_types::Element::Reference(grovedbg_types::Reference::SiblingReference {
             sibling_key,
             element_flags,
         }),
-        crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
-            value,
-            element_flags,
-        },
+        crate::Element::SumItem(value, element_flags)
+        | crate::Element::SumItemWithBackwardsReferences(value, element_flags) => {
+            grovedbg_types::Element::SumItem {
+                value,
+                element_flags,
+            }
+        }
         crate::Element::SumTree(root_key, sum, element_flags) => grovedbg_types::Element::Sumtree {
             root_key,
             sum,

@@ -344,8 +344,11 @@ impl GroveDb {
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
                             | Element::SumItem(..)
+                            | Element::SumItemWithBackwardsReferences(..)
                             | Element::Item(..)
-                            | Element::Reference(..) => {
+                            | Element::ItemWithBackwardsReferences(..)
+                            | Element::Reference(..)
+                            | Element::BidirectionalReference(..) => {
                                 return Err(Error::InvalidProof(
                                     "Proof has lower layer for a non Tree".into(),
                                 ));

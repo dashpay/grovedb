@@ -20,51 +20,6 @@ use crate::{Element, Error};
 impl Element {
     #[cfg(feature = "minimal")]
     /// Delete an element from Merk under a key
-    pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
-        merk: &mut Merk<S>,
-        key: K,
-        merk_options: Option<MerkOptions>,
-        is_layered: bool,
-        in_tree_type: TreeType,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!("delete", grove_version.grovedb_versions.element.delete);
-        let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree, false) => Op::Delete,
-            (TreeType::SumTree, true)
-            | (TreeType::BigSumTree, true)
-            | (TreeType::CountTree, true)
-            | (TreeType::CountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
-            (TreeType::SumTree, false)
-            | (TreeType::BigSumTree, false)
-            | (TreeType::CountTree, false)
-            | (TreeType::CountSumTree, false) => Op::DeleteMaybeSpecialized,
-        };
-        let batch = [(key, op)];
-        // todo not sure we get it again, we need to see if this is necessary
-        let tree_type = merk.tree_type;
-        merk.apply_with_specialized_costs::<_, Vec<u8>>(
-            &batch,
-            &[],
-            merk_options,
-            &|key, value| {
-                Self::specialized_costs_for_key_value(
-                    key,
-                    value,
-                    tree_type.inner_node_type(),
-                    grove_version,
-                )
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
-            },
-            Some(&Element::value_defined_cost_for_serialized_value),
-            grove_version,
-        )
-        .map_err(|e| Error::CorruptedData(e.to_string()))
-    }
-
-    #[cfg(feature = "minimal")]
-    /// Delete an element from Merk under a key
     pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
