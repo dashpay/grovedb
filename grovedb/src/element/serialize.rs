@@ -48,6 +48,7 @@ impl Element {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
+    use grovedb_epoch_based_storage_flags::StorageFlags;
     use integer_encoding::VarInt;
 
     use super::*;
@@ -153,5 +154,40 @@ mod tests {
             reference.serialized_size(grove_version).unwrap()
         );
         assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
+
+        // Serialize and deserialize a count tree
+
+        let root_node = [1u8; 32];
+        let count_tree = Element::CountTree(
+            Some(root_node.to_vec()),
+            5,
+            StorageFlags::SingleEpoch(0).to_some_element_flags(),
+        );
+
+        let serialized_count_tree = count_tree
+            .serialize(grove_version)
+            .expect("serialize count tree");
+
+        dbg!(serialized_count_tree.len());
+
+        let deserialized_count_tree = Element::deserialize(&serialized_count_tree, grove_version)
+            .expect("deserialize count tree");
+
+        assert_eq!(count_tree, deserialized_count_tree);
+
+        let another_serialized_count_tree = hex::decode(
+            "060120bb1f2761e7ec90539584ab05b6e93be8413eabc4acfacff7da6128b2284b8205010103000000",
+        )
+        .expect("decode hex to bytes");
+
+        assert_eq!(
+            serialized_count_tree.len(),
+            another_serialized_count_tree.len()
+        );
+
+        let element = Element::deserialize(&serialized_count_tree, grove_version)
+            .expect("deserialize count tree");
+
+        dbg!(element.to_string());
     }
 }

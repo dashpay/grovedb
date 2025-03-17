@@ -185,7 +185,7 @@ pub struct GroveDBProofV0 {
 impl fmt::Display for LayerProof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "LayerProof {{")?;
-        writeln!(f, "  merk_proof: {}", decode_merk_proof(&self.merk_proof))?;
+        writeln!(f, "  merk_proof: {}", decode_merk_proof(&self.merk_proof)?)?;
         if !self.lower_layers.is_empty() {
             writeln!(f, "  lower_layers: {{")?;
             for (key, layer_proof) in &self.lower_layers {
@@ -219,14 +219,14 @@ impl fmt::Display for GroveDBProofV0 {
     }
 }
 
-fn decode_merk_proof(proof: &[u8]) -> String {
+fn decode_merk_proof(proof: &[u8]) -> Result<String, fmt::Error> {
     let mut result = String::new();
     let ops = Decoder::new(proof);
 
     for (i, op) in ops.enumerate() {
         match op {
             Ok(op) => {
-                result.push_str(&format!("\n    {}: {}", i, op_to_string(&op)));
+                result.push_str(&format!("\n    {}: {}", i, op_to_string(&op)?));
             }
             Err(e) => {
                 result.push_str(&format!("\n    {}: Error decoding op: {}", i, e));
@@ -234,31 +234,37 @@ fn decode_merk_proof(proof: &[u8]) -> String {
         }
     }
 
-    result
+    Ok(result)
 }
 
-fn op_to_string(op: &Op) -> String {
-    match op {
-        Op::Push(node) => format!("Push({})", node_to_string(node)),
-        Op::PushInverted(node) => format!("PushInverted({})", node_to_string(node)),
+fn op_to_string(op: &Op) -> Result<String, fmt::Error> {
+    let op_string = match op {
+        Op::Push(node) => format!("Push({})", node_to_string(node)?),
+        Op::PushInverted(node) => format!("PushInverted({})", node_to_string(node)?),
         Op::Parent => "Parent".to_string(),
         Op::Child => "Child".to_string(),
         Op::ParentInverted => "ParentInverted".to_string(),
         Op::ChildInverted => "ChildInverted".to_string(),
-    }
+    };
+
+    Ok(op_string)
 }
 
-fn node_to_string(node: &Node) -> String {
-    match node {
+fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
+    let node_string = match node {
         Node::Hash(hash) => format!("Hash(HASH[{}])", hex::encode(hash)),
         Node::KVHash(kv_hash) => format!("KVHash(HASH[{}])", hex::encode(kv_hash)),
         Node::KV(key, value) => {
-            format!("KV({}, {})", hex_to_ascii(key), element_hex_to_ascii(value))
+            format!(
+                "KV({}, {})",
+                hex_to_ascii(key),
+                element_hex_to_ascii(value)?
+            )
         }
         Node::KVValueHash(key, value, value_hash) => format!(
             "KVValueHash({}, {}, HASH[{}])",
             hex_to_ascii(key),
-            element_hex_to_ascii(value),
+            element_hex_to_ascii(value)?,
             hex::encode(value_hash)
         ),
         Node::KVDigest(key, value_hash) => format!(
@@ -269,15 +275,17 @@ fn node_to_string(node: &Node) -> String {
         Node::KVRefValueHash(key, value, value_hash) => format!(
             "KVRefValueHash({}, {}, HASH[{}])",
             hex_to_ascii(key),
-            element_hex_to_ascii(value),
+            element_hex_to_ascii(value)?,
             hex::encode(value_hash)
         ),
         Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => format!(
             "KVValueHashFeatureType({}, {}, HASH[{}], {:?})",
             hex_to_ascii(key),
-            element_hex_to_ascii(value),
+            element_hex_to_ascii(value)?,
             hex::encode(value_hash),
             feature_type
         ),
-    }
+    };
+
+    Ok(node_string)
 }
