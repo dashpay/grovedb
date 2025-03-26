@@ -21,6 +21,9 @@ pub use query::QueryOptions;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod serialize;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub(crate) mod aggregate_sum_query;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::fmt;
 
 use bincode::{Decode, Encode};

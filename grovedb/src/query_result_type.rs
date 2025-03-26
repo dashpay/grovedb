@@ -15,6 +15,7 @@ use crate::{
     },
     Element, Error,
 };
+use crate::element::SumValue;
 
 #[derive(Copy, Clone)]
 /// Query result type
@@ -490,6 +491,10 @@ impl QueryResultElement {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Key, Element);
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Type alias for key-sum value common pattern.
+pub type KeySumValuePair = (Key, SumValue);
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for key optional_element common pattern.

@@ -5,8 +5,15 @@ pub struct GroveDBVersions {
     pub apply_batch: GroveDBApplyBatchVersions,
     pub element: GroveDBElementMethodVersions,
     pub operations: GroveDBOperationsVersions,
+    pub aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions,
     pub path_query_methods: GroveDBPathQueryMethodVersions,
     pub replication: GroveDBReplicationVersions,
+}
+
+
+#[derive(Clone, Debug, Default)]
+pub struct GroveDBAggregateSumPathQueryMethodVersions {
+    pub merge: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -88,6 +95,7 @@ pub struct GroveDBOperationsQueryVersions {
     pub query: FeatureVersion,
     pub query_item_value: FeatureVersion,
     pub query_item_value_or_sum: FeatureVersion,
+    pub query_aggregate_sums: FeatureVersion,
     pub query_sums: FeatureVersion,
     pub query_raw: FeatureVersion,
     pub query_keys_optional: FeatureVersion,
@@ -209,16 +217,21 @@ pub struct GroveDBElementMethodVersions {
     pub insert_subtree: FeatureVersion,
     pub insert_subtree_into_batch_operations: FeatureVersion,
     pub get_query: FeatureVersion,
+    pub get_aggregate_sum_query: FeatureVersion,
     pub get_query_values: FeatureVersion,
     pub get_query_apply_function: FeatureVersion,
     pub get_path_query: FeatureVersion,
     pub get_sized_query: FeatureVersion,
+    pub get_aggregate_sum_query_apply_function: FeatureVersion,
     pub path_query_push: FeatureVersion,
+    pub aggregate_sum_path_query_push: FeatureVersion,
     pub query_item: FeatureVersion,
     pub basic_push: FeatureVersion,
+    pub basic_aggregate_sum_push: FeatureVersion,
     pub serialize: FeatureVersion,
     pub serialized_size: FeatureVersion,
     pub deserialize: FeatureVersion,
+    pub aggregate_sum_query_item: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

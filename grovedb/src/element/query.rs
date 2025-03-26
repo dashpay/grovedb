@@ -833,7 +833,7 @@ impl Element {
                 .unwrap_add_cost(&mut cost);
 
             while item
-                .iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right)
+                .iter_is_valid_for_type(&iter, *limit, None, sized_query.query.left_to_right)
                 .unwrap_add_cost(&mut cost)
             {
                 let element = cost_return_on_error_no_add!(
