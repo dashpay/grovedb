@@ -793,6 +793,7 @@ impl QueryItem {
         &self,
         iter: &I,
         limit: Option<u16>,
+        aggregate_limit: Option<i64>,
         left_to_right: bool,
     ) -> CostContext<bool> {
         let mut cost = OperationCost::default();
@@ -800,7 +801,7 @@ impl QueryItem {
         // Check that if limit is set it's greater than 0 and iterator points to a valid
         // place.
         let basic_valid =
-            limit.map(|l| l > 0).unwrap_or(true) && iter.valid().unwrap_add_cost(&mut cost);
+            limit.map(|l| l > 0).unwrap_or(true) && aggregate_limit.map(|l| l > 0).unwrap_or(true) && iter.valid().unwrap_add_cost(&mut cost);
 
         if !basic_valid {
             return false.wrap_with_cost(cost);

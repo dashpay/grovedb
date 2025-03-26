@@ -11,6 +11,7 @@ use crate::version::{
     merk_versions::{MerkAverageCaseCostsVersions, MerkVersions},
     GroveVersion,
 };
+use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 
 pub const GROVE_V1: GroveVersion = GroveVersion {
     protocol_version: 0,
@@ -55,18 +56,23 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             insert_subtree: 0,
             insert_subtree_into_batch_operations: 0,
             get_query: 0,
+            get_aggregate_sum_query: 0,
             get_query_values: 0,
             get_query_apply_function: 0,
             get_path_query: 0,
             get_sized_query: 0,
+            get_aggregate_sum_query_apply_function: 0,
             path_query_push: 0,
+            aggregate_sum_path_query_push: 0,
             query_item: 0,
             basic_push: 0,
+            basic_aggregate_sum_push: 0,
             serialize: 0,
             serialized_size: 0,
             deserialize: 0,
             get_with_value_hash: 0,
             insert_reference_if_changed_value: 0,
+            aggregate_sum_query_item: 0,
         },
         operations: GroveDBOperationsVersions {
             get: GroveDBOperationsGetVersions {
@@ -127,6 +133,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 query: 0,
                 query_item_value: 0,
                 query_item_value_or_sum: 0,
+                query_aggregate_sums: 0,
                 query_sums: 0,
                 query_raw: 0,
                 query_keys_optional: 0,
@@ -175,6 +182,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 add_worst_case_get_cost: 0,
             },
         },
+        aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions { merge: 0 },
         path_query_methods: GroveDBPathQueryMethodVersions {
             terminal_keys: 0,
             merge: 0,

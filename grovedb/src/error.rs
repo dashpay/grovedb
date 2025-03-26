@@ -158,6 +158,10 @@ pub enum Error {
     #[error("cyclic error")]
     /// Cyclic reference
     CyclicError(&'static str),
+
+    #[error("overflow error: {0}")]
+    /// Overflow error
+    Overflow(&'static str),
 }
 
 impl Error {

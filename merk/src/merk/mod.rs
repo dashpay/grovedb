@@ -145,7 +145,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
         let mut cost = OperationCost::default();
 
         if query_item
-            .iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right)
+            .iter_is_valid_for_type(&self.raw_iter, None, None, self.left_to_right)
             .unwrap_add_cost(&mut cost)
         {
             let kv = (

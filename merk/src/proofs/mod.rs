@@ -2,26 +2,21 @@
 
 #[cfg(feature = "minimal")]
 pub mod chunk;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod encoding;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod query;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree;
+
+pub mod aggregate_sum_query;
 
 #[cfg(feature = "minimal")]
 pub use encoding::encode_into;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use encoding::Decoder;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::Query;
 #[cfg(feature = "minimal")]
 pub use tree::Tree;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{tree::CryptoHash, TreeFeatureType};
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 /// A proof operator, executed to verify the data in a Merkle proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
@@ -54,7 +49,6 @@ pub enum Op {
     ChildInverted,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 /// A selected piece of data about a single tree node, to be contained in a
 /// `Push` operator in a proof.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,7 +80,6 @@ pub enum Node {
 
 use std::fmt;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let node_string = match self {

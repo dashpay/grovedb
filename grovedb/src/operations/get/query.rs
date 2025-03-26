@@ -8,20 +8,18 @@ use grovedb_costs::{
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
-
+use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
 #[cfg(feature = "minimal")]
 use crate::element::SumValue;
-use crate::{
-    element::{BigSumValue, CountValue, QueryOptions},
-    operations::proof::ProveOptions,
-    query_result_type::PathKeyOptionalElementTrio,
-};
+use crate::{element::{BigSumValue, CountValue, QueryOptions}, operations::proof::ProveOptions, query_result_type::PathKeyOptionalElementTrio, AggregateSumPathQuery};
 #[cfg(feature = "minimal")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
+use crate::element::aggregate_sum_query::AggregateSumQueryOptions;
+use crate::query_result_type::KeySumValuePair;
 
 #[cfg(feature = "minimal")]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -488,6 +486,33 @@ where {
 
         let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
+    }
+
+    /// Retrieves only SumItem elements that match a path query
+    pub fn query_aggregate_sums(
+        &self,
+        aggregate_sum_path_query: &AggregateSumPathQuery,
+        allow_cache: bool,
+        error_if_intermediate_path_tree_not_present: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<KeySumValuePair>, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_sums",
+            grove_version.grovedb_versions.operations.query.query_aggregate_sums
+        );
+
+        Element::get_aggregate_sum_query(
+            &self.db,
+            aggregate_sum_path_query,
+            AggregateSumQueryOptions {
+                allow_get_raw: true,
+                allow_cache,
+                error_if_intermediate_path_tree_not_present,
+            },
+            transaction,
+            grove_version,
+        )
     }
 
     /// Retrieves only SumItem elements that match a path query
