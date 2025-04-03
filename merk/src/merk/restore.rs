@@ -455,7 +455,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         if !self
             .merk
-            .verify(self.merk.tree_type == TreeType::NormalTree, grove_version)
+            .verify(self.merk.tree_type != TreeType::NormalTree, grove_version)
             .0
             .is_empty()
         {

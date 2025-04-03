@@ -16,6 +16,8 @@ const KEY_INT_1: &[u8] = b"key_int_1";
 const KEY_INT_2: &[u8] = b"key_int_2";
 const KEY_INT_REF_0: &[u8] = b"key_int_ref_0";
 const KEY_INT_A: &[u8] = b"key_sum_0";
+
+const KEY_INT_COUNT: &[u8] = b"key_count_0";
 const ROOT_PATH: &[&[u8]] = &[];
 
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
@@ -70,6 +72,13 @@ fn populate_db(grovedb_path: String, grove_version: &GroveVersion) -> GroveDb {
     insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 1, 500, &tx_3, &grove_version);
     insert_sum_element_db(&db, &[MAIN_ΚΕΥ, KEY_INT_A], 501, 550, &tx_3, &grove_version);
     let _ = db.commit_transaction(tx_3);
+
+    insert_empty_count_tree_db(&db, &[MAIN_ΚΕΥ], KEY_INT_COUNT, &grove_version);
+
+    let tx_4 = db.start_transaction();
+    insert_range_values_db(&db, &[MAIN_ΚΕΥ, KEY_INT_COUNT], 1, 50, &tx_4, &grove_version);
+    let _ = db.commit_transaction(tx_4);
+
     db
 }
 
@@ -122,6 +131,13 @@ fn main() {
 
     let query_path = &[MAIN_ΚΕΥ, KEY_INT_0];
     let query_key = (20487u32).to_be_bytes().to_vec();
+    println!("\n######## Query on db_checkpoint_0:");
+    query_db(&db_checkpoint_0, query_path, query_key.clone(), &grove_version);
+    println!("\n######## Query on db_destination:");
+    query_db(&db_destination, query_path, query_key.clone(), &grove_version);
+
+    let query_path = &[MAIN_ΚΕΥ, KEY_INT_COUNT];
+    let query_key = (40u32).to_be_bytes().to_vec();
     println!("\n######## Query on db_checkpoint_0:");
     query_db(&db_checkpoint_0, query_path, query_key.clone(), &grove_version);
     println!("\n######## Query on db_destination:");
@@ -202,6 +218,14 @@ fn insert_sum_element_db(db: &GroveDb, path: &[&[u8]], min_i: u32, max_i: u32, t
             .expect("successfully inserted values");
     }
 }
+
+fn insert_empty_count_tree_db(db: &GroveDb, path: &[&[u8]], key: &[u8], grove_version: &GroveVersion)
+{
+    db.insert(path, key, Element::empty_count_tree(), INSERT_OPTIONS, None, grove_version)
+        .unwrap()
+        .expect("successfully inserted tree");
+}
+
 fn generate_random_path(prefix: &str, suffix: &str, len: usize) -> String {
     let random_string: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -245,7 +269,8 @@ fn sync_db_demo(
 ) -> Result<(), grovedb::Error> {
     let start_time = Instant::now();
     let app_hash = source_db.root_hash(None, grove_version).value.unwrap();
-    let mut session = target_db.start_snapshot_syncing(app_hash, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+    const SUBTREES_BATCH_SIZE: u32 = 2; // Small value for demo purposes
+    let mut session = target_db.start_snapshot_syncing(app_hash, SUBTREES_BATCH_SIZE, CURRENT_STATE_SYNC_VERSION, grove_version)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
 
@@ -256,14 +281,14 @@ fn sync_db_demo(
     while let Some(chunk_id) = chunk_queue.pop_front() {
         num_chunks += 1;
         let ops = source_db.fetch_chunk(chunk_id.as_slice(), None, CURRENT_STATE_SYNC_VERSION, grove_version)?;
-
-        let more_chunks = session.apply_chunk(&target_db, chunk_id.as_slice(), ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
+        let more_chunks = session.apply_chunk(chunk_id.as_slice(), &ops, CURRENT_STATE_SYNC_VERSION, grove_version)?;
         chunk_queue.extend(more_chunks);
     }
     println!("num_chunks: {}", num_chunks);
 
     if session.is_sync_completed() {
-        target_db.commit_session(session).expect("failed to commit session");
+        println!("state_sync completed");
+        target_db.commit_session(session)?;
     }
     let elapsed = start_time.elapsed();
     println!("state_synced in {:.2?}", elapsed);

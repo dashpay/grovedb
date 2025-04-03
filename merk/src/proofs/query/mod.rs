@@ -14,9 +14,11 @@ pub mod query_item;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
 
-#[cfg(feature = "minimal")]
-use std::cmp::Ordering;
-use std::{collections::HashSet, fmt, ops::RangeFull};
+use std::{
+    collections::{BTreeSet, HashSet},
+    fmt,
+    ops::RangeFull,
+};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use bincode::{
@@ -49,7 +51,10 @@ use {super::Op, std::collections::LinkedList};
 use super::Node;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::error::Error;
-use crate::proofs::hex_to_ascii;
+use crate::proofs::{
+    hex_to_ascii,
+    query::query_item::intersect::{Direction, RangeSetBorrowed},
+};
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
@@ -701,6 +706,147 @@ impl Link {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ProofItems<'a> {
+    key_query_items: BTreeSet<&'a Vec<u8>>,
+    range_query_items: Vec<RangeSetBorrowed<'a>>,
+}
+
+impl fmt::Display for ProofItems<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "ProofItems:\n  Key Queries: {:?}\n  Range Queries: [{}]\n",
+            self.key_query_items
+                .iter()
+                .map(|b| format!("{:X?}", b))
+                .collect::<Vec<_>>(),
+            self.range_query_items
+                .iter()
+                .map(|r| format!("{}", r))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    }
+}
+
+impl<'a> ProofItems<'a> {
+    pub fn new_with_query_items(
+        query_items: &[QueryItem],
+        left_to_right: bool,
+    ) -> (ProofItems, ProofParams) {
+        let mut key_query_items = BTreeSet::new();
+        let mut range_query_items = vec![];
+        for query_item in query_items {
+            match query_item {
+                QueryItem::Key(key) => {
+                    key_query_items.insert(key);
+                }
+                query_item => {
+                    // These are all ranges
+                    range_query_items.push(
+                        query_item
+                            .to_range_set_borrowed()
+                            .expect("all query items at this point should be ranges"),
+                    );
+                }
+            }
+        }
+        let status = ProofItems {
+            key_query_items,
+            range_query_items,
+        };
+        let params = ProofParams { left_to_right };
+        (status, params)
+    }
+
+    /// The point of process key is to take the current proof items that we have
+    /// and split them left and right
+    fn process_key(&'a self, key: &'a Vec<u8>) -> (bool, bool, ProofItems<'a>, ProofItems<'a>) {
+        // 1) Partition the user’s key-based queries
+        let mut left_key_query_items = BTreeSet::new();
+        let mut right_key_query_items = BTreeSet::new();
+        let mut item_is_present = false;
+        let mut item_on_boundary = false;
+
+        for &query_item_key in self.key_query_items.iter() {
+            match query_item_key.cmp(&key) {
+                std::cmp::Ordering::Less => left_key_query_items.insert(query_item_key),
+                std::cmp::Ordering::Greater => right_key_query_items.insert(query_item_key),
+                std::cmp::Ordering::Equal => {
+                    item_is_present = true;
+                    false // `insert` returns a bool, but we don't use it here
+                }
+            };
+        }
+        // 2) Partition the user’s range-based queries
+        let mut left_range_query_items = vec![];
+        let mut right_range_query_items = vec![];
+        for &range_set in self.range_query_items.iter() {
+            if range_set.could_have_items_in_direction(key, Direction::LeftOf) {
+                left_range_query_items.push(range_set)
+            }
+
+            if range_set.could_have_items_in_direction(key, Direction::RightOf) {
+                right_range_query_items.push(range_set)
+            }
+
+            if !item_is_present {
+                let key_containment_result = range_set.could_contain_key(key);
+                item_is_present = key_containment_result.included;
+                item_on_boundary |= key_containment_result.on_bounds_not_included;
+            }
+        }
+
+        let left = ProofItems {
+            key_query_items: left_key_query_items,
+            range_query_items: left_range_query_items,
+        };
+
+        let right = ProofItems {
+            key_query_items: right_key_query_items,
+            range_query_items: right_range_query_items,
+        };
+
+        (item_is_present, item_on_boundary, left, right)
+    }
+
+    pub fn has_no_query_items(&self) -> bool {
+        self.key_query_items.is_empty() && self.range_query_items.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProofStatus {
+    pub limit: Option<u16>,
+}
+
+impl ProofStatus {
+    pub fn hit_limit(&self) -> bool {
+        self.limit.is_some() && self.limit.unwrap() == 0
+    }
+}
+
+impl ProofStatus {
+    fn new_with_limit(limit: Option<u16>) -> Self {
+        Self { limit }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ProofParams {
+    left_to_right: bool,
+}
+
+impl ProofStatus {
+    pub fn update_limit(mut self, new_limit: Option<u16>) -> Self {
+        if let Some(new_limit) = new_limit {
+            self.limit = Some(new_limit)
+        }
+        self
+    }
+}
+
 #[cfg(feature = "minimal")]
 impl<S> RefWalker<'_, S>
 where
@@ -752,12 +898,6 @@ where
         self.tree().hash().map(Node::Hash)
     }
 
-    /// Generates a proof for the list of queried keys. Returns a tuple
-    /// containing the generated proof operators, and a tuple representing if
-    /// any keys were queried were less than the left edge or greater than the
-    /// right edge, respectively.
-    ///
-    /// TODO: Generalize logic and get code to better represent logic
     #[cfg(feature = "minimal")]
     pub(crate) fn create_proof(
         &mut self,
@@ -766,85 +906,63 @@ where
         left_to_right: bool,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
+        let (proof_query_items, proof_params) =
+            ProofItems::new_with_query_items(query, left_to_right);
+        let proof_status = ProofStatus::new_with_limit(limit);
+        self.create_proof_internal(
+            &proof_query_items,
+            &proof_params,
+            proof_status,
+            grove_version,
+        )
+    }
+
+    /// Generates a proof for the list of queried items. Returns a tuple
+    /// containing the generated proof operators, and a tuple representing if
+    /// any keys were queried were less than the left edge or greater than the
+    /// right edge, respectively.
+    #[cfg(feature = "minimal")]
+    pub(crate) fn create_proof_internal(
+        &mut self,
+        proof_query_items: &ProofItems,
+        proof_params: &ProofParams,
+        proof_status: ProofStatus,
+        grove_version: &GroveVersion,
+    ) -> CostResult<ProofAbsenceLimit, Error> {
         let mut cost = OperationCost::default();
 
-        // TODO: don't copy into vec, support comparing QI to byte slice
-        let node_key = QueryItem::Key(self.tree().key().to_vec());
-        let mut search = query.binary_search_by(|key| {
-            // TODO: change to contains more efficient
-            //  left here to catch potential errors with the intersect function
-            if key.collides_with(&node_key) {
-                // if key.contains(self.tree().key()) {
-                Ordering::Equal
-            } else {
-                key.cmp(&node_key)
-            }
-        });
+        // We get the key from the current node we are at
+        let key = self.tree().key().to_vec(); // there is no escaping this clone
 
-        let current_node_in_query: bool;
-        let mut node_on_non_inclusive_bounds = false;
+        // We check to see if that key matches our current proof items
+        // We also split our proof items for query items that would be active on the
+        // left of our node and other query items that would be active on the
+        // right of our node. For example if we are looking for keys 3, 5, 8 and
+        // 9, and we are at key 6, we split the keys we are searching for, as 3
+        // and 5 won't be on the right of 6 and 8 and 9 won't be on the left of
+        // 6. The same logic applies to range queries. If we are searching for
+        // items 1 to 4 it would not make sense to push this to the right of 6.
 
-        let (mut left_items, mut right_items) = match search {
-            Ok(index) => {
-                current_node_in_query = true;
-                let item = &query[index];
-                let (left_bound, left_not_inclusive) = item.lower_bound();
-                let (right_bound, right_inclusive) = item.upper_bound();
+        let (mut found_item, on_boundary_not_found, mut left_proof_items, mut right_proof_items) =
+            proof_query_items.process_key(&key);
 
-                if left_bound.is_some()
-                    && left_bound.unwrap() == self.tree().key()
-                    && left_not_inclusive
-                    || right_bound.is_some()
-                        && right_bound.unwrap() == self.tree().key()
-                        && !right_inclusive
-                {
-                    node_on_non_inclusive_bounds = true;
-                }
-
-                // if range starts before this node's key, include it in left
-                // child's query
-                let left_query = if left_bound.is_none() || left_bound < Some(self.tree().key()) {
-                    &query[..=index]
-                } else {
-                    &query[..index]
-                };
-
-                // if range ends after this node's key, include it in right
-                // child's query
-                let right_query = if right_bound.is_none() || right_bound > Some(self.tree().key())
-                {
-                    &query[index..]
-                } else {
-                    &query[index + 1..]
-                };
-
-                (left_query, right_query)
-            }
-            Err(index) => {
-                current_node_in_query = false;
-                (&query[..index], &query[index..])
-            }
-        };
-
-        // when the limit hits zero, the rest of the query batch should be cleared
-        // so empty the left, right query batch, and set the current node to not found
-        if let Some(current_limit) = limit {
+        if let Some(current_limit) = proof_status.limit {
             if current_limit == 0 {
-                left_items = &[];
-                search = Err(Default::default());
-                right_items = &[];
+                left_proof_items = ProofItems::default();
+                found_item = false;
+                right_proof_items = ProofItems::default();
             }
         }
 
-        let proof_direction = left_to_right; // signifies what direction the DFS should go
-        let (mut proof, left_absence, mut new_limit) = if left_to_right {
+        let proof_direction = proof_params.left_to_right; // search the opposite path on second pass
+        let (mut proof, left_absence, proof_status) = if proof_params.left_to_right {
             cost_return_on_error!(
                 &mut cost,
                 self.create_child_proof(
                     proof_direction,
-                    left_items,
-                    limit,
-                    left_to_right,
+                    &left_proof_items,
+                    proof_params,
+                    proof_status,
                     grove_version
                 )
             )
@@ -853,60 +971,64 @@ where
                 &mut cost,
                 self.create_child_proof(
                     proof_direction,
-                    right_items,
-                    limit,
-                    left_to_right,
+                    &right_proof_items,
+                    proof_params,
+                    proof_status,
                     grove_version
                 )
             )
         };
 
-        if let Some(current_limit) = new_limit {
+        let mut new_limit = None;
+
+        if let Some(current_limit) = proof_status.limit {
             // if after generating proof for the left subtree, the limit becomes 0
             // clear the current node and clear the right batch
             if current_limit == 0 {
-                if left_to_right {
-                    right_items = &[];
+                if proof_params.left_to_right {
+                    right_proof_items = ProofItems::default();
                 } else {
-                    left_items = &[];
+                    left_proof_items = ProofItems::default();
                 }
-                search = Err(Default::default());
-            } else if current_node_in_query && !node_on_non_inclusive_bounds {
+                found_item = false;
+            } else if found_item && !on_boundary_not_found {
                 // if limit is not zero, reserve a limit slot for the current node
                 // before generating proof for the right subtree
                 new_limit = Some(current_limit - 1);
                 // if after limit slot reservation, limit becomes 0, right query
                 // should be cleared
                 if current_limit - 1 == 0 {
-                    if left_to_right {
-                        right_items = &[];
+                    if proof_params.left_to_right {
+                        right_proof_items = ProofItems::default();
                     } else {
-                        left_items = &[];
+                        left_proof_items = ProofItems::default();
                     }
                 }
             }
         }
 
         let proof_direction = !proof_direction; // search the opposite path on second pass
-        let (mut right_proof, right_absence, new_limit) = if left_to_right {
+        let (mut right_proof, right_absence, new_limit) = if proof_params.left_to_right {
+            let new_proof_status = proof_status.update_limit(new_limit);
             cost_return_on_error!(
                 &mut cost,
                 self.create_child_proof(
                     proof_direction,
-                    right_items,
-                    new_limit,
-                    left_to_right,
+                    &right_proof_items,
+                    proof_params,
+                    new_proof_status,
                     grove_version
                 )
             )
         } else {
+            let new_proof_status = proof_status.update_limit(new_limit);
             cost_return_on_error!(
                 &mut cost,
                 self.create_child_proof(
                     proof_direction,
-                    left_items,
-                    new_limit,
-                    left_to_right,
+                    &left_proof_items,
+                    proof_params,
+                    new_proof_status,
                     grove_version
                 )
             )
@@ -914,37 +1036,28 @@ where
 
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
-        proof.push_back(match search {
-            Ok(_) => {
-                if node_on_non_inclusive_bounds {
-                    if left_to_right {
-                        Op::Push(self.to_kvdigest_node())
-                    } else {
-                        Op::PushInverted(self.to_kvdigest_node())
-                    }
-                } else if left_to_right {
-                    Op::Push(self.to_kv_value_hash_node())
-                } else {
-                    Op::PushInverted(self.to_kv_value_hash_node())
-                }
+        let proof_op = if found_item {
+            if proof_params.left_to_right {
+                Op::Push(self.to_kv_value_hash_node())
+            } else {
+                Op::PushInverted(self.to_kv_value_hash_node())
             }
-            Err(_) => {
-                if left_absence.1 || right_absence.0 {
-                    if left_to_right {
-                        Op::Push(self.to_kvdigest_node())
-                    } else {
-                        Op::PushInverted(self.to_kvdigest_node())
-                    }
-                } else if left_to_right {
-                    Op::Push(self.to_kvhash_node())
-                } else {
-                    Op::PushInverted(self.to_kvhash_node())
-                }
+        } else if on_boundary_not_found || left_absence.1 || right_absence.0 {
+            if proof_params.left_to_right {
+                Op::Push(self.to_kvdigest_node())
+            } else {
+                Op::PushInverted(self.to_kvdigest_node())
             }
-        });
+        } else if proof_params.left_to_right {
+            Op::Push(self.to_kvhash_node())
+        } else {
+            Op::PushInverted(self.to_kvhash_node())
+        };
+
+        proof.push_back(proof_op);
 
         if has_left {
-            if left_to_right {
+            if proof_params.left_to_right {
                 proof.push_back(Op::Parent);
             } else {
                 proof.push_back(Op::ParentInverted);
@@ -953,7 +1066,7 @@ where
 
         if has_right {
             proof.append(&mut right_proof);
-            if left_to_right {
+            if proof_params.left_to_right {
                 proof.push_back(Op::Child);
             } else {
                 proof.push_back(Op::ChildInverted);
@@ -969,12 +1082,12 @@ where
     fn create_child_proof(
         &mut self,
         left: bool,
-        query: &[QueryItem],
-        limit: Option<u16>,
-        left_to_right: bool,
+        query_items: &ProofItems,
+        params: &ProofParams,
+        proof_status: ProofStatus,
         grove_version: &GroveVersion,
     ) -> CostResult<ProofAbsenceLimit, Error> {
-        if !query.is_empty() {
+        if !query_items.has_no_query_items() {
             self.walk(
                 left,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -982,21 +1095,22 @@ where
             )
             .flat_map_ok(|child_opt| {
                 if let Some(mut child) = child_opt {
-                    child.create_proof(query, limit, left_to_right, grove_version)
+                    child.create_proof_internal(query_items, params, proof_status, grove_version)
                 } else {
-                    Ok((LinkedList::new(), (true, true), limit)).wrap_with_cost(Default::default())
+                    Ok((LinkedList::new(), (true, true), proof_status))
+                        .wrap_with_cost(Default::default())
                 }
             })
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
-            proof.push_back(if left_to_right {
+            proof.push_back(if params.left_to_right {
                 Op::Push(link.to_hash_node())
             } else {
                 Op::PushInverted(link.to_hash_node())
             });
-            Ok((proof, (false, false), limit)).wrap_with_cost(Default::default())
+            Ok((proof, (false, false), proof_status)).wrap_with_cost(Default::default())
         } else {
-            Ok((LinkedList::new(), (false, false), limit)).wrap_with_cost(Default::default())
+            Ok((LinkedList::new(), (false, false), proof_status)).wrap_with_cost(Default::default())
         }
     }
 }
@@ -4026,13 +4140,13 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let query_items = vec![QueryItem::RangeFrom(vec![2]..)];
-        let (proof, _, limit) = walker
+        let (proof, _, status) = walker
             .create_proof(query_items.as_slice(), Some(1), true, grove_version)
             .unwrap()
             .expect("create_proof errored");
 
         // TODO: Add this test for other range types
-        assert_eq!(limit, Some(0));
+        assert_eq!(status.limit, Some(0));
 
         let mut iter = proof.iter();
         assert_eq!(

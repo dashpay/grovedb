@@ -103,7 +103,7 @@ where
                         grove_version,
                     )
                 })
-                .map_ok(|(proof, _, limit, ..)| (proof, limit))
+                .map_ok(|(proof, _, status, ..)| (proof, status.limit))
         })
     }
 
@@ -136,7 +136,7 @@ where
                     let mut ref_walker = RefWalker::new(tree, self.source());
                     ref_walker.create_proof(query_items, limit, left_to_right, grove_version)
                 })
-                .map_ok(|(proof, _, limit, ..)| (proof, limit))
+                .map_ok(|(proof, _, status, ..)| (proof, status.limit))
         })
     }
 }

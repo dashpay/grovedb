@@ -147,7 +147,9 @@ impl Query {
             .items
             .iter()
             .filter_map(|our_item| {
-                if our_item.collides_with(&item) {
+                if our_item.is_key() && item.is_key() && our_item == &item {
+                    None
+                } else if our_item.collides_with(&item) {
                     item.merge_assign(our_item);
                     None
                 } else {
@@ -169,6 +171,32 @@ impl Query {
     pub fn insert_items(&mut self, items: Vec<QueryItem>) {
         for item in items {
             self.insert_item(item)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assert_matches::assert_matches;
+
+    use super::*;
+
+    mod insert_item {
+        use super::*;
+
+        #[test]
+        fn test_insert_item_adds_only_one_key_for_equal_key_items() {
+            let value = vec![
+                3, 207, 99, 250, 114, 92, 207, 167, 120, 9, 236, 164, 124, 63, 102, 237, 201, 35,
+                86, 5, 23, 169, 147, 150, 61, 132, 155, 33, 225, 145, 85, 138,
+            ];
+
+            let mut query = Query::new();
+
+            query.insert_key(value.clone());
+            query.insert_key(value.clone());
+
+            assert_matches!(query.items.as_slice(), [QueryItem::Key(v)] if v == &value);
         }
     }
 }
