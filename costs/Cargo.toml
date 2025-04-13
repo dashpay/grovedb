@@ -10,6 +10,6 @@ repository = "https://github.com/dashpay/grovedb"
 
 
 [dependencies]
-thiserror = "2.0.11"
+thiserror = "2.0.12"
 intmap = "3.0.1"
 integer-encoding = "4.0.0"
