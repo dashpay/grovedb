@@ -559,11 +559,11 @@ impl GroveDb {
                 return Err(Error::InvalidProof(
                     new_path_query,
                     format!(
-                    "Root hash for different path queries do not match, first is {}, this one is \
-                     {}",
-                    hex::encode(last_root_hash),
-                    hex::encode(new_root_hash)
-                ),
+                        "Root hash for different path queries do not match, first is {}, this one \
+                         is {}",
+                        hex::encode(last_root_hash),
+                        hex::encode(new_root_hash)
+                    ),
                 ));
             }
 
