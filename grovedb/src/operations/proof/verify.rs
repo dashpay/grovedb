@@ -274,7 +274,10 @@ impl GroveDb {
             .unwrap()
             .map_err(|e| {
                 eprintln!("{e}");
-                Error::InvalidProof(format!("invalid proof verification parameters: {}", e))
+                Error::InvalidProof(format!(
+                    "Invalid proof verification parameters: {}. Path query: {}",
+                    e, query
+                ))
             })?;
         #[cfg(feature = "proof_debug")]
         {
@@ -329,9 +332,10 @@ impl GroveDb {
                                         .to_owned();
                                 if hash != &combined_root_hash {
                                     return Err(Error::InvalidProof(format!(
-                                        "Mismatch in lower layer hash, expected {}, got {}",
+                                        "Mismatch in lower layer hash, expected {}, got {}. Path query: {}",
                                         hex::encode(hash),
-                                        hex::encode(combined_root_hash)
+                                        hex::encode(combined_root_hash),
+                                        query
                                     )));
                                 }
                                 if limit_left == &Some(0) {
@@ -346,9 +350,10 @@ impl GroveDb {
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::Reference(..) => {
-                                return Err(Error::InvalidProof(
-                                    "Proof has lower layer for a non Tree".into(),
-                                ));
+                                return Err(Error::InvalidProof(format!(
+                                    "Proof has lower layer for a non Tree. Path query: {}",
+                                    query
+                                )));
                             }
                         }
                     } else if element.is_any_item()
@@ -550,10 +555,11 @@ impl GroveDb {
 
             if new_root_hash != last_root_hash {
                 return Err(Error::InvalidProof(format!(
-                    "root hash for different path queries do not match, first is {}, this one is \
-                     {}",
+                    "Root hash for different path queries do not match, first is {}, this one is \
+                     {}. Path query: {}",
                     hex::encode(last_root_hash),
-                    hex::encode(new_root_hash)
+                    hex::encode(new_root_hash),
+                    new_path_query
                 )));
             }
 
