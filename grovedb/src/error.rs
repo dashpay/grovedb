@@ -2,6 +2,8 @@
 
 use std::convert::Infallible;
 
+use crate::PathQuery;
+
 /// GroveDB Errors
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
@@ -24,7 +26,7 @@ pub enum Error {
     InternalError(String),
     #[error("invalid proof: {0}")]
     /// Invalid proof
-    InvalidProof(String),
+    InvalidProof(PathQuery, String),
     #[error("invalid input: {0}")]
     /// Invalid input
     InvalidInput(&'static str),
