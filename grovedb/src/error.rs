@@ -26,7 +26,7 @@ pub enum Error {
     #[error("internal error: {0}")]
     /// Internal error
     InternalError(String),
-    #[error("invalid proof: {0}")]
+    #[error("invalid proof: {1}")]
     /// Invalid proof
     InvalidProof(PathQuery, String),
     #[error("invalid input: {0}")]
