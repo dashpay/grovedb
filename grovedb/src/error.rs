@@ -4,6 +4,8 @@ use std::convert::Infallible;
 
 use grovedb_costs::CostResult;
 
+use crate::PathQuery;
+
 /// GroveDB Errors
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
@@ -24,9 +26,9 @@ pub enum Error {
     #[error("internal error: {0}")]
     /// Internal error
     InternalError(String),
-    #[error("invalid proof: {0}")]
+    #[error("invalid proof: {1}")]
     /// Invalid proof
-    InvalidProof(String),
+    InvalidProof(PathQuery, String),
     #[error("invalid input: {0}")]
     /// Invalid input
     InvalidInput(&'static str),
@@ -165,7 +167,7 @@ impl Error {
         match self {
             Self::MissingReference(s)
             | Self::InternalError(s)
-            | Self::InvalidProof(s)
+            | Self::InvalidProof(_, s)
             | Self::PathKeyNotFound(s)
             | Self::PathNotFound(s)
             | Self::PathParentLayerNotFound(s)
