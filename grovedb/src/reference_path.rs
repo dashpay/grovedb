@@ -246,7 +246,7 @@ impl ReferencePathType {
 
                 let referenced_path = (0..n_to_remove).fold(current_path, |p, _| {
                     p.derive_parent_owned()
-                        .expect("lenghts were checked above")
+                        .expect("lengths were checked above")
                         .0
                 });
                 let referenced_path = append_path.into_iter().fold(referenced_path, |mut p, s| {

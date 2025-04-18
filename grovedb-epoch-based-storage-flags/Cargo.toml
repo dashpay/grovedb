@@ -13,4 +13,4 @@ grovedb-costs = { version = "3.0.0", path = "../costs" }
 hex = { version = "0.4.3" }
 integer-encoding = { version = "4.0.0" }
 intmap = { version = "3.0.1", features = ["serde"]}
-thiserror = { version = "2.0.11" }
+thiserror = { version = "2.0.12" }
