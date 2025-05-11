@@ -1,8 +1,6 @@
 //! Helpers
 //! Implements helper functions in Element
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     merk::NodeType,
@@ -14,6 +12,10 @@ use grovedb_merk::{
         },
         TreeNode,
     },
+};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use grovedb_merk::{
+    tree_type::{MaybeTree, TreeType},
     TreeFeatureType,
     TreeFeatureType::{
         BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode, SummedMerkNode,
