@@ -206,6 +206,20 @@ impl Element {
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Check if the element is a tree and return the aggregate of elements in
+    /// the tree
+    pub fn tree_feature_type(&self) -> Option<TreeFeatureType> {
+        match self {
+            Element::Tree(..) => Some(BasicMerkNode),
+            Element::SumTree(_, value, _) => Some(SummedMerkNode(*value)),
+            Element::BigSumTree(_, value, _) => Some(BigSummedMerkNode(*value)),
+            Element::CountTree(_, value, _) => Some(CountedMerkNode(*value)),
+            Element::CountSumTree(_, count, sum, _) => Some(CountedSummedMerkNode(*count, *sum)),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a tree and return the tree type
     pub fn maybe_tree_type(&self) -> MaybeTree {
         match self {

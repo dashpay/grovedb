@@ -78,6 +78,7 @@ pub struct GroveDBOperationsProofVersions {
     pub verify_query_with_absence_proof: FeatureVersion,
     pub verify_subset_query_with_absence_proof: FeatureVersion,
     pub verify_query_with_chained_path_queries: FeatureVersion,
+    pub verify_query_get_parent_tree_info_with_options: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

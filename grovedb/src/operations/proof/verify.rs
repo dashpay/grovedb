@@ -6,7 +6,7 @@ use grovedb_merk::{
         Query,
     },
     tree::{combine_hash, value_hash},
-    CryptoHash,
+    CryptoHash, TreeFeatureType, TreeType,
 };
 use grovedb_version::{
     check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
@@ -61,10 +61,64 @@ impl GroveDb {
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
 
-        let (root_hash, result) =
+        let (root_hash, _, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
 
         Ok((root_hash, result))
+    }
+
+    /// The point of this query is to get the parent tree information which will
+    /// be present because we are querying in a subtree
+    pub fn verify_query_get_parent_tree_info_with_options(
+        proof: &[u8],
+        query: &PathQuery,
+        options: VerifyOptions,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, TreeFeatureType, Vec<PathKeyOptionalElementTrio>), Error> {
+        check_grovedb_v0!(
+            "verify_query_get_parent_tree_info_with_options",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_query_get_parent_tree_info_with_options
+        );
+
+        if query.query.query.has_subquery() {
+            return Err(Error::NotSupported(
+                "getting the parent tree info is not available when using subqueries".to_string(),
+            ));
+        }
+        if options.absence_proofs_for_non_existing_searched_keys {
+            // must have a limit
+            query.query.limit.ok_or(Error::NotSupported(
+                "limits must be set in verify_query_with_absence_proof".to_string(),
+            ))?;
+        }
+
+        // must have no offset
+        if query.query.offset.is_some() {
+            return Err(Error::NotSupported(
+                "offsets in path queries are not supported for proofs".to_string(),
+            ));
+        }
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
+            .0;
+
+        let (root_hash, tree_feature_type, result) =
+            Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
+
+        let tree_feature_type = tree_feature_type.ok_or(Error::InvalidProof(
+            query.clone(),
+            "query had no parent tree info, maybe it was for for root tree".to_string(),
+        ))?;
+
+        Ok((root_hash, tree_feature_type, result))
     }
 
     pub fn verify_query_raw(
@@ -87,7 +141,7 @@ impl GroveDb {
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
 
-        let (root_hash, result) = Self::verify_proof_raw_internal(
+        let (root_hash, _, result) = Self::verify_proof_raw_internal(
             &grovedb_proof,
             query,
             VerifyOptions {
@@ -106,7 +160,14 @@ impl GroveDb {
         query: &PathQuery,
         options: VerifyOptions,
         grove_version: &GroveVersion,
-    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<
+        (
+            CryptoHash,
+            Option<TreeFeatureType>,
+            Vec<PathKeyOptionalElementTrio>,
+        ),
+        Error,
+    > {
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_v0_internal(proof_v0, query, options, grove_version)
@@ -119,9 +180,17 @@ impl GroveDb {
         query: &PathQuery,
         options: VerifyOptions,
         grove_version: &GroveVersion,
-    ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
+    ) -> Result<
+        (
+            CryptoHash,
+            Option<TreeFeatureType>,
+            Vec<PathKeyOptionalElementTrio>,
+        ),
+        Error,
+    > {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
+        let mut last_tree_feature_type = None;
         let root_hash = Self::verify_layer_proof(
             &proof.root_layer,
             &proof.prove_options,
@@ -129,6 +198,7 @@ impl GroveDb {
             &mut limit,
             &[],
             &mut result,
+            &mut last_tree_feature_type,
             &options,
             grove_version,
         )?;
@@ -188,7 +258,7 @@ impl GroveDb {
                 .collect();
         }
 
-        Ok((root_hash, result))
+        Ok((root_hash, last_tree_feature_type, result))
     }
 
     pub(crate) fn verify_proof_raw_internal(
@@ -196,7 +266,7 @@ impl GroveDb {
         query: &PathQuery,
         options: VerifyOptions,
         grove_version: &GroveVersion,
-    ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
+    ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_raw_internal_v0(proof_v0, query, options, grove_version)
@@ -209,9 +279,10 @@ impl GroveDb {
         query: &PathQuery,
         options: VerifyOptions,
         grove_version: &GroveVersion,
-    ) -> Result<(CryptoHash, ProvedPathKeyValues), Error> {
+    ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
         let mut result = Vec::new();
         let mut limit = query.query.limit;
+        let mut last_tree_feature_type = None;
         let root_hash = Self::verify_layer_proof(
             &proof.root_layer,
             &proof.prove_options,
@@ -219,10 +290,11 @@ impl GroveDb {
             &mut limit,
             &[],
             &mut result,
+            &mut last_tree_feature_type,
             &options,
             grove_version,
         )?;
-        Ok((root_hash, result))
+        Ok((root_hash, last_tree_feature_type, result))
     }
 
     fn verify_layer_proof<T>(
@@ -232,6 +304,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         current_path: &[&[u8]],
         result: &mut Vec<T>,
+        last_parent_tree_type: &mut Option<TreeFeatureType>,
         options: &VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
@@ -316,6 +389,7 @@ impl GroveDb {
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..) => {
                                 path.push(key);
+                                *last_parent_tree_type = element.tree_feature_type();
                                 let lower_hash = Self::verify_layer_proof(
                                     lower_layer,
                                     prove_options,
@@ -323,6 +397,7 @@ impl GroveDb {
                                     limit_left,
                                     &path,
                                     result,
+                                    last_parent_tree_type,
                                     options,
                                     grove_version,
                                 )?;
@@ -354,7 +429,7 @@ impl GroveDb {
                             | Element::Reference(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
-                                    format!("Proof has lower layer for a non Tree."),
+                                    "Proof has lower layer for a non Tree.".to_string(),
                                 ));
                             }
                         }
@@ -434,6 +509,52 @@ impl GroveDb {
                 .verify_subset_query
         );
         Self::verify_query_with_options(
+            proof,
+            query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+    }
+
+    /// The point of this query is to get the parent tree information which will
+    /// be present because we are querying in a subtree
+    pub fn verify_query_get_parent_tree_info(
+        proof: &[u8],
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, TreeFeatureType, Vec<PathKeyOptionalElementTrio>), Error> {
+        check_grovedb_v0!(
+            "verify_query_get_parent_tree_info",
+            grove_version.grovedb_versions.operations.proof.verify_query
+        );
+        Self::verify_query_get_parent_tree_info_with_options(
+            proof,
+            query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: true,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+    }
+
+    /// The point of this query is to get the parent tree information which will
+    /// be present because we are querying in a subtree
+    pub fn verify_subset_query_get_parent_tree_info(
+        proof: &[u8],
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, TreeFeatureType, Vec<PathKeyOptionalElementTrio>), Error> {
+        check_grovedb_v0!(
+            "verify_subset_query_get_parent_tree_info",
+            grove_version.grovedb_versions.operations.proof.verify_query
+        );
+        Self::verify_query_get_parent_tree_info_with_options(
             proof,
             query,
             VerifyOptions {

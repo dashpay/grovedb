@@ -144,6 +144,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 verify_query_with_absence_proof: 0,
                 verify_subset_query_with_absence_proof: 0,
                 verify_query_with_chained_path_queries: 0,
+                verify_query_get_parent_tree_info_with_options: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,

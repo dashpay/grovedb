@@ -2,9 +2,11 @@
 
 #[cfg(test)]
 mod tests {
+    use assert_matches::assert_matches;
     use grovedb_merk::{
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
+        TreeFeatureType,
         TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
     };
     use grovedb_storage::StorageBatch;
@@ -104,6 +106,19 @@ mod tests {
                 .expect("should deserialize element"),
             Element::new_item(vec![3])
         );
+
+        let (root_hash, parent, result_set) =
+            GroveDb::verify_query_get_parent_tree_info(&proof, &path_query, grove_version)
+                .expect("should verify proof");
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        assert_eq!(result_set.len(), 1);
+        assert_eq!(
+            parent,
+            SummedMerkNode(0), // because no sum items
+        );
     }
 
     #[test]
@@ -179,6 +194,19 @@ mod tests {
             .expect("should deserialize element");
         assert_eq!(element_from_proof, Element::new_sum_item(5));
         assert_eq!(element_from_proof.sum_value_or_default(), 5);
+
+        let (root_hash, parent, result_set) =
+            GroveDb::verify_query_get_parent_tree_info(&proof, &path_query, grove_version)
+                .expect("should verify proof");
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        assert_eq!(result_set.len(), 1);
+        assert_eq!(
+            parent,
+            SummedMerkNode(5), // because no sum items
+        );
     }
 
     #[test]
@@ -1707,6 +1735,76 @@ mod tests {
         assert_eq!(
             sum_tree.aggregate_data().expect("expected to get sum"),
             AggregateData::BigSum(41)
+        );
+    }
+
+    #[test]
+    fn test_verify_query_get_parent_tree_info() {
+        let grove_version = GroveVersion::latest();
+        #[rustfmt::skip]
+        let proof = hex::decode("00fb013d01a2704ddea5e5d945adbb6676daf2009e895ee02e810f85542cb1f6ae6d6\
+        760e204014000240201205c140e655c0265bbc2a808716de1847985135918ad51cdfd0b76664ba95ba37c0084db131b8025b950fa24fa2\
+        e843c73108263e572b9946b21c2c3fd9627e407c61001cf348c325b7635a8bdf70e9ce480344dae0ff1b150982352c036ab0ab80673360\
+        28919e738c1d682a834178cbd56398ae1039b2a2fa1714c71f09da1588354fbe9100401580024020120ddce697de2792f0e584961d5596\
+        b5e5f411e677832f21fb13415b3eced5bbbac0061be5470c86feef008a0f59f316dd2cde93a29378cb3eaaefc5afc92cf1076111102868\
+        dbce2e37187e87d5440fa14b02e55c816bf6b2a42218b1252d438513c35721001728de12d58ac77d35ad591df34db59e929ec1f0d6e87d\
+        76785145f890830d3c61111020140d101788e3a259e0f42b3b95d242d9b20d3783f8875ccfd75c419a364cc19a267cc8904202d4359152\
+        2d8914e9cf3113acabe0d5c3d287ac95463bb6ee9803f30ac1dd26c00050201010100cf9f9c0c4ba2e279c21006e07d40b0b939eed14e6\
+        09ffe03111f7bb111248def10016a2dd3b0bea7de92002da1e4298e51d9337cfe85a57f82b88c94e6079e1f1916110224c13650a211657\
+        be239cba81f825b49b8b32d4287a641dc824066b61c7e94241001321f2ab6e866d75692664e459ba978247b9e8dc2d31cc03609ca9a2f8\
+        b11afb31101202d43591522d8914e9cf3113acabe0d5c3d287ac95463bb6ee9803f30ac1dd26c59017326e2d5ed8b71c6a23737c6a7ae2\
+        386cf0562e80c8ccfddc01aad545ac240c6040101001202010e646972656374507572636861736500fbc1fe44cd9d71ef7811b65385c98\
+        8e4ea048a2b2c7b7d5513ad94b329437c6710010101bb018056d40565a1a6baa036c98ddf3d242057eae0a26fb3b8755c78d176aa49d44\
+        8020f873d92cda86ea3c81844789a6635072e58e16551802704e466c0e6cd11ea2e10010791683dce9b978a9f23bbf0c10e49d791251e6\
+        abad13e99174d42e7fb1bc65004046d696e74000b020107746f6b656e49640007affede04d18f1e14d4288aa17368b96fb363987e81e34\
+        ee462f9313ac2395c10014a88b93b931ec8b3ae6ad028b40c735d9f621f7ffe1018dce33c81c1ddb60b4e111101046d696e744a0401000\
+        003020000651929e1747381a16157515e5447625502f3a79843859a0a929d24c605c0b23a02c4d4ab8e6aaf3cbab84daf126cc9b454be2\
+        6f097992462859547a3f18b751fca100001584a0420ddce697de2792f0e584961d5596b5e5f411e677832f21fb13415b3eced5bbbac000\
+        6020102000000960fb81fab3ec029ae3b2361395b11cb8a2cf6fc9371c69359fdb2fe055b16dc0120ddce697de2792f0e584961d5596b5\
+        e5f411e677832f21fb13415b3eced5bbbac2b0402000000050201014d00256c1403624ce7e1a72b402ae793333eeae622b41c943c7d385\
+        1e93e1fe2c40301020000940166edea757853345f867b571b3caec6a5222f735f1250bd47701a0f74925055b404014d00240201209a530\
+        aace4c548b8d8d8b0207a198a39abb674474b41b36765a634f3f7b25f0900d5807a08f8c32cae3189189485b62b982529a7bc9faf241eb\
+        5a02538b743d3f4100401580003020000651929e1747381a16157515e5447625502f3a79843859a0a929d24c605c0b23a1101014d49042\
+        09a530aace4c548b8d8d8b0207a198a39abb674474b41b36765a634f3f7b25f0900050201015300942e7784de40db01dd61f82f2dac500\
+        e3c48bf833712e8404f075d1407ee048501209a530aace4c548b8d8d8b0207a198a39abb674474b41b36765a634f3f7b25f096c0158642\
+        68816552789d60452cf54975b46f01454b9e4303b8d5fe01ac1909be37f040153002504012097052066db888f35b30814ca4bd2ce6cb10\
+        efbca3402166b2d2b2efdd081ad0c02006828dad691b686174f6152f1fb15c4fad8d109ce9006b4d8379926dbf9698452100101536b042\
+        097052066db888f35b30814ca4bd2ce6cb10efbca3402166b2d2b2efdd081ad0c0027030201230297052066db888f35b30814ca4bd2ce6\
+        cb10efbca3402166b2d2b2efdd081ad0c000060cfba1b62b0b3c408b50b1718ce1cb20b8f6fbb5cff024966a7d78beb4\
+        12fc90001").expect("expected to decode hex");
+
+        let path_query = PathQuery::new_single_key(
+            vec![
+                vec![0x58],
+                hex::decode("ddce697de2792f0e584961d5596b5e5f411e677832f21fb13415b3eced5bbbac")
+                    .unwrap(),
+                0u16.to_be_bytes().to_vec(),
+                vec![0x4d],
+                hex::decode("9a530aace4c548b8d8d8b0207a198a39abb674474b41b36765a634f3f7b25f09")
+                    .unwrap(),
+                vec![0x53],
+            ],
+            hex::decode("97052066db888f35b30814ca4bd2ce6cb10efbca3402166b2d2b2efdd081ad0c")
+                .unwrap(),
+        );
+
+        let (root_hash, parent, result_set) =
+            GroveDb::verify_query_get_parent_tree_info(&proof, &path_query, grove_version)
+                .expect("should verify proof");
+
+        assert_eq!(parent, SummedMerkNode(1));
+
+        // We can also check the result if desired
+        assert_eq!(result_set.len(), 1);
+
+        let (_path, _key, maybe_element) = &result_set[0];
+
+        let element = maybe_element.as_ref().expect("expected Some(element)");
+
+        assert!(
+            matches!(element, Element::SumItem(1, _)),
+            "expected SumItem(1), got: {:?}",
+            element
         );
     }
 }
