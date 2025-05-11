@@ -1,8 +1,6 @@
 //! Helpers
 //! Implements helper functions in Element
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     merk::NodeType,
@@ -14,6 +12,10 @@ use grovedb_merk::{
         },
         TreeNode,
     },
+};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use grovedb_merk::{
+    tree_type::{MaybeTree, TreeType},
     TreeFeatureType,
     TreeFeatureType::{
         BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode, SummedMerkNode,
@@ -201,6 +203,20 @@ impl Element {
             Element::BigSumTree(..) => Some(TreeType::BigSumTree),
             Element::CountTree(..) => Some(TreeType::CountTree),
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Check if the element is a tree and return the aggregate of elements in
+    /// the tree
+    pub fn tree_feature_type(&self) -> Option<TreeFeatureType> {
+        match self {
+            Element::Tree(..) => Some(BasicMerkNode),
+            Element::SumTree(_, value, _) => Some(SummedMerkNode(*value)),
+            Element::BigSumTree(_, value, _) => Some(BigSummedMerkNode(*value)),
+            Element::CountTree(_, value, _) => Some(CountedMerkNode(*value)),
+            Element::CountSumTree(_, count, sum, _) => Some(CountedSummedMerkNode(*count, *sum)),
             _ => None,
         }
     }

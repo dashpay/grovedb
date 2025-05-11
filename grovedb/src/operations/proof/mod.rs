@@ -78,6 +78,7 @@ impl GroveDBProof {
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Vec<PathKeyOptionalElementTrio>), Error> {
         GroveDb::verify_proof_internal(self, query, options, grove_version)
+            .map(|(root_hash, _, results)| (root_hash, results))
     }
 
     /// Verifies a raw query using the proof and returns the root hash and the
@@ -97,6 +98,7 @@ impl GroveDBProof {
             },
             grove_version,
         )
+        .map(|(root_hash, _, results)| (root_hash, results))
     }
 
     /// Verifies a query using the proof and returns the root hash and the query
@@ -116,6 +118,7 @@ impl GroveDBProof {
             },
             grove_version,
         )
+        .map(|(root_hash, _, results)| (root_hash, results))
     }
 
     /// Verifies a query with an absence proof and returns the root hash and the
@@ -135,6 +138,7 @@ impl GroveDBProof {
             },
             grove_version,
         )
+        .map(|(root_hash, _, results)| (root_hash, results))
     }
 
     /// Verifies a subset query using the proof and returns the root hash and
@@ -154,6 +158,7 @@ impl GroveDBProof {
             },
             grove_version,
         )
+        .map(|(root_hash, _, results)| (root_hash, results))
     }
 
     /// Verifies a subset query with an absence proof using the proof and
@@ -173,6 +178,7 @@ impl GroveDBProof {
             },
             grove_version,
         )
+        .map(|(root_hash, _, results)| (root_hash, results))
     }
 }
 
