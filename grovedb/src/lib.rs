@@ -181,6 +181,8 @@ pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::proofs::query::VerifyOptions;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::tree::TreeFeatureType;
 #[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
