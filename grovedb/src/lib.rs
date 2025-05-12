@@ -179,15 +179,15 @@ pub use grovedb_merk::estimated_costs::{
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use grovedb_merk::proofs::Query;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::VerifyOptions;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use grovedb_merk::tree::TreeFeatureType;
+pub use grovedb_merk::proofs::Query;
 #[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 pub use grovedb_merk::tree::AggregateData;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::tree::TreeFeatureType;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]

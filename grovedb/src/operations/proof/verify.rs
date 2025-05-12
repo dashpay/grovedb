@@ -390,33 +390,58 @@ impl GroveDb {
                             | Element::CountSumTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
-                                let lower_hash = Self::verify_layer_proof(
-                                    lower_layer,
-                                    prove_options,
-                                    query,
-                                    limit_left,
-                                    &path,
-                                    result,
-                                    last_parent_tree_type,
-                                    options,
-                                    grove_version,
-                                )?;
-                                let combined_root_hash =
-                                    combine_hash(value_hash(value_bytes).value(), &lower_hash)
-                                        .value()
-                                        .to_owned();
-                                if hash != &combined_root_hash {
-                                    return Err(Error::InvalidProof(
-                                        query.clone(),
-                                        format!(
-                                            "Mismatch in lower layer hash, expected {}, got {}",
-                                            hex::encode(hash),
-                                            hex::encode(combined_root_hash)
-                                        ),
-                                    ));
-                                }
-                                if limit_left == &Some(0) {
-                                    break;
+                                if query.query_items_at_path(&path, grove_version)?.is_none() {
+                                    // We are actually looking for the tree
+                                    let path_key_optional_value =
+                                        ProvedPathKeyOptionalValue::from_proved_key_value(
+                                            path.iter().map(|p| p.to_vec()).collect(),
+                                            proved_key_value,
+                                        );
+                                    #[cfg(feature = "proof_debug")]
+                                    {
+                                        println!(
+                                            "pushing {} limit left after is {:?}",
+                                            &path_key_optional_value, limit_left
+                                        );
+                                    }
+                                    result.push(
+                                        path_key_optional_value
+                                            .try_into_versioned(grove_version)?,
+                                    );
+
+                                    limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                                    if limit_left == &Some(0) {
+                                        break;
+                                    }
+                                } else {
+                                    let lower_hash = Self::verify_layer_proof(
+                                        lower_layer,
+                                        prove_options,
+                                        query,
+                                        limit_left,
+                                        &path,
+                                        result,
+                                        last_parent_tree_type,
+                                        options,
+                                        grove_version,
+                                    )?;
+                                    let combined_root_hash =
+                                        combine_hash(value_hash(value_bytes).value(), &lower_hash)
+                                            .value()
+                                            .to_owned();
+                                    if hash != &combined_root_hash {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "Mismatch in lower layer hash, expected {}, got {}",
+                                                hex::encode(hash),
+                                                hex::encode(combined_root_hash)
+                                            ),
+                                        ));
+                                    }
+                                    if limit_left == &Some(0) {
+                                        break;
+                                    }
                                 }
                             }
                             Element::Tree(None, _)
