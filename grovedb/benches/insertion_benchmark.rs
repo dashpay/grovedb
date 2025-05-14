@@ -1,37 +1,10 @@
-// MIT LICENSE
-//
-// Copyright (c) 2021 Dash Core Group
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
 //! Insertion Benchmark
 
 #[cfg(feature = "minimal")]
 use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(feature = "minimal")]
 use grovedb::{Element, GroveDb};
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use rand::Rng;
@@ -56,11 +29,11 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
         Element::empty_tree(),
         None,
         None,
-        grove_version,
+        &grovedb_version::version::GroveVersion::default(),
     )
     .unwrap()
     .unwrap();
-    let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
+    let keys = std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("scalars insertion without transaction", |b| {
         b.iter(|| {
@@ -71,7 +44,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
                     Element::new_item(k.to_vec()),
                     None,
                     None,
-                    grove_version,
+                    &grovedb_version::version::GroveVersion::default(),
                 )
                 .unwrap()
                 .unwrap();
@@ -93,11 +66,11 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
         Element::empty_tree(),
         None,
         None,
-        grove_version,
+        &grovedb_version::version::GroveVersion::default(),
     )
     .unwrap()
     .unwrap();
-    let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
+    let keys = std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("scalars insertion with transaction", |b| {
         b.iter(|| {
@@ -109,7 +82,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
                     Element::new_item(k.to_vec()),
                     None,
                     Some(&tx),
-                    grove_version,
+                    &grovedb_version::version::GroveVersion::default(),
                 )
                 .unwrap()
                 .unwrap();
@@ -124,7 +97,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
 pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
-    let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10);
+    let keys = std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(10);
 
     c.bench_function("root leaves insertion without transaction", |b| {
         b.iter(|| {
@@ -135,7 +108,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
                     Element::empty_tree(),
                     None,
                     None,
-                    grove_version,
+                    &grovedb_version::version::GroveVersion::default(),
                 )
                 .unwrap()
                 .unwrap();
@@ -149,7 +122,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
 pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
-    let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10);
+    let keys = std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(10);
 
     c.bench_function("root leaves insertion with transaction", |b| {
         b.iter(|| {
@@ -161,7 +134,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
                     Element::empty_tree(),
                     None,
                     Some(&tx),
-                    grove_version,
+                    &grovedb_version::version::GroveVersion::default(),
                 )
                 .unwrap()
                 .unwrap();
@@ -178,21 +151,21 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let mut nested_subtrees: Vec<[u8; 32]> = Vec::new();
-    for s in std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10) {
+    for s in std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(10) {
         db.insert(
             nested_subtrees.as_slice(),
             &s,
             Element::empty_tree(),
             None,
             None,
-            grove_version,
+            &grovedb_version::version::GroveVersion::default(),
         )
         .unwrap()
         .unwrap();
         nested_subtrees.push(s);
     }
 
-    let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
+    let keys = std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("deeply nested scalars insertion without transaction", |b| {
         b.iter(|| {
@@ -203,7 +176,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
                     Element::new_item(k.to_vec()),
                     None,
                     None,
-                    grove_version,
+                    &grovedb_version::version::GroveVersion::default(),
                 )
                 .unwrap()
                 .unwrap();
@@ -219,21 +192,21 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let mut nested_subtrees: Vec<[u8; 32]> = Vec::new();
-    for s in std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10) {
+    for s in std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(10) {
         db.insert(
             nested_subtrees.as_slice(),
             &s,
             Element::empty_tree(),
             None,
             None,
-            grove_version,
+            &grovedb_version::version::GroveVersion::default(),
         )
         .unwrap()
         .unwrap();
         nested_subtrees.push(s);
     }
 
-    let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
+    let keys = std::iter::repeat_with(|| rand::rng().random::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("deeply nested scalars insertion with transaction", |b| {
         b.iter(|| {
@@ -245,7 +218,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
                     Element::new_item(k.to_vec()),
                     None,
                     Some(&tx),
-                    grove_version,
+                    &grovedb_version::version::GroveVersion::default(),
                 )
                 .unwrap()
                 .unwrap();

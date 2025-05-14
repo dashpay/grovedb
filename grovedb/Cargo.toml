@@ -49,6 +49,10 @@ assert_matches = "1.5.0"
 name = "insertion_benchmark"
 harness = false
 
+[[bench]]
+name = "proof_generation_benchmark"
+harness = false
+
 [features]
 default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
