@@ -37,7 +37,7 @@ fn main() {
         .expect("expected successful get_path_query");
 
     // Generate proof.
-    let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None, None, grove_version).unwrap().unwrap();
 
     // Get hash from query proof and print to terminal along with GroveDB root hash.
     let (hash, _result_set) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();

@@ -172,14 +172,7 @@ where {
                 .query
                 .get_proved_path_query
         );
-        if transaction.is_some() {
-            Err(Error::NotSupported(
-                "transactions are not currently supported".to_string(),
-            ))
-            .wrap_with_cost(Default::default())
-        } else {
-            self.prove_query(path_query, prove_options, grove_version)
-        }
+        self.prove_query(path_query, prove_options, transaction, grove_version)
     }
 
     fn follow_element(

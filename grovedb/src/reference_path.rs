@@ -968,7 +968,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .expect("should generate proof");
         let (hash, result) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)

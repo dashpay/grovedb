@@ -765,7 +765,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -805,7 +805,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -845,7 +845,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -894,7 +894,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -944,7 +944,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -991,7 +991,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1041,7 +1041,7 @@ mod tests {
         assert!(elements.contains(&last_value));
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1083,7 +1083,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1128,7 +1128,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1168,7 +1168,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1213,7 +1213,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1253,7 +1253,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1298,7 +1298,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1343,7 +1343,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1383,7 +1383,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1428,7 +1428,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1475,7 +1475,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1522,7 +1522,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1569,7 +1569,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1620,7 +1620,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1666,7 +1666,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1701,7 +1701,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1738,7 +1738,7 @@ mod tests {
         assert_eq!(elements[elements.len() - 1], last_value);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1841,7 +1841,7 @@ mod tests {
         assert_eq!(elements.len(), 250);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2018,7 +2018,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .expect("expected successful proving");
         let (hash, _result_set) =
@@ -2129,7 +2129,7 @@ mod tests {
         assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1], vec![1]]);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2157,7 +2157,7 @@ mod tests {
         assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1], vec![1]]);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2179,7 +2179,7 @@ mod tests {
         assert_eq!(elements, vec![vec![2]]);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2201,7 +2201,7 @@ mod tests {
         assert_eq!(elements, vec![vec![2], vec![3], vec![4]]);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2223,7 +2223,7 @@ mod tests {
         assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1]]);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2344,7 +2344,7 @@ mod tests {
         assert_eq!(elements.len(), 5);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2382,7 +2382,7 @@ mod tests {
         assert_eq!(elements.len(), 1);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2571,7 +2571,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2639,7 +2639,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2660,7 +2660,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(path, query.clone());
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2688,7 +2688,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(path, query.clone());
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2708,7 +2708,7 @@ mod tests {
             SizedQuery::new(query, Some(0), Some(0)),
         );
 
-        db.prove_query(&path_query, None, grove_version)
+        db.prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .expect_err("expected error when trying to prove with limit 0");
     }
@@ -2723,7 +2723,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2758,7 +2758,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2798,7 +2798,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2845,7 +2845,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2883,7 +2883,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
@@ -2936,7 +2936,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2987,7 +2987,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
@@ -3074,7 +3074,7 @@ mod tests {
 
         // first prove non verbose
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
@@ -3310,7 +3310,7 @@ mod tests {
 
         // first we show that this returns the correct output
         let proof = db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -3326,7 +3326,7 @@ mod tests {
 
         // show that we get the correct output
         let proof = db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -3341,7 +3341,7 @@ mod tests {
             PathQuery::merge(vec![&path_query_one, &path_query_two], grove_version).unwrap();
         merged_path_queries.query.limit = Some(3);
         let proof = db
-            .prove_query(&merged_path_queries, None, grove_version)
+            .prove_query(&merged_path_queries, None, None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -3396,7 +3396,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"invalid".to_vec()], query);
 
         let proof = grovedb
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .expect("should generate proofs");
 
@@ -3447,7 +3447,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3493,7 +3493,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3539,7 +3539,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3585,7 +3585,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3631,7 +3631,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3677,7 +3677,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3725,7 +3725,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3773,7 +3773,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3821,7 +3821,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3869,7 +3869,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3917,7 +3917,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -3965,7 +3965,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4013,7 +4013,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4061,7 +4061,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4112,7 +4112,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4163,7 +4163,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4214,7 +4214,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4265,7 +4265,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4316,7 +4316,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4367,7 +4367,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4418,7 +4418,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4469,7 +4469,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4520,7 +4520,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4571,7 +4571,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4622,7 +4622,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4673,7 +4673,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4724,7 +4724,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4781,7 +4781,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4842,7 +4842,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
@@ -4893,7 +4893,7 @@ mod tests {
         assert_eq!(elements.len(), 2);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .value
             .expect("expected successful get_path_query");
 
