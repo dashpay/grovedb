@@ -603,6 +603,9 @@ mod tests {
     };
 
     #[test]
+    /// Tests merging two `PathQuery` instances with the same path but different key queries, verifying that the merged query returns results for both keys.
+    ///
+    /// This test creates two queries targeting the same path but with different keys, merges them, and checks that the merged query returns both results.
     fn test_same_path_different_query_merge() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -651,6 +654,9 @@ mod tests {
     }
 
     #[test]
+    /// Tests merging of `PathQuery` instances with different but same-length paths and queries, verifying correct merged query structure and result sets.
+    ///
+    /// This test constructs several `PathQuery` objects targeting different paths in a GroveDB tree, merges them, and asserts that the merged query returns the expected results. It covers both shallow and deep tree structures, including cases with nested and conditional subqueries, and validates the correctness of the merged query's structure and output.
     fn test_different_same_length_path_with_different_query_merge() {
         let grove_version = GroveVersion::latest();
         // Tests for
@@ -937,6 +943,9 @@ mod tests {
     }
 
     #[test]
+    /// Tests merging of `PathQuery` instances with different path lengths and verifies that the merged query returns the combined results from both original queries.
+    ///
+    /// This test constructs two queries targeting different depths in a deep GroveDB tree, merges them, and checks that the merged query yields the union of results from both paths. It also verifies that the merged query's path is the common prefix of the original queries and that the result set matches the expected keys and values.
     fn test_different_length_paths_merge() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -1088,6 +1097,16 @@ mod tests {
     }
 
     #[test]
+    /// Tests merging of `PathQuery` instances with equal and nested paths, verifying correct query merging, subquery handling, and result set sizes.
+    ///
+    /// This test covers scenarios where:
+    /// - Two queries with identical paths but different keys are merged, resulting in a combined query that returns results for both keys.
+    /// - Merging queries with nested subqueries produces a merged query with conditional subqueries, and the result set reflects the union of all matching elements.
+    /// - The merged queries are validated by executing them against a temporary GroveDB instance and verifying the result counts and structure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any query or proof verification fails, or if the merged query does not match expected structure or result counts.
     fn test_equal_path_merge() {
         let grove_version = GroveVersion::latest();
         // [a, b, Q]

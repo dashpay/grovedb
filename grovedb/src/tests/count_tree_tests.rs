@@ -19,6 +19,15 @@ mod tests {
     };
 
     #[test]
+    /// Tests that a count tree behaves like a regular tree in GroveDB.
+    ///
+    /// Inserts an empty count tree, adds items and a nested tree, and verifies correct retrieval and proof generation. Asserts that inserted elements are accessible and that generated proofs can be verified against the database root hash and expected results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_count_tree_behaves_like_regular_tree();
+    /// ```
     fn test_count_tree_behaves_like_regular_tree() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);

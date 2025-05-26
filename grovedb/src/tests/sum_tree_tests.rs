@@ -21,6 +21,15 @@ mod tests {
     };
 
     #[test]
+    /// Tests that a sum tree behaves like a regular tree for insertion, retrieval, and proof generation.
+    ///
+    /// Inserts an empty sum tree, adds regular items and an empty tree inside it, and verifies correct retrieval of items. Generates and verifies a proof for a specific key, checking that the root hash and result set are as expected. Also verifies that the parent node of the proof is a `SummedMerkNode` with sum 0 when no sum items are present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_sum_tree_behaves_like_regular_tree();
+    /// ```
     fn test_sum_tree_behaves_like_regular_tree() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -122,6 +131,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that sum items in a sum tree behave like regular items, supporting insertion, retrieval, proof generation, and correct sum aggregation.
+    ///
+    /// This test inserts a sum tree, adds both regular and sum items, and verifies that sum items can be retrieved and included in proofs. It also checks that the parent node's sum is correctly updated and reflected in proof verification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_sum_item_behaves_like_regular_item();
+    /// ```
     fn test_sum_item_behaves_like_regular_item() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);

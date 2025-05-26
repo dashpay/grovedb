@@ -731,6 +731,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range query with a non-unique subquery, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates the database with a tree containing multiple subtrees and items, then performs a range query with a subquery that selects all items under a specific key. It asserts that the correct number of elements are returned, checks the first and last values, and verifies that the proof matches the expected root hash and result set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_query_with_non_unique_subquery();
+    /// ```
     fn test_get_range_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -776,6 +785,17 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range query with a unique subquery, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates the database with a tree structure where each key in the range 1985..2000 has a unique item at key `\0`.
+    /// It then performs a range query for keys 1988..1992 with a subquery on `\0`, asserting that the correct elements are returned,
+    /// and that the generated proof can be successfully verified against the database root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_query_with_unique_subquery();
+    /// ```
     fn test_get_range_query_with_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let mut db = make_test_grovedb(grove_version);
@@ -816,6 +836,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests unique range queries on a tree containing references, verifying that the correct elements are returned and that proof generation and verification yield consistent results.
+    ///
+    /// This test populates a subtree with references, performs a range query with a unique subquery key, and checks that the returned elements match the expected values. It also generates a proof for the query and verifies that the proof matches the database's root hash and yields the same result set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_query_with_unique_subquery_on_references();
+    /// ```
     fn test_get_range_query_with_unique_subquery_on_references() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -856,6 +885,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range query with a unique subquery on a tree containing non-unique null values, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates the database with a structure where each key in a range has a unique value, and an additional subtree with non-unique null values is present. It performs a query with a subquery on the null key, checks that the correct number of elements and their values are returned, and verifies that the generated proof matches the database root hash and result set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_query_with_unique_subquery_with_non_unique_null_values();
+    /// ```
     fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
         let grove_version = GroveVersion::latest();
         let mut db = make_test_grovedb(grove_version);
@@ -905,6 +943,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a unique range query with a conditional subquery correctly ignores non-unique null values.
+    ///
+    /// This test populates a tree with unique range values and additional non-unique null values, then performs a query that excludes the null values using a conditional subquery. It verifies that only the expected unique values are returned and that the proof generated for the query is valid and matches the database root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_query_with_unique_subquery_ignore_non_unique_null_values();
+    /// ```
     fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
         let grove_version = GroveVersion::latest();
         let mut db = make_test_grovedb(grove_version);
@@ -955,6 +1002,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests inclusive range queries with non-unique subqueries, verifying that all expected elements are returned in order and that proof verification matches the query results.
+    ///
+    /// This test populates the database with a tree containing subtrees for keys 1985..2000, each with multiple items. It then performs an inclusive range query from 1988 to 1995, using a subquery to select all items under each matching subtree. The test asserts the correct number of elements, checks the first and last values, and verifies that the proof matches the query results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_inclusive_query_with_non_unique_subquery();
+    /// ```
     fn test_get_range_inclusive_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1002,6 +1058,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests inclusive range queries with non-unique subqueries on reference trees.
+    ///
+    /// Verifies that querying a tree containing references with an inclusive range and a non-unique subquery returns the expected number of elements, and that proof generation and verification yield consistent results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_inclusive_query_with_non_unique_subquery_on_references();
+    /// ```
     fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1052,6 +1117,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests inclusive range queries with a unique subquery, verifying that the correct elements are returned and that proof generation and verification yield consistent results.
+    ///
+    /// This test populates the database with a tree containing unique items for keys 1985 to 2000, then performs an inclusive range query from 1988 to 1995 using a subquery key. It asserts that the correct number of elements are returned, checks the first and last values, and verifies that the proof matches the database root hash and yields the same result set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_inclusive_query_with_unique_subquery();
+    /// ```
     fn test_get_range_inclusive_query_with_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1094,6 +1168,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range-from query with a non-unique subquery, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates the database with a tree containing multiple subtrees and items, then performs a range-from query starting at key 1995 with a subquery that selects all items under each subtree. It asserts that the correct number of elements is returned, checks the first and last values, and verifies that the proof matches the query results and the database root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_from_query_with_non_unique_subquery();
+    /// ```
     fn test_get_range_from_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1139,6 +1222,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range-from query with a unique subquery, verifying correct retrieval and proof verification.
+    ///
+    /// This test populates the database with a tree containing unique items keyed by years, then performs a range-from query starting at 1995 with a subquery on key `\0`. It asserts that the correct elements are returned, verifies the first and last values, and checks that the generated proof matches the database root hash and result set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_from_query_with_unique_subquery();
+    /// ```
     fn test_get_range_from_query_with_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1179,6 +1271,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range-to query with a non-unique subquery, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates a tree with multiple subtrees and items, performs a range-to query up to a specified key with a subquery that selects all items, and asserts that the correct number of elements are returned in the expected order. It also generates and verifies a proof for the query, ensuring the result set matches the direct query output and the root hash is correct.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_to_query_with_non_unique_subquery();
+    /// ```
     fn test_get_range_to_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1224,6 +1325,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range-to query with a unique subquery, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates the database with a tree containing unique items, performs a range-to query up to a specified key using a subquery, and asserts that the correct elements are returned. It also generates and verifies a proof for the query, ensuring the result set matches the expected elements and the root hash is correct.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_to_query_with_unique_subquery();
+    /// ```
     fn test_get_range_to_query_with_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1264,6 +1374,9 @@ mod tests {
     }
 
     #[test]
+    /// Tests inclusive range-to queries with non-unique subqueries in GroveDB.
+    ///
+    /// This test populates the database with a tree containing subtrees for keys 1985 to 2000, each with multiple items. It then performs a query for all items in subtrees up to and including key 1995, using a non-unique subquery. The test verifies the number of returned elements, checks the first and last values, and confirms that proof generation and verification yield consistent results.
     fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1309,6 +1422,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests an inclusive range-to query with a non-unique subquery where the upper bound key is out of the populated range.
+    ///
+    /// Verifies that all elements up to the highest existing key are returned, checks the order and values of the first and last elements, and ensures proof verification matches the query results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds();
+    /// ```
     fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1354,6 +1476,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests inclusive range queries with a unique subquery, verifying that the correct elements are returned and that proof verification matches the query results.
+    ///
+    /// This test populates the database with a tree containing unique items, performs an inclusive range query up to a specified key using a subquery, and asserts that the returned elements and proof verification are consistent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_to_inclusive_query_with_unique_subquery();
+    /// ```
     fn test_get_range_to_inclusive_query_with_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1394,6 +1525,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range-after query with a non-unique subquery, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates the database with a tree containing subtrees keyed by years and items with composite keys. It then performs a range-after query starting from key 1995, using a subquery to retrieve all items under each matching subtree. The test asserts the number of elements, checks the first and last values, and verifies that the proof matches the query results and root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_after_query_with_non_unique_subquery();
+    /// ```
     fn test_get_range_after_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1439,6 +1579,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a range-after-to query with a non-unique subquery, verifying correct element retrieval and proof verification.
+    ///
+    /// This test populates the database with a tree containing non-unique subqueries, performs a range-after-to query for keys between 1995 and 1997, and asserts that the correct number of elements are returned in the expected order. It also verifies that the generated proof matches the database root hash and that the result set from proof verification matches the original query results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_after_to_query_with_non_unique_subquery();
+    /// ```
     fn test_get_range_after_to_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1486,6 +1635,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests inclusive range-after-to queries with non-unique subqueries, verifying that the correct number of elements are returned and that proof verification matches the query results.
+    ///
+    /// This test populates the database with a tree containing subtrees for keys in the range 1985..2000, each with multiple items. It then performs a range-after-to-inclusive query from key 1995 to 1997 (inclusive), using a subquery that selects all items under the subtree at key `\0`. The test asserts that 100 elements are returned, checks the first and last values, and verifies that the proof matches the query results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_after_to_inclusive_query_with_non_unique_subquery();
+    /// ```
     fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1533,6 +1691,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests an inclusive range-after-to query with a non-unique subquery where the upper bound key is out of range.
+    ///
+    /// Verifies that querying a tree with a range starting after key 1995 up to and including key 5000, using a non-unique subquery, returns the expected number of elements and correct ordering. Also checks that the generated proof is valid and matches the database root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds();
+    /// ```
     fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1580,6 +1747,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests inclusive range queries with double non-unique subqueries, verifying correct retrieval and proof verification.
+    ///
+    /// This test constructs a tree with three levels of non-unique keys, performs an inclusive range query with nested subqueries, and asserts that the correct number of elements are returned in the expected order. It also verifies that the generated proof matches the database root hash and that the result set from proof verification matches the direct query result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_inclusive_query_with_double_non_unique_subquery();
+    /// ```
     fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1631,6 +1807,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests range queries with various combinations of limits and offsets, verifying correct ordering, element counts, and proof verification for both non-unique and unique subqueries.
+    ///
+    /// This test covers ascending and descending queries, applies different limits and offsets, and checks that the returned elements and proofs match expectations. It also verifies behavior when limits or offsets exceed the number of available elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_get_range_query_with_limit_and_offset();
+    /// ```
     fn test_get_range_query_with_limit_and_offset() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1875,6 +2060,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that child root hashes are correctly propagated to parent nodes when multiple levels of trees and references are inserted in the same batch.
+    ///
+    /// This test constructs a multi-level tree structure with nested subtrees and references, applies all insertions in batches, and verifies that the resulting root hash matches the expected value after proof verification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_correct_child_root_hash_propagation_for_parent_in_same_batch();
+    /// ```
     fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         let grove_version = GroveVersion::latest();
         let tmp_dir = TempDir::new().unwrap();
@@ -2027,6 +2221,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests mixed-level queries and proof verification involving trees, items, and references with various limits and offsets.
+    ///
+    /// This test constructs a tree with both direct items and references, then performs queries that include subqueries, limits, and offsets. It verifies that the returned elements and the results obtained from proof verification are consistent and correct for each query scenario.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_mixed_level_proofs();
+    /// ```
     fn test_mixed_level_proofs() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -2243,6 +2446,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests mixed-level queries and proof verification involving both trees and items, including conditional subqueries and query limits.
+    ///
+    /// This test inserts multiple subtrees and items into the database, constructs a query with a conditional subquery, and verifies that both direct query results and proof verification yield the expected elements. It also checks that limiting the query returns the correct number of elements and that the proof verification matches the database root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_mixed_level_proofs_with_tree();
+    /// ```
     fn test_mixed_level_proofs_with_tree() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -2394,6 +2606,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests mixed-level GroveDB queries with subquery paths and verifies proof correctness.
+    ///
+    /// This test constructs a multi-level tree structure with various items and subtrees, then performs queries using subquery paths, subqueries, and conditional subqueries. It verifies that the returned elements and proof verifications match expectations for each query scenario, including path translations and nested queries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_mixed_level_proofs_with_subquery_paths();
+    /// ```
     fn test_mixed_level_proofs_with_subquery_paths() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -2698,6 +2919,14 @@ mod tests {
     }
 
     #[test]
+    /// Tests that attempting to generate a proof for a query with a limit of zero results in an error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_proof_with_limit_zero();
+    /// // The test will pass if an error is returned when proving with limit 0.
+    /// ```
     fn test_proof_with_limit_zero() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -2714,6 +2943,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that result set paths are correctly tracked after proof verification for various query types, including subqueries and subquery paths.
+    ///
+    /// This test verifies that the `path` field in each result set entry returned by `GroveDb::verify_query_raw` matches the expected query path, even when using subqueries, subquery paths, and conditional subqueries. It checks that the result set keys and their associated paths are consistent with the structure of the queried tree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_result_set_path_after_verification();
+    /// ```
     fn test_result_set_path_after_verification() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -2874,6 +3112,9 @@ mod tests {
     }
 
     #[test]
+    /// Tests that proof verification returns the correct set of (path, key, optional element) tuples for a query over a subtree.
+    ///
+    /// This test constructs a query for all items in a specific subtree, generates a proof, verifies it, and asserts that the result set contains the expected path-key-element triples. Also checks that the verified root hash matches the database root hash.
     fn test_verification_with_path_key_optional_element_trio() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -2917,6 +3158,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for absent and present keys in a subtree.
+    ///
+    /// Verifies that a proof can be generated for a set of keys, some of which are present and some absent, and that the proof correctly distinguishes between them after verification. Also checks that the root hash matches and the result set contains the expected presence or absence for each key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_absence_proof();
+    /// ```
     fn test_absence_proof() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -2973,6 +3223,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a proof generated for a superset query can be used to verify a subset query, ensuring correct result extraction and root hash consistency.
+    ///
+    /// This test constructs a tree, generates a proof for a query that retrieves all items, and then verifies that the same proof can be used to validate a subset query for a specific key. It asserts that the result set and root hash are correct for both the superset and subset queries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_subset_proof_verification();
+    /// ```
     fn test_subset_proof_verification() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -3056,6 +3315,15 @@ mod tests {
         );
     }
     #[test]
+    /// Tests chained path query verification by generating a proof for a nested query, then verifying the proof and chaining additional path queries based on the results.
+    ///
+    /// This test constructs a deep tree, generates a proof for a multi-level subquery, and verifies the proof. It then defines a chained path query generator to query additional paths based on the initial results, and verifies that the chained queries return the expected elements and root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_chained_path_query_verification();
+    /// ```
     fn test_chained_path_query_verification() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -3202,6 +3470,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests chained query proof generation and verification where the result of one query determines the parameters of the next.
+    ///
+    /// This test sets up two trees: one mapping IDs to names, and another mapping names to ages. It verifies that a proof can be generated and verified for a query that retrieves the age of all entries with IDs greater than a specified value, ordered by name. The test demonstrates that the verifier can use the result of the first proof (ID to name) to construct and verify the second proof (name to age), and that merged and chained path queries yield correct results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_query_b_depends_on_query_a();
+    /// ```
     fn test_query_b_depends_on_query_a() {
         let grove_version = GroveVersion::latest();
         // we have two trees
@@ -3383,6 +3660,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a proof can be generated and verified for the absence of a key in a path containing an intermediate empty tree.
+    ///
+    /// This test creates a tree structure where the intermediate node is empty, then attempts to prove the absence of a key in a non-existent subtree. It verifies that the proof is valid, the result set is empty, and the root hash matches the database.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_prove_absent_path_with_intermediate_emtpy_tree();
+    /// ```
     fn test_prove_absent_path_with_intermediate_emtpy_tree() {
         let grove_version = GroveVersion::latest();
         //         root
@@ -3411,6 +3697,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with a subquery and a limit of 2, ascending from the start, returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a two-level tree hierarchy, performs a range query with a subquery and a limit of 2 in ascending order, and asserts that both the query and its proof return exactly two elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_subquery_and_limit_2_asc_from_start();
+    /// ```
     fn test_path_query_items_with_subquery_and_limit_2_asc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3457,6 +3752,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a descending path query with a subquery and a limit of 2 returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a two-level tree hierarchy, performs a descending range-to-inclusive query limited to two elements, and checks that both the query and its proof return the expected number of results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_subquery_and_limit_2_desc_from_start();
+    /// ```
     fn test_path_query_items_with_subquery_and_limit_2_desc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3503,6 +3807,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with a subquery and a limit of 2, starting in the middle of a two-by-two hierarchy, returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a tree with nodes A, B, and C, each having two children, and performs a range query starting from "B" with a limit of 2. It asserts that the correct number of elements is returned and that the proof can be successfully verified.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_subquery_and_limit_2_asc_in_middle();
+    /// ```
     fn test_path_query_items_with_subquery_and_limit_2_asc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3549,6 +3862,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a descending range query with a subquery and a limit of 2 returns the correct elements from the middle of a two-by-two hierarchy tree.
+    ///
+    /// This test constructs a tree with nodes A, B, and C, each having two children. It performs a descending range query up to and including "B", applies a subquery to each branch, and limits the result to 2 elements. The test verifies both the direct query result and the result obtained from proof verification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_subquery_and_limit_2_desc_in_middle();
+    /// ```
     fn test_path_query_items_with_subquery_and_limit_2_desc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3595,6 +3917,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with a subquery and a limit of 2, ascending from the end of the key range, returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a two-by-two hierarchy, performs a range query starting from key "M" with a limit of 2 in ascending order, and checks that both the query and its proof return exactly two elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_subquery_and_limit_2_asc_at_end();
+    /// ```
     fn test_path_query_items_with_subquery_and_limit_2_asc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3641,6 +3972,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a descending path query with a subquery and a limit of 2 at the end of the key range returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a two-level hierarchy (A..M, each with two children), performs a descending range-to-inclusive query limited to 2 elements, and checks both the query result and proof verification for correctness.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_subquery_and_limit_2_desc_at_end();
+    /// ```
     fn test_path_query_items_with_subquery_and_limit_2_desc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3687,6 +4027,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with an intermediate path translation and a limit of 2 returns the first two elements in ascending order.
+    ///
+    /// This test constructs a two-level tree hierarchy with intermediate nodes, performs a path query that translates through the intermediate node (`0`), and verifies that both direct query results and proof verification yield exactly two elements in ascending order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_asc_from_start();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_asc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3735,6 +4084,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with an intermediate path translation and a descending order limit returns the correct elements and proof.
+    ///
+    /// This test constructs a tree with an intermediate node under each parent, then performs a descending range query with a limit of 2, starting from the beginning. It verifies that both the direct query and the proof verification return the expected number of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_desc_from_start();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_desc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3783,6 +4141,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with an intermediate path translation and a limit of 2, ascending from a middle key, returns the correct elements and verifies proof correctness.
+    ///
+    /// This test constructs a two-level tree hierarchy with intermediate nodes, performs a range query starting from key "B" with a subquery path through the intermediate node `0`, and asserts that exactly two elements are returned. It also verifies that the proof generated for this query is valid and yields the same result set after verification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_asc_in_middle();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_asc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3831,6 +4198,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with an intermediate path translation, limit 2, starting from the middle of the key range.
+    ///
+    /// This test constructs a two-level tree hierarchy with intermediate nodes, performs a descending range query up to and including key "B" with a limit of 2, and verifies both the query results and proof verification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_desc_in_middle();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_desc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3879,6 +4255,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with an intermediate path and a range excluding middle keys returns the correct two elements in ascending order, and verifies the proof for correctness.
+    ///
+    /// This test constructs a two-level tree hierarchy with intermediate nodes, performs a range-to query up to key "F" (excluding middle keys), applies a limit of 2, and checks that both the query and its proof return exactly two elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_asc_not_included_in_middle();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_asc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3927,6 +4312,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with intermediate path translation, a limit of 2, and a range excluding middle keys.
+    ///
+    /// This test verifies that querying a two-level tree structure with an intermediate node and a descending range up to (but not including) key "F" returns the correct two elements. It also checks that the generated proof can be successfully verified and matches the query result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_desc_not_included_in_middle();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_desc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -3975,6 +4369,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with an intermediate path translation and a limit of 2, ascending from the end of the key range, returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a two-level tree hierarchy with intermediate nodes, performs a range query starting from key "M", and checks that only the last two elements are returned. It also verifies that the proof generated for this query is valid and matches the query results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_asc_at_end();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_asc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4023,6 +4426,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with an intermediate path translation, limit 2, at the end of the range.
+    ///
+    /// This test constructs a two-level tree hierarchy with intermediate nodes, then performs a descending range-to-inclusive query with a limit of 2, using a subquery path translation. It verifies that both the direct query and the proof verification return exactly two elements, confirming correct query and proof behavior for this scenario.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_intermediate_path_limit_2_desc_at_end();
+    /// ```
     fn test_path_query_items_with_intermediate_path_limit_2_desc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4071,6 +4483,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with references and a limit of 2 returns the correct elements in ascending order from the start.
+    ///
+    /// This test constructs a two-level tree with references, performs a path query with a limit of 2, and verifies that both the direct query and proof verification return exactly two elements in ascending order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_asc_from_start();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_asc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4122,6 +4543,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with references and a limit of 2 from the start of the range.
+    ///
+    /// Constructs a hierarchical tree with references, performs a descending range-to-inclusive query with a limit of 2, and verifies both the query results and proof verification return the expected number of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_desc_from_start();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_desc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4173,6 +4603,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with references and a limit of 2, ascending from the middle of the key range, returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a tree with a two-level hierarchy and references, performs a range query starting from key "b" with a limit of 2, and checks that both the query results and the proof verification yield the expected number of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_asc_in_middle();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_asc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4224,6 +4663,17 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with references, limit 2, starting from the middle of the key range.
+    ///
+    /// Constructs a tree with parent nodes 'a', 'b', and 'c', each containing intermediate nodes and reference nodes.  
+    /// Executes a descending range-to-inclusive query up to key 'b', following a subquery path through reference nodes, and limits the result to 2 elements.  
+    /// Verifies that both direct query results and proof verification return exactly 2 elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_desc_in_middle();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_desc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4275,6 +4725,17 @@ mod tests {
     }
 
     #[test]
+    /// Tests a path query with references, limit 2, ascending order, excluding middle keys.
+    ///
+    /// Constructs a hierarchical tree with references and performs a range-to query up to key "f",
+    /// following a subquery path through intermediate nodes. Verifies that only two elements are returned
+    /// and that the proof verification yields the same result set length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_asc_not_included_in_middle();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_asc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4326,6 +4787,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests a descending path query with references, limit 2, excluding middle keys.
+    ///
+    /// Constructs a tree with a two-level reference hierarchy and performs a descending range-to query up to key "f" (exclusive), following a subquery path through intermediate nodes. Verifies that only two elements are returned and that the proof verification matches the query result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_desc_not_included_in_middle();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_desc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4377,6 +4847,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with references and a limit of 2, ascending from the end of the key range, returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a hierarchical tree with references, performs a range query starting from key "m" with a limit of 2 in ascending order, and asserts that both the query and its proof return the expected number of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_asc_at_end();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_asc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4428,6 +4907,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with references, limit 2, at the end of the key range.
+    ///
+    /// Constructs a hierarchical tree with references, performs a descending range-to-inclusive query limited to two elements at the end of the range, and verifies both the query results and proof verification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_with_reference_limit_2_desc_at_end();
+    /// ```
     fn test_path_query_items_with_reference_limit_2_desc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4479,6 +4967,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with references in a top-level tree returns the first two elements in ascending order from the start, and verifies the proof for correctness.
+    ///
+    /// This test constructs a hierarchical tree with references, performs a path query with a limit of 2 and ascending order, and asserts that both the query result and the verified proof contain exactly two elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_from_start();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4530,6 +5027,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with references in a top-level tree, using a limit of 2 from the start.
+    ///
+    /// Constructs a hierarchical tree with references under a top-level node, then performs a descending range query limited to two elements. Verifies that both the direct query and proof verification return the expected number of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_from_start();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_from_start() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4581,6 +5087,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with references in a top-level tree, using a limit of 2 and ascending order from a middle key, returns the correct elements and verifies proof correctness.
+    ///
+    /// This test constructs a hierarchical tree with references, performs a range query starting from key `b` under the top-level node `1`, and asserts that only two elements are returned in ascending order. It also verifies that the generated proof matches the query results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_in_middle();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4632,6 +5147,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with references in a top-level tree, using a limit of 2 and a range ending in the middle of the keyspace.
+    ///
+    /// This test verifies that querying a top-level tree containing references, with a descending order and a limit of 2, correctly returns the expected elements and that the proof generated for this query is valid.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_in_middle();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4683,6 +5207,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with a limit of 2, ascending order, and a range not including middle keys returns the correct referenced elements from a top-level tree.
+    ///
+    /// This test constructs a hierarchical tree with references, performs a range-to query (excluding keys beyond "f") with a limit of 2, and verifies both the direct query result and the proof verification result for correctness.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_not_included_in_middle();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4734,6 +5267,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with references in a top-level tree, using a limit of 2 and a range that excludes middle keys.
+    ///
+    /// This test constructs a hierarchical tree with references, performs a descending range-to query with a limit of 2 on a top-level subtree, and verifies that the correct elements are returned and that the proof can be successfully verified.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_not_included_in_middle();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_not_included_in_middle() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4801,6 +5343,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that a path query with references in a top-level tree, limited to 2 elements in ascending order starting at the end of the range, returns the correct elements and verifies the proof.
+    ///
+    /// This test constructs a hierarchical tree with references, performs a range query starting from key "m" with a limit of 2, and checks that both the query and its proof return the expected number of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_at_end();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_asc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
@@ -4852,6 +5403,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests descending path queries with a limit of 2 at the end of a top-level tree containing references.
+    ///
+    /// This test constructs a hierarchical tree with references under a top-level node, then performs a descending range query with a limit of 2 at the end of the range. It verifies that the correct elements are returned and that the generated proof can be successfully verified, matching the expected result set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_at_end();
+    /// ```
     fn test_path_query_items_held_in_top_tree_with_refs_limit_2_desc_at_end() {
         // The structure is the following
         // ---------------------------------------------------------->
