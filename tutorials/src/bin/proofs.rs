@@ -12,6 +12,16 @@ const INSERT_OPTIONS: Option<InsertOptions> = Some(InsertOptions {
     base_root_storage_is_free: true,
 });
 
+/// Demonstrates querying, proof generation, and verification in GroveDB.
+///
+/// Opens an existing GroveDB instance, populates it with nested subtrees and key-value pairs, performs a range query, generates a cryptographic proof for the query, verifies the proof, and checks if the resulting hash matches the current database root hash.
+///
+/// # Examples
+///
+/// ```
+/// // Run the main function to execute the GroveDB demonstration.
+/// main();
+/// ```
 fn main() {
     // Specify the path to the previously created GroveDB instance
     let path = String::from("../tutorial-storage");

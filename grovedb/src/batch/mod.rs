@@ -3992,6 +3992,19 @@ mod tests {
     }
 
     #[test]
+    /// Tests reference element handling in batch operations, including missing references, in-batch resolution, proof generation, and reference hop limits.
+    ///
+    /// This test verifies that:
+    /// - Applying a batch with a reference to a non-existent item returns a missing reference error.
+    /// - References can be resolved within the same batch if the target is inserted in the same operation.
+    /// - Generated proofs for references are valid and verifiable.
+    /// - Exceeding the maximum allowed reference hops results in a reference limit error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_references();
+    /// ```
     fn test_references() {
         let grove_version = GroveVersion::latest();
         // insert reference that points to non-existent item

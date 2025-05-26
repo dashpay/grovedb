@@ -32,6 +32,15 @@ pub enum OwnedOrBorrowedTransaction<'db> {
 impl<'db> Deref for OwnedOrBorrowedTransaction<'db> {
     type Target = Transaction<'db>;
 
+    /// Returns a reference to the underlying `Transaction`, regardless of whether it is owned or borrowed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let tx = Transaction::default();
+    /// let owned = OwnedOrBorrowedTransaction::OwnedTransaction(tx);
+    /// let reference: &Transaction = owned.deref();
+    /// ```
     fn deref(&self) -> &Self::Target {
         match self {
             OwnedOrBorrowedTransaction::BorrowedTransaction(borrowed) => borrowed,
@@ -43,7 +52,17 @@ impl<'db> Deref for OwnedOrBorrowedTransaction<'db> {
 impl GroveDb {
     /// Prove one or more path queries.
     /// If we have more than one path query, we merge into a single path query
-    /// before proving.
+    /// Generates a cryptographic proof for multiple path queries, merging them if necessary.
+    ///
+    /// If more than one query is provided, merges them into a single query before generating the proof. Returns the serialized proof as a byte vector, or an error with operation cost if proof generation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let queries = vec![&path_query1, &path_query2];
+    /// let proof = grovedb.prove_query_many(queries, None, tx_arg, &grove_version)?;
+    /// assert!(!proof.is_empty());
+    /// ```
     pub fn prove_query_many(
         &self,
         query: Vec<&PathQuery>,
@@ -70,7 +89,24 @@ impl GroveDb {
     /// Generate a minimalistic proof for a given path query
     /// doesn't allow for subset verification
     /// Proofs generated with this can only be verified by the path query used
-    /// to generate them.
+    /// Generates a serialized cryptographic proof for a single database query.
+    ///
+    /// Produces a minimalistic proof for the provided `PathQuery`, serializes it using big-endian encoding, and returns the resulting byte vector. The proof is generated within the context of the specified transaction and GroveDB version, and can be customized with optional proof options.
+    ///
+    /// # Returns
+    /// A byte vector containing the serialized proof, or an error wrapped with operation cost if proof generation or serialization fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let proof_bytes = grovedb.prove_query(
+    ///     &path_query,
+    ///     Some(prove_options),
+    ///     transaction_arg,
+    ///     &grove_version,
+    /// )?;
+    /// assert!(!proof_bytes.is_empty());
+    /// ```
     pub fn prove_query(
         &self,
         path_query: &PathQuery,
@@ -102,7 +138,24 @@ impl GroveDb {
         Ok(encoded_proof).wrap_with_cost(cost)
     }
 
-    /// Generates a proof and does not serialize the result
+    /// Generates a cryptographic proof for a single path query without serializing the result.
+    ///
+    /// Validates the query parameters, then constructs a minimalistic proof structure representing the database state for the specified query. The proof includes all necessary information to verify the query result externally. Returns the proof as a `GroveDBProof` variant, or an error if the query parameters are invalid.
+    ///
+    /// # Returns
+    /// A `GroveDBProof` containing the proof structure for the query, or an error if the query is invalid (e.g., non-zero offset or zero limit).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let proof = grovedb.prove_query_non_serialized(
+    ///     &path_query,
+    ///     None,
+    ///     tx_arg,
+    ///     &grove_version,
+    /// );
+    /// assert!(proof.is_ok());
+    /// ```
     pub fn prove_query_non_serialized(
         &self,
         path_query: &PathQuery,
@@ -189,7 +242,35 @@ impl GroveDb {
     }
 
     /// Perform a pre-order traversal of the tree based on the provided
-    /// subqueries
+    /// Recursively generates a layered cryptographic proof for a path query and its subqueries.
+    ///
+    /// Traverses the GroveDB tree according to the provided `PathQuery`, generating a Merk proof for each relevant subtree and recursively including proofs for subqueries. Handles reference resolution, limit enforcement, and proof composition across multiple tree levels. Returns a `LayerProof` containing the serialized Merk proof for the current layer and any lower-layer proofs.
+    ///
+    /// # Parameters
+    /// - `path`: The current path within the GroveDB tree being traversed.
+    /// - `path_query`: The query specifying which elements and subqueries to prove.
+    /// - `overall_limit`: Mutable reference to the remaining result limit, decremented as results are included in the proof.
+    /// - `prove_options`: Options controlling proof generation behavior, such as limit handling.
+    /// - `tx`: The transaction context for database operations.
+    /// - `grove_version`: The GroveDB version to use for compatibility.
+    ///
+    /// # Returns
+    /// A `LayerProof` containing the serialized Merk proof for the current layer and any lower-layer proofs, wrapped with operation cost and error handling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut limit = Some(10);
+    /// let proof = grovedb.prove_subqueries(
+    ///     vec![b"root"],
+    ///     &path_query,
+    ///     &mut limit,
+    ///     &prove_options,
+    ///     tx,
+    ///     &grove_version,
+    /// );
+    /// assert!(proof.is_ok());
+    /// ```
     fn prove_subqueries(
         &self,
         path: Vec<&[u8]>,

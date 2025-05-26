@@ -772,6 +772,11 @@ mod tests {
     }
 
     #[test]
+    /// Tests insertion, retrieval, and proof generation for elements with and without flags in GroveDB.
+    ///
+    /// This test inserts various elements—including items, trees, and references—with and without flags,
+    /// then verifies correct retrieval of flags and values. It also checks that references with flags
+    /// resolve as expected, and validates proof generation and verification for queries involving flagged elements.
     fn test_element_with_flags() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1427,6 +1432,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests that generating and verifying a proof for a query with an invalid root key returns an empty result set and the correct root hash.
+    ///
+    /// This test constructs a query targeting a non-existent root key, generates a proof, and verifies that the proof yields no results while matching the database's root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_proof_for_invalid_path_root_key();
+    /// ```
     fn test_proof_for_invalid_path_root_key() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -1447,6 +1461,16 @@ mod tests {
     }
 
     #[test]
+    /// Verifies that proofs for queries with invalid paths return an empty result set.
+    ///
+    /// This test constructs queries targeting non-existent keys at various depths in a deep tree,
+    /// generates proofs for those queries, and verifies that the proofs are valid and the result sets are empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_proof_for_invalid_path();
+    /// ```
     fn test_proof_for_invalid_path() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -1533,6 +1557,17 @@ mod tests {
     }
 
     #[test]
+    /// Tests that generating and verifying a proof for a query on an empty subtree returns an empty result set.
+    ///
+    /// This test constructs a query for a non-existent key within an existing but empty subtree,
+    /// generates a proof for the query, and verifies that the proof yields an empty result set and
+    /// the correct root hash. This ensures that absence proofs are correctly handled for empty subtrees.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_proof_for_non_existent_data();
+    /// ```
     fn test_proof_for_non_existent_data() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_test_grovedb(grove_version);
@@ -1559,6 +1594,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for a path query that includes references without subqueries.
+    ///
+    /// Builds a tree structure with nested subtrees and reference elements, then performs a range query on a subtree containing both direct items and references. Verifies that the generated proof is correct, that referenced elements are resolved properly, and that the proof can be validated against the database root hash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proofs_without_subquery_with_reference();
+    /// ```
     fn test_path_query_proofs_without_subquery_with_reference() {
         let grove_version = GroveVersion::latest();
         // Tree Structure
@@ -1746,6 +1790,14 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for path queries without subqueries in GroveDB.
+    ///
+    /// This test constructs a multi-level tree structure, inserts key-value pairs, and performs various queries:
+    /// - Single key query
+    /// - Range query with a limit
+    /// - Range query with direction and limit
+    ///
+    /// For each query, it generates a proof, verifies the proof, and asserts that the returned results and root hash match expectations. This ensures that GroveDB's proof system correctly handles queries without subqueries and that the results are consistent with the database state.
     fn test_path_query_proofs_without_subquery() {
         let grove_version = GroveVersion::latest();
         // Tree Structure
@@ -1946,6 +1998,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for path queries with default subqueries in GroveDB.
+    ///
+    /// This test constructs various queries with default subqueries, including full key queries, range queries, and nested subqueries, then generates and verifies proofs for each. It asserts that the returned result sets match the expected key-element pairs and that the root hash remains consistent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proofs_with_default_subquery();
+    /// ```
     fn test_path_query_proofs_with_default_subquery() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -2119,6 +2180,21 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for path queries using subquery paths in GroveDB.
+    ///
+    /// This test covers various scenarios involving subquery paths, including:
+    /// - Subqueries with a single key.
+    /// - Subqueries with multi-level paths.
+    /// - Subqueries with empty paths (querying all elements in a subtree).
+    /// - Subqueries with invalid paths, ensuring absence proofs are generated and result sets are empty.
+    ///
+    /// The test verifies that the generated proofs are valid, the result sets match expected key-value pairs, and the root hash remains consistent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proofs_with_subquery_path();
+    /// ```
     fn test_path_query_proofs_with_subquery_path() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -2260,6 +2336,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for a path query with a key and a subquery key.
+    ///
+    /// Constructs a deep tree, creates a query targeting a specific key with a subquery on a nested key, generates a proof, and verifies that the proof returns the expected set of key-value pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proofs_with_key_and_subquery();
+    /// ```
     fn test_path_query_proofs_with_key_and_subquery() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -2297,6 +2382,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for path queries with conditional and default subqueries.
+    ///
+    /// This test constructs deep tree structures and performs queries that include both conditional subqueries and default subqueries. It verifies that the generated proofs are valid, the root hash matches the expected value, and the result sets contain the correct keys and elements as specified by the query structure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proofs_with_conditional_subquery();
+    /// ```
     fn test_path_query_proofs_with_conditional_subquery() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -2409,6 +2503,17 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for a sized query with conditional and default subqueries.
+    ///
+    /// Builds a deep tree structure, constructs a path query with a limit, and verifies that the proof
+    /// contains the expected key-element pairs for a specified key range. Ensures that the proof is valid,
+    /// the root hash matches, and the result set contains only the expected elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proofs_with_sized_query();
+    /// ```
     fn test_path_query_proofs_with_sized_query() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -2461,6 +2566,11 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for a path query with a range subquery and a result limit.
+    ///
+    /// This test constructs a deep tree, performs a path query with a range and a subquery, and sets a result limit.
+    /// It verifies that the generated proof is valid, the root hash matches, and the number of results respects the limit.
+    /// It also compares the results with and without the limit to ensure correctness.
     fn test_path_query_proof_with_range_subquery_and_limit() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree(grove_version);
@@ -2525,6 +2635,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for a path query with a range subquery and a result limit on a tree containing sum trees.
+    ///
+    /// This test constructs a deep tree with sum trees, performs a limited range query with a subquery, and verifies that the proof contains the correct number of results. It also compares the limited result set to the full result set without a limit to ensure correctness.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proof_with_range_subquery_and_limit_with_sum_trees();
+    /// ```
     fn test_path_query_proof_with_range_subquery_and_limit_with_sum_trees() {
         let grove_version = GroveVersion::latest();
         let db = make_deep_tree_with_sum_trees(grove_version);
@@ -2617,6 +2736,17 @@ mod tests {
     }
 
     #[test]
+    /// Tests proof generation and verification for path queries with direction flags and subqueries.
+    ///
+    /// This test constructs a deep tree structure and performs queries with various direction settings and subqueries,
+    /// then generates and verifies proofs for those queries. It checks that the result sets and root hashes match expectations
+    /// for both limited and full queries, including reverse iteration and nested subqueries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_path_query_proofs_with_direction();
+    /// ```
     fn test_path_query_proofs_with_direction() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
@@ -3947,6 +4077,15 @@ mod tests {
     }
 
     #[test]
+    /// Tests detection of corrupted references in GroveDB by verifying that proof verification and database integrity checks fail when a referenced value is modified.
+    ///
+    /// This test inserts a reference to a specific key, verifies that proofs are valid initially, then updates the referenced value to break the reference consistency. It asserts that proof verification fails after corruption and that the database integrity check reports the inconsistency.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// test_grovedb_verify_corrupted_reference();
+    /// ```
     fn test_grovedb_verify_corrupted_reference() {
         // This test is dedicated to a case when references are out of sync, but
         // `verify_grovedb` must detect this case as any other inconsistency
