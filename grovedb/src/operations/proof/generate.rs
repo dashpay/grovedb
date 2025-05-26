@@ -56,7 +56,7 @@ impl GroveDb {
     /// to generate them.
     pub fn prove_query(
         &self,
-        query: &PathQuery,
+        path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
@@ -64,20 +64,10 @@ impl GroveDb {
             "prove_query_many",
             grove_version.grovedb_versions.operations.proof.prove_query
         );
-        self.prove_internal_serialized(query, prove_options, grove_version)
-    }
-
-    /// Generates a proof and serializes it
-    fn prove_internal_serialized(
-        &self,
-        path_query: &PathQuery,
-        prove_options: Option<ProveOptions>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
         let proof = cost_return_on_error!(
             &mut cost,
-            self.prove_internal(path_query, prove_options, grove_version)
+            self.prove_query_non_serialized(path_query, prove_options, grove_version)
         );
         #[cfg(feature = "proof_debug")]
         {
@@ -94,8 +84,8 @@ impl GroveDb {
         Ok(encoded_proof).wrap_with_cost(cost)
     }
 
-    /// Generates a proof
-    pub(crate) fn prove_internal(
+    /// Generates a proof and does not serialize the result
+    pub fn prove_query_non_serialized(
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
