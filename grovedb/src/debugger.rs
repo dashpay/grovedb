@@ -288,7 +288,7 @@ async fn prove_path_query(
     let path_query = path_query_to_grovedb(json_path_query);
 
     let grovedb_proof = db
-        .prove_internal(&path_query, None, GroveVersion::latest())
+        .prove_query_non_serialized(&path_query, None, GroveVersion::latest())
         .unwrap()?;
     Ok(Json(proof_to_grovedbg(grovedb_proof)?))
 }
