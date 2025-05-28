@@ -46,10 +46,10 @@ fn main() {
     println!("Before deleting, we have key2: {:?}", result2);
 
     // Delete the values
-    db.delete(root_path, key1, None, None)
+    db.delete(root_path, key1, None, None, grove_version)
         .unwrap()
         .expect("successfully deleted key1");
-    db.delete(root_path, key2, None, None)
+    db.delete(root_path, key2, None, None, grove_version)
         .unwrap()
         .expect("successfully deleted key2");
 
