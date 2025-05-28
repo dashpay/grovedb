@@ -269,7 +269,7 @@ fn sync_db_demo(
 ) -> Result<(), grovedb::Error> {
     let start_time = Instant::now();
     let app_hash = source_db.root_hash(None, grove_version).value.unwrap();
-    const SUBTREES_BATCH_SIZE: u32 = 2; // Small value for demo purposes
+    const SUBTREES_BATCH_SIZE: usize = 2; // Small value for demo purposes
     let mut session = target_db.start_snapshot_syncing(app_hash, SUBTREES_BATCH_SIZE, CURRENT_STATE_SYNC_VERSION, grove_version)?;
 
     let mut chunk_queue : VecDeque<Vec<u8>> = VecDeque::new();
