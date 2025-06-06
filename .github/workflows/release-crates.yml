@@ -21,7 +21,7 @@ jobs:
           override: true
 
       - name: Login to crates.io
-        run: cargo login ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo login ${{ secrets.CARGO_GROVE_TOKEN }}
 
       - name: Publish crates
         run: |
