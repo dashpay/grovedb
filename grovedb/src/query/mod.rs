@@ -2160,4 +2160,241 @@ mod tests {
 
         assert_eq!(path_query, decoded);
     }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_empty_path() {
+        let grove_version = GroveVersion::latest();
+
+        // Test with add_parent_tree_on_subquery = true
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(vec![], query);
+
+        // Empty path should return the query's add_parent_tree_on_subquery value
+        let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
+        assert_eq!(result.unwrap(), true);
+
+        // Test with add_parent_tree_on_subquery = false
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = false;
+        let path_query = PathQuery::new_unsized(vec![], query);
+
+        let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_exact_match() {
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec(), b"subtree".to_vec()], query);
+
+        // Exact path match
+        let path = vec![b"root".as_ref(), b"subtree".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), true);
+
+        // Different path of same length
+        let path = vec![b"root".as_ref(), b"other".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_shorter_path() {
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec(), b"subtree".to_vec(), b"leaf".to_vec()],
+            query,
+        );
+
+        // Shorter path should return false
+        let path = vec![b"root".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+
+        let path = vec![b"root".as_ref(), b"subtree".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_with_subqueries() {
+        let grove_version = GroveVersion::latest();
+
+        // Create a nested query structure
+        let mut inner_query = Query::new();
+        inner_query.add_parent_tree_on_subquery = true;
+        inner_query.insert_key(b"inner_key".to_vec());
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = false;
+        query.insert_key(b"key1".to_vec());
+        query.default_subquery_branch = SubqueryBranch {
+            subquery_path: Some(vec![b"subpath".to_vec()]),
+            subquery: Some(Box::new(inner_query)),
+        };
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        // Test path leading to the inner query
+        let path = vec![b"root".as_ref(), b"key1".as_ref(), b"subpath".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), true); // Should return inner query's value
+
+        // Test root path
+        let path = vec![b"root".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false); // Should return root query's value
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_conditional_subqueries() {
+        let grove_version = GroveVersion::latest();
+
+        // Create conditional subqueries
+        let mut conditional_branches = IndexMap::new();
+
+        let mut branch1_query = Query::new();
+        branch1_query.add_parent_tree_on_subquery = true;
+        conditional_branches.insert(
+            QueryItem::Key(b"branch1".to_vec()),
+            SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(branch1_query)),
+            },
+        );
+
+        let mut branch2_query = Query::new();
+        branch2_query.add_parent_tree_on_subquery = false;
+        conditional_branches.insert(
+            QueryItem::Key(b"branch2".to_vec()),
+            SubqueryBranch {
+                subquery_path: Some(vec![b"nested".to_vec()]),
+                subquery: Some(Box::new(branch2_query)),
+            },
+        );
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = false;
+        query.conditional_subquery_branches = Some(conditional_branches);
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        // Test path to branch1
+        let path = vec![b"root".as_ref(), b"branch1".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), true);
+
+        // Test path to branch2 with nested path
+        let path = vec![b"root".as_ref(), b"branch2".as_ref(), b"nested".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_deep_nesting() {
+        let grove_version = GroveVersion::latest();
+
+        // Create deeply nested query structure
+        let mut level3_query = Query::new();
+        level3_query.add_parent_tree_on_subquery = true;
+
+        let mut level2_query = Query::new();
+        level2_query.add_parent_tree_on_subquery = false;
+        level2_query.insert_key(b"level3".to_vec());
+        level2_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(level3_query)),
+        };
+
+        let mut level1_query = Query::new();
+        level1_query.add_parent_tree_on_subquery = false;
+        level1_query.insert_key(b"level2".to_vec());
+        level1_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(level2_query)),
+        };
+
+        let mut root_query = Query::new();
+        root_query.add_parent_tree_on_subquery = false;
+        root_query.insert_key(b"level1".to_vec());
+        root_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(level1_query)),
+        };
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], root_query);
+
+        // Test various depths
+        let path = vec![b"root".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+
+        let path = vec![b"root".as_ref(), b"level1".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+
+        let path = vec![b"root".as_ref(), b"level1".as_ref(), b"level2".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+
+        let path = vec![
+            b"root".as_ref(),
+            b"level1".as_ref(),
+            b"level2".as_ref(),
+            b"level3".as_ref(),
+        ];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_nonexistent_path() {
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        query.insert_key(b"existing".to_vec());
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        // Path that doesn't exist in the query structure
+        let path = vec![b"root".as_ref(), b"nonexistent".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+
+        // Longer path that doesn't match
+        let path = vec![
+            b"root".as_ref(),
+            b"existing".as_ref(),
+            b"but_no_subquery".as_ref(),
+        ];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_version_gating() {
+        // Test with latest version
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let result = path_query.should_add_parent_tree_at_path(&[b"root".as_ref()], grove_version);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+
+        // Test with mismatched path
+        let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
 }
