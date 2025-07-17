@@ -127,6 +127,8 @@ pub struct Query {
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     /// Left to right?
     pub left_to_right: bool,
+    /// Add self to results if we subquery
+    pub add_parent_tree_on_subquery: bool,
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -189,11 +191,15 @@ impl Decode for Query {
         // Decode the left_to_right boolean
         let left_to_right = bool::decode(decoder)?;
 
+        // Decode the left_to_right boolean
+        let add_parent_tree_on_subquery = bool::decode(decoder)?;
+
         Ok(Query {
             items,
             default_subquery_branch,
             conditional_subquery_branches,
             left_to_right,
+            add_parent_tree_on_subquery,
         })
     }
 }
@@ -226,11 +232,15 @@ impl<'de> BorrowDecode<'de> for Query {
         // Borrow-decode the left_to_right boolean
         let left_to_right = bool::borrow_decode(decoder)?;
 
+        // Decode the left_to_right boolean
+        let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
+
         Ok(Query {
             items,
             default_subquery_branch,
             conditional_subquery_branches,
             left_to_right,
+            add_parent_tree_on_subquery,
         })
     }
 }
@@ -667,6 +677,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             },
             conditional_subquery_branches: None,
             left_to_right: true,
+            add_parent_tree_on_subquery: false,
         }
     }
 }

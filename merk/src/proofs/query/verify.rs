@@ -386,7 +386,7 @@ impl Query {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 /// Proved key-value
 pub struct ProvedKeyOptionalValue {
     /// Key
@@ -445,7 +445,7 @@ impl fmt::Display for ProvedKeyOptionalValue {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 /// Proved key-value
 pub struct ProvedKeyValue {
     /// Key

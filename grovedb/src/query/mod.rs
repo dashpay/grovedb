@@ -305,6 +305,128 @@ impl PathQuery {
         }
     }
 
+    pub fn should_add_parent_tree_at_path(
+        &self,
+        path: &[&[u8]],
+        grove_version: &GroveVersion,
+    ) -> Result<bool, Error> {
+        check_grovedb_v0!(
+            "should_add_parent_tree_at_path",
+            grove_version
+                .grovedb_versions
+                .path_query_methods
+                .should_add_parent_tree_at_path
+        );
+
+        fn recursive_should_add_parent_tree_at_path<'b>(query: &'b Query, path: &[&[u8]]) -> bool {
+            if path.is_empty() {
+                return query.add_parent_tree_on_subquery;
+            }
+
+            let key = path[0];
+            let path_after_top_removed = &path[1..];
+
+            if let Some(conditional_branches) = &query.conditional_subquery_branches {
+                for (query_item, subquery_branch) in conditional_branches {
+                    if query_item.contains(key) {
+                        if let Some(subquery_path) = &subquery_branch.subquery_path {
+                            if path_after_top_removed.len() <= subquery_path.len() {
+                                if path_after_top_removed
+                                    .iter()
+                                    .zip(subquery_path)
+                                    .all(|(a, b)| *a == b.as_slice())
+                                {
+                                    return if path_after_top_removed.len() == subquery_path.len() {
+                                        subquery_branch.subquery.as_ref().is_some_and(|subquery| {
+                                            subquery.add_parent_tree_on_subquery
+                                        })
+                                    } else {
+                                        false
+                                    };
+                                }
+                            } else if path_after_top_removed
+                                .iter()
+                                .take(subquery_path.len())
+                                .zip(subquery_path)
+                                .all(|(a, b)| *a == b.as_slice())
+                            {
+                                if let Some(subquery) = &subquery_branch.subquery {
+                                    return recursive_should_add_parent_tree_at_path(
+                                        subquery,
+                                        &path_after_top_removed[subquery_path.len()..],
+                                    );
+                                }
+                            }
+                        } else if let Some(subquery) = &subquery_branch.subquery {
+                            return recursive_should_add_parent_tree_at_path(
+                                subquery,
+                                path_after_top_removed,
+                            );
+                        }
+
+                        return false;
+                    }
+                }
+            }
+
+            if let Some(subquery_path) = &query.default_subquery_branch.subquery_path {
+                if path_after_top_removed.len() <= subquery_path.len() {
+                    if path_after_top_removed
+                        .iter()
+                        .zip(subquery_path)
+                        .all(|(a, b)| *a == b.as_slice())
+                    {
+                        return if path_after_top_removed.len() == subquery_path.len() {
+                            query
+                                .default_subquery_branch
+                                .subquery
+                                .as_ref()
+                                .is_some_and(|subquery| subquery.add_parent_tree_on_subquery)
+                        } else {
+                            false
+                        };
+                    }
+                } else if path_after_top_removed
+                    .iter()
+                    .take(subquery_path.len())
+                    .zip(subquery_path)
+                    .all(|(a, b)| *a == b.as_slice())
+                {
+                    if let Some(subquery) = &query.default_subquery_branch.subquery {
+                        return recursive_should_add_parent_tree_at_path(
+                            subquery,
+                            &path_after_top_removed[subquery_path.len()..],
+                        );
+                    }
+                }
+            } else if let Some(subquery) = &query.default_subquery_branch.subquery {
+                return recursive_should_add_parent_tree_at_path(subquery, path_after_top_removed);
+            }
+
+            false
+        }
+
+        let self_path_len = self.path.len();
+        let given_path_len = path.len();
+
+        Ok(match given_path_len.cmp(&self_path_len) {
+            Ordering::Less => false,
+            Ordering::Equal => {
+                if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
+                    self.query.query.add_parent_tree_on_subquery
+                } else {
+                    false
+                }
+            }
+            Ordering::Greater => {
+                if !self.path.iter().zip(path).all(|(a, b)| a.as_slice() == *b) {
+                    return Ok(false);
+                }
+                recursive_should_add_parent_tree_at_path(&self.query.query, &path[self_path_len..])
+            }
+        })
+    }
+
     pub fn query_items_at_path(
         &self,
         path: &[&[u8]],
@@ -1288,6 +1410,7 @@ mod tests {
             },
             left_to_right: true,
             conditional_subquery_branches: None,
+            add_parent_tree_on_subquery: false,
         };
 
         // Constructing the PathQuery
@@ -1305,6 +1428,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -1469,6 +1593,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: None,
@@ -1540,6 +1665,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: Some(conditional_subquery_branches),
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: None,
@@ -1589,6 +1715,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 })),
             },
         )]);
@@ -1606,6 +1733,7 @@ mod tests {
                         },
                         left_to_right: true,
                         conditional_subquery_branches: None,
+                        add_parent_tree_on_subquery: false,
                     })),
                 },
             ),
@@ -1623,6 +1751,7 @@ mod tests {
                             inner_conditional_subquery_branches.clone(),
                         ),
                         left_to_right: true,
+                        add_parent_tree_on_subquery: false,
                     })),
                 },
             ),
@@ -1639,6 +1768,7 @@ mod tests {
                     },
                     conditional_subquery_branches: Some(conditional_subquery_branches.clone()),
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: None,
@@ -1767,6 +1897,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -1789,6 +1920,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: false,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(10),
                 offset: Some(2),
@@ -1811,6 +1943,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(5),
                 offset: None,
@@ -1842,6 +1975,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -1885,6 +2019,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -1907,6 +2042,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: false,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: Some(10),
@@ -1931,6 +2067,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 })),
             },
         );
@@ -1943,6 +2080,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: false,
+                    add_parent_tree_on_subquery: false,
                 })),
             },
         );
@@ -1955,6 +2093,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(50),
                 offset: Some(5),
@@ -1981,10 +2120,12 @@ mod tests {
                             default_subquery_branch: SubqueryBranch::default(),
                             conditional_subquery_branches: None,
                             left_to_right: true,
+                            add_parent_tree_on_subquery: false,
                         })),
                     },
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -2007,6 +2148,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(20),
                 offset: None,

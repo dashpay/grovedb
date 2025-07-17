@@ -3986,6 +3986,7 @@ mod tests {
                     },
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
