@@ -158,7 +158,7 @@ Seven reference types enable complex relationships:
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-grovedb = "2.0"
+grovedb = "3.0"
 ```
 
 ### Basic Setup
