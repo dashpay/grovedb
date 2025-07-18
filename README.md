@@ -437,6 +437,7 @@ Performance on different hardware:
 ### Detailed Documentation
 
 - [Merk - Merkle AVL Tree](docs/crates/merk.md)
+- [Merk Deep Dive - Nodes, Proofs, and State](docs/merk-deep-dive.md)
 - [Storage Abstraction Layer](docs/crates/storage.md)
 - [GroveDB Core](docs/crates/grovedb.md)
 - [Cost Tracking System](docs/crates/costs.md)
