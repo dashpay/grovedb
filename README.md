@@ -61,8 +61,6 @@ Built on cutting-edge research in hierarchical authenticated data structures, Gr
 ### 🌐 Cross-Platform Support
 - Native Rust implementation
 - Runs on x86, ARM (including Raspberry Pi), and WebAssembly
-- Node.js bindings available
-- C bindings coming soon
 
 ## The Forest Architecture: Why Hierarchical Matters
 
