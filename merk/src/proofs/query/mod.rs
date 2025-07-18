@@ -134,6 +134,8 @@ pub struct Query {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for Query {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
+        1u8.encode(encoder)?;
+
         // Encode the items vector
         self.items.encode(encoder)?;
 
@@ -161,6 +163,8 @@ impl Encode for Query {
         // Encode the left_to_right boolean
         self.left_to_right.encode(encoder)?;
 
+        self.add_parent_tree_on_subquery.encode(encoder)?;
+
         Ok(())
     }
 }
@@ -168,6 +172,7 @@ impl Encode for Query {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl Decode for Query {
     fn decode<D: bincode::de::Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+        let _version = u8::decode(decoder)?;
         // Decode the items vector
         let items = Vec::<QueryItem>::decode(decoder)?;
 
@@ -209,6 +214,7 @@ impl<'de> BorrowDecode<'de> for Query {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
+        let _version = u8::borrow_decode(decoder)?;
         // Borrow-decode the items vector
         let items = Vec::<QueryItem>::borrow_decode(decoder)?;
 
