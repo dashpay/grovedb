@@ -172,6 +172,69 @@ Node::KVRefValueHash(key: Vec<u8>, value_hash: [u8; 32], referenced_value: Vec<u
 - **Use Case**: Proving references in GroveDB where value points to other data
 - **Example**: Proving an index entry that references actual data elsewhere
 
+## Special Tree Types and Aggregation
+
+### Count Trees (CountedMerkNode)
+
+In a count tree, it's important to understand the difference between what's stored in the `TreeFeatureType` and what's computed:
+
+**TreeFeatureType Storage**:
+- `CountedMerkNode(1)` - Regular items store just their own contribution of 1
+- `CountedMerkNode(n)` - CountTree elements store their specific count value
+
+**Aggregate Computation**:
+The total count is computed dynamically and stored in the `Link`'s `aggregate_data` field:
+
+```rust
+// In TreeFeatureType - stores only own contribution
+CountedMerkNode(1)  // Just this node's count
+
+// In Link - stores computed aggregate
+aggregate_data: AggregateData::Count(3)  // This node + all descendants
+```
+
+Example count tree structure:
+```
+        root 
+        TreeFeatureType: CountedMerkNode(1)
+        Link.aggregate_data: Count(7)
+       /                            \
+   alice                          charlie
+   CountedMerkNode(1)             CountedMerkNode(1)  
+   aggregate_data: Count(3)       aggregate_data: Count(3)
+   /            \                          \
+bob           carol                       dave
+CountedMerkNode(1)                     CountedMerkNode(1)
+aggregate_data: Count(1)               aggregate_data: Count(1)
+```
+
+The aggregation works as follows:
+- Each node's `TreeFeatureType` stores only its own count (usually 1)
+- The `aggregate_data` in the Link stores: own count + left subtree aggregate + right subtree aggregate
+- This aggregate data is persisted to disk but is NOT part of the authenticated state
+- This allows O(1) retrieval of the total count at any node level without recomputation
+
+**Important: Aggregate Data is NOT in the State**
+
+While aggregate data is persisted to disk for performance, it is **NOT part of the cryptographic state**:
+- The node hash is computed from: `Hash(kv_hash, left_child_hash, right_child_hash)`
+- Aggregate data is NOT included in the hash computation
+- Therefore, aggregate data cannot be proven with a GroveDB proof
+- It's a derived value that can be recomputed from the tree structure
+
+**Storage Layout**:
+When a Link is persisted, it includes:
+- Key (with length prefix)
+- Hash (32 bytes) - computed WITHOUT aggregate data
+- Child heights (2 bytes)
+- Aggregate data type (1 byte) + value(s) - cached but not authenticated
+
+This design separates:
+- **Authenticated State**: The actual tree structure and values (provable)
+- **Cached Derivatives**: Aggregate counts/sums for performance (not provable)
+
+The precomputed storage strategy trades a small amount of extra storage space for massive query performance improvements, while keeping the authenticated state minimal.
+
 ## How Proofs Work
 
 ### Proof Generation Process
