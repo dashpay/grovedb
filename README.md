@@ -67,8 +67,8 @@ GroveDB is a high-performance, cryptographically verifiable database system that
 GroveDB combines several innovative components:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     GroveDB Core                         │
+┌────────────────────────────────────────────────────────┐
+│                     GroveDB Core                       │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
 │  │   Element   │  │    Query     │  │     Proof     │  │
 │  │   System    │  │    Engine    │  │   Generator   │  │
@@ -77,23 +77,23 @@ GroveDB combines several innovative components:
 │  │   Batch     │  │  Reference   │  │   Version     │  │
 │  │ Operations  │  │   Resolver   │  │  Management   │  │
 │  └─────────────┘  └──────────────┘  └───────────────┘  │
-└─────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────┐
-│                      Merk Layer                          │
-│         (Merkle AVL Tree Implementation)                 │
+└────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│                      Merk Layer                        │
+│         (Merkle AVL Tree Implementation)               │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
 │  │  AVL Tree   │  │    Proof     │  │     Cost      │  │
 │  │  Balancing  │  │    System    │  │   Tracking    │  │
 │  └─────────────┘  └──────────────┘  └───────────────┘  │
-└─────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────┐
-│                   Storage Layer                          │
-│            (RocksDB Abstraction)                         │
+└────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│                   Storage Layer                        │
+│            (RocksDB Abstraction)                       │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
 │  │ Prefixed    │  │ Transaction  │  │    Batch      │  │
 │  │  Storage    │  │   Support    │  │ Processing    │  │
 │  └─────────────┘  └──────────────┘  └───────────────┘  │
-└─────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────┘
 ```
 
 ### Component Details
