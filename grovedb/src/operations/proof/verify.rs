@@ -414,6 +414,21 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
+                                    if query.should_add_parent_tree_at_path(
+                                        current_path,
+                                        grove_version,
+                                    )? {
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                path.iter().map(|p| p.to_vec()).collect(),
+                                                proved_key_value.clone(),
+                                            );
+
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                    }
                                     let lower_hash = Self::verify_layer_proof(
                                         lower_layer,
                                         prove_options,

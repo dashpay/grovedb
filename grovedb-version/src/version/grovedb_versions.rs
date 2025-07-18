@@ -14,6 +14,7 @@ pub struct GroveDBPathQueryMethodVersions {
     pub terminal_keys: FeatureVersion,
     pub merge: FeatureVersion,
     pub query_items_at_path: FeatureVersion,
+    pub should_add_parent_tree_at_path: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
