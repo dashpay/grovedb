@@ -1,258 +1,424 @@
 # GroveDB
-| Branch | Tests                                                                                                                           | Coverage |
-|--------|---------------------------------------------------------------------------------------------------------------------------------|------|
+
+| Branch | Tests | Coverage |
+|--------|-------|----------|
 | master | [![Tests](https://github.com/dashevo/grovedb/workflows/CI/badge.svg?branch=master)](https://github.com/dashevo/grovedb/actions) | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV)](https://codecov.io/gh/dashpay/grovedb) |
 
+**GroveDB: Hierarchical Authenticated Data Structure Database**
 
-*Hierarchical Authenticated Data Structure with Efficient Secondary Index Queries*
+GroveDB is a high-performance, cryptographically verifiable database system that organizes data as a "grove" - a tree of trees. Built specifically for efficient secondary index queries, proofs, and blockchain applications, it provides the foundational storage layer for [Dash Platform](https://dashplatform.readme.io/docs/introduction-what-is-dash-platform) while being flexible enough for any application requiring authenticated data structures.
 
-GroveDB is a database system designed specifically for efficient secondary index queries, proofs, speed, and reliability. It was built for use within [Dash Platform](https://dashplatform.readme.io/docs/introduction-what-is-dash-platform), but can be easily integrated into other applications for similar use.  
-   
-## Motivation
+## Table of Contents
 
-Secondary indices are crucial to any database management system. All previous solutions had certain tradeoffs depending on the problem they were trying to solve. 
+- [Key Features](#key-features)
+- [Architecture Overview](#architecture-overview)
+- [Core Concepts](#core-concepts)
+- [Getting Started](#getting-started)
+- [Usage Examples](#usage-examples)
+- [Query System](#query-system)
+- [Performance](#performance)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
 
-Consider an authenticated data structure, like a Merkle tree built on a database of restaurants for example. Each restaurant has certain attributes, such as price and type:
+## Key Features
+
+### 🌳 Hierarchical Tree-of-Trees Structure
+- Organize data naturally in nested hierarchies
+- Each subtree is a fully authenticated Merkle AVL tree
+- Efficient navigation and organization of complex data
+
+### 🔍 Efficient Secondary Index Queries
+- Pre-computed secondary indices stored as subtrees
+- O(log n) query performance on any indexed field
+- No need to scan entire dataset for non-primary key queries
+
+### 🔐 Cryptographic Proofs
+- Generate proofs for any query result
+- Supports membership, non-membership, and range proofs
+- Minimal proof sizes through optimized algorithms
+- Layer-by-layer verification from root to leaves
+
+### 🚀 High Performance
+- Built on RocksDB for reliable persistent storage
+- Batch operations for atomic updates across multiple trees
+- Intelligent caching system (MerkCache) for frequently accessed data
+- Cost tracking for all operations
+
+### 🔗 Advanced Reference System
+- 7 types of references for complex data relationships
+- Automatic reference following (configurable hop limits)
+- Cycle detection prevents infinite loops
+- Cross-tree data linking without duplication
+
+### 📊 Built-in Aggregations
+- Sum trees for automatic value totaling
+- Count trees for element counting
+- Combined count+sum trees
+- Big sum trees for 256-bit integers
+
+### 🌐 Cross-Platform Support
+- Native Rust implementation
+- Runs on x86, ARM (including Raspberry Pi), and WebAssembly
+- Node.js bindings available
+- C bindings coming soon
+
+## Architecture Overview
+
+GroveDB combines several innovative components:
 
 ```
-struct Restaurant{
-	ID uint32;
-	name: String;
-	type: String;
-	isVegan: bool;
-};
+┌─────────────────────────────────────────────────────────┐
+│                     GroveDB Core                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │   Element   │  │    Query     │  │     Proof     │  │
+│  │   System    │  │    Engine    │  │   Generator   │  │
+│  └─────────────┘  └──────────────┘  └───────────────┘  │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │   Batch     │  │  Reference   │  │   Version     │  │
+│  │ Operations  │  │   Resolver   │  │  Management   │  │
+│  └─────────────┘  └──────────────┘  └───────────────┘  │
+└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                      Merk Layer                          │
+│         (Merkle AVL Tree Implementation)                 │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │  AVL Tree   │  │    Proof     │  │     Cost      │  │
+│  │  Balancing  │  │    System    │  │   Tracking    │  │
+│  └─────────────┘  └──────────────┘  └───────────────┘  │
+└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                   Storage Layer                          │
+│            (RocksDB Abstraction)                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │ Prefixed    │  │ Transaction  │  │    Batch      │  │
+│  │  Storage    │  │   Support    │  │ Processing    │  │
+│  └─────────────┘  └──────────────┘  └───────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-If we have say four restaurants, we might normally commit them to a Merkle tree as follows:
+### Component Details
 
-```mermaid
-graph TD;
-root-->A[" "];
-root-->B[" "];
-A-->AA["id:0"];
-A-->AB["id:1"];
-B-->AC["id:2"];
-B-->AD["id:3"];
-```
+1. **GroveDB Core**: Orchestrates multiple Merk trees into a unified hierarchical database
+2. **Merk**: High-performance Merkle AVL tree implementation with proof generation
+3. **Storage**: Abstract storage layer with RocksDB backend, supporting transactions and batching
+4. **Costs**: Comprehensive resource tracking for all operations
+5. **Version Management**: Protocol versioning for smooth upgrades
 
+## Core Concepts
 
-Querying by primary key is easy and efficient. If we have a query such as  ```SELECT * WHERE ID <= 2; ```, we can return the appropriate elements as well as construct an efficient range proof. However, querying by a secondary index is not efficient at all; it's likely that you will have to iterate over the entire structure. Consider the query ``` SELECT * WHERE isVegan=true;```. When sorted by primary key, the vegan restaurant won't be contiguous. Not only will the proof be nontrivial, but so will the time required to find these elements. 
+### Elements
 
-GroveDB is a classic time-space tradeoff. It enables efficient querying on secondary indices by precomputing and committing them. A subtree of each possible queryable secondary index (up to a cap) is built and committed to our authenticated data structure. A tree of subtrees; a grove. For the same data, part of the analogous GroveDB structure might look like this:
-
-```mermaid
-graph TD;
-root-->A["\'Restaurant\'"];
-root-->B["..."];
-A-->Q["ID"];
-A-->W["name"];
-A-->E["kind"];
-A-->R["isVegan"];
-Q-->Z["..."];
-W-->X["..."];
-E-->C["..."];
-R-->Y["id:2"];
-R-->U["id:1"];
-R-->I["id:0"];
-R-->O["id:3"];
-```
-From here, a query on the secondary index ```isVegan``` would traverse to the subtree built for this secondary index. The items are not necessarily replicated, but referenced to.
-## Features
-- **Efficient secondary index queries** - Built specifically for and tailored to secondary index queries.
-- **Proofs** - Supports proofs of membership, proofs of non-membership, and range proofs.
-- **Run anywhere** - Being written in Rust, it supports all compile targets. x86, Raspberry Pis (AArch64), and Wasm. There are Node.js bindings as well.
-
-## Architecture
-Insertion and deletion work as you might expect, updating the respective subtrees and returning appropriate proofs of membership/nonmembership.
-### Tree structure(s)
-Instead of disjoint authenticated data structures, we opt for a unified one; a hierarchical, authenticated data structure based off of [Database Outsourcing with Hierarchical Authenticated Data Structures](https://ia.cr/2015/351). Elements are the most atomic pieces and can be represented in a few ways. They can be items, item references, trees, trees with items, or even trees with item references. An element contains an item, a reference to an object, or a subtree.
-
-
-The trees are based off of our fork of Merk, with custom patches applied for better use with GroveDB. Merk is unique in the fact that it's an AVL tree, so the intermediary nodes also contain a key/value pair. Each node contains a third hash, the ```kv_hash```, in addition to the hashes of its left and right children. The ```kv_hash``` is simply computed as ```kv_hash=H(key,value)```. The node hash is then computed as ```H(kv_hash,left_child_hash,right_child_hash)```. Merk uses Blake2B, and rs-merkle uses SHA256. 
-
-### Storage
-RocksDB is a key-value store, forked from LevelDB and built out by Facebook. We chose it because of its high performance, maturity, and its compatibility with our stack. Merk itself is built on top of RocksDB.
-
-We have three types of storage: auxiliary, metadata, and tree root storage. Auxiliary storage is used to store plain key-value data which is not used in consensus.  Metadata is used to store things outside of the GroveDB usage scope. Is has no prefixes, and therefore has no relation to subtrees. It lives at a higher level. Tree root storage is used to store subtrees.
-
-A database transaction in GroveDB is a wrapper around the ```OptimisticTransactionDB``` primitive from RocksDB. An optimistic transaction hopes on average there will be only a few conflicts, which are detected at the commit stage. This is as compared to the pessimistic model, which uses a lock. 
-
-## Querying
-To query GroveDB, a path and a query item have to be supplied.
-The path specifies the subtree, and the query item determines which nodes are selected from the subtree.
-
-GroveDB currently supports 10 query item types:
-- Key(key_name)
-- Range(start..end)
-- RangeInclusive(start..=end)
-- RangeFull(..)
-- RangeFrom(start..)
-- RangeTo(..end)
-- RangeToInclusive(..=end)
-- RangeAfter(prev..)
-- RangeAfterTo(prev..end)
-- RangeAfterToInclusive(prev..=end)
-
-This describes a basic query system: select a subtree then select nodes from that subtree. The need to create more complex queries or add restrictions to the result set may arise, which leads us to the **PathQuery**.
-
-### PathQuery
-The ```PathQuery``` allows for more complex queries with optional restrictions on the result set, i.e. limits and offsets. 
-```
-    PathQuery
-        path: [k1, k2, ..]
-        sized_query: SizedQuery
-            limit: Optional<number>
-            offset: Optional<number>
-            query: Query
-                items: [query_item_1, query_item_2, ...],
-                default_subquery_branch: SubqueryBranch
-                    subquery_path: Optional<key>
-                    subquery_value: Optional<Query>
-                conditional_subquery_branches: Map<QueryItem, SubqueryBranch>
-                        
-```
-
-A path is needed to define the starting context for the query.
-
-#### SizedQuery
-The ```sized_query``` determines how the result set would be restricted. It holds optional limits and offset values. 
-The ```limit``` determines the maximum size of the result set and the ```offset``` specifies the number of elements to skip before adding to the result set. 
-
-#### Query
-The ```query``` object is a recursive structure - it specifies how to select nodes from the current subtree and has the option to recursively apply another query to the result set obtained from the previous query. 
-
-#### Items
-The ```items``` are a collection of query items that decide which nodes to select from the current context (this builds a result set).  
-
-Before describing ```default_subquery_branch``` and ```conditional_subquery_branches```, we need to define their building blocks, subquery branches:
-
-#### Subquery Branches
-```
-    subquery_path: Optional<Key>
-    subquery_value: Optional<Query>
-```
-**Cases**  
-- ```subquery_path: true```, ```subquery_value: false```  
-The node with the subquery path is selected and returned as the result set.
-
-- ```subquery_path: false```, ```subquery_value: true```  
-The query held in subquery_value is applied directly to the subtree, and the result is returned as the result set.
-
-- ```subquery_path: true```, ```subquery_value: true``` 
-First the node with the subquery path is selected and set as new context.  
-Then, the subquery value is applied to this new context, and the result is returned as the result set.
-
-The subquery branch is used on a single node but can be applied to the result set of a previous query with the use of **default_subquery_branch** and **conditional_subquery_branches**:
-
-#### default_subquery_branch
-If this exists, the specified subquery branch is applied to every node in the result set of the previous query.
-
-#### conditional_subquery_branch
-Rather than applying a subquery branch to every node in the result set, you might want to apply it to a subset of the result set.  In such cases, we make use of a conditional subquery.  
-  
-The conditional subquery holds a map QueryItem to SubqueryBranch.  
-```
-    Map<QueryItem, SubqueryBranch>
-```
-For every node in the result set, we check if there is a query item that matches it. If there is, then the associated subquery branch is applied to that node.  Note that once a conditional subquery has been applied to a node, the default subquery does run on that node.
-
-## Merging Path Queries
-This section describes how GroveDB deals with the merging of path queries.
-
-Mergeable path queries allow for the combination of separate path queries that do different things into a single equivalent path query.  
-  
-A path query can be represented as a set of keys (path to a subtree), and a query to apply to that subtree (query can have unknown depth):  
-
-p<sub>i</sub> = [k<sub>1</sub>, k<sub>2</sub>, .., k<sub>n</sub>, Query]
-
-Something very important to show is that a path query chain can be compressed at any point, i.e. you can turn a sequence of keys into a single query.  
-
-Consider p<sub>1</sub> = [k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>]. This reads as: 
-- From the root tree, select node with key k1
-- Change the context to k1, then select the node with key k2
-- Change the context to k2 and finally select the node with key k3
-
-We can create an equivalent query to represent this, which can look like this:
-```
-    Query
-        query k1
-        cond on k1
-            query k2
-            cond on k2
-                query k3
-                cond on k3
-```
-[k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>] => [Q<sub>1</sub>],  where Q1 is equivalent to the path array.  
-
-This can also be done at any point in the path array, so we can have:  
-
-[k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>] => [k<sub>1</sub>, Q<sub>2</sub>]  
-[k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>] => [K<sub>1</sub>, K<sub>2</sub> Q<sub>3</sub>]
-
-The path merge algorithm becomes:
-- Find the common path across the path queries
-- Compress each path array to a query after the common path index
-- Merge the compressed query into a single query
-- Return new path query with common path as path and combined query as query
-
-**Example:**  
-p<sub>1</sub> =  [k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>, Q<sub>a</sub>]  
-p<sub>2</sub> =  [k<sub>1</sub>, k<sub>2</sub>, k<sub>4</sub>, Q<sub>b</sub>]
-
-Common path = [k1, k2]  
-
-Compress each path array after common path:  
-p<sub>1</sub> = [k<sub>1</sub>, k<sub>2</sub>, Q<sub>c</sub>]  
-p<sub>2</sub> = [k<sub>1</sub>, k<sub>2</sub>, Q<sub>d</sub>]  
-
-Merge compressed queries:  
-Q<sub>p</sub> = Q<sub>c</sub> + Q<sub>d</sub> 
-
-Return final PathQuery:  
-p<sub>f</sub> = [k<sub>1</sub>, k<sub>2</sub>, Q<sub>p</sub>]
-
-
-## Usage
-GroveDB is built for use with Dash Platform, but can be easily integrated into other applications for similar use. See its use in [rs-drive](https://github.com/dashevo/rs-drive) ([example](https://github.com/dashevo/rs-drive-example)). 
-
-We currently also have bindings for Node.js. See [node-grove](https://github.com/dashevo/grovedb/tree/master/node-grove). 
-
-## Building
-First, install [rustup](https://www.rust-lang.org/tools/install) using your preferred method. 
-
-Rust nightly is required to build, so ensure you are using the correct version.
-
-```rustup install nightly```
-
-Clone the repo and navigate to the main directory:
-
-```git clone https://github.com/dashevo/grovedb.git && cd grovedb```
-
-From here we can build: 
-
-```cargo build```
-
-## grovedbg
-
-There is a work in progress implementation of a debugger layer for GroveDB. To use this library with
-these capabilities enabled one needs to set a dependency with `grovedbg` feature.
-
-Then, to launch visualizer tool to observe the database structure inside of your browser on a port,
-let's say 10000, the following snippet should do:
+GroveDB supports 8 element types:
 
 ```rust
-    let db = Arc::new(GroveDb::open("db").unwrap());
-    db.start_visualizer(10000);
+// Basic storage
+Element::Item(value, flags)           // Arbitrary bytes
+Element::Reference(path, max_hops)    // Link to another element
+Element::Tree(root_hash)             // Subtree container
+
+// Aggregation types
+Element::SumItem(value)              // Contributes to sum
+Element::SumTree(root_hash, sum)     // Maintains sum of descendants
+Element::BigSumTree(root_hash, sum)  // 256-bit sums
+Element::CountTree(root_hash, count) // Element counting
+Element::CountSumTree(root_hash, count, sum) // Combined
 ```
 
-Just remember to use Arc because the HTTP server might outlast the GroveDB instance.
+### Hierarchical Paths
+
+Data is organized using paths:
+```rust
+// Path: ["users", "alice", "documents"]
+db.insert(
+    &["users", "alice"], 
+    b"balance", 
+    Element::new_item(b"100")
+)?;
+```
+
+### Reference Types
+
+Seven reference types enable complex relationships:
+- `AbsolutePathReference`: Direct path from root
+- `UpstreamRootHeightReference`: Go up N levels, then follow path
+- `UpstreamFromElementHeightReference`: Relative to current element
+- `CousinReference`: Same level, different branch
+- `SiblingReference`: Same parent tree
+- `UtilityReference`: Special system references
+
+## Getting Started
+
+### Requirements
+
+- Rust 1.74+ (nightly)
+- RocksDB dependencies
+
+### Installation
+
+Add to your `Cargo.toml`:
+```toml
+[dependencies]
+grovedb = "2.0"
+```
+
+### Basic Setup
+
+```rust
+use grovedb::GroveDb;
+
+// Open database
+let db = GroveDb::open("./my_db")?;
+
+// Create a tree structure
+db.insert(&[], b"users", Element::new_tree(None), None, None)?;
+db.insert(&[b"users"], b"alice", Element::new_tree(None), None, None)?;
+
+// Insert data
+db.insert(
+    &[b"users", b"alice"], 
+    b"age", 
+    Element::new_item(b"30"),
+    None,
+    None
+)?;
+
+// Query data
+let age = db.get(&[b"users", b"alice"], b"age", None)?;
+```
+
+## Usage Examples
+
+### Creating Secondary Indexes
+
+```rust
+// Create user data
+db.insert(&[b"users"], b"user1", Element::new_tree(None), None, None)?;
+db.insert(&[b"users", b"user1"], b"age", Element::new_item(b"25"), None, None)?;
+db.insert(&[b"users", b"user1"], b"city", Element::new_item(b"Boston"), None, None)?;
+
+// Create indexes
+db.insert(&[], b"indexes", Element::new_tree(None), None, None)?;
+db.insert(&[b"indexes"], b"by_age", Element::new_tree(None), None, None)?;
+db.insert(&[b"indexes"], b"by_city", Element::new_tree(None), None, None)?;
+
+// Add references in indexes
+db.insert(
+    &[b"indexes", b"by_age"], 
+    b"25_user1",
+    Element::new_reference(ReferencePathType::absolute_path(vec![
+        b"users".to_vec(), 
+        b"user1".to_vec()
+    ])),
+    None,
+    None
+)?;
+```
+
+### Using Sum Trees
+
+```rust
+// Create account structure with balances
+db.insert(&[], b"accounts", Element::new_sum_tree(None, 0), None, None)?;
+
+// Add accounts with balances
+db.insert(&[b"accounts"], b"alice", Element::new_sum_item(100), None, None)?;
+db.insert(&[b"accounts"], b"bob", Element::new_sum_item(200), None, None)?;
+db.insert(&[b"accounts"], b"charlie", Element::new_sum_item(150), None, None)?;
+
+// Get total sum (automatically maintained)
+let sum_tree = db.get(&[], b"accounts", None)?;
+// sum_tree now contains Element::SumTree with sum = 450
+```
+
+### Batch Operations
+
+```rust
+use grovedb::batch::GroveDbOp;
+
+let ops = vec![
+    GroveDbOp::insert_op(vec![b"users"], b"alice", Element::new_tree(None)),
+    GroveDbOp::insert_op(vec![b"users", b"alice"], b"name", Element::new_item(b"Alice")),
+    GroveDbOp::insert_op(vec![b"users", b"alice"], b"age", Element::new_item(b"30")),
+];
+
+// Apply atomically
+db.apply_batch(ops, None, None)?;
+```
+
+### Generating Proofs
+
+```rust
+use grovedb::query::PathQuery;
+
+// Create a path query
+let path_query = PathQuery::new_unsized(
+    vec![b"users".to_vec()],
+    Query::new_range_full(),
+);
+
+// Generate proof
+let proof = db.prove_query(&path_query, None, None)?;
+
+// Verify proof independently
+let (root_hash, results) = GroveDb::verify_query(proof.as_slice(), &path_query)?;
+```
+
+## Query System
+
+### Basic Queries
+
+```rust
+// Get all items in a subtree
+let query = Query::new_range_full();
+let path_query = PathQuery::new_unsized(vec![b"users".to_vec()], query);
+let results = db.query(&path_query, false, false, None)?;
+```
+
+### Range Queries
+
+```rust
+// Get users with names from "A" to "M"
+let mut query = Query::new();
+query.insert_range(b"A".to_vec()..b"N".to_vec());
+
+let path_query = PathQuery::new_unsized(vec![b"users".to_vec()], query);
+let results = db.query(&path_query, false, false, None)?;
+```
+
+### Complex Queries with Subqueries
+
+```rust
+// Get all users and their documents
+let mut query = Query::new_with_subquery_key(b"documents".to_vec());
+let path_query = PathQuery::new_unsized(vec![b"users".to_vec()], query);
+let results = db.query(&path_query, false, false, None)?;
+```
+
+### Query Types
+
+GroveDB supports 10 query item types:
+- `Key(key)` - Exact key match
+- `Range(start..end)` - Exclusive range
+- `RangeInclusive(start..=end)` - Inclusive range
+- `RangeFull(..)` - All keys
+- `RangeFrom(start..)` - From key onwards
+- `RangeTo(..end)` - Up to key
+- `RangeToInclusive(..=end)` - Up to and including key
+- `RangeAfter(prev..)` - After specific key
+- `RangeAfterTo(prev..end)` - After key up to end
+- `RangeAfterToInclusive(prev..=end)` - After key up to and including end
 
 ## Performance
 
-run with ```cargo test```
-|CPU | Time |
-|----|-----|
-|Raspberry Pi 4 | 2m58.491s|
-|R5 1600AF | 33.958s |
-|R5 3600 | 25.658s |
+### Benchmarks
 
+Performance on different hardware:
+
+| Hardware | Full Test Suite |
+|----------|----------------|
+| Raspberry Pi 4 | 2m 58s |
+| AMD Ryzen 5 1600AF | 34s |
+| AMD Ryzen 5 3600 | 26s |
+| Apple M1 Pro | 19s |
+
+### Optimization Features
+
+1. **MerkCache**: Keeps frequently accessed subtrees in memory
+2. **Batch Operations**: Process multiple updates in single transaction
+3. **Cost Tracking**: Monitor resource usage for optimization
+4. **Lazy Loading**: Load only required tree nodes
+5. **Prefix Iteration**: Efficient subtree traversal
+
+## Documentation
+
+### Detailed Documentation
+
+- [Merk - Merkle AVL Tree](docs/crates/merk.md)
+- [Storage Abstraction Layer](docs/crates/storage.md)
+- [GroveDB Core](docs/crates/grovedb.md)
+- [Cost Tracking System](docs/crates/costs.md)
+- [Auxiliary Crates](docs/crates/auxiliary.md)
+
+### Examples
+
+See the [examples](examples/) directory for:
+- Basic CRUD operations
+- Secondary indexing patterns
+- Reference usage
+- Batch operations
+- Proof generation and verification
+
+## Building from Source
+
+```bash
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Clone repository
+git clone https://github.com/dashevo/grovedb.git
+cd grovedb
+
+# Build
+cargo build --release
+
+# Run tests
+cargo test
+
+# Run benchmarks
+cargo bench
+```
+
+## Debug Visualization
+
+GroveDB includes a web-based visualizer for debugging:
+
+```rust
+let db = Arc::new(GroveDb::open("db")?);
+db.start_visualizer(10000); // Port 10000
+
+// Visit http://localhost:10000 in your browser
+```
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Development Setup
+
+1. Fork the repository
+2. Create a feature branch
+3. Write tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+### Testing
+
+```bash
+# Run all tests
+cargo test
+
+# Run specific test
+cargo test test_name
+
+# Run with verbose output
+cargo test -- --nocapture
+```
+
+## License
+
+GroveDB is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+## Support
+
+- [GitHub Issues](https://github.com/dashevo/grovedb/issues)
+- [Discord](https://discord.gg/dash)
+- [Documentation](https://dashplatform.readme.io)
+
+## Acknowledgments
+
+GroveDB is built on research including:
+- [Database Outsourcing with Hierarchical Authenticated Data Structures](https://ia.cr/2015/351)
+- AVL tree algorithms for self-balancing
+- Merkle tree cryptographic proofs
+
+Special thanks to the Dash Core Group and all contributors.
