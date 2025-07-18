@@ -308,6 +308,23 @@ GroveDB supports 10 query item types:
 - `RangeAfterTo(prev..end)` - After key up to end
 - `RangeAfterToInclusive(prev..=end)` - After key up to and including end
 
+### Advanced Query Features (v2+)
+
+**Parent Tree Inclusion**: When performing subqueries, you can include the parent tree element itself in the results:
+
+```rust
+let mut query = Query::new();
+query.insert_key(b"users".to_vec());
+query.set_subquery(Query::new_range_full());
+query.add_parent_tree_on_subquery = true;  // Include parent tree
+
+let path_query = PathQuery::new_unsized(vec![], query);
+let results = db.query(&path_query, false, false, None)?;
+// Results include both the "users" tree element AND its contents
+```
+
+This is particularly useful for count trees and sum trees where you want both the aggregate value and the individual elements.
+
 ## Performance
 
 ### Benchmarks

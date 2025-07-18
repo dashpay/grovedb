@@ -144,6 +144,14 @@ pub struct SizedQuery {
     pub limit: Option<u16>,
     pub offset: Option<u16>,
 }
+
+pub struct Query {
+    pub items: Vec<QueryItem>,
+    pub default_subquery_branch: SubqueryBranch,
+    pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
+    pub left_to_right: bool,
+    pub add_parent_tree_on_subquery: bool,  // New in v2
+}
 ```
 
 **Query Features**:
@@ -151,6 +159,7 @@ pub struct SizedQuery {
 - Subqueries based on element types
 - Left-to-right or right-to-left traversal
 - Pagination with limit/offset
+- **Parent tree inclusion**: When `add_parent_tree_on_subquery` is true, the parent tree element itself is included in query results when performing subqueries
 
 **Query Items**:
 - `Key`: Exact key match
@@ -158,6 +167,18 @@ pub struct SizedQuery {
 - `RangeInclusive`: Inclusive ranges
 - `RangeFull`: All keys
 - Complex range variants for advanced queries
+
+**Parent Tree Inclusion (v2+)**:
+The `add_parent_tree_on_subquery` flag allows including parent tree elements in query results:
+```rust
+let mut query = Query::new();
+query.insert_key(b"users".to_vec());
+query.set_subquery(Query::new_range_full());
+query.add_parent_tree_on_subquery = true;  // Include "users" tree in results
+
+let path_query = PathQuery::new_unsized(vec![], query);
+// Results will include both the "users" tree element AND its contents
+```
 
 ### Batch Operations
 

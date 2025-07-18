@@ -118,12 +118,16 @@ PathQuery {
             items: Vec<QueryItem>,  // What to select
             default_subquery_branch,
             conditional_subquery_branches,
+            left_to_right: bool,
+            add_parent_tree_on_subquery: bool,  // v2: Include parent tree in results
         },
         limit: Option<u16>,
         offset: Option<u16>,
     }
 }
 ```
+
+**New in v2**: The `add_parent_tree_on_subquery` flag allows including parent tree elements (like CountTree or SumTree) in query results when performing subqueries. This is useful when you need both aggregate values and individual elements.
 
 #### Batch Operations
 - Two-phase processing: validation then application
