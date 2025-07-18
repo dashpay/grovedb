@@ -358,7 +358,7 @@ db.insert(
 ```rust
 // Create path query
 let mut query = Query::new();
-query.insert_range(b"a"..b"z");
+query.insert_range(b"a".to_vec()..b"z".to_vec());
 
 let path_query = PathQuery::new(
     vec![b"users".to_vec()],

@@ -164,14 +164,16 @@ grovedb = "3.0"
 ### Basic Setup
 
 ```rust
-use grovedb::GroveDb;
+use grovedb::{GroveDb, Element};
+use grovedb_version::version::GroveVersion;
 
 // Open database
 let db = GroveDb::open("./my_db")?;
+let grove_version = GroveVersion::latest();
 
 // Create a tree structure
-db.insert(&[], b"users", Element::new_tree(None), None, None)?;
-db.insert(&[b"users"], b"alice", Element::new_tree(None), None, None)?;
+db.insert(&[], b"users", Element::new_tree(None), None, None, grove_version)?;
+db.insert(&[b"users"], b"alice", Element::new_tree(None), None, None, grove_version)?;
 
 // Insert data
 db.insert(
@@ -179,11 +181,12 @@ db.insert(
     b"age", 
     Element::new_item(b"30"),
     None,
-    None
+    None,
+    grove_version
 )?;
 
 // Query data
-let age = db.get(&[b"users", b"alice"], b"age", None)?;
+let age = db.get(&[b"users", b"alice"], b"age", None, grove_version)?;
 ```
 
 ## Usage Examples
@@ -192,14 +195,14 @@ let age = db.get(&[b"users", b"alice"], b"age", None)?;
 
 ```rust
 // Create user data
-db.insert(&[b"users"], b"user1", Element::new_tree(None), None, None)?;
-db.insert(&[b"users", b"user1"], b"age", Element::new_item(b"25"), None, None)?;
-db.insert(&[b"users", b"user1"], b"city", Element::new_item(b"Boston"), None, None)?;
+db.insert(&[b"users"], b"user1", Element::new_tree(None), None, None, grove_version)?;
+db.insert(&[b"users", b"user1"], b"age", Element::new_item(b"25"), None, None, grove_version)?;
+db.insert(&[b"users", b"user1"], b"city", Element::new_item(b"Boston"), None, None, grove_version)?;
 
 // Create indexes
-db.insert(&[], b"indexes", Element::new_tree(None), None, None)?;
-db.insert(&[b"indexes"], b"by_age", Element::new_tree(None), None, None)?;
-db.insert(&[b"indexes"], b"by_city", Element::new_tree(None), None, None)?;
+db.insert(&[], b"indexes", Element::new_tree(None), None, None, grove_version)?;
+db.insert(&[b"indexes"], b"by_age", Element::new_tree(None), None, None, grove_version)?;
+db.insert(&[b"indexes"], b"by_city", Element::new_tree(None), None, None, grove_version)?;
 
 // Add references in indexes
 db.insert(
@@ -210,7 +213,8 @@ db.insert(
         b"user1".to_vec()
     ])),
     None,
-    None
+    None,
+    grove_version
 )?;
 ```
 
@@ -218,15 +222,15 @@ db.insert(
 
 ```rust
 // Create account structure with balances
-db.insert(&[], b"accounts", Element::new_sum_tree(None, 0), None, None)?;
+db.insert(&[], b"accounts", Element::new_sum_tree(None, 0), None, None, grove_version)?;
 
 // Add accounts with balances
-db.insert(&[b"accounts"], b"alice", Element::new_sum_item(100), None, None)?;
-db.insert(&[b"accounts"], b"bob", Element::new_sum_item(200), None, None)?;
-db.insert(&[b"accounts"], b"charlie", Element::new_sum_item(150), None, None)?;
+db.insert(&[b"accounts"], b"alice", Element::new_sum_item(100), None, None, grove_version)?;
+db.insert(&[b"accounts"], b"bob", Element::new_sum_item(200), None, None, grove_version)?;
+db.insert(&[b"accounts"], b"charlie", Element::new_sum_item(150), None, None, grove_version)?;
 
 // Get total sum (automatically maintained)
-let sum_tree = db.get(&[], b"accounts", None)?;
+let sum_tree = db.get(&[], b"accounts", None, grove_version)?;
 // sum_tree now contains Element::SumTree with sum = 450
 ```
 
@@ -242,13 +246,14 @@ let ops = vec![
 ];
 
 // Apply atomically
-db.apply_batch(ops, None, None)?;
+db.apply_batch(ops, None, None, grove_version)?;
 ```
 
 ### Generating Proofs
 
 ```rust
 use grovedb::query::PathQuery;
+use grovedb_merk::proofs::Query;
 
 // Create a path query
 let path_query = PathQuery::new_unsized(
@@ -257,10 +262,10 @@ let path_query = PathQuery::new_unsized(
 );
 
 // Generate proof
-let proof = db.prove_query(&path_query, None, None)?;
+let proof = db.prove_query(&path_query, None, None, grove_version)?;
 
 // Verify proof independently
-let (root_hash, results) = GroveDb::verify_query(proof.as_slice(), &path_query)?;
+let (root_hash, results) = GroveDb::verify_query(proof.as_slice(), &path_query, grove_version)?;
 ```
 
 ## Query System
@@ -271,7 +276,7 @@ let (root_hash, results) = GroveDb::verify_query(proof.as_slice(), &path_query)?
 // Get all items in a subtree
 let query = Query::new_range_full();
 let path_query = PathQuery::new_unsized(vec![b"users".to_vec()], query);
-let results = db.query(&path_query, false, false, None)?;
+let results = db.query(&path_query, false, false, None, grove_version)?;
 ```
 
 ### Range Queries
@@ -282,7 +287,7 @@ let mut query = Query::new();
 query.insert_range(b"A".to_vec()..b"N".to_vec());
 
 let path_query = PathQuery::new_unsized(vec![b"users".to_vec()], query);
-let results = db.query(&path_query, false, false, None)?;
+let results = db.query(&path_query, false, false, None, grove_version)?;
 ```
 
 ### Complex Queries with Subqueries
@@ -291,7 +296,7 @@ let results = db.query(&path_query, false, false, None)?;
 // Get all users and their documents
 let mut query = Query::new_with_subquery_key(b"documents".to_vec());
 let path_query = PathQuery::new_unsized(vec![b"users".to_vec()], query);
-let results = db.query(&path_query, false, false, None)?;
+let results = db.query(&path_query, false, false, None, grove_version)?;
 ```
 
 ### Query Types
@@ -319,7 +324,7 @@ query.set_subquery(Query::new_range_full());
 query.add_parent_tree_on_subquery = true;  // Include parent tree
 
 let path_query = PathQuery::new_unsized(vec![], query);
-let results = db.query(&path_query, false, false, None)?;
+let results = db.query(&path_query, false, false, None, grove_version)?;
 // Results include both the "users" tree element AND its contents
 ```
 
