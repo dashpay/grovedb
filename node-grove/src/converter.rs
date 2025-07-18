@@ -41,6 +41,7 @@ fn element_to_string(element: Element) -> String {
         Element::BigSumTree(..) => "big_sum_tree".to_string(),
         Element::CountTree(..) => "count_tree".to_string(),
         Element::CountSumTree(..) => "count_sum_tree".to_string(),
+        Element::ProvableCountTree(..) => "provable_count_tree".to_string(),
     }
 }
 
@@ -72,6 +73,11 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
             let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
             Ok(Element::new_tree(Some(tree_vec)))
         }
+        "provable_count_tree" => {
+            let js_buffer: Handle<JsBuffer> = js_object.get(cx, "value")?;
+            let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
+            Ok(Element::new_provable_count_tree(Some(tree_vec)))
+        }
         _ => cx.throw_error(format!("Unexpected element type {element_string}")),
     }
 }
@@ -98,6 +104,7 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
         Element::BigSumTree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::CountTree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::CountSumTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::ProvableCountTree(..) => nested_vecs_to_js(vec![], cx)?,
     };
 
     js_object.set(cx, "value", js_value)?;

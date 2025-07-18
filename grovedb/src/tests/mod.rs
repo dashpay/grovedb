@@ -9,6 +9,8 @@ mod sum_tree_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
 mod tree_hashes_tests;
+mod provable_count_tree_test;
+mod provable_count_tree_comprehensive_test;
 
 use std::{
     ops::{Deref, DerefMut},

@@ -250,6 +250,7 @@ pub enum NodeType {
     BigSumNode,
     CountNode,
     CountSumNode,
+    ProvableCountNode,
 }
 
 impl NodeType {
@@ -260,6 +261,7 @@ impl NodeType {
             NodeType::BigSumNode => 17,
             NodeType::CountNode => 9,
             NodeType::CountSumNode => 17,
+            NodeType::ProvableCountNode => 9,
         }
     }
 
@@ -270,6 +272,7 @@ impl NodeType {
             NodeType::BigSumNode => 16,
             NodeType::CountNode => 8,
             NodeType::CountSumNode => 16,
+            NodeType::ProvableCountNode => 8,
         }
     }
 }

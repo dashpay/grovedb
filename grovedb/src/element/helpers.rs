@@ -54,7 +54,7 @@ impl Element {
     /// everything else
     pub fn count_value_or_default(&self) -> u64 {
         match self {
-            Element::CountTree(_, count_value, _) => *count_value,
+            Element::CountTree(_, count_value, _) | Element::ProvableCountTree(_, count_value, _) => *count_value,
             _ => 1,
         }
     }
@@ -67,6 +67,7 @@ impl Element {
             Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => (1, *sum_value),
             Element::CountTree(_, count_value, _) => (*count_value, 0),
             Element::CountSumTree(_, count_value, sum_value, _) => (*count_value, *sum_value),
+            Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
             _ => (1, 0),
         }
     }
@@ -163,6 +164,7 @@ impl Element {
             Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
             Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
             Element::CountSumTree(root_key, ..) => Some((root_key, TreeType::CountSumTree)),
+            Element::ProvableCountTree(root_key, ..) => Some((root_key, TreeType::ProvableCountTree)),
             _ => None,
         }
     }
@@ -177,6 +179,7 @@ impl Element {
             Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
             Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
             Element::CountSumTree(root_key, ..) => Some((root_key, TreeType::CountSumTree)),
+            Element::ProvableCountTree(root_key, ..) => Some((root_key, TreeType::ProvableCountTree)),
             _ => None,
         }
     }
@@ -190,6 +193,7 @@ impl Element {
             Element::BigSumTree(_, _, flags) => Some((flags, TreeType::BigSumTree)),
             Element::CountTree(_, _, flags) => Some((flags, TreeType::CountTree)),
             Element::CountSumTree(.., flags) => Some((flags, TreeType::CountSumTree)),
+            Element::ProvableCountTree(_, _, flags) => Some((flags, TreeType::ProvableCountTree)),
             _ => None,
         }
     }
@@ -203,6 +207,7 @@ impl Element {
             Element::BigSumTree(..) => Some(TreeType::BigSumTree),
             Element::CountTree(..) => Some(TreeType::CountTree),
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
+            Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             _ => None,
         }
     }
@@ -217,6 +222,7 @@ impl Element {
             Element::BigSumTree(_, value, _) => Some(BigSummedMerkNode(*value)),
             Element::CountTree(_, value, _) => Some(CountedMerkNode(*value)),
             Element::CountSumTree(_, count, sum, _) => Some(CountedSummedMerkNode(*count, *sum)),
+            Element::ProvableCountTree(_, value, _) => Some(TreeFeatureType::ProvableCountedMerkNode(*value)),
             _ => None,
         }
     }
@@ -230,6 +236,7 @@ impl Element {
             Element::BigSumTree(..) => MaybeTree::Tree(TreeType::BigSumTree),
             Element::CountTree(..) => MaybeTree::Tree(TreeType::CountTree),
             Element::CountSumTree(..) => MaybeTree::Tree(TreeType::CountSumTree),
+            Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             _ => MaybeTree::NotTree,
         }
     }
@@ -256,6 +263,7 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountTree(..)
                 | Element::CountSumTree(..)
+                | Element::ProvableCountTree(..)
         )
     }
 
@@ -295,6 +303,7 @@ impl Element {
                 let v = self.count_sum_value_or_default();
                 Ok(CountedSummedMerkNode(v.0, v.1))
             }
+            TreeType::ProvableCountTree => Ok(TreeFeatureType::ProvableCountedMerkNode(self.count_value_or_default())),
         }
     }
 
@@ -309,7 +318,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ProvableCountTree(.., flags) => flags,
         }
     }
 
@@ -324,7 +334,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ProvableCountTree(.., flags) => flags,
         }
     }
 
@@ -339,7 +350,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ProvableCountTree(.., flags) => flags,
         }
     }
 
@@ -354,7 +366,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => *flags = new_flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ProvableCountTree(.., flags) => *flags = new_flags,
         }
     }
 
@@ -476,6 +489,17 @@ impl Element {
                     key_len, value_len, node_type,
                 )
             }
+            Element::ProvableCountTree(_, _count_value, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -504,6 +528,7 @@ impl Element {
             Element::SumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             Element::CountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
+            Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
@@ -526,6 +551,7 @@ impl Element {
             Element::BigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableCountTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             _ => None,
         }

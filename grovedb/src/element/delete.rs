@@ -35,11 +35,13 @@ impl Element {
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
-            | (TreeType::CountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::CountSumTree, true)
+            | (TreeType::ProvableCountTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
-            | (TreeType::CountSumTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::CountSumTree, false)
+            | (TreeType::ProvableCountTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -94,11 +96,13 @@ impl Element {
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
-            | (TreeType::CountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::CountSumTree, true)
+            | (TreeType::ProvableCountTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
-            | (TreeType::CountSumTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::CountSumTree, false)
+            | (TreeType::ProvableCountTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -147,11 +151,13 @@ impl Element {
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
-            | (TreeType::CountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::CountSumTree, true)
+            | (TreeType::ProvableCountTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
-            | (TreeType::CountSumTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::CountSumTree, false)
+            | (TreeType::ProvableCountTree, false) => Op::DeleteMaybeSpecialized,
         };
         let entry = (key, op);
         batch_operations.push(entry);

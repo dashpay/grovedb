@@ -6,7 +6,7 @@ use grovedb_merk::{
         Query,
     },
     tree::{combine_hash, value_hash},
-    CryptoHash, TreeFeatureType, TreeType,
+    CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
     check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
@@ -387,7 +387,8 @@ impl GroveDb {
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)
                             | Element::CountTree(Some(_), ..)
-                            | Element::CountSumTree(Some(_), ..) => {
+                            | Element::CountSumTree(Some(_), ..)
+                            | Element::ProvableCountTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -464,6 +465,7 @@ impl GroveDb {
                             | Element::BigSumTree(None, ..)
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
+                            | Element::ProvableCountTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::Reference(..) => {

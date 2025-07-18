@@ -104,6 +104,7 @@ impl CostSize for TreeType {
             TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
             TreeType::CountTree => COUNT_TREE_COST_SIZE,
             TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
+            TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
         }
     }
 }
@@ -138,6 +139,8 @@ pub enum Element {
     CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
     /// Combines Element::SumTree and Element::CountTree
     CountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+    /// Same as Element::CountTree but includes counts in cryptographic state
+    ProvableCountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
 }
 
 impl fmt::Display for Element {
@@ -229,6 +232,17 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::ProvableCountTree(root_key, count_value, flags) => {
+                write!(
+                    f,
+                    "ProvableCountTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -244,6 +258,7 @@ impl Element {
             Element::BigSumTree(..) => "big sum tree",
             Element::CountTree(..) => "count tree",
             Element::CountSumTree(..) => "count sum tree",
+            Element::ProvableCountTree(..) => "provable count tree",
         }
     }
 

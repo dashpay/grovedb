@@ -133,6 +133,17 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::ProvableCountTree(root_key, value, flags) => {
+                drawer.write(b"provable_count_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!(" {value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

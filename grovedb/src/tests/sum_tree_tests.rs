@@ -2,11 +2,9 @@
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
     use grovedb_merk::{
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
-        TreeFeatureType,
         TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
     };
     use grovedb_storage::StorageBatch;
@@ -1788,7 +1786,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let (root_hash, parent, result_set) =
+        let (_root_hash, parent, result_set) =
             GroveDb::verify_query_get_parent_tree_info(&proof, &path_query, grove_version)
                 .expect("should verify proof");
 

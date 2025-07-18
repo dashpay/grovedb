@@ -20,6 +20,9 @@ use std::{
     ops::RangeFull,
 };
 
+#[cfg(feature = "minimal")]
+use crate::TreeFeatureType;
+
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use bincode::{
     enc::write::Writer,
@@ -915,6 +918,30 @@ where
         self.tree().hash().map(Node::Hash)
     }
 
+    /// Creates a `Node::KVCount` from the key/value/count of the root node
+    /// Used for ProvableCountTree
+    pub(crate) fn to_kv_count_node(&self) -> Node {
+        let count = match self.tree().feature_type() {
+            TreeFeatureType::ProvableCountedMerkNode(count) => count,
+            _ => 0, // Fallback, should not happen for ProvableCountTree
+        };
+        Node::KVCount(
+            self.tree().key().to_vec(),
+            self.tree().value_as_slice().to_vec(),
+            count,
+        )
+    }
+
+    /// Creates a `Node::KVHashCount` from the kv hash and count of the root node
+    /// Used for ProvableCountTree
+    pub(crate) fn to_kvhash_count_node(&self) -> Node {
+        let count = match self.tree().feature_type() {
+            TreeFeatureType::ProvableCountedMerkNode(count) => count,
+            _ => 0, // Fallback, should not happen for ProvableCountTree
+        };
+        Node::KVHashCount(*self.tree().kv_hash(), count)
+    }
+
     #[cfg(feature = "minimal")]
     pub(crate) fn create_proof(
         &mut self,
@@ -1053,8 +1080,19 @@ where
 
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
+        let is_provable_count_tree = matches!(
+            self.tree().feature_type(),
+            TreeFeatureType::ProvableCountedMerkNode(_)
+        );
+
         let proof_op = if found_item {
-            if proof_params.left_to_right {
+            if is_provable_count_tree {
+                if proof_params.left_to_right {
+                    Op::Push(self.to_kv_count_node())
+                } else {
+                    Op::PushInverted(self.to_kv_count_node())
+                }
+            } else if proof_params.left_to_right {
                 Op::Push(self.to_kv_value_hash_node())
             } else {
                 Op::PushInverted(self.to_kv_value_hash_node())
@@ -1064,6 +1102,12 @@ where
                 Op::Push(self.to_kvdigest_node())
             } else {
                 Op::PushInverted(self.to_kvdigest_node())
+            }
+        } else if is_provable_count_tree {
+            if proof_params.left_to_right {
+                Op::Push(self.to_kvhash_count_node())
+            } else {
+                Op::PushInverted(self.to_kvhash_count_node())
             }
         } else if proof_params.left_to_right {
             Op::Push(self.to_kvhash_node())

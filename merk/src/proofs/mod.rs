@@ -82,6 +82,14 @@ pub enum Node {
     /// Represents the key, value of some referenced node and value_hash of
     /// current tree node
     KVRefValueHash(Vec<u8>, Vec<u8>, CryptoHash),
+
+    /// Represents the key, value and count of a tree node
+    /// Used by ProvableCountTree
+    KVCount(Vec<u8>, Vec<u8>, u64),
+
+    /// Represents the kv hash and count of a tree node
+    /// Used by ProvableCountTree
+    KVHashCount(CryptoHash, u64),
 }
 
 use std::fmt;
@@ -118,6 +126,17 @@ impl fmt::Display for Node {
                 hex_to_ascii(value),
                 hex::encode(value_hash),
                 feature_type
+            ),
+            Node::KVCount(key, value, count) => format!(
+                "KVCount({}, {}, {})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                count
+            ),
+            Node::KVHashCount(kv_hash, count) => format!(
+                "KVHashCount(HASH[{}], {})",
+                hex::encode(kv_hash),
+                count
             ),
         };
         write!(f, "{}", node_string)

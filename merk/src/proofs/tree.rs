@@ -12,7 +12,7 @@ use grovedb_costs::{
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use super::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, NULL_HASH};
+use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash, NULL_HASH};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{error::Error, tree::CryptoHash};
 #[cfg(feature = "minimal")]
@@ -42,6 +42,9 @@ impl Child {
             }
             Node::KVValueHashFeatureType(key, _, _, feature_type) => {
                 (key.as_slice(), (*feature_type).into())
+            }
+            Node::KVCount(key, _, count) => {
+                (key.as_slice(), AggregateData::ProvableCount(*count))
             }
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
@@ -130,6 +133,25 @@ impl Tree {
 
                 kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
+            }
+            Node::KVCount(key, value, count) => {
+                kv_hash(key.as_slice(), value.as_slice())
+                    .flat_map(|kv_hash| {
+                        node_hash_with_count(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
+                            *count,
+                        )
+                    })
+            }
+            Node::KVHashCount(kv_hash, count) => {
+                node_hash_with_count(
+                    kv_hash,
+                    &self.child_hash(true),
+                    &self.child_hash(false),
+                    *count,
+                )
             }
         }
     }
