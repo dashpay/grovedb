@@ -477,6 +477,7 @@ fn query_to_grovedb(query: Query) -> crate::Query {
             query.conditional_subquery_branches,
         ),
         left_to_right: query.left_to_right,
+        add_parent_tree_on_subquery: false,
     }
 }
 

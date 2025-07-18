@@ -180,6 +180,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             terminal_keys: 0,
             merge: 0,
             query_items_at_path: 0,
+            should_add_parent_tree_at_path: 0,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,
