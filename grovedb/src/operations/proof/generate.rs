@@ -1,6 +1,6 @@
 //! Generate proof operations
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap, ops::Deref};
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
@@ -21,8 +21,24 @@ use crate::{
         util::hex_to_ascii, GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions,
     },
     reference_path::path_from_reference_path_type,
-    Element, Error, GroveDb, PathQuery,
+    Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
+
+pub enum OwnedOrBorrowedTransaction<'db> {
+    BorrowedTransaction(&'db Transaction<'db>),
+    OwnedTransaction(Transaction<'db>),
+}
+
+impl<'db> Deref for OwnedOrBorrowedTransaction<'db> {
+    type Target = Transaction<'db>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            OwnedOrBorrowedTransaction::BorrowedTransaction(borrowed) => borrowed,
+            OwnedOrBorrowedTransaction::OwnedTransaction(owned) => owned,
+        }
+    }
+}
 
 impl GroveDb {
     /// Prove one or more path queries.
@@ -32,6 +48,7 @@ impl GroveDb {
         &self,
         query: Vec<&PathQuery>,
         prove_options: Option<ProveOptions>,
+        tx: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
         check_grovedb_v0_with_cost!(
@@ -44,9 +61,9 @@ impl GroveDb {
         );
         if query.len() > 1 {
             let query = cost_return_on_error_default!(PathQuery::merge(query, grove_version));
-            self.prove_query(&query, prove_options, grove_version)
+            self.prove_query(&query, prove_options, tx, grove_version)
         } else {
-            self.prove_query(query[0], prove_options, grove_version)
+            self.prove_query(query[0], prove_options, tx, grove_version)
         }
     }
 
@@ -58,16 +75,17 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
+        tx: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
         check_grovedb_v0_with_cost!(
-            "prove_query_many",
+            "prove_query",
             grove_version.grovedb_versions.operations.proof.prove_query
         );
         let mut cost = OperationCost::default();
         let proof = cost_return_on_error!(
             &mut cost,
-            self.prove_query_non_serialized(path_query, prove_options, grove_version)
+            self.prove_query_non_serialized(path_query, prove_options, tx, grove_version)
         );
         #[cfg(feature = "proof_debug")]
         {
@@ -89,6 +107,7 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
+        tx: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
@@ -122,7 +141,7 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
+                    tx,
                     grove_version,
                 )
             )
@@ -138,7 +157,7 @@ impl GroveDb {
                     prove_options.decrease_limit_on_empty_sub_query_result,
                     false,
                     QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
+                    tx,
                     grove_version,
                 )
             )
@@ -157,6 +176,7 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 &prove_options,
+                tx,
                 grove_version
             )
         );
@@ -176,11 +196,15 @@ impl GroveDb {
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        tx: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
 
-        let tx = self.start_transaction();
+        let cow_tx = match tx {
+            Some(tx) => OwnedOrBorrowedTransaction::BorrowedTransaction(tx),
+            None => OwnedOrBorrowedTransaction::OwnedTransaction(self.start_transaction()),
+        };
 
         let query = cost_return_on_error_no_add!(
             cost,
@@ -200,7 +224,12 @@ impl GroveDb {
 
         let subtree = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path.as_slice().into(), &tx, None, grove_version)
+            self.open_transactional_merk_at_path(
+                path.as_slice().into(),
+                &cow_tx,
+                None,
+                grove_version
+            )
         );
 
         let limit = if path.len() < path_query.path.len() {
@@ -268,7 +297,7 @@ impl GroveDb {
                                     self.follow_reference(
                                         absolute_path.as_slice().into(),
                                         true,
-                                        None,
+                                        tx,
                                         grove_version
                                     )
                                 );
@@ -332,6 +361,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        tx,
                                         grove_version,
                                     )
                                 );
