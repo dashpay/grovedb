@@ -6,11 +6,9 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        batch::QualifiedGroveDbOp,
-        operations::proof::util::ProvedPathKeyValue,
-        query_result_type::QueryResultType,
-        tests::make_test_grovedb,
-        Element, GroveDb, PathQuery, Query, SizedQuery,
+        batch::QualifiedGroveDbOp, operations::proof::util::ProvedPathKeyValue,
+        query_result_type::QueryResultType, tests::make_test_grovedb, Element, GroveDb, PathQuery,
+        Query, SizedQuery,
     };
 
     #[test]
@@ -71,13 +69,21 @@ mod tests {
             .expect("should get root hash");
 
         // All hashes should be different
-        assert_ne!(initial_hash, hash_after_one, "Hash should change after first insert");
-        assert_ne!(hash_after_one, hash_after_two, "Hash should change after second insert");
-        assert_ne!(initial_hash, hash_after_two, "Hash should be different from initial");
+        assert_ne!(
+            initial_hash, hash_after_one,
+            "Hash should change after first insert"
+        );
+        assert_ne!(
+            hash_after_one, hash_after_two,
+            "Hash should change after second insert"
+        );
+        assert_ne!(
+            initial_hash, hash_after_two,
+            "Hash should be different from initial"
+        );
     }
 
     #[test]
-    #[ignore] // TODO: Fix proof decoding issue
     fn test_provable_count_tree_proof_contains_count_nodes() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -110,9 +116,8 @@ mod tests {
             .expect("should insert item");
         }
 
-        // Query for a specific item
-        let mut query = Query::new();
-        query.insert_key(b"item1".to_vec());
+        // Query for all items to ensure we get count nodes in the proof
+        let query = Query::new(); // Empty query gets all items
         let path_query = PathQuery::new_unsized(vec![b"counts".to_vec()], query);
 
         let proof = db
@@ -120,22 +125,61 @@ mod tests {
             .unwrap()
             .expect("should generate proof");
 
+        // First, deserialize the GroveDBProof
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let grovedb_proof: crate::operations::proof::GroveDBProof =
+            bincode::decode_from_slice(&proof, config)
+                .expect("should deserialize proof")
+                .0;
+
+        // Check if there are lower layers (which would contain the actual merk proof
+        // for the ProvableCountTree)
+        let has_lower_layers = match &grovedb_proof {
+            crate::operations::proof::GroveDBProof::V0(proof_v0) => {
+                !proof_v0.root_layer.lower_layers.is_empty()
+            }
+        };
+
+        assert!(
+            has_lower_layers,
+            "Proof should have lower layers for ProvableCountTree"
+        );
+
+        // Extract the merk proof from the lower layer (the actual ProvableCountTree)
+        let merk_proof = match &grovedb_proof {
+            crate::operations::proof::GroveDBProof::V0(proof_v0) => proof_v0
+                .root_layer
+                .lower_layers
+                .get(b"counts".as_slice())
+                .expect("should have counts layer")
+                .merk_proof
+                .as_slice(),
+        };
+
         // Decode proof and check for count nodes
-        let decoder = Decoder::new(&proof);
+        let decoder = Decoder::new(merk_proof);
         let mut found_count_node = false;
-        
+
         for op in decoder {
             if let Ok(op) = op {
                 match op {
-                    Op::Push(node) | Op::PushInverted(node) => {
-                        match node {
-                            Node::KVCount(_, _, _) | Node::KVHashCount(_, _) => {
-                                found_count_node = true;
-                                break;
-                            }
-                            _ => {}
+                    Op::Push(node) | Op::PushInverted(node) => match node {
+                        Node::KVCount(k, _, c) => {
+                            eprintln!("Found KVCount node: key={}, count={}", hex::encode(k), c);
+                            found_count_node = true;
+                            break;
                         }
-                    }
+                        Node::KVHashCount(_, c) => {
+                            eprintln!("Found KVHashCount node: count={}", c);
+                            found_count_node = true;
+                            break;
+                        }
+                        n => {
+                            eprintln!("Found node: {:?}", n);
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -153,13 +197,11 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         // Create tree using batch
-        let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![],
-                b"batch_tree".to_vec(),
-                Element::empty_provable_count_tree(),
-            ),
-        ];
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"batch_tree".to_vec(),
+            Element::empty_provable_count_tree(),
+        )];
 
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
@@ -237,15 +279,9 @@ mod tests {
             .expect("should get root hash");
 
         // Delete one item
-        db.delete(
-            &[b"delete_test"],
-            b"item2",
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("should delete item");
+        db.delete(&[b"delete_test"], b"item2", None, None, grove_version)
+            .unwrap()
+            .expect("should delete item");
 
         let hash_with_four = db
             .root_hash(None, grove_version)
@@ -253,15 +289,9 @@ mod tests {
             .expect("should get root hash");
 
         // Delete another item
-        db.delete(
-            &[b"delete_test"],
-            b"item4",
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("should delete item");
+        db.delete(&[b"delete_test"], b"item4", None, None, grove_version)
+            .unwrap()
+            .expect("should delete item");
 
         let hash_with_three = db
             .root_hash(None, grove_version)
@@ -269,8 +299,14 @@ mod tests {
             .expect("should get root hash");
 
         // All hashes should be different
-        assert_ne!(hash_with_five, hash_with_four, "Hash should change after first delete");
-        assert_ne!(hash_with_four, hash_with_three, "Hash should change after second delete");
+        assert_ne!(
+            hash_with_five, hash_with_four,
+            "Hash should change after first delete"
+        );
+        assert_ne!(
+            hash_with_four, hash_with_three,
+            "Hash should change after second delete"
+        );
     }
 
     #[test]
@@ -315,14 +351,15 @@ mod tests {
             .expect("should generate proof");
 
         // Verify proof
-        let (_root_hash, proved_path_key_optional_values) = GroveDb::verify_query_raw(
-            &proof,
-            &path_query,
-            grove_version,
-        )
-        .expect("should verify proof");
+        let (_root_hash, proved_path_key_optional_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify proof");
 
-        assert_eq!(proved_path_key_optional_values.len(), 5, "Should have 5 items in proof");
+        assert_eq!(
+            proved_path_key_optional_values.len(),
+            5,
+            "Should have 5 items in proof"
+        );
     }
 
     #[test]
@@ -367,7 +404,7 @@ mod tests {
         let mut query = Query::new();
         query.insert_key(b"alice".to_vec());
         query.insert_key(b"carol".to_vec());
-        
+
         let path_query = PathQuery::new_unsized(vec![b"verified".to_vec()], query);
 
         let proof = db
@@ -376,12 +413,9 @@ mod tests {
             .expect("should generate proof");
 
         // Verify the proof
-        let (root_hash, proved_values) = GroveDb::verify_query_raw(
-            &proof,
-            &path_query,
-            grove_version,
-        )
-        .expect("should verify proof");
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify proof");
 
         // Check root hash matches
         let actual_root_hash = db
@@ -393,20 +427,23 @@ mod tests {
 
         // Check proved values
         assert_eq!(proved_values.len(), 2, "Should have 2 proved values");
-        
+
         // Verify the values are correct
         for proved_value in proved_values {
             let ProvedPathKeyValue {
-                path,
-                key,
-                value,
-                ..
+                path, key, value, ..
             } = proved_value;
             assert_eq!(path, vec![b"verified".to_vec()]);
             if key == b"alice" {
-                assert_eq!(value, b"data1");
+                // The value is a serialized Element, so we need to deserialize it
+                let element =
+                    Element::deserialize(&value, grove_version).expect("should deserialize");
+                assert_eq!(element, Element::new_item(b"data1".to_vec()));
             } else if key == b"carol" {
-                assert_eq!(value, b"data3");
+                // The value is a serialized Element, so we need to deserialize it
+                let element =
+                    Element::deserialize(&value, grove_version).expect("should deserialize");
+                assert_eq!(element, Element::new_item(b"data3".to_vec()));
             } else {
                 panic!("Unexpected key in proof");
             }
@@ -441,21 +478,25 @@ mod tests {
             .expect("should generate proof");
 
         // Verify empty proof
-        let (root_hash, proved_values) = GroveDb::verify_query_raw(
-            &proof,
-            &path_query,
-            grove_version,
-        )
-        .expect("should verify proof");
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify proof");
 
-        assert_eq!(proved_values.len(), 0, "Should have no values in empty tree");
-        
+        assert_eq!(
+            proved_values.len(),
+            0,
+            "Should have no values in empty tree"
+        );
+
         let actual_root_hash = db
             .root_hash(None, grove_version)
             .unwrap()
             .expect("should get root hash");
 
-        assert_eq!(root_hash, actual_root_hash, "Root hash should match for empty tree");
+        assert_eq!(
+            root_hash, actual_root_hash,
+            "Root hash should match for empty tree"
+        );
     }
 
     #[test]
@@ -494,7 +535,7 @@ mod tests {
         // Range query from item_05 to item_15
         let mut query = Query::new();
         query.insert_range_inclusive(b"item_05".to_vec()..=b"item_15".to_vec());
-        
+
         let path_query = PathQuery::new_unsized(vec![b"range_test".to_vec()], query);
 
         let proof = db
@@ -503,12 +544,9 @@ mod tests {
             .expect("should generate proof");
 
         // Verify the proof
-        let (root_hash, proved_values) = GroveDb::verify_query_raw(
-            &proof,
-            &path_query,
-            grove_version,
-        )
-        .expect("should verify proof");
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify proof");
 
         // Should have items 05 through 15 (11 items)
         assert_eq!(proved_values.len(), 11, "Should have 11 items in range");
@@ -558,12 +596,9 @@ mod tests {
         // Query with limit
         let mut query = Query::new_with_direction(false); // ascending
         query.insert_all();
-        
+
         let sized_query = SizedQuery::new(query, Some(5), None);
-        let path_query = PathQuery::new(
-            vec![b"limit_test".to_vec()],
-            sized_query,
-        );
+        let path_query = PathQuery::new(vec![b"limit_test".to_vec()], sized_query);
 
         let proof = db
             .prove_query(&path_query, None, grove_version)
@@ -571,14 +606,15 @@ mod tests {
             .expect("should generate proof");
 
         // Verify the proof
-        let (root_hash, proved_values) = GroveDb::verify_query_raw(
-            &proof,
-            &path_query,
-            grove_version,
-        )
-        .expect("should verify proof");
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify proof");
 
-        assert_eq!(proved_values.len(), 5, "Should have exactly 5 items due to limit");
+        assert_eq!(
+            proved_values.len(),
+            5,
+            "Should have exactly 5 items due to limit"
+        );
 
         // Verify root hash still matches (limit doesn't affect root)
         let actual_root_hash = db
@@ -655,7 +691,7 @@ mod tests {
         let mut query = Query::new();
         query.insert_key(b"item1".to_vec());
         query.insert_key(b"item2".to_vec());
-        
+
         let path_query = PathQuery::new_unsized(vec![b"conditional".to_vec()], query);
 
         let proof = db
@@ -664,12 +700,8 @@ mod tests {
             .expect("should generate proof");
 
         // Verify we only get the requested items
-        let (_, proved_values) = GroveDb::verify_query_raw(
-            &proof,
-            &path_query,
-            grove_version,
-        )
-        .expect("should verify proof");
+        let (_, proved_values) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof");
 
         assert_eq!(proved_values.len(), 2, "Should have exactly 2 items");
     }

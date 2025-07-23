@@ -190,9 +190,7 @@ impl Encode for Op {
             Op::Push(Node::KVCount(key, value, count)) => {
                 4 + key.len() + value.len() + count.encoding_length()?
             }
-            Op::Push(Node::KVHashCount(_, count)) => {
-                1 + HASH_LENGTH + count.encoding_length()?
-            }
+            Op::Push(Node::KVHashCount(_, count)) => 1 + HASH_LENGTH + count.encoding_length()?,
             Op::PushInverted(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVHash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVDigest(key, _)) => 2 + key.len() + HASH_LENGTH,
@@ -1085,5 +1083,88 @@ mod test {
     fn decode_unknown() {
         let bytes = [0x88];
         assert!(Op::decode(&bytes[..]).is_err());
+    }
+
+    #[test]
+    fn encode_decode_push_kvcount() {
+        let op = Op::Push(Node::KVCount(vec![1, 2, 3], vec![4, 5, 6], 42));
+        // 1 opcode + 1 key_len + key + 2 value_len + value + 8 count
+        let expected_length = 4 + 3 + 3 + 8;
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x14); // Check opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_push_kvhashcount() {
+        let op = Op::Push(Node::KVHashCount([123; HASH_LENGTH], 42));
+        let expected_length = 1 + HASH_LENGTH + 8; // 1 opcode + 32 hash + 8 count
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x15); // Check opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_push_inverted_kvcount() {
+        let op = Op::PushInverted(Node::KVCount(vec![1, 2, 3], vec![4, 5, 6], 42));
+        // 1 opcode + 1 key_len + key + 2 value_len + value + 8 count
+        let expected_length = 4 + 3 + 3 + 8;
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x16); // Check opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_push_inverted_kvhashcount() {
+        let op = Op::PushInverted(Node::KVHashCount([123; HASH_LENGTH], 42));
+        let expected_length = 1 + HASH_LENGTH + 8; // 1 opcode + 32 hash + 8 count
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x17); // Check opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn decoder_with_count_nodes() {
+        let ops = vec![
+            Op::Push(Node::KVCount(vec![1, 2, 3], vec![4, 5, 6], 42)),
+            Op::Push(Node::KVHashCount([123; HASH_LENGTH], 100)),
+            Op::Child,
+            Op::PushInverted(Node::KVCount(vec![7, 8, 9], vec![10, 11, 12], 200)),
+            Op::Parent,
+        ];
+
+        let mut encoded = vec![];
+        for op in &ops {
+            op.encode_into(&mut encoded).unwrap();
+        }
+
+        let decoder = Decoder::new(&encoded);
+        let decoded_ops: Result<Vec<Op>, _> = decoder.collect();
+        assert!(decoded_ops.is_ok());
+        assert_eq!(decoded_ops.unwrap(), ops);
     }
 }

@@ -247,7 +247,9 @@ impl GroveDb {
             done_with_results |= overall_limit == &Some(0);
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    Node::KV(key, value) | Node::KVValueHash(key, value, ..)
+                    Node::KV(key, value)
+                    | Node::KVValueHash(key, value, ..)
+                    | Node::KVCount(key, value, _)
                         if !done_with_results =>
                     {
                         let elem = Element::deserialize(value, grove_version);
@@ -307,6 +309,8 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -344,7 +348,12 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            Ok(Element::Tree(..)) | Ok(Element::SumTree(..))
+                            Ok(Element::Tree(..))
+                            | Ok(Element::SumTree(..))
+                            | Ok(Element::BigSumTree(..))
+                            | Ok(Element::CountTree(..))
+                            | Ok(Element::ProvableCountTree(..))
+                            | Ok(Element::CountSumTree(..))
                                 if !done_with_results =>
                             {
                                 #[cfg(feature = "proof_debug")]

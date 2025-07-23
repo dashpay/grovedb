@@ -316,7 +316,14 @@ impl Query {
                     }
                     execute_node(key, Some(value), value_hash(value).unwrap())?;
                 }
-                Node::Hash(_) | Node::KVHash(_) | Node::KVValueHashFeatureType(..) | Node::KVHashCount(..) => {
+                Node::KVValueHashFeatureType(key, value, value_hash, _feature_type) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVValueHashFeatureType node");
+                    }
+                    execute_node(key, Some(value), *value_hash)?;
+                }
+                Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
                             "Proof is missing data for query range. Encountered unexpected node \

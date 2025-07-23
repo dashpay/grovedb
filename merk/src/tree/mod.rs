@@ -46,8 +46,8 @@ use grovedb_costs::{
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash, CryptoHash, HASH_LENGTH,
-    NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash,
+    CryptoHash, HASH_LENGTH, NULL_HASH,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -75,7 +75,7 @@ use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "minimal")]
-use crate::{error::Error, Error::Overflow, tree_type::TreeType};
+use crate::{error::Error, tree_type::TreeType, Error::Overflow};
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
@@ -567,13 +567,16 @@ impl TreeNode {
         )
     }
 
-    /// Computes and returns the hash of the root node, including aggregate data for ProvableCountTree.
+    /// Computes and returns the hash of the root node, including aggregate data
+    /// for ProvableCountTree.
     #[inline]
     pub fn hash_for_link(&self, tree_type: TreeType) -> CostContext<CryptoHash> {
         match tree_type {
             TreeType::ProvableCountTree => {
                 // For ProvableCountTree, include the aggregate count in the hash
-                let aggregate_data = self.aggregate_data().unwrap_or(AggregateData::NoAggregateData);
+                let aggregate_data = self
+                    .aggregate_data()
+                    .unwrap_or(AggregateData::NoAggregateData);
                 if let AggregateData::ProvableCount(count) = aggregate_data {
                     node_hash_with_count(
                         self.inner.kv.hash(),
@@ -1069,14 +1072,13 @@ impl TreeNode {
 
                 // Use special hash for ProvableCountTree
                 let hash = match &aggregate_data {
-                    AggregateData::ProvableCount(count) => {
-                        node_hash_with_count(
-                            tree.inner.kv.hash(),
-                            tree.child_hash(true),
-                            tree.child_hash(false),
-                            *count,
-                        ).unwrap_add_cost(&mut cost)
-                    }
+                    AggregateData::ProvableCount(count) => node_hash_with_count(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *count,
+                    )
+                    .unwrap_add_cost(&mut cost),
                     _ => tree.hash().unwrap_add_cost(&mut cost),
                 };
                 self.inner.left = Some(Link::Loaded {
@@ -1103,14 +1105,13 @@ impl TreeNode {
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
                 // Use special hash for ProvableCountTree
                 let hash = match &aggregate_data {
-                    AggregateData::ProvableCount(count) => {
-                        node_hash_with_count(
-                            tree.inner.kv.hash(),
-                            tree.child_hash(true),
-                            tree.child_hash(false),
-                            *count,
-                        ).unwrap_add_cost(&mut cost)
-                    }
+                    AggregateData::ProvableCount(count) => node_hash_with_count(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *count,
+                    )
+                    .unwrap_add_cost(&mut cost),
                     _ => tree.hash().unwrap_add_cost(&mut cost),
                 };
                 self.inner.right = Some(Link::Loaded {

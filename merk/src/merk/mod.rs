@@ -314,9 +314,10 @@ where
     /// proofs can be checked against). If the tree is empty, returns the null
     /// hash (zero-filled).
     pub fn root_hash(&self) -> CostContext<CryptoHash> {
+        let tree_type = self.tree_type;
         self.use_tree(|tree| {
             tree.map_or(NULL_HASH.wrap_with_cost(Default::default()), |tree| {
-                tree.hash()
+                tree.hash_for_link(tree_type)
             })
         })
     }
@@ -352,12 +353,13 @@ where
     pub fn root_hash_key_and_aggregate_data(
         &self,
     ) -> CostResult<RootHashKeyAndAggregateData, Error> {
+        let tree_type = self.tree_type;
         self.use_tree(|tree| match tree {
             None => Ok((NULL_HASH, None, AggregateData::NoAggregateData))
                 .wrap_with_cost(Default::default()),
             Some(tree) => {
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
-                tree.hash()
+                tree.hash_for_link(tree_type)
                     .map(|hash| Ok((hash, Some(tree.key().to_vec()), aggregate_data)))
             }
         })

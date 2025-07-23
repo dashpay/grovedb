@@ -133,11 +133,9 @@ impl fmt::Display for Node {
                 hex_to_ascii(value),
                 count
             ),
-            Node::KVHashCount(kv_hash, count) => format!(
-                "KVHashCount(HASH[{}], {})",
-                hex::encode(kv_hash),
-                count
-            ),
+            Node::KVHashCount(kv_hash, count) => {
+                format!("KVHashCount(HASH[{}], {})", hex::encode(kv_hash), count)
+            }
         };
         write!(f, "{}", node_string)
     }

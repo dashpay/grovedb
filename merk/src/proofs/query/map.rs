@@ -40,7 +40,9 @@ impl MapBuilder {
     /// `Hash`).
     pub fn insert(&mut self, node: &Node) -> Result<(), Error> {
         match node {
-            Node::KV(key, value) | Node::KVValueHash(key, value, ..) | Node::KVCount(key, value, _) => {
+            Node::KV(key, value)
+            | Node::KVValueHash(key, value, ..)
+            | Node::KVCount(key, value, _) => {
                 if let Some((prev_key, _)) = self.0.entries.last_key_value() {
                     if key <= prev_key {
                         return Err(Error::KeyOrderingError(

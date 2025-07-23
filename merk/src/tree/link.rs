@@ -280,7 +280,9 @@ impl Link {
                 ..
             } => match aggregate_data {
                 AggregateData::NoAggregateData => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
-                AggregateData::Count(_) | AggregateData::Sum(_) | AggregateData::ProvableCount(_) => {
+                AggregateData::Count(_)
+                | AggregateData::Sum(_)
+                | AggregateData::ProvableCount(_) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -315,7 +317,9 @@ impl Link {
                 ..
             } => match aggregate_data {
                 AggregateData::NoAggregateData => tree.key().len() + 36, // 1 + 32 + 2 + 1,
-                AggregateData::Count(_) | AggregateData::Sum(_) | AggregateData::ProvableCount(_) => {
+                AggregateData::Count(_)
+                | AggregateData::Sum(_)
+                | AggregateData::ProvableCount(_) => {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
                 AggregateData::BigSum(_) | AggregateData::CountAndSum(..) => {

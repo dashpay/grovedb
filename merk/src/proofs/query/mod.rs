@@ -20,9 +20,6 @@ use std::{
     ops::RangeFull,
 };
 
-#[cfg(feature = "minimal")]
-use crate::TreeFeatureType;
-
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use bincode::{
     enc::write::Writer,
@@ -62,6 +59,8 @@ use crate::proofs::{
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::tree::{Fetch, Link, RefWalker};
+#[cfg(feature = "minimal")]
+use crate::TreeFeatureType;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for a path.
@@ -927,13 +926,13 @@ where
         };
         Node::KVCount(
             self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
+            self.tree().value_ref().to_vec(),
             count,
         )
     }
 
-    /// Creates a `Node::KVHashCount` from the kv hash and count of the root node
-    /// Used for ProvableCountTree
+    /// Creates a `Node::KVHashCount` from the kv hash and count of the root
+    /// node Used for ProvableCountTree
     pub(crate) fn to_kvhash_count_node(&self) -> Node {
         let count = match self.tree().feature_type() {
             TreeFeatureType::ProvableCountedMerkNode(count) => count,
@@ -1086,6 +1085,8 @@ where
         );
 
         let proof_op = if found_item {
+            // For query proofs, we need to include the actual key/value data
+            // For ProvableCountTree, use KVCount to include the count
             if is_provable_count_tree {
                 if proof_params.left_to_right {
                     Op::Push(self.to_kv_count_node())

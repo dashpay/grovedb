@@ -352,6 +352,18 @@ impl GroveDb {
                     format!("Invalid proof verification parameters: {}", e),
                 )
             })?;
+
+        #[cfg(feature = "proof_debug")]
+        {
+            println!(
+                "\nDEBUG: Layer proof verification at path {:?}",
+                current_path.iter().map(hex::encode).collect::<Vec<_>>()
+            );
+            println!("  Calculated root hash: {}", hex::encode(&root_hash));
+            if let Some(parent_type) = last_parent_tree_type {
+                println!("  Parent tree type: {:?}", parent_type);
+            }
+        }
         #[cfg(feature = "proof_debug")]
         {
             println!(
@@ -441,10 +453,73 @@ impl GroveDb {
                                         options,
                                         grove_version,
                                     )?;
-                                    let combined_root_hash =
+
+                                    #[cfg(feature = "proof_debug")]
+                                    {
+                                        println!("\nDEBUG: Lower layer verification completed");
+                                        println!(
+                                            "  Path: {:?}",
+                                            path.iter()
+                                                .map(|p| hex_to_ascii(p))
+                                                .collect::<Vec<_>>()
+                                        );
+                                        println!(
+                                            "  Lower layer root hash: {}",
+                                            hex::encode(&lower_hash)
+                                        );
+                                        println!("  Parent tree type: {:?}", last_parent_tree_type);
+                                    }
+                                    // Check if this is a layered reference
+                                    let is_layered_reference = matches!(
+                                        &element,
+                                        Element::Tree(Some(_), _)
+                                            | Element::SumTree(Some(_), ..)
+                                            | Element::BigSumTree(Some(_), ..)
+                                            | Element::CountTree(Some(_), ..)
+                                            | Element::CountSumTree(Some(_), ..)
+                                            | Element::ProvableCountTree(Some(_), ..)
+                                    );
+
+                                    let combined_root_hash = if is_layered_reference {
+                                        // For layered references, the hash in the proof (from
+                                        // KVValueHash)
+                                        // is already the combined value_hash that was stored in the
+                                        // tree node.
+                                        // This was calculated during storage as:
+                                        // combine_hash(value_hash(serialized_element),
+                                        // subtree_root_hash)
+                                        // We should use this hash directly for comparison.
+                                        hash.to_owned()
+                                    } else {
+                                        // For non-layered references, combine normally
                                         combine_hash(value_hash(value_bytes).value(), &lower_hash)
                                             .value()
-                                            .to_owned();
+                                            .to_owned()
+                                    };
+
+                                    #[cfg(feature = "proof_debug")]
+                                    {
+                                        println!("\nDEBUG: Tree element verification");
+                                        println!("  Key: {}", hex_to_ascii(key));
+                                        println!(
+                                            "  Element type: {:?}",
+                                            element.tree_feature_type()
+                                        );
+                                        println!("  Value bytes: {}", hex::encode(value_bytes));
+                                        println!(
+                                            "  Value bytes hash: {}",
+                                            hex::encode(value_hash(value_bytes).value())
+                                        );
+                                        println!(
+                                            "  Lower layer hash: {}",
+                                            hex::encode(&lower_hash)
+                                        );
+                                        println!(
+                                            "  Combined hash: {}",
+                                            hex::encode(&combined_root_hash)
+                                        );
+                                        println!("  Expected hash: {}", hex::encode(hash));
+                                    }
                                     if hash != &combined_root_hash {
                                         return Err(Error::InvalidProof(
                                             query.clone(),

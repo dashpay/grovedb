@@ -4,10 +4,7 @@
 mod tests {
     use grovedb_version::version::GroveVersion;
 
-    use crate::{
-        tests::make_test_grovedb,
-        Element, GroveDb, PathQuery, Query,
-    };
+    use crate::{tests::make_test_grovedb, Element, GroveDb, PathQuery, Query, SizedQuery};
 
     #[test]
     fn test_provable_count_tree_basic_operations() {
@@ -47,8 +44,11 @@ mod tests {
         }
 
         // Get the root hash before and after insertions
-        let root_hash = db.root_hash(None, grove_version).unwrap().expect("should get root hash");
-        
+        let root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
         // The root hash should change when we insert more items
         db.insert(
             &[b"provable_counts"],
@@ -61,9 +61,15 @@ mod tests {
         .unwrap()
         .expect("should insert item");
 
-        let new_root_hash = db.root_hash(None, grove_version).unwrap().expect("should get root hash");
-        
-        assert_ne!(root_hash, new_root_hash, "Root hash should change when count changes");
+        let new_root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
+        assert_ne!(
+            root_hash, new_root_hash,
+            "Root hash should change when count changes"
+        );
     }
 
     #[test]
@@ -102,7 +108,7 @@ mod tests {
         // Create a path query for a specific key
         let mut query = Query::new();
         query.insert_key(b"key2".to_vec());
-        
+
         let path_query = PathQuery::new_unsized(vec![b"counts".to_vec()], query);
 
         // Generate proof
@@ -113,24 +119,25 @@ mod tests {
 
         // Verify the proof was generated successfully
         assert!(!proof.is_empty(), "Proof should not be empty");
-        
+
         // Verify we can decode the proof without errors
-        let (root_hash, proved_values) = GroveDb::verify_query_raw(
-            &proof,
-            &path_query,
-            grove_version,
-        )
-        .expect("should verify proof");
-        
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify proof");
+
         // We queried for one specific key
-        assert_eq!(proved_values.len(), 1, "Should have exactly one proved value");
-        
+        assert_eq!(
+            proved_values.len(),
+            1,
+            "Should have exactly one proved value"
+        );
+
         // Verify the root hash matches
         let actual_root_hash = db
             .root_hash(None, grove_version)
             .unwrap()
             .expect("should get root hash");
-        
+
         assert_eq!(root_hash, actual_root_hash, "Root hash should match");
     }
 
@@ -194,15 +201,19 @@ mod tests {
         }
 
         // Get root hashes - they should be different even with same content
-        let root_hash1 = db.root_hash(None, grove_version).unwrap().expect("should get root hash");
-        
-        // The trees should have different hashes because they use different hash functions
-        // This verifies that ProvableCountTree includes count in its hash calculation
-        
+        let root_hash1 = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
+        // The trees should have different hashes because they use different hash
+        // functions This verifies that ProvableCountTree includes count in its
+        // hash calculation
+
         // Generate proofs for both to see the difference
         let mut query = Query::new();
         query.insert_key(b"b".to_vec());
-        
+
         let regular_proof = db
             .prove_query(
                 &PathQuery::new_unsized(vec![b"regular_count".to_vec()], query.clone()),
@@ -222,7 +233,82 @@ mod tests {
             .expect("should generate proof for provable count tree");
 
         // The proofs should have different structures
-        assert_ne!(regular_proof.len(), provable_proof.len(), 
-            "Proofs should differ between regular and provable count trees");
+        assert_ne!(
+            regular_proof.len(),
+            provable_proof.len(),
+            "Proofs should differ between regular and provable count trees"
+        );
+    }
+
+    #[test]
+    fn test_prove_count_tree_with_subtree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a ProvableCountTree at root
+        db.insert::<_, &[&[u8]]>(
+            &[],
+            b"count_tree",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert count tree");
+
+        // Add a subtree under the count tree
+        db.insert::<_, &[&[u8]]>(
+            &[b"count_tree"],
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert subtree");
+
+        // Add items to the subtree
+        db.insert::<_, &[&[u8]]>(
+            &[b"count_tree", b"subtree"],
+            b"item1",
+            Element::new_item(vec![1, 2, 3]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+        // Create a path query that queries for the count_tree itself
+        let path_query = PathQuery::new(
+            vec![],
+            SizedQuery::new(
+                Query::new_single_key(b"count_tree".to_vec()),
+                Some(10),
+                None,
+            ),
+        );
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        // Verify the proof
+        let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect("proof verification should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, b"count_tree");
+
+        // Verify root hash matches
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get root hash")
+        );
     }
 }

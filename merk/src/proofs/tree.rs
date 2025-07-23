@@ -12,9 +12,15 @@ use grovedb_costs::{
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use super::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash, NULL_HASH};
+use crate::tree::{
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash,
+    NULL_HASH,
+};
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::{error::Error, tree::CryptoHash};
+use crate::{
+    error::Error,
+    tree::{CryptoHash, TreeFeatureType},
+};
 #[cfg(feature = "minimal")]
 use crate::{
     proofs::chunk::chunk::{LEFT, RIGHT},
@@ -43,9 +49,7 @@ impl Child {
             Node::KVValueHashFeatureType(key, _, _, feature_type) => {
                 (key.as_slice(), (*feature_type).into())
             }
-            Node::KVCount(key, _, count) => {
-                (key.as_slice(), AggregateData::ProvableCount(*count))
-            }
+            Node::KVCount(key, _, count) => (key.as_slice(), AggregateData::ProvableCount(*count)),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -116,11 +120,25 @@ impl Tree {
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
             Node::KV(key, value) => kv_hash(key.as_slice(), value.as_slice())
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
-            Node::KVValueHash(key, _, value_hash)
-            | Node::KVValueHashFeatureType(key, _, value_hash, _) => {
+            Node::KVValueHash(key, _, value_hash) => {
                 // TODO: add verification of the value
                 kv_digest_to_kv_hash(key.as_slice(), value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
+            }
+            Node::KVValueHashFeatureType(key, _, value_hash, feature_type) => {
+                // TODO: add verification of the value
+                kv_digest_to_kv_hash(key.as_slice(), value_hash).flat_map(|kv_hash| {
+                    // For ProvableCountTree, use node_hash_with_count
+                    match feature_type {
+                        TreeFeatureType::ProvableCountedMerkNode(count) => node_hash_with_count(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
+                            *count,
+                        ),
+                        _ => compute_hash(self, kv_hash),
+                    }
+                })
             }
             Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
@@ -135,24 +153,21 @@ impl Tree {
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
             }
             Node::KVCount(key, value, count) => {
-                kv_hash(key.as_slice(), value.as_slice())
-                    .flat_map(|kv_hash| {
-                        node_hash_with_count(
-                            &kv_hash,
-                            &self.child_hash(true),
-                            &self.child_hash(false),
-                            *count,
-                        )
-                    })
+                kv_hash(key.as_slice(), value.as_slice()).flat_map(|kv_hash| {
+                    node_hash_with_count(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                    )
+                })
             }
-            Node::KVHashCount(kv_hash, count) => {
-                node_hash_with_count(
-                    kv_hash,
-                    &self.child_hash(true),
-                    &self.child_hash(false),
-                    *count,
-                )
-            }
+            Node::KVHashCount(kv_hash, count) => node_hash_with_count(
+                kv_hash,
+                &self.child_hash(true),
+                &self.child_hash(false),
+                *count,
+            ),
         }
     }
 

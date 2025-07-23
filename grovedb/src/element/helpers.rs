@@ -54,7 +54,8 @@ impl Element {
     /// everything else
     pub fn count_value_or_default(&self) -> u64 {
         match self {
-            Element::CountTree(_, count_value, _) | Element::ProvableCountTree(_, count_value, _) => *count_value,
+            Element::CountTree(_, count_value, _)
+            | Element::ProvableCountTree(_, count_value, _) => *count_value,
             _ => 1,
         }
     }
@@ -164,7 +165,9 @@ impl Element {
             Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
             Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
             Element::CountSumTree(root_key, ..) => Some((root_key, TreeType::CountSumTree)),
-            Element::ProvableCountTree(root_key, ..) => Some((root_key, TreeType::ProvableCountTree)),
+            Element::ProvableCountTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableCountTree))
+            }
             _ => None,
         }
     }
@@ -179,7 +182,9 @@ impl Element {
             Element::BigSumTree(root_key, ..) => Some((root_key, TreeType::BigSumTree)),
             Element::CountTree(root_key, ..) => Some((root_key, TreeType::CountTree)),
             Element::CountSumTree(root_key, ..) => Some((root_key, TreeType::CountSumTree)),
-            Element::ProvableCountTree(root_key, ..) => Some((root_key, TreeType::ProvableCountTree)),
+            Element::ProvableCountTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableCountTree))
+            }
             _ => None,
         }
     }
@@ -222,7 +227,9 @@ impl Element {
             Element::BigSumTree(_, value, _) => Some(BigSummedMerkNode(*value)),
             Element::CountTree(_, value, _) => Some(CountedMerkNode(*value)),
             Element::CountSumTree(_, count, sum, _) => Some(CountedSummedMerkNode(*count, *sum)),
-            Element::ProvableCountTree(_, value, _) => Some(TreeFeatureType::ProvableCountedMerkNode(*value)),
+            Element::ProvableCountTree(_, value, _) => {
+                Some(TreeFeatureType::ProvableCountedMerkNode(*value))
+            }
             _ => None,
         }
     }
@@ -303,7 +310,9 @@ impl Element {
                 let v = self.count_sum_value_or_default();
                 Ok(CountedSummedMerkNode(v.0, v.1))
             }
-            TreeType::ProvableCountTree => Ok(TreeFeatureType::ProvableCountedMerkNode(self.count_value_or_default())),
+            TreeType::ProvableCountTree => Ok(TreeFeatureType::ProvableCountedMerkNode(
+                self.count_value_or_default(),
+            )),
         }
     }
 

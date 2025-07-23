@@ -14,7 +14,7 @@ mod tests {
     #[test]
     fn test_provable_count_tree_hash_includes_count() {
         let _grove_version = GroveVersion::latest();
-        
+
         // Create two trees with the same key-value pairs but different counts
         let tree1 = TreeNode::new(
             vec![1, 2, 3],
@@ -23,7 +23,7 @@ mod tests {
             TreeFeatureType::ProvableCountedMerkNode(10),
         )
         .unwrap();
-        
+
         let tree2 = TreeNode::new(
             vec![1, 2, 3],
             vec![4, 5, 6],
@@ -51,7 +51,10 @@ mod tests {
         let hash3 = tree3.hash_for_link(TreeType::CountTree).unwrap();
 
         // The hash of a regular CountTree should differ from ProvableCountTree
-        assert_ne!(hash1, hash3, "ProvableCountTree hash should differ from CountTree hash");
+        assert_ne!(
+            hash1, hash3,
+            "ProvableCountTree hash should differ from CountTree hash"
+        );
     }
 
     #[test]
@@ -59,7 +62,7 @@ mod tests {
         // Test that ProvableCountedMerkNode converts to ProvableCount aggregate data
         let feature_type = TreeFeatureType::ProvableCountedMerkNode(42);
         let aggregate_data: AggregateData = feature_type.into();
-        
+
         assert!(matches!(aggregate_data, AggregateData::ProvableCount(42)));
     }
 
@@ -68,16 +71,16 @@ mod tests {
         // Test TreeType to TreeFeatureType conversion
         let tree_type = TreeType::ProvableCountTree;
         let feature_type = tree_type.empty_tree_feature_type();
-        
+
         assert!(matches!(
             feature_type,
             TreeFeatureType::ProvableCountedMerkNode(0)
         ));
 
-        // Test TreeType to node type  
+        // Test TreeType to node type
         let node_type = tree_type.inner_node_type();
         assert_eq!(node_type as u8, 5); // ProvableCountNode = 5
-        
+
         // Test TreeType allows sum items
         assert!(!tree_type.allows_sum_item());
     }
@@ -86,7 +89,7 @@ mod tests {
     fn test_aggregate_count_calculation() {
         let _grove_version = GroveVersion::latest();
         let _cost = OperationCost::default();
-        
+
         // Create a tree with ProvableCountedMerkNode
         let tree = TreeNode::new(
             vec![5],
@@ -99,9 +102,9 @@ mod tests {
         // Simulate having children with counts
         // In a real scenario, these would be loaded from storage
         // For testing, we'll use the aggregate_data method directly
-        
+
         let aggregate_data = tree.aggregate_data().unwrap();
-        
+
         // Should return ProvableCount with the node's own count (no children yet)
         match aggregate_data {
             AggregateData::ProvableCount(count) => {
