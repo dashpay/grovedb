@@ -19,7 +19,7 @@ grovedb-storage = { version = "3.0.0", path = "../storage", optional = true }
 grovedb-version = { version = "3.0.0", path = "../grovedb-version" }
 grovedb-visualize = { version = "3.0.0", path = "../visualize", optional = true }
 
-axum = { version = "=0.7.5", features = ["macros"], optional = true }
+axum = { version = "0.8", features = ["macros"], optional = true }
 bincode = { version = "=2.0.0-rc.3" }
 bincode_derive = { version = "=2.0.0-rc.3" }
 blake3 = "1.8.1"
