@@ -1,7 +1,7 @@
 [package]
 name = "grovedb"
 description = "Fully featured database using balanced hierarchical authenticated data structures"
-version = "3.0.0"
+version = "3.1.0"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
 edition = "2021"
 license = "MIT"
@@ -11,13 +11,13 @@ readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [dependencies]
-grovedb-costs = { version = "3.0.0", path = "../costs" , optional = true }
-grovedbg-types = { version = "3.0.0", path = "../grovedbg-types", optional = true }
-grovedb-merk = { version = "3.0.0", path = "../merk", optional = true, default-features = false }
-grovedb-path = { version = "3.0.0", path = "../path" }
-grovedb-storage = { version = "3.0.0", path = "../storage", optional = true }
-grovedb-version = { version = "3.0.0", path = "../grovedb-version" }
-grovedb-visualize = { version = "3.0.0", path = "../visualize", optional = true }
+grovedb-costs = { version = "3.1.0", path = "../costs" , optional = true }
+grovedbg-types = { version = "3.1.0", path = "../grovedbg-types", optional = true }
+grovedb-merk = { version = "3.1.0", path = "../merk", optional = true, default-features = false }
+grovedb-path = { version = "3.1.0", path = "../path" }
+grovedb-storage = { version = "3.1.0", path = "../storage", optional = true }
+grovedb-version = { version = "3.1.0", path = "../grovedb-version" }
+grovedb-visualize = { version = "3.1.0", path = "../visualize", optional = true }
 
 axum = { version = "0.8", features = ["macros"], optional = true }
 bincode = { version = "=2.0.0-rc.3" }
@@ -37,7 +37,7 @@ zip-extensions = { version = "0.6.2", optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 
 [dev-dependencies]
-grovedb-epoch-based-storage-flags = { version = "3.0.0", path = "../grovedb-epoch-based-storage-flags" }
+grovedb-epoch-based-storage-flags = { version = "3.1.0", path = "../grovedb-epoch-based-storage-flags" }
 
 criterion = "0.5.1"
 hex = "0.4.3"

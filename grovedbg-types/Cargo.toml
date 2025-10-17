@@ -1,6 +1,6 @@
 [package]
 name = "grovedbg-types"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 description = "Common type definitions for data exchange over GroveDBG protocol"
 authors = ["Evgeny Fomin <evgeny.fomin@dash.org>"]

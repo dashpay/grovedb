@@ -1,7 +1,7 @@
 [package]
 name = "grovedb-merk"
 description = "Merkle key/value store adapted for GroveDB"
-version = "3.0.0"
+version = "3.1.0"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>", "Matt Bell <mappum@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -11,11 +11,11 @@ readme = "README.md"
 documentation = "https://docs.rs/grovedb-merk"
 
 [dependencies]
-grovedb-costs = { version = "3.0.0", path = "../costs" }
-grovedb-path = { version = "3.0.0", path = "../path" }
-grovedb-storage = { version = "3.0.0", path = "../storage", optional = true }
-grovedb-version = { version = "3.0.0", path = "../grovedb-version" }
-grovedb-visualize = { version = "3.0.0", path = "../visualize" }
+grovedb-costs = { version = "3.1.0", path = "../costs" }
+grovedb-path = { version = "3.1.0", path = "../path" }
+grovedb-storage = { version = "3.1.0", path = "../storage", optional = true }
+grovedb-version = { version = "3.1.0", path = "../grovedb-version" }
+grovedb-visualize = { version = "3.1.0", path = "../visualize" }
 
 bincode = { version = "=2.0.0-rc.3" }
 bincode_derive = { version = "=2.0.0-rc.3" }
