@@ -35,6 +35,7 @@ fn element_to_string(element: Element) -> String {
     match element {
         Element::Item(..) => "item".to_string(),
         Element::SumItem(..) => "sum_item".to_string(),
+        Element::ItemWithSumItem(..) => "item_with_sum_item".to_string(),
         Element::Reference(..) => "reference".to_string(),
         Element::Tree(..) => "tree".to_string(),
         Element::SumTree(..) => "sum_tree".to_string(),
@@ -92,6 +93,10 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
         }
         // TODO: Fix bindings
         Element::SumItem(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::ItemWithSumItem(item, ..) => {
+            let js_buffer = JsBuffer::external(cx, item);
+            js_buffer.upcast()
+        }
         Element::Reference(..) => nested_vecs_to_js(vec![], cx)?,
         Element::Tree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::SumTree(..) => nested_vecs_to_js(vec![], cx)?,

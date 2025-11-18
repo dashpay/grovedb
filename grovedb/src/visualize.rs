@@ -133,6 +133,17 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::ItemWithSumItem(value, sum_value, flags) => {
+                drawer.write(b"item_with_sum_item: ")?;
+                drawer = value.visualize(drawer)?;
+                drawer.write(format!(" {sum_value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

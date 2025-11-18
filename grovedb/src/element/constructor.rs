@@ -97,6 +97,22 @@ impl Element {
     }
 
     #[cfg(feature = "minimal")]
+    /// Set element to a sum item without flags
+    pub fn new_item_with_sum_item(item_value: Vec<u8>, sum_value: i64) -> Self {
+        Element::ItemWithSumItem(item_value, sum_value, None)
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Set element to a sum item with flags
+    pub fn new_item_with_sum_item_with_flags(
+        item_value: Vec<u8>,
+        sum_value: i64,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ItemWithSumItem(item_value, sum_value, flags)
+    }
+
+    #[cfg(feature = "minimal")]
     /// Set element to a reference without flags
     pub fn new_reference(reference_path: ReferencePathType) -> Self {
         Element::Reference(reference_path, None, None)

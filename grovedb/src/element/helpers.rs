@@ -44,7 +44,9 @@ impl Element {
     /// everything else
     pub fn sum_value_or_default(&self) -> i64 {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => *sum_value,
+            Element::SumItem(sum_value, _)
+            | Element::ItemWithSumItem(_, sum_value, _)
+            | Element::SumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
@@ -64,7 +66,9 @@ impl Element {
     /// everything else
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => (1, *sum_value),
+            Element::SumItem(sum_value, _)
+            | Element::ItemWithSumItem(_, sum_value, _)
+            | Element::SumTree(_, sum_value, _) => (1, *sum_value),
             Element::CountTree(_, count_value, _) => (*count_value, 0),
             Element::CountSumTree(_, count_value, sum_value, _) => (*count_value, *sum_value),
             _ => (1, 0),
@@ -76,9 +80,9 @@ impl Element {
     /// everything else
     pub fn big_sum_value_or_default(&self) -> i128 {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => {
-                *sum_value as i128
-            }
+            Element::SumItem(sum_value, _)
+            | Element::ItemWithSumItem(_, sum_value, _)
+            | Element::SumTree(_, sum_value, _) => *sum_value as i128,
             Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
@@ -89,6 +93,7 @@ impl Element {
     pub fn as_sum_item_value(&self) -> Result<i64, Error> {
         match self {
             Element::SumItem(value, _) => Ok(*value),
+            Element::ItemWithSumItem(_, value, _) => Ok(*value),
             _ => Err(Error::WrongElementType("expected a sum item")),
         }
     }
@@ -98,6 +103,7 @@ impl Element {
     pub fn into_sum_item_value(self) -> Result<i64, Error> {
         match self {
             Element::SumItem(value, _) => Ok(value),
+            Element::ItemWithSumItem(_, value, _) => Ok(value),
             _ => Err(Error::WrongElementType("expected a sum item")),
         }
     }
@@ -125,6 +131,7 @@ impl Element {
     pub fn as_item_bytes(&self) -> Result<&[u8], Error> {
         match self {
             Element::Item(value, _) => Ok(value),
+            Element::ItemWithSumItem(value, ..) => Ok(value),
             _ => Err(Error::WrongElementType("expected an item")),
         }
     }
@@ -134,6 +141,7 @@ impl Element {
     pub fn into_item_bytes(self) -> Result<Vec<u8>, Error> {
         match self {
             Element::Item(value, _) => Ok(value),
+            Element::ItemWithSumItem(value, ..) => Ok(value),
             _ => Err(Error::WrongElementType("expected an item")),
         }
     }
@@ -268,7 +276,10 @@ impl Element {
     #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is an item
     pub fn is_any_item(&self) -> bool {
-        matches!(self, Element::Item(..) | Element::SumItem(..))
+        matches!(
+            self,
+            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..)
+        )
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -278,9 +289,21 @@ impl Element {
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Check if the element is an item
+    pub fn has_basic_item(&self) -> bool {
+        matches!(self, Element::Item(..) | Element::ItemWithSumItem(..))
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a sum item
     pub fn is_sum_item(&self) -> bool {
-        matches!(self, Element::SumItem(..))
+        matches!(self, Element::SumItem(..) | Element::ItemWithSumItem(..))
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Check if the element is a sum item
+    pub fn is_item_with_sum_item(&self) -> bool {
+        matches!(self, Element::ItemWithSumItem(..))
     }
 
     #[cfg(feature = "minimal")]
@@ -309,7 +332,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -324,7 +348,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -339,7 +364,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -354,7 +380,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => *flags = new_flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => *flags = new_flags,
         }
     }
 
@@ -482,6 +509,19 @@ impl Element {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::node_value_byte_cost_size(key_len, value_len, node_type)
+            }
+            Element::ItemWithSumItem(item_value, _, flags) => {
+                let item_value_len = item_value.len() as u32;
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = item_value_len
+                    + item_value_len.required_space() as u32
+                    + SUM_ITEM_COST_SIZE
+                    + flags_len;
                 let key_len = key.len() as u32;
                 KV::node_value_byte_cost_size(key_len, value_len, node_type)
             }

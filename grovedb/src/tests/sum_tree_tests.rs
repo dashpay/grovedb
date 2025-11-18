@@ -2,11 +2,9 @@
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
     use grovedb_merk::{
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
-        TreeFeatureType,
         TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
     };
     use grovedb_storage::StorageBatch;

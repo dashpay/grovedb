@@ -613,6 +613,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             value,
             element_flags,
         },
+        crate::Element::ItemWithSumItem(value, sum_value, element_flags) => {
+            grovedbg_types::Element::ItemWithSumItem {
+                value,
+                sum_value,
+                element_flags,
+            }
+        }
         crate::Element::SumTree(root_key, sum, element_flags) => grovedbg_types::Element::Sumtree {
             root_key,
             sum,
