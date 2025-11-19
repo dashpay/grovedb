@@ -996,7 +996,7 @@ where
         };
 
         match element {
-            Element::Item(..) | Element::SumItem(..) => {
+            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                 let serialized =
                     cost_return_on_error_no_add!(cost, element.serialize(grove_version));
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
@@ -1074,7 +1074,7 @@ where
                 | GroveOp::Replace { element }
                 | GroveOp::Patch { element, .. } => {
                     match element {
-                        Element::Item(..) | Element::SumItem(..) => {
+                        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let serialized = cost_return_on_error_no_add!(
                                 cost,
                                 element.serialize(grove_version)
@@ -1149,7 +1149,7 @@ where
                     }
                 }
                 GroveOp::InsertOnly { element } => match element {
-                    Element::Item(..) | Element::SumItem(..) => {
+                    Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let serialized =
                             cost_return_on_error_no_add!(cost, element.serialize(grove_version));
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
@@ -1368,7 +1368,7 @@ where
                             )
                         );
                     }
-                    Element::Item(..) | Element::SumItem(..) => {
+                    Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
@@ -1678,6 +1678,18 @@ where
                                         let sum_item_value_cost = SUM_ITEM_COST_SIZE
                                             + flags_len
                                             + flags_len.required_space() as u32;
+                                        Ok((
+                                            true,
+                                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
+                                        ))
+                                    }
+                                    Element::ItemWithSumItem(item_value, ..) => {
+                                        let item_len = item_value.len() as u32;
+                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
+                                            + flags_len
+                                            + flags_len.required_space() as u32
+                                            + item_len
+                                            + item_len.required_space() as u32;
                                         Ok((
                                             true,
                                             Some(SpecializedValueDefinedCost(sum_item_value_cost)),

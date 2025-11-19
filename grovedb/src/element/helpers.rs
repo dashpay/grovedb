@@ -44,7 +44,9 @@ impl Element {
     /// everything else
     pub fn sum_value_or_default(&self) -> i64 {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => *sum_value,
+            Element::SumItem(sum_value, _)
+            | Element::ItemWithSumItem(_, sum_value, _)
+            | Element::SumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
@@ -64,7 +66,9 @@ impl Element {
     /// everything else
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => (1, *sum_value),
+            Element::SumItem(sum_value, _)
+            | Element::ItemWithSumItem(_, sum_value, _)
+            | Element::SumTree(_, sum_value, _) => (1, *sum_value),
             Element::CountTree(_, count_value, _) => (*count_value, 0),
             Element::CountSumTree(_, count_value, sum_value, _) => (*count_value, *sum_value),
             _ => (1, 0),
@@ -76,9 +80,9 @@ impl Element {
     /// everything else
     pub fn big_sum_value_or_default(&self) -> i128 {
         match self {
-            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => {
-                *sum_value as i128
-            }
+            Element::SumItem(sum_value, _)
+            | Element::ItemWithSumItem(_, sum_value, _)
+            | Element::SumTree(_, sum_value, _) => *sum_value as i128,
             Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
@@ -89,6 +93,7 @@ impl Element {
     pub fn as_sum_item_value(&self) -> Result<i64, Error> {
         match self {
             Element::SumItem(value, _) => Ok(*value),
+            Element::ItemWithSumItem(_, value, _) => Ok(*value),
             _ => Err(Error::WrongElementType("expected a sum item")),
         }
     }
@@ -98,6 +103,7 @@ impl Element {
     pub fn into_sum_item_value(self) -> Result<i64, Error> {
         match self {
             Element::SumItem(value, _) => Ok(value),
+            Element::ItemWithSumItem(_, value, _) => Ok(value),
             _ => Err(Error::WrongElementType("expected a sum item")),
         }
     }
@@ -125,6 +131,7 @@ impl Element {
     pub fn as_item_bytes(&self) -> Result<&[u8], Error> {
         match self {
             Element::Item(value, _) => Ok(value),
+            Element::ItemWithSumItem(value, ..) => Ok(value),
             _ => Err(Error::WrongElementType("expected an item")),
         }
     }
@@ -134,6 +141,7 @@ impl Element {
     pub fn into_item_bytes(self) -> Result<Vec<u8>, Error> {
         match self {
             Element::Item(value, _) => Ok(value),
+            Element::ItemWithSumItem(value, ..) => Ok(value),
             _ => Err(Error::WrongElementType("expected an item")),
         }
     }
@@ -268,7 +276,10 @@ impl Element {
     #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is an item
     pub fn is_any_item(&self) -> bool {
-        matches!(self, Element::Item(..) | Element::SumItem(..))
+        matches!(
+            self,
+            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..)
+        )
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -278,9 +289,21 @@ impl Element {
     }
 
     #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Check if the element is an item
+    pub fn has_basic_item(&self) -> bool {
+        matches!(self, Element::Item(..) | Element::ItemWithSumItem(..))
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Check if the element is a sum item
     pub fn is_sum_item(&self) -> bool {
-        matches!(self, Element::SumItem(..))
+        matches!(self, Element::SumItem(..) | Element::ItemWithSumItem(..))
+    }
+
+    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Check if the element is a sum item
+    pub fn is_item_with_sum_item(&self) -> bool {
+        matches!(self, Element::ItemWithSumItem(..))
     }
 
     #[cfg(feature = "minimal")]
@@ -309,7 +332,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -324,7 +348,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -339,7 +364,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -354,7 +380,8 @@ impl Element {
             | Element::BigSumTree(.., flags)
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
-            | Element::CountSumTree(.., flags) => *flags = new_flags,
+            | Element::CountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => *flags = new_flags,
         }
     }
 
@@ -485,6 +512,19 @@ impl Element {
                 let key_len = key.len() as u32;
                 KV::node_value_byte_cost_size(key_len, value_len, node_type)
             }
+            Element::ItemWithSumItem(item_value, _, flags) => {
+                let item_value_len = item_value.len() as u32;
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = item_value_len
+                    + item_value_len.required_space() as u32
+                    + SUM_ITEM_COST_SIZE
+                    + flags_len;
+                let key_len = key.len() as u32;
+                KV::node_value_byte_cost_size(key_len, value_len, node_type)
+            }
             _ => KV::node_value_byte_cost_size(key.len() as u32, value.len() as u32, node_type),
         };
         Ok(cost)
@@ -492,7 +532,7 @@ impl Element {
 
     #[cfg(feature = "minimal")]
     /// Get tree cost for the element
-    pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
+    fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         check_grovedb_v0!(
             "get_specialized_cost",
             grove_version.grovedb_versions.element.get_specialized_cost
@@ -501,12 +541,53 @@ impl Element {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
-            Element::SumItem(..) => Ok(SUM_ITEM_COST_SIZE),
+            Element::SumItem(..) | Element::ItemWithSumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             Element::CountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
+        }
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Get the value defined cost for a serialized value item with sum item or
+    /// sum item
+    pub fn specialized_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
+        let value_cost = self.get_specialized_cost(grove_version).ok()?;
+
+        let cost = value_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        match self {
+            Element::SumItem(..) => Some(cost),
+            Element::ItemWithSumItem(item, ..) => {
+                let item_len = item.len() as u32;
+                Some(cost + item_len + item_len.required_space() as u32)
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Get the value defined cost for a serialized value item with a tree
+    pub fn layered_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
+        let value_cost = self.get_specialized_cost(grove_version).ok()?;
+
+        let cost = value_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        match self {
+            Element::Tree(..)
+            | Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountTree(..)
+            | Element::CountSumTree(..) => Some(cost),
+            _ => None,
         }
     }
 
@@ -527,6 +608,12 @@ impl Element {
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
+            Element::ItemWithSumItem(item, ..) => {
+                let item_len = item.len() as u32;
+                Some(SpecializedValueDefinedCost(
+                    cost + item_len + item_len.required_space() as u32,
+                ))
+            }
             _ => None,
         }
     }
@@ -554,4 +641,52 @@ pub fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element,
     .map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice(), grove_version)?;
     Ok(element)
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_merk::tree::kv::ValueDefinedCostType::SpecializedValueDefinedCost;
+    use grovedb_version::version::GroveVersion;
+
+    use super::*;
+
+    #[test]
+    fn item_with_sum_item_helpers_cover_all_behaviors() {
+        let grove_version = GroveVersion::latest();
+        let flags = Some(vec![1, 2, 3]);
+        let element = Element::ItemWithSumItem(b"payload".to_vec(), 42, flags.clone());
+
+        assert!(element.is_any_item());
+        assert!(element.has_basic_item());
+        assert!(element.is_sum_item());
+        assert!(element.is_item_with_sum_item());
+        assert_eq!(element.sum_value_or_default(), 42);
+        assert_eq!(element.count_sum_value_or_default(), (1, 42));
+        assert_eq!(element.big_sum_value_or_default(), 42);
+        assert_eq!(element.as_item_bytes().unwrap(), b"payload");
+        assert_eq!(
+            element.clone().into_item_bytes().unwrap(),
+            b"payload".to_vec()
+        );
+        assert_eq!(element.as_sum_item_value().unwrap(), 42);
+        assert_eq!(element.clone().into_sum_item_value().unwrap(), 42);
+        assert_eq!(element.get_flags(), &flags);
+
+        let serialized = element.serialize(grove_version).expect("serialize element");
+        let deserialized =
+            Element::deserialize(&serialized, grove_version).expect("deserialize element");
+        assert_eq!(deserialized, element);
+
+        let explicit_cost = element.value_defined_cost(grove_version).unwrap();
+        let derived_cost =
+            Element::value_defined_cost_for_serialized_value(&serialized, grove_version)
+                .expect("cost for serialized element");
+        match (explicit_cost, derived_cost) {
+            (SpecializedValueDefinedCost(explicit), SpecializedValueDefinedCost(derived)) => {
+                assert!(explicit > 0);
+                assert_eq!(explicit, derived);
+            }
+            _ => panic!("unexpected cost type"),
+        }
+    }
 }

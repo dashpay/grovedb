@@ -208,6 +208,15 @@ impl Element {
                     NodeType::NormalNode,
                 ) as u64
             }
+            Some(Element::ItemWithSumItem(..)) => {
+                // This should not be possible because v0 wouldn't have ItemWithSumItem
+                let cost_size = SUM_ITEM_COST_SIZE;
+                cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
+                    key_ref.len() as u32,
+                    value.as_ref().unwrap().len() as u32 + cost_size,
+                    NodeType::NormalNode,
+                ) as u64
+            }
             Some(Element::Tree(_, flags))
             | Some(Element::SumTree(_, _, flags))
             | Some(Element::BigSumTree(_, _, flags))
@@ -289,6 +298,19 @@ impl Element {
                 cost.storage_loaded_bytes =
                     KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, node_type) as u64
                 // this is changed to sum node in v1
+            }
+            Element::ItemWithSumItem(item_value, _, flags) => {
+                let item_value_len = item_value.len() as u32;
+
+                let cost_size = SUM_ITEM_COST_SIZE;
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len =
+                    item_value_len + item_value_len.required_space() as u32 + cost_size + flags_len;
+                cost.storage_loaded_bytes =
+                    KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, node_type) as u64
             }
             Element::Tree(_, flags)
             | Element::SumTree(_, _, flags)

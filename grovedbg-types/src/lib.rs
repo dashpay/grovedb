@@ -158,6 +158,13 @@ pub enum Element {
         #[serde_as(as = "Option<Base64>")]
         element_flags: Option<Vec<u8>>,
     },
+    ItemWithSumItem {
+        #[serde_as(as = "Base64")]
+        value: Vec<u8>,
+        sum_item_value: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
     Reference(Reference),
 }
 

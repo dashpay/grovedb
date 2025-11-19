@@ -2,11 +2,9 @@
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
     use grovedb_merk::{
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
-        TreeFeatureType,
         TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
     };
     use grovedb_storage::StorageBatch;
@@ -235,6 +233,81 @@ mod tests {
             .unwrap(),
             Err(Error::InvalidInput("cannot add sum item to non sum tree"))
         ));
+        assert!(matches!(
+            db.insert(
+                [TEST_LEAF, b"sumkey"].as_ref(),
+                b"k2",
+                Element::ItemWithSumItem(b"value".to_vec(), 10, None),
+                None,
+                None,
+                grove_version
+            )
+            .unwrap(),
+            Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+        ));
+    }
+
+    #[test]
+    fn test_item_with_sum_item_updates_sum_tree_sum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sum_mixed",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        db.insert(
+            [TEST_LEAF, b"sum_mixed"].as_ref(),
+            b"alpha",
+            Element::ItemWithSumItem(b"payload".to_vec(), 6, None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum");
+
+        let mut assert_sum = |expected_sum: i64| {
+            let element = db
+                .get([TEST_LEAF].as_ref(), b"sum_mixed", None, grove_version)
+                .unwrap()
+                .expect("should fetch sum tree");
+            match element {
+                Element::SumTree(_, sum, _) => assert_eq!(sum, expected_sum),
+                _ => panic!("expected sum tree"),
+            }
+        };
+
+        assert_sum(6);
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"sum_mixed".to_vec()],
+            b"alpha".to_vec(),
+            Element::ItemWithSumItem(b"updated".to_vec(), -9, Some(vec![5])),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("should replace item with sum");
+
+        assert_sum(-9);
+
+        db.delete(
+            [TEST_LEAF, b"sum_mixed"].as_ref(),
+            b"alpha",
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should delete item");
+
+        assert_sum(0);
     }
 
     #[test]

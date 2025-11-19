@@ -138,6 +138,8 @@ pub enum Element {
     CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
     /// Combines Element::SumTree and Element::CountTree
     CountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+    /// An ordinary value with a sum value
+    ItemWithSumItem(Vec<u8>, SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Display for Element {
@@ -229,6 +231,17 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::ItemWithSumItem(data, sum_value, flags) => {
+                write!(
+                    f,
+                    "ItemWithSumItem({} , {}{})",
+                    hex_to_ascii(data),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -244,6 +257,7 @@ impl Element {
             Element::BigSumTree(..) => "big sum tree",
             Element::CountTree(..) => "count tree",
             Element::CountSumTree(..) => "count sum tree",
+            Element::ItemWithSumItem(..) => "item with sum item",
         }
     }
 
