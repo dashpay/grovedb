@@ -37,15 +37,12 @@ impl Element {
 
         let merk_feature_type =
             cost_return_on_error_default!(self.get_feature_type(merk.tree_type));
-        let batch_operations = if matches!(self, SumItem(..)) {
-            let value_cost =
-                cost_return_on_error_default!(self.get_specialized_cost(grove_version));
-
-            let cost = value_cost
-                + self.get_flags().as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
+        let batch_operations = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
+            let cost = cost_return_on_error_default!(self
+                .specialized_value_defined_cost(grove_version)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "sum items should always have a value defined cost"
+                )));
             [(
                 key,
                 Op::PutWithSpecializedCost(serialized, cost, merk_feature_type),
@@ -97,15 +94,13 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = if matches!(self, SumItem(..)) {
-            let value_cost =
-                cost_return_on_error_default!(self.get_specialized_cost(grove_version));
+        let entry = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
+            let cost = cost_return_on_error_default!(self
+                .specialized_value_defined_cost(grove_version)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "sum items should always have a value defined cost"
+                )));
 
-            let cost = value_cost
-                + self.get_flags().as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
             (
                 key,
                 Op::PutWithSpecializedCost(serialized, cost, feature_type),
@@ -453,13 +448,11 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let tree_cost = cost_return_on_error_default!(self.get_specialized_cost(grove_version));
-
-        let cost = tree_cost
-            + self.get_flags().as_ref().map_or(0, |flags| {
-                let flags_len = flags.len() as u32;
-                flags_len + flags_len.required_space() as u32
-            });
+        let cost = cost_return_on_error_default!(self
+            .layered_value_defined_cost(grove_version)
+            .ok_or(Error::CorruptedCodeExecution(
+                "trees should always have a layered value defined cost"
+            )));
 
         // Replacing is more efficient, but should lead to the same costs
         let entry = if is_replace {

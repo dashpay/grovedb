@@ -532,7 +532,7 @@ impl Element {
 
     #[cfg(feature = "minimal")]
     /// Get tree cost for the element
-    pub fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
+    fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         check_grovedb_v0!(
             "get_specialized_cost",
             grove_version.grovedb_versions.element.get_specialized_cost
@@ -547,6 +547,47 @@ impl Element {
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
+        }
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Get the value defined cost for a serialized value item with sum item or
+    /// sum item
+    pub fn specialized_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
+        let value_cost = self.get_specialized_cost(grove_version).ok()?;
+
+        let cost = value_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        match self {
+            Element::SumItem(..) => Some(cost),
+            Element::ItemWithSumItem(item, ..) => {
+                let item_len = item.len() as u32;
+                Some(cost + item_len + item_len.required_space() as u32)
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "minimal")]
+    /// Get the value defined cost for a serialized value item with a tree
+    pub fn layered_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
+        let value_cost = self.get_specialized_cost(grove_version).ok()?;
+
+        let cost = value_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        match self {
+            Element::Tree(..)
+            | Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountTree(..)
+            | Element::CountSumTree(..) => Some(cost),
+            _ => None,
         }
     }
 
@@ -567,6 +608,12 @@ impl Element {
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
+            Element::ItemWithSumItem(item, ..) => {
+                let item_len = item.len() as u32;
+                Some(SpecializedValueDefinedCost(
+                    cost + item_len + item_len.required_space() as u32,
+                ))
+            }
             _ => None,
         }
     }
