@@ -28,10 +28,10 @@ jobs:
           # Publish all workspace crates
           cargo publish -p grovedb-version
           cargo publish -p grovedb-costs
+          cargo publish -p grovedb-visualize
           cargo publish -p grovedb-path
           cargo publish -p grovedb-storage
           cargo publish -p grovedb-epoch-based-storage-flags
           cargo publish -p grovedbg-types
-          cargo publish -p grovedb-visualize
           cargo publish -p grovedb-merk
           cargo publish -p grovedb
