@@ -541,7 +541,7 @@ impl Element {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
-            Element::SumItem(..) => Ok(SUM_ITEM_COST_SIZE),
+            Element::SumItem(..) | Element::ItemWithSumItem(..) => Ok(SUM_ITEM_COST_SIZE),
             Element::CountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
@@ -641,4 +641,52 @@ pub fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element,
     .map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice(), grove_version)?;
     Ok(element)
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_merk::tree::kv::ValueDefinedCostType::SpecializedValueDefinedCost;
+    use grovedb_version::version::GroveVersion;
+
+    use super::*;
+
+    #[test]
+    fn item_with_sum_item_helpers_cover_all_behaviors() {
+        let grove_version = GroveVersion::latest();
+        let flags = Some(vec![1, 2, 3]);
+        let element = Element::ItemWithSumItem(b"payload".to_vec(), 42, flags.clone());
+
+        assert!(element.is_any_item());
+        assert!(element.has_basic_item());
+        assert!(element.is_sum_item());
+        assert!(element.is_item_with_sum_item());
+        assert_eq!(element.sum_value_or_default(), 42);
+        assert_eq!(element.count_sum_value_or_default(), (1, 42));
+        assert_eq!(element.big_sum_value_or_default(), 42);
+        assert_eq!(element.as_item_bytes().unwrap(), b"payload");
+        assert_eq!(
+            element.clone().into_item_bytes().unwrap(),
+            b"payload".to_vec()
+        );
+        assert_eq!(element.as_sum_item_value().unwrap(), 42);
+        assert_eq!(element.clone().into_sum_item_value().unwrap(), 42);
+        assert_eq!(element.get_flags(), &flags);
+
+        let serialized = element.serialize(grove_version).expect("serialize element");
+        let deserialized =
+            Element::deserialize(&serialized, grove_version).expect("deserialize element");
+        assert_eq!(deserialized, element);
+
+        let explicit_cost = element.value_defined_cost(grove_version).unwrap();
+        let derived_cost =
+            Element::value_defined_cost_for_serialized_value(&serialized, grove_version)
+                .expect("cost for serialized element");
+        match (explicit_cost, derived_cost) {
+            (SpecializedValueDefinedCost(explicit), SpecializedValueDefinedCost(derived)) => {
+                assert!(explicit > 0);
+                assert_eq!(explicit, derived);
+            }
+            _ => panic!("unexpected cost type"),
+        }
+    }
 }

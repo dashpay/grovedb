@@ -146,6 +146,17 @@ pub fn js_array_of_buffers_to_vec<'a, C: Context<'a>>(
     Ok(vec)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn element_to_string_identifies_item_with_sum_item() {
+        let element = Element::ItemWithSumItem(b"node".to_vec(), 4, Some(vec![1]));
+        assert_eq!(element_to_string(element), "item_with_sum_item");
+    }
+}
+
 /// Convert js value to option
 pub fn js_value_to_option<'a, T: Value, C: Context<'a>>(
     js_value: Handle<'a, JsValue>,

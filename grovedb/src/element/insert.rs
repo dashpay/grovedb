@@ -392,14 +392,14 @@ impl Element {
         let merk_feature_type =
             cost_return_on_error_no_add!(cost, self.get_feature_type(merk.tree_type));
 
-        let tree_cost =
-            cost_return_on_error_no_add!(cost, self.get_specialized_cost(grove_version));
+        let cost = cost_return_on_error_no_add!(
+            cost,
+            self.layered_value_defined_cost(grove_version)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "trees should always have a layered value defined cost"
+                ))
+        );
 
-        let cost = tree_cost
-            + self.get_flags().as_ref().map_or(0, |flags| {
-                let flags_len = flags.len() as u32;
-                flags_len + flags_len.required_space() as u32
-            });
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),

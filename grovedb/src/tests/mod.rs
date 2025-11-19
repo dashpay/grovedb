@@ -2947,6 +2947,53 @@ mod tests {
     }
 
     #[test]
+    fn test_path_query_proof_contains_item_with_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"proof_sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        let payload = b"sum-proof".to_vec();
+        let flags = Some(vec![7, 8]);
+        let expected_element = Element::ItemWithSumItem(payload.clone(), 11, flags.clone());
+        db.insert(
+            [TEST_LEAF, b"proof_sum_tree"].as_ref(),
+            b"node",
+            expected_element.clone(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum for proofs");
+
+        let mut query = Query::new();
+        query.insert_key(b"node".to_vec());
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"proof_sum_tree".to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+        let (hash, result_set) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version).expect("verify proof");
+        assert_eq!(hash, db.root_hash(None, grove_version).unwrap().unwrap());
+        assert_eq!(result_set.len(), 1);
+        let element = Element::deserialize(&result_set[0].value, grove_version)
+            .expect("proof should contain deserializable element");
+        assert_eq!(element, expected_element);
+    }
+
+    #[test]
     fn test_path_query_proofs_with_direction() {
         let grove_version = GroveVersion::latest();
         let temp_db = make_deep_tree(grove_version);
