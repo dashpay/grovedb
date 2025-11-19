@@ -97,16 +97,16 @@ impl Element {
     }
 
     #[cfg(feature = "minimal")]
-    /// Set element to a sum item without flags
-    pub fn new_item_with_sum_item(item_value: Vec<u8>, sum_value: i64) -> Self {
+    /// Set element to an item with sum value (no flags)
+    pub fn new_item_with_sum_item(item_value: Vec<u8>, sum_value: SumValue) -> Self {
         Element::ItemWithSumItem(item_value, sum_value, None)
     }
 
     #[cfg(feature = "minimal")]
-    /// Set element to a sum item with flags
+    /// Set element to an item with sum value and flags
     pub fn new_item_with_sum_item_with_flags(
         item_value: Vec<u8>,
-        sum_value: i64,
+        sum_value: SumValue,
         flags: Option<ElementFlags>,
     ) -> Self {
         Element::ItemWithSumItem(item_value, sum_value, flags)
