@@ -515,7 +515,7 @@ GroveDB is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 ## Support
 
 - [GitHub Issues](https://github.com/dashevo/grovedb/issues)
-- [Discord](https://discord.gg/dash)
+- [Discord](https://discordapp.com/invite/PXbUxJB)
 - [Documentation](https://dashplatform.readme.io)
 
 ## Acknowledgments
