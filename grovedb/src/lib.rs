@@ -1096,7 +1096,7 @@ impl GroveDb {
                         grove_version,
                     )?);
                 }
-                Element::Item(..) | Element::SumItem(..) => {
+                Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

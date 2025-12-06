@@ -105,6 +105,30 @@ mod tests {
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "030a00");
 
+        let item = Element::new_item_with_sum_item("abc".as_bytes().to_vec(), 7);
+        let serialized = item
+            .serialize(grove_version)
+            .expect("expected to serialize ItemWithSumItem");
+        assert_eq!(
+            Element::deserialize(&serialized, grove_version)
+                .expect("should deserialize ItemWithSumItem"),
+            item
+        );
+
+        let item = Element::new_item_with_sum_item_with_flags(
+            hex::decode("abcd").expect("expected to decode"),
+            -3,
+            Some(vec![9, 8, 7]),
+        );
+        let serialized = item
+            .serialize(grove_version)
+            .expect("expected to serialize ItemWithSumItem");
+        assert_eq!(
+            Element::deserialize(&serialized, grove_version)
+                .expect("should deserialize ItemWithSumItem"),
+            item
+        );
+
         let item = Element::new_item_with_flags(
             hex::decode("abcdef").expect("expected to decode"),
             Some(vec![1]),

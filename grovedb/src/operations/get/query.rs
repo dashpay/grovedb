@@ -37,11 +37,14 @@ pub enum QueryItemOrSumReturnType {
     CountValue(CountValue),
     /// A count and sum value
     CountSumValue(CountValue, SumValue),
+    /// an Item in serialized form with a Sum Value
+    ItemDataWithSumValue(Vec<u8>, SumValue),
 }
 
 #[cfg(feature = "minimal")]
 impl GroveDb {
     /// Encoded query for multiple path queries
+    #[deprecated]
     pub fn query_encoded_many(
         &self,
         path_queries: &[&PathQuery],
@@ -95,6 +98,7 @@ impl GroveDb {
 
                             match maybe_item {
                                 Element::Item(item, _) => Ok(item),
+                                Element::ItemWithSumItem(item, ..) => Ok(item),
                                 Element::SumItem(value, _) => Ok(value.encode_var_vec()),
                                 _ => {
                                     Err(Error::InvalidQuery("the reference must result in an item"))
@@ -229,6 +233,7 @@ where {
             }
             Element::Item(..)
             | Element::SumItem(..)
+            | Element::ItemWithSumItem(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountTree(..)
@@ -283,6 +288,7 @@ where {
 
     /// Queries the backing store and returns element items by their value,
     /// Sum Items are encoded as var vec
+    #[deprecated(note = "use `query_item_value_or_sum` instead")]
     pub fn query_item_value(
         &self,
         path_query: &PathQuery,
@@ -338,7 +344,8 @@ where {
                                         .unwrap_add_cost(&mut cost)?;
 
                                     match maybe_item {
-                                        Element::Item(item, _) => Ok(item),
+                                        Element::Item(item, _)
+                                        | Element::ItemWithSumItem(item, ..) => Ok(item),
                                         Element::SumItem(item, _) => Ok(item.encode_var_vec()),
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
@@ -350,7 +357,7 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(item),
+                        Element::Item(item, _) | Element::ItemWithSumItem(item, ..) => Ok(item),
                         Element::SumItem(item, _) => Ok(item.encode_var_vec()),
                         Element::Tree(..)
                         | Element::SumTree(..)
@@ -435,6 +442,11 @@ where {
                                         Element::SumItem(sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
+                                        Element::ItemWithSumItem(item, sum_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::ItemDataWithSumValue(
+                                                item, sum_value,
+                                            ))
+                                        }
                                         Element::SumTree(_, sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
@@ -467,6 +479,9 @@ where {
                         Element::SumItem(sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
+                        Element::ItemWithSumItem(item, sum_value, _) => Ok(
+                            QueryItemOrSumReturnType::ItemDataWithSumValue(item, sum_value),
+                        ),
                         Element::SumTree(_, sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
@@ -562,7 +577,9 @@ where {
                                 )),
                             }
                         }
-                        Element::SumItem(item, _) => Ok(item),
+                        Element::SumItem(item, _) | Element::ItemWithSumItem(_, item, _) => {
+                            Ok(item)
+                        }
                         Element::Tree(..)
                         | Element::SumTree(..)
                         | Element::BigSumTree(..)
@@ -586,6 +603,7 @@ where {
     }
 
     /// Returns result elements and number of elements skipped given path query
+    #[allow(clippy::too_many_arguments)]
     pub fn query_raw(
         &self,
         path_query: &PathQuery,

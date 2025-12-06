@@ -543,6 +543,7 @@ impl GroveDb {
                             | Element::ProvableCountTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
+                            | Element::ItemWithSumItem(..)
                             | Element::Reference(..) => {
                                 return Err(Error::InvalidProof(
                                     query.clone(),

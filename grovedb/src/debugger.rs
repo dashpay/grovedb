@@ -613,6 +613,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             value,
             element_flags,
         },
+        crate::Element::ItemWithSumItem(value, sum_value, element_flags) => {
+            grovedbg_types::Element::ItemWithSumItem {
+                value,
+                sum_item_value: sum_value,
+                element_flags,
+            }
+        }
         crate::Element::SumTree(root_key, sum, element_flags) => grovedbg_types::Element::Sumtree {
             root_key,
             sum,
@@ -687,4 +694,27 @@ fn node_to_update(
         value_hash,
         kv_digest_hash,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn element_to_grovedbg_converts_item_with_sum_item() {
+        let flags = Some(vec![1, 2, 3]);
+        let element = crate::Element::ItemWithSumItem(b"dbg".to_vec(), -5, flags.clone());
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ItemWithSumItem {
+                value,
+                sum_item_value,
+                element_flags,
+            } => {
+                assert_eq!(value, b"dbg");
+                assert_eq!(sum_item_value, -5);
+                assert_eq!(element_flags, flags);
+            }
+            _ => panic!("unexpected debugger conversion"),
+        }
+    }
 }
