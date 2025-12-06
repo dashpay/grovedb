@@ -469,33 +469,10 @@ impl GroveDb {
                                         );
                                         println!("  Parent tree type: {:?}", last_parent_tree_type);
                                     }
-                                    // Check if this is a layered reference
-                                    let is_layered_reference = matches!(
-                                        &element,
-                                        Element::Tree(Some(_), _)
-                                            | Element::SumTree(Some(_), ..)
-                                            | Element::BigSumTree(Some(_), ..)
-                                            | Element::CountTree(Some(_), ..)
-                                            | Element::CountSumTree(Some(_), ..)
-                                            | Element::ProvableCountTree(Some(_), ..)
-                                    );
-
-                                    let combined_root_hash = if is_layered_reference {
-                                        // For layered references, the hash in the proof (from
-                                        // KVValueHash)
-                                        // is already the combined value_hash that was stored in the
-                                        // tree node.
-                                        // This was calculated during storage as:
-                                        // combine_hash(value_hash(serialized_element),
-                                        // subtree_root_hash)
-                                        // We should use this hash directly for comparison.
-                                        hash.to_owned()
-                                    } else {
-                                        // For non-layered references, combine normally
+                                    let combined_root_hash =
                                         combine_hash(value_hash(value_bytes).value(), &lower_hash)
                                             .value()
-                                            .to_owned()
-                                    };
+                                            .to_owned();
 
                                     #[cfg(feature = "proof_debug")]
                                     {

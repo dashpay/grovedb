@@ -22,6 +22,7 @@ use crate::tree::tree_feature_type::TreeFeatureType::{
 };
 #[cfg(feature = "minimal")]
 use crate::tree_type::TreeType;
+use crate::TreeFeatureType::ProvableCountedMerkNode;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -50,7 +51,7 @@ impl TreeFeatureType {
             BigSummedMerkNode(_) => NodeType::BigSumNode,
             CountedMerkNode(_) => NodeType::CountNode,
             CountedSummedMerkNode(..) => NodeType::CountSumNode,
-            TreeFeatureType::ProvableCountedMerkNode(_) => NodeType::ProvableCountNode,
+            ProvableCountedMerkNode(_) => NodeType::ProvableCountNode,
         }
     }
 }
@@ -275,7 +276,7 @@ impl Decode for TreeFeatureType {
             }
             [5] => {
                 let encoded_count: u64 = input.read_varint()?;
-                Ok(TreeFeatureType::ProvableCountedMerkNode(encoded_count))
+                Ok(ProvableCountedMerkNode(encoded_count))
             }
             _ => Err(ed::Error::UnexpectedByte(55)),
         }
