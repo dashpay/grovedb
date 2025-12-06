@@ -58,9 +58,9 @@ use crate::proofs::{
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
-use crate::tree::{Fetch, Link, RefWalker};
-#[cfg(feature = "minimal")]
 use crate::tree::AggregateData;
+#[cfg(feature = "minimal")]
+use crate::tree::{Fetch, Link, RefWalker};
 #[cfg(feature = "minimal")]
 use crate::TreeFeatureType;
 
@@ -893,7 +893,8 @@ where
 
     /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
     /// root node
-    /// Note: For ProvableCountTree, uses aggregate count to match hash calculation
+    /// Note: For ProvableCountTree, uses aggregate count to match hash
+    /// calculation
     pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
         // For ProvableCountTree, we need to use the aggregate count (sum of self +
         // children) because the hash calculation uses aggregate_data(), not
@@ -931,7 +932,8 @@ where
 
     /// Creates a `Node::KVCount` from the key/value/count of the root node
     /// Used for ProvableCountTree
-    /// Note: Uses aggregate count (sum of self + children) to match hash calculation
+    /// Note: Uses aggregate count (sum of self + children) to match hash
+    /// calculation
     pub(crate) fn to_kv_count_node(&self) -> Node {
         let count = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => count,
@@ -946,7 +948,8 @@ where
 
     /// Creates a `Node::KVHashCount` from the kv hash and count of the root
     /// node Used for ProvableCountTree
-    /// Note: Uses aggregate count (sum of self + children) to match hash calculation
+    /// Note: Uses aggregate count (sum of self + children) to match hash
+    /// calculation
     pub(crate) fn to_kvhash_count_node(&self) -> Node {
         let count = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => count,

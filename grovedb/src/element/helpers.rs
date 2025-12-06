@@ -57,7 +57,7 @@ impl Element {
     pub fn count_value_or_default(&self) -> u64 {
         match self {
             Element::CountTree(_, count_value, _)
-            | Element::CountSumTree(_, count_value, _, _)
+            | Element::CountSumTree(_, count_value, ..)
             | Element::ProvableCountTree(_, count_value, _) => *count_value,
             _ => 1,
         }
