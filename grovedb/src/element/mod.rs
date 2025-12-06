@@ -243,6 +243,7 @@ impl fmt::Display for Element {
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
             }
             Element::ItemWithSumItem(data, sum_value, flags) => {
                 write!(

@@ -352,7 +352,7 @@ impl Element {
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags) => flags,
-            | Element::ItemWithSumItem(.., flags) => flags,
+            Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -369,7 +369,7 @@ impl Element {
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags) => flags,
-            | Element::ItemWithSumItem(.., flags) => flags,
+            Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -386,7 +386,7 @@ impl Element {
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags) => flags,
-            | Element::ItemWithSumItem(.., flags) => flags,
+            Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -403,7 +403,7 @@ impl Element {
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags) => *flags = new_flags,
-            | Element::ItemWithSumItem(.., flags) => *flags = new_flags,
+            Element::ItemWithSumItem(.., flags) => *flags = new_flags,
         }
     }
 
