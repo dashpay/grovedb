@@ -6,7 +6,7 @@ use grovedb_costs::{
 };
 use grovedb_element::Element;
 use grovedb_merk::{
-    element::{get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions},
+    element::{decode::ElementDecodeExtensions, get::ElementFetchFromStorageExtensions},
     error::MerkErrorExt,
     proofs::{query::query_item::QueryItem, Query},
 };

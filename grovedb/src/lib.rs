@@ -170,9 +170,11 @@ use grovedb_costs::cost_return_on_error_into;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "minimal")]
 use grovedb_merk::element::{
-    costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
-    insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions, ElementExt,
+    costs::ElementCostExtensions, decode::ElementDecodeExtensions,
+    get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+    tree_type::ElementTreeTypeExtensions, ElementExt,
 };
 #[cfg(feature = "estimated_costs")]
 pub use grovedb_merk::estimated_costs::{
@@ -193,7 +195,7 @@ use grovedb_merk::tree::kv::ValueDefinedCostType;
 pub use grovedb_merk::tree::AggregateData;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::tree::TreeFeatureType;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
@@ -971,7 +973,7 @@ impl GroveDb {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn start_transaction(&self) -> Transaction {
+    pub fn start_transaction(&self) -> Transaction<'_> {
         self.db.start_transaction()
     }
 

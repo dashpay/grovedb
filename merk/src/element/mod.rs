@@ -3,10 +3,17 @@ use grovedb_element::{error::ElementError, Element};
 
 use crate::tree::value_hash;
 
+#[cfg(feature = "minimal")]
 pub mod costs;
+#[cfg(feature = "minimal")]
+pub mod decode;
+#[cfg(feature = "minimal")]
 pub mod delete;
+#[cfg(feature = "minimal")]
 pub mod exists;
+#[cfg(feature = "minimal")]
 pub mod get;
+#[cfg(feature = "minimal")]
 pub mod insert;
 pub mod tree_type;
 

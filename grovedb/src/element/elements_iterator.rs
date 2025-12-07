@@ -2,7 +2,7 @@ use grovedb_costs::{
     cost_return_on_error_into_no_add, CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::Element;
-use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
+use grovedb_merk::element::decode::ElementDecodeExtensions;
 use grovedb_storage::RawIterator;
 use grovedb_version::version::GroveVersion;
 

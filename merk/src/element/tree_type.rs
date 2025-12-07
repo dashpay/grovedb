@@ -1,9 +1,6 @@
 use grovedb_element::{Element, ElementFlags};
-use grovedb_version::version::GroveVersion;
 
 use crate::{
-    element::costs::ElementCostExtensions,
-    tree::TreeNode,
     Error, MaybeTree, TreeFeatureType,
     TreeFeatureType::{
         BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode, SummedMerkNode,
@@ -35,9 +32,6 @@ pub trait ElementTreeTypeExtensions {
 
     /// Get the tree feature type
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error>;
-
-    /// Decode from bytes
-    fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element, Error>;
 }
 impl ElementTreeTypeExtensions for Element {
     /// Check if the element is a tree and return the root_tree info and tree
@@ -142,20 +136,6 @@ impl ElementTreeTypeExtensions for Element {
                 self.count_value_or_default(),
             )),
         }
-    }
-
-    /// Decode from bytes
-    // todo: rename as this is coming from the tree node
-    fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element, Error> {
-        let tree = TreeNode::decode_raw(
-            bytes,
-            vec![],
-            Some(Element::value_defined_cost_for_serialized_value),
-            grove_version,
-        )
-        .map_err(|e| Error::CorruptedData(e.to_string()))?;
-        let element: Element = Element::deserialize(tree.value_as_slice(), grove_version)?;
-        Ok(element)
     }
 }
 

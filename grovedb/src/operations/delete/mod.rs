@@ -20,8 +20,8 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::element::{
-    costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
-    tree_type::ElementTreeTypeExtensions,
+    costs::ElementCostExtensions, decode::ElementDecodeExtensions,
+    delete::ElementDeleteFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
