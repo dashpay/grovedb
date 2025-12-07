@@ -11,6 +11,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::po
 use grovedb_merk::{
     debugger::NodeDbg,
     proofs::{Decoder, Node, Op},
+    tree::value_hash,
     TreeFeatureType,
 };
 use grovedb_path::SubtreePath;
@@ -444,10 +445,11 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
         }
         Node::KVCount(key, value, count) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            let val_hash = value_hash(&value).unwrap();
             MerkProofNode::KVValueHashFeatureType(
                 key,
                 element_to_grovedbg(element),
-                [0u8; 32], // placeholder hash
+                val_hash,
                 grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
             )
         }
