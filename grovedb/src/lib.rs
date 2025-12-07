@@ -682,6 +682,19 @@ impl GroveDb {
                     None,
                     grove_version,
                 )
+            } else if let Element::ProvableCountTree(.., flag) = element {
+                let tree = Element::new_provable_count_tree_with_flags_and_count_value(
+                    maybe_root_key,
+                    aggregate_data.as_count_u64(),
+                    flag,
+                );
+                tree.insert_subtree(
+                    parent_tree,
+                    key.as_ref(),
+                    root_tree_hash,
+                    None,
+                    grove_version,
+                )
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -786,6 +799,25 @@ impl GroveDb {
                         maybe_root_key,
                         aggregate_data.as_count_u64(),
                         aggregate_data.as_sum_i64(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                } else if let Element::ProvableCountTree(.., flag) = element {
+                    let tree = Element::new_provable_count_tree_with_flags_and_count_value(
+                        maybe_root_key,
+                        aggregate_data.as_count_u64(),
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error!(
@@ -1016,7 +1048,8 @@ impl GroveDb {
                 | Element::Tree(..)
                 | Element::BigSumTree(..)
                 | Element::CountTree(..)
-                | Element::CountSumTree(..) => {
+                | Element::CountSumTree(..)
+                | Element::ProvableCountTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

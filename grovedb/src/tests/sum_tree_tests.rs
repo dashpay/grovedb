@@ -1861,7 +1861,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let (root_hash, parent, result_set) =
+        let (_root_hash, parent, result_set) =
             GroveDb::verify_query_get_parent_tree_info(&proof, &path_query, grove_version)
                 .expect("should verify proof");
 

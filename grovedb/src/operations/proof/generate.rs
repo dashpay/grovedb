@@ -247,7 +247,55 @@ impl GroveDb {
             done_with_results |= overall_limit == &Some(0);
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    Node::KV(key, value) | Node::KVValueHash(key, value, ..)
+                    // Handle KVValueHashFeatureType for tree types with subqueries
+                    // This is used when the parent tree is a ProvableCountTree
+                    Node::KVValueHashFeatureType(key, value, ..)
+                        if !done_with_results
+                            && query.has_subquery_or_matching_in_path_on_key(key) =>
+                    {
+                        let elem = Element::deserialize(value, grove_version);
+                        match elem {
+                            Ok(Element::Tree(Some(_), _))
+                            | Ok(Element::SumTree(Some(_), ..))
+                            | Ok(Element::BigSumTree(Some(_), ..))
+                            | Ok(Element::CountTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountTree(Some(_), ..)) => {
+                                #[cfg(feature = "proof_debug")]
+                                {
+                                    println!(
+                                        "found tree {} (via KVValueHashFeatureType), query is {}",
+                                        hex_to_ascii(key),
+                                        query
+                                    );
+                                }
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        grove_version,
+                                    )
+                                );
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+                            _ => continue,
+                        }
+                    }
+                    Node::KV(key, value)
+                    | Node::KVValueHash(key, value, ..)
+                    | Node::KVCount(key, value, _)
                         if !done_with_results =>
                     {
                         let elem = Element::deserialize(value, grove_version);
@@ -307,6 +355,8 @@ impl GroveDb {
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
                             | Ok(Element::CountTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -344,7 +394,12 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            Ok(Element::Tree(..)) | Ok(Element::SumTree(..))
+                            Ok(Element::Tree(..))
+                            | Ok(Element::SumTree(..))
+                            | Ok(Element::BigSumTree(..))
+                            | Ok(Element::CountTree(..))
+                            | Ok(Element::ProvableCountTree(..))
+                            | Ok(Element::CountSumTree(..))
                                 if !done_with_results =>
                             {
                                 #[cfg(feature = "proof_debug")]

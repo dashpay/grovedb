@@ -143,3 +143,29 @@ pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext
         ..Default::default()
     })
 }
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Hashes a node for ProvableCountTree, including the aggregate count
+pub fn node_hash_with_count(
+    kv: &CryptoHash,
+    left: &CryptoHash,
+    right: &CryptoHash,
+    count: u64,
+) -> CostContext<CryptoHash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(kv);
+    hasher.update(left);
+    hasher.update(right);
+    hasher.update(&count.to_be_bytes());
+
+    // hashes will always be 2
+    let hashes = 2; // 1 + (hasher.count() - 1) / 64;
+
+    let res = hasher.finalize();
+    let mut hash: CryptoHash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash.wrap_with_cost(OperationCost {
+        hash_node_calls: hashes,
+        ..Default::default()
+    })
+}

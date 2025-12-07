@@ -221,7 +221,8 @@ impl Element {
             | Some(Element::SumTree(_, _, flags))
             | Some(Element::BigSumTree(_, _, flags))
             | Some(Element::CountTree(_, _, flags))
-            | Some(Element::CountSumTree(.., flags)) => {
+            | Some(Element::CountSumTree(.., flags))
+            | Some(Element::ProvableCountTree(_, _, flags)) => {
                 let tree_cost_size = element.as_ref().unwrap().tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -316,7 +317,8 @@ impl Element {
             | Element::SumTree(_, _, flags)
             | Element::BigSumTree(_, _, flags)
             | Element::CountTree(_, _, flags)
-            | Element::CountSumTree(.., flags) => {
+            | Element::CountSumTree(.., flags)
+            | Element::ProvableCountTree(_, _, flags) => {
                 let tree_cost_size = element.tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;

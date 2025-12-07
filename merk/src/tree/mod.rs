@@ -46,8 +46,8 @@ use grovedb_costs::{
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH,
-    NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash,
+    CryptoHash, HASH_LENGTH, NULL_HASH,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -75,7 +75,7 @@ use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "minimal")]
-use crate::{error::Error, Error::Overflow};
+use crate::{error::Error, tree_type::TreeType, Error::Overflow};
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
@@ -464,6 +464,7 @@ impl TreeNode {
                     AggregateData::CountAndSum(c, s) => {
                         s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32
                     }
+                    AggregateData::ProvableCount(c) => c.encode_var_vec().len() as u32,
                 },
             )
         })
@@ -515,6 +516,7 @@ impl TreeNode {
                 )),
                 AggregateData::Count(_) => Ok(0),
                 AggregateData::CountAndSum(_, s) => Ok(s),
+                AggregateData::ProvableCount(_) => Ok(0),
             },
             _ => Ok(0),
         }
@@ -531,6 +533,7 @@ impl TreeNode {
                 AggregateData::BigSum(_) => Ok(0),
                 AggregateData::Count(c) => Ok(c),
                 AggregateData::CountAndSum(c, _) => Ok(c),
+                AggregateData::ProvableCount(c) => Ok(c),
             },
             _ => Ok(0),
         }
@@ -547,6 +550,7 @@ impl TreeNode {
                 AggregateData::BigSum(s) => s,
                 AggregateData::Count(_) => 0,
                 AggregateData::CountAndSum(_, s) => s as i128,
+                AggregateData::ProvableCount(_) => 0,
             },
             _ => 0,
         }
@@ -561,6 +565,32 @@ impl TreeNode {
             self.child_hash(true),
             self.child_hash(false),
         )
+    }
+
+    /// Computes and returns the hash of the root node, including aggregate data
+    /// for ProvableCountTree.
+    #[inline]
+    pub fn hash_for_link(&self, tree_type: TreeType) -> CostContext<CryptoHash> {
+        match tree_type {
+            TreeType::ProvableCountTree => {
+                // For ProvableCountTree, include the aggregate count in the hash
+                let aggregate_data = self
+                    .aggregate_data()
+                    .unwrap_or(AggregateData::NoAggregateData);
+                if let AggregateData::ProvableCount(count) = aggregate_data {
+                    node_hash_with_count(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        count,
+                    )
+                } else {
+                    // Fallback to regular hash if aggregate data is unexpected
+                    self.hash()
+                }
+            }
+            _ => self.hash(),
+        }
     }
 
     /// Computes and returns the hash of the root node.
@@ -610,6 +640,15 @@ impl TreeNode {
                     aggregated_count_value,
                     aggregated_sum_value,
                 ))
+            }
+            TreeFeatureType::ProvableCountedMerkNode(value) => {
+                let left = self.child_aggregate_count_data_as_u64(true)?;
+                let right = self.child_aggregate_count_data_as_u64(false)?;
+                value
+                    .checked_add(left)
+                    .and_then(|a| a.checked_add(right))
+                    .ok_or(Overflow("count is overflowing"))
+                    .map(AggregateData::ProvableCount)
             }
         }
     }
@@ -1031,8 +1070,19 @@ impl TreeNode {
                 cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
 
+                // Use special hash for ProvableCountTree
+                let hash = match &aggregate_data {
+                    AggregateData::ProvableCount(count) => node_hash_with_count(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *count,
+                    )
+                    .unwrap_add_cost(&mut cost),
+                    _ => tree.hash().unwrap_add_cost(&mut cost),
+                };
                 self.inner.left = Some(Link::Loaded {
-                    hash: tree.hash().unwrap_add_cost(&mut cost),
+                    hash,
                     tree,
                     child_heights,
                     aggregate_data,
@@ -1053,8 +1103,19 @@ impl TreeNode {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
+                // Use special hash for ProvableCountTree
+                let hash = match &aggregate_data {
+                    AggregateData::ProvableCount(count) => node_hash_with_count(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *count,
+                    )
+                    .unwrap_add_cost(&mut cost),
+                    _ => tree.hash().unwrap_add_cost(&mut cost),
+                };
                 self.inner.right = Some(Link::Loaded {
-                    hash: tree.hash().unwrap_add_cost(&mut cost),
+                    hash,
                     tree,
                     child_heights,
                     aggregate_data,
@@ -1129,6 +1190,12 @@ pub const fn side_to_str(left: bool) -> &'static str {
         "right"
     }
 }
+
+#[cfg(feature = "minimal")]
+#[cfg(test)]
+mod test_provable_count;
+#[cfg(test)]
+mod test_provable_count_edge_cases;
 
 #[cfg(feature = "minimal")]
 #[cfg(test)]

@@ -1020,7 +1020,8 @@ where
             | Element::SumTree(..)
             | Element::BigSumTree(..)
             | Element::CountTree(..)
-            | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::CountSumTree(..)
+            | Element::ProvableCountTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1142,7 +1143,8 @@ where
                         | Element::SumTree(..)
                         | Element::BigSumTree(..)
                         | Element::CountTree(..)
-                        | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
+                        | Element::CountSumTree(..)
+                        | Element::ProvableCountTree(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
@@ -1173,7 +1175,8 @@ where
                     | Element::SumTree(..)
                     | Element::BigSumTree(..)
                     | Element::CountTree(..)
-                    | Element::CountSumTree(..) => Err(Error::InvalidBatchOperation(
+                    | Element::CountSumTree(..)
+                    | Element::ProvableCountTree(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
@@ -1349,7 +1352,8 @@ where
                     | Element::SumTree(..)
                     | Element::BigSumTree(..)
                     | Element::CountTree(..)
-                    | Element::CountSumTree(..) => {
+                    | Element::CountSumTree(..)
+                    | Element::ProvableCountTree(..) => {
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
                             element
@@ -1571,6 +1575,13 @@ where
                                 flags,
                             )
                         }
+                        AggregateData::ProvableCount(count_value) => {
+                            Element::new_provable_count_tree_with_flags_and_count_value(
+                                root_key,
+                                count_value,
+                                flags,
+                            )
+                        }
                     };
                     let merk_feature_type =
                         cost_return_on_error_no_add!(cost, element.get_feature_type(in_tree_type));
@@ -1660,7 +1671,8 @@ where
                                     | Element::SumTree(..)
                                     | Element::BigSumTree(..)
                                     | Element::CountTree(..)
-                                    | Element::CountSumTree(..) => {
+                                    | Element::CountSumTree(..)
+                                    | Element::ProvableCountTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
                                         let tree_cost_size = match tree_type {
                                             TreeType::NormalTree => TREE_COST_SIZE,
@@ -1668,6 +1680,7 @@ where
                                             TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
                                             TreeType::CountTree => COUNT_TREE_COST_SIZE,
                                             TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
+                                            TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
                                         };
                                         let tree_value_cost = tree_cost_size
                                             + flags_len

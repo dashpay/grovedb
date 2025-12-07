@@ -17,6 +17,7 @@ pub enum TreeType {
     BigSumTree = 2,
     CountTree = 3,
     CountSumTree = 4,
+    ProvableCountTree = 5,
 }
 
 impl TryFrom<u8> for TreeType {
@@ -29,7 +30,8 @@ impl TryFrom<u8> for TreeType {
             2 => Ok(TreeType::BigSumTree),
             3 => Ok(TreeType::CountTree),
             4 => Ok(TreeType::CountSumTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 4", n))), // Error handling
+            5 => Ok(TreeType::ProvableCountTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 5", n))), // Error handling
         }
     }
 }
@@ -42,6 +44,7 @@ impl fmt::Display for TreeType {
             TreeType::BigSumTree => "Big Sum Tree",
             TreeType::CountTree => "Count Tree",
             TreeType::CountSumTree => "Count Sum Tree",
+            TreeType::ProvableCountTree => "Provable Count Tree",
         };
         write!(f, "{}", s)
     }
@@ -55,6 +58,7 @@ impl TreeType {
             TreeType::BigSumTree => true,
             TreeType::CountTree => false,
             TreeType::CountSumTree => true,
+            TreeType::ProvableCountTree => false,
         }
     }
 
@@ -66,6 +70,7 @@ impl TreeType {
             TreeType::BigSumTree => NodeType::BigSumNode,
             TreeType::CountTree => NodeType::CountNode,
             TreeType::CountSumTree => NodeType::CountSumNode,
+            TreeType::ProvableCountTree => NodeType::ProvableCountNode,
         }
     }
 
@@ -76,6 +81,7 @@ impl TreeType {
             TreeType::BigSumTree => TreeFeatureType::BigSummedMerkNode(0),
             TreeType::CountTree => TreeFeatureType::CountedMerkNode(0),
             TreeType::CountSumTree => TreeFeatureType::CountedSummedMerkNode(0, 0),
+            TreeType::ProvableCountTree => TreeFeatureType::ProvableCountedMerkNode(0),
         }
     }
 }

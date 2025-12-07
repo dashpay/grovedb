@@ -285,5 +285,14 @@ fn node_to_string(node: &Node) -> String {
             hex::encode(value_hash),
             feature_type
         ),
+        Node::KVCount(key, value, count) => format!(
+            "KVCount({}, {}, {})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value),
+            count
+        ),
+        Node::KVHashCount(kv_hash, count) => {
+            format!("KVHashCount(HASH[{}], {})", hex::encode(kv_hash), count)
+        }
     }
 }

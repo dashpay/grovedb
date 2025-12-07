@@ -86,7 +86,14 @@ where
         }
 
         // add current node's data
-        proof.push(Op::Push(self.to_kv_value_hash_feature_type_node()));
+        // For chunks, we always use value hash (not node hash)
+        // since chunks are for restoration, not query proofs
+        proof.push(Op::Push(Node::KVValueHashFeatureType(
+            self.tree().key().to_vec(),
+            self.tree().value_ref().to_vec(),
+            *self.tree().value_hash(),
+            self.tree().feature_type(),
+        )));
 
         if has_left_child {
             proof.push(Op::Parent);

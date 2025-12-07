@@ -6,7 +6,7 @@ use grovedb_merk::{
         Query,
     },
     tree::{combine_hash, value_hash},
-    CryptoHash, TreeFeatureType, TreeType,
+    CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
     check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
@@ -352,6 +352,18 @@ impl GroveDb {
                     format!("Invalid proof verification parameters: {}", e),
                 )
             })?;
+
+        #[cfg(feature = "proof_debug")]
+        {
+            println!(
+                "\nDEBUG: Layer proof verification at path {:?}",
+                current_path.iter().map(hex::encode).collect::<Vec<_>>()
+            );
+            println!("  Calculated root hash: {}", hex::encode(&root_hash));
+            if let Some(parent_type) = last_parent_tree_type {
+                println!("  Parent tree type: {:?}", parent_type);
+            }
+        }
         #[cfg(feature = "proof_debug")]
         {
             println!(
@@ -387,7 +399,8 @@ impl GroveDb {
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)
                             | Element::CountTree(Some(_), ..)
-                            | Element::CountSumTree(Some(_), ..) => {
+                            | Element::CountSumTree(Some(_), ..)
+                            | Element::ProvableCountTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -440,10 +453,50 @@ impl GroveDb {
                                         options,
                                         grove_version,
                                     )?;
+
+                                    #[cfg(feature = "proof_debug")]
+                                    {
+                                        println!("\nDEBUG: Lower layer verification completed");
+                                        println!(
+                                            "  Path: {:?}",
+                                            path.iter()
+                                                .map(|p| hex_to_ascii(p))
+                                                .collect::<Vec<_>>()
+                                        );
+                                        println!(
+                                            "  Lower layer root hash: {}",
+                                            hex::encode(&lower_hash)
+                                        );
+                                        println!("  Parent tree type: {:?}", last_parent_tree_type);
+                                    }
                                     let combined_root_hash =
                                         combine_hash(value_hash(value_bytes).value(), &lower_hash)
                                             .value()
                                             .to_owned();
+
+                                    #[cfg(feature = "proof_debug")]
+                                    {
+                                        println!("\nDEBUG: Tree element verification");
+                                        println!("  Key: {}", hex_to_ascii(key));
+                                        println!(
+                                            "  Element type: {:?}",
+                                            element.tree_feature_type()
+                                        );
+                                        println!("  Value bytes: {}", hex::encode(value_bytes));
+                                        println!(
+                                            "  Value bytes hash: {}",
+                                            hex::encode(value_hash(value_bytes).value())
+                                        );
+                                        println!(
+                                            "  Lower layer hash: {}",
+                                            hex::encode(&lower_hash)
+                                        );
+                                        println!(
+                                            "  Combined hash: {}",
+                                            hex::encode(&combined_root_hash)
+                                        );
+                                        println!("  Expected hash: {}", hex::encode(hash));
+                                    }
                                     if hash != &combined_root_hash {
                                         return Err(Error::InvalidProof(
                                             query.clone(),
@@ -464,6 +517,7 @@ impl GroveDb {
                             | Element::BigSumTree(None, ..)
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
+                            | Element::ProvableCountTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
