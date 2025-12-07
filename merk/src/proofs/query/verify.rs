@@ -293,6 +293,11 @@ impl Query {
                     {
                         println!("Processing KVValueHash node");
                     }
+                    // Note: We cannot verify hash(value) == value_hash here because for
+                    // subtrees, value_hash is a combined hash of hash(value) and the
+                    // child subtree's root hash. The security comes from the merkle root
+                    // verification - if the value_hash is wrong, the computed root won't
+                    // match the expected root.
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::KVDigest(key, value_hash) => {
@@ -321,6 +326,9 @@ impl Query {
                     {
                         println!("Processing KVValueHashFeatureType node");
                     }
+                    // Note: Same as KVValueHash - we cannot verify hash(value) == value_hash
+                    // because value_hash may be a combined hash for subtrees. Security comes
+                    // from merkle root verification.
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {

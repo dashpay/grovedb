@@ -65,6 +65,7 @@ pub mod error;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod estimated_costs;
 
+mod element;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree_type;
 #[cfg(feature = "minimal")]
