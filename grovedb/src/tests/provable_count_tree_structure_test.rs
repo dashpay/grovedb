@@ -1542,4 +1542,508 @@ mod tests {
         println!("  - Each node's hash includes its subtree's aggregate count");
         println!("  - Changing any count anywhere would invalidate the root hash");
     }
+
+    #[test]
+    fn test_nested_provable_count_trees_with_batch_operations() {
+        //! Test deeply nested ProvableCountTrees with batch operations across
+        //! multiple levels.
+        //!
+        //! Tree structure (before batch):
+        //! ```text
+        //!                              [root]
+        //!                                 |
+        //!                      ProvableCountTree("level0")
+        //!                       [initial count = 8]
+        //!                                 |
+        //!     +--------+--------+--------+--------+--------+
+        //!     |        |        |        |        |        |
+        //!  Item"a"  Item"b"  Item"c"  Item"d"  Item"e"  ProvableCountTree("level1")
+        //!                                                   [count = 3]
+        //!                                                      |
+        //!                              +--------+--------+--------+
+        //!                              |        |        |        |
+        //!                           Item"f"  Item"g"  ProvableCountTree("level2")
+        //!                                                   [count = 1]
+        //!                                                      |
+        //!                                                   Item"h"
+        //!
+        //! Count calculation (before batch):
+        //!   level2: 1 (just item h)
+        //!   level1: f(1) + g(1) + level2(1) = 3
+        //!   level0: a(1) + b(1) + c(1) + d(1) + e(1) + level1(3) = 8
+        //! ```
+        //!
+        //! After batch operation (adds 2 items to each level):
+        //! ```text
+        //!   level2: h + i + j = 3
+        //!   level1: f + g + level2(3) + k + l = 7
+        //!   level0: a + b + c + d + e + level1(7) + m + n = 14
+        //! ```
+
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // Keys
+        let level0 = b"level0";
+        let level1 = b"level1";
+        let level2 = b"level2";
+
+        // =================================================================
+        // PHASE 1: Build initial structure with individual inserts
+        // =================================================================
+        println!("\n======================================================================");
+        println!("PHASE 1: Building initial nested ProvableCountTree structure");
+        println!("======================================================================\n");
+
+        // Create level0 ProvableCountTree at root
+        db.insert(
+            &[] as &[&[u8]],
+            level0,
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert level0");
+
+        // Insert 5 items at level0
+        for key in &[b"a", b"b", b"c", b"d", b"e"] {
+            db.insert(
+                &[level0.as_slice()],
+                *key,
+                Element::new_item(format!("value_{}", String::from_utf8_lossy(*key)).into_bytes()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item at level0");
+        }
+
+        // Create level1 ProvableCountTree inside level0
+        db.insert(
+            &[level0.as_slice()],
+            level1,
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert level1");
+
+        // Insert 2 items at level1
+        for key in &[b"f", b"g"] {
+            db.insert(
+                &[level0.as_slice(), level1.as_slice()],
+                *key,
+                Element::new_item(format!("value_{}", String::from_utf8_lossy(*key)).into_bytes()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item at level1");
+        }
+
+        // Create level2 ProvableCountTree inside level1
+        db.insert(
+            &[level0.as_slice(), level1.as_slice()],
+            level2,
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert level2");
+
+        // Insert 1 item at level2
+        db.insert(
+            &[level0.as_slice(), level1.as_slice(), level2.as_slice()],
+            b"h",
+            Element::new_item(b"value_h".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item h at level2");
+
+        // =================================================================
+        // Verify initial counts
+        // =================================================================
+        println!("Verifying initial counts...\n");
+
+        // level2 should have count 1
+        let level2_elem = db
+            .get(
+                &[level0.as_slice(), level1.as_slice()],
+                level2,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get level2");
+
+        match &level2_elem {
+            Element::ProvableCountTree(_, count, _) => {
+                println!("level2 count: {} (expected: 1)", count);
+                assert_eq!(*count, 1, "level2 should have count 1");
+            }
+            _ => panic!("Expected ProvableCountTree for level2"),
+        }
+
+        // level1 should have count 3 (f + g + level2=1)
+        let level1_elem = db
+            .get(&[level0.as_slice()], level1, None, grove_version)
+            .unwrap()
+            .expect("get level1");
+
+        match &level1_elem {
+            Element::ProvableCountTree(_, count, _) => {
+                println!("level1 count: {} (expected: 3)", count);
+                assert_eq!(*count, 3, "level1 should have count 3");
+            }
+            _ => panic!("Expected ProvableCountTree for level1"),
+        }
+
+        // level0 should have count 8 (a+b+c+d+e + level1=3)
+        let level0_elem = db
+            .get(&[] as &[&[u8]], level0, None, grove_version)
+            .unwrap()
+            .expect("get level0");
+
+        match &level0_elem {
+            Element::ProvableCountTree(_, count, _) => {
+                println!("level0 count: {} (expected: 8)", count);
+                assert_eq!(*count, 8, "level0 should have count 8");
+            }
+            _ => panic!("Expected ProvableCountTree for level0"),
+        }
+
+        let root_hash_before = db.root_hash(None, grove_version).unwrap().unwrap();
+        println!(
+            "\nRoot hash before batch: {}",
+            hex::encode(root_hash_before)
+        );
+
+        // =================================================================
+        // PHASE 2: Batch operation - add 2 items to each level
+        // =================================================================
+        println!("\n======================================================================");
+        println!("PHASE 2: Executing batch operation across all levels");
+        println!("======================================================================\n");
+
+        let ops = vec![
+            // Add 2 items to level2
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![level0.to_vec(), level1.to_vec(), level2.to_vec()],
+                b"i".to_vec(),
+                Element::new_item(b"value_i".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![level0.to_vec(), level1.to_vec(), level2.to_vec()],
+                b"j".to_vec(),
+                Element::new_item(b"value_j".to_vec()),
+            ),
+            // Add 2 items to level1
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![level0.to_vec(), level1.to_vec()],
+                b"k".to_vec(),
+                Element::new_item(b"value_k".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![level0.to_vec(), level1.to_vec()],
+                b"l".to_vec(),
+                Element::new_item(b"value_l".to_vec()),
+            ),
+            // Add 2 items to level0
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![level0.to_vec()],
+                b"m".to_vec(),
+                Element::new_item(b"value_m".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![level0.to_vec()],
+                b"n".to_vec(),
+                Element::new_item(b"value_n".to_vec()),
+            ),
+        ];
+
+        println!("Batch operations:");
+        println!("  - level2: +i, +j (1 -> 3)");
+        println!("  - level1: +k, +l (3 -> 7, because level2 now contributes 3)");
+        println!("  - level0: +m, +n (8 -> 14, because level1 now contributes 7)");
+        println!();
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("apply batch");
+
+        println!("Batch applied successfully!\n");
+
+        // =================================================================
+        // PHASE 3: Verify counts after batch
+        // =================================================================
+        println!("======================================================================");
+        println!("PHASE 3: Verifying counts after batch operation");
+        println!("======================================================================\n");
+
+        // level2 should now have count 3
+        let level2_elem = db
+            .get(
+                &[level0.as_slice(), level1.as_slice()],
+                level2,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get level2");
+
+        match &level2_elem {
+            Element::ProvableCountTree(_, count, _) => {
+                println!("level2 count: {} (expected: 3)", count);
+                assert_eq!(*count, 3, "level2 should have count 3 after batch");
+            }
+            _ => panic!("Expected ProvableCountTree for level2"),
+        }
+
+        // level1 should now have count 7 (f + g + k + l + level2=3)
+        let level1_elem = db
+            .get(&[level0.as_slice()], level1, None, grove_version)
+            .unwrap()
+            .expect("get level1");
+
+        match &level1_elem {
+            Element::ProvableCountTree(_, count, _) => {
+                println!("level1 count: {} (expected: 7)", count);
+                assert_eq!(*count, 7, "level1 should have count 7 after batch");
+            }
+            _ => panic!("Expected ProvableCountTree for level1"),
+        }
+
+        // level0 should now have count 14 (a+b+c+d+e+m+n + level1=7)
+        let level0_elem = db
+            .get(&[] as &[&[u8]], level0, None, grove_version)
+            .unwrap()
+            .expect("get level0");
+
+        match &level0_elem {
+            Element::ProvableCountTree(_, count, _) => {
+                println!("level0 count: {} (expected: 14)", count);
+                assert_eq!(*count, 14, "level0 should have count 14 after batch");
+            }
+            _ => panic!("Expected ProvableCountTree for level0"),
+        }
+
+        let root_hash_after = db.root_hash(None, grove_version).unwrap().unwrap();
+        println!("\nRoot hash after batch: {}", hex::encode(root_hash_after));
+
+        // Verify root hash changed
+        assert_ne!(
+            root_hash_before, root_hash_after,
+            "Root hash should change after batch"
+        );
+
+        // =================================================================
+        // PHASE 4: Verify proofs work correctly at all levels
+        // =================================================================
+        println!("\n======================================================================");
+        println!("PHASE 4: Verifying proofs at all nesting levels");
+        println!("======================================================================\n");
+
+        // Query and prove items at level0
+        let query_level0 = PathQuery::new(
+            vec![level0.to_vec()],
+            SizedQuery::new(
+                Query::new_single_query_item(QueryItem::RangeFull(..)),
+                None,
+                None,
+            ),
+        );
+
+        let proof_level0 = db
+            .prove_query(&query_level0, None, grove_version)
+            .unwrap()
+            .expect("prove level0");
+
+        let (hash_level0, tree_type_level0, results_level0) =
+            GroveDb::verify_query_get_parent_tree_info(&proof_level0, &query_level0, grove_version)
+                .expect("verify level0");
+
+        println!("Level0 query results: {} elements", results_level0.len());
+        match tree_type_level0 {
+            TreeFeatureType::ProvableCountedMerkNode(count) => {
+                println!("Level0 proof tree type: ProvableCountedMerkNode({})", count);
+                assert_eq!(count, 14, "Proof should show count 14 at level0");
+            }
+            _ => panic!(
+                "Expected ProvableCountedMerkNode at level0, got {:?}",
+                tree_type_level0
+            ),
+        }
+        assert_eq!(
+            hash_level0, root_hash_after,
+            "Level0 proof root hash mismatch"
+        );
+
+        // Query and prove items at level1
+        let query_level1 = PathQuery::new(
+            vec![level0.to_vec(), level1.to_vec()],
+            SizedQuery::new(
+                Query::new_single_query_item(QueryItem::RangeFull(..)),
+                None,
+                None,
+            ),
+        );
+
+        let proof_level1 = db
+            .prove_query(&query_level1, None, grove_version)
+            .unwrap()
+            .expect("prove level1");
+
+        let (hash_level1, tree_type_level1, results_level1) =
+            GroveDb::verify_query_get_parent_tree_info(&proof_level1, &query_level1, grove_version)
+                .expect("verify level1");
+
+        println!("Level1 query results: {} elements", results_level1.len());
+        match tree_type_level1 {
+            TreeFeatureType::ProvableCountedMerkNode(count) => {
+                println!("Level1 proof tree type: ProvableCountedMerkNode({})", count);
+                assert_eq!(count, 7, "Proof should show count 7 at level1");
+            }
+            _ => panic!(
+                "Expected ProvableCountedMerkNode at level1, got {:?}",
+                tree_type_level1
+            ),
+        }
+        assert_eq!(
+            hash_level1, root_hash_after,
+            "Level1 proof root hash mismatch"
+        );
+
+        // Query and prove items at level2
+        let query_level2 = PathQuery::new(
+            vec![level0.to_vec(), level1.to_vec(), level2.to_vec()],
+            SizedQuery::new(
+                Query::new_single_query_item(QueryItem::RangeFull(..)),
+                None,
+                None,
+            ),
+        );
+
+        let proof_level2 = db
+            .prove_query(&query_level2, None, grove_version)
+            .unwrap()
+            .expect("prove level2");
+
+        let (hash_level2, tree_type_level2, results_level2) =
+            GroveDb::verify_query_get_parent_tree_info(&proof_level2, &query_level2, grove_version)
+                .expect("verify level2");
+
+        println!("Level2 query results: {} elements", results_level2.len());
+        match tree_type_level2 {
+            TreeFeatureType::ProvableCountedMerkNode(count) => {
+                println!("Level2 proof tree type: ProvableCountedMerkNode({})", count);
+                assert_eq!(count, 3, "Proof should show count 3 at level2");
+            }
+            _ => panic!(
+                "Expected ProvableCountedMerkNode at level2, got {:?}",
+                tree_type_level2
+            ),
+        }
+        assert_eq!(
+            hash_level2, root_hash_after,
+            "Level2 proof root hash mismatch"
+        );
+
+        // =================================================================
+        // PHASE 5: Query specific items to verify content
+        // =================================================================
+        println!("\n======================================================================");
+        println!("PHASE 5: Verifying specific items at each level");
+        println!("======================================================================\n");
+
+        // Verify items at level2
+        let items_level2 = vec![b"h", b"i", b"j"];
+        for key in items_level2 {
+            let item = db
+                .get(
+                    &[level0.as_slice(), level1.as_slice(), level2.as_slice()],
+                    key,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("get item");
+            match item {
+                Element::Item(value, _) => {
+                    println!(
+                        "  level2/{}: {}",
+                        String::from_utf8_lossy(key),
+                        String::from_utf8_lossy(&value)
+                    );
+                }
+                _ => panic!("Expected Item"),
+            }
+        }
+
+        // Verify items at level1
+        let items_level1 = vec![b"f", b"g", b"k", b"l"];
+        for key in items_level1 {
+            let item = db
+                .get(
+                    &[level0.as_slice(), level1.as_slice()],
+                    key,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("get item");
+            match item {
+                Element::Item(value, _) => {
+                    println!(
+                        "  level1/{}: {}",
+                        String::from_utf8_lossy(key),
+                        String::from_utf8_lossy(&value)
+                    );
+                }
+                _ => panic!("Expected Item"),
+            }
+        }
+
+        // Verify items at level0
+        let items_level0 = vec![b"a", b"b", b"c", b"d", b"e", b"m", b"n"];
+        for key in items_level0 {
+            let item = db
+                .get(&[level0.as_slice()], key, None, grove_version)
+                .unwrap()
+                .expect("get item");
+            match item {
+                Element::Item(value, _) => {
+                    println!(
+                        "  level0/{}: {}",
+                        String::from_utf8_lossy(key),
+                        String::from_utf8_lossy(&value)
+                    );
+                }
+                _ => panic!("Expected Item"),
+            }
+        }
+
+        println!("\n======================================================================");
+        println!("SUCCESS: Nested ProvableCountTrees with batch operations work correctly!");
+        println!("======================================================================\n");
+
+        println!("Summary:");
+        println!("  - 3 levels of nested ProvableCountTrees");
+        println!("  - Batch operation modified all 3 levels simultaneously");
+        println!("  - Counts propagate correctly through all levels");
+        println!("  - Proofs verify correctly at each level");
+        println!("  - Root hash changes appropriately with batch operations");
+    }
 }

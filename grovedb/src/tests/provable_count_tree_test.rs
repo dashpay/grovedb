@@ -200,12 +200,6 @@ mod tests {
             .expect("should insert into provable count tree");
         }
 
-        // Get root hashes - they should be different even with same content
-        let root_hash1 = db
-            .root_hash(None, grove_version)
-            .unwrap()
-            .expect("should get root hash");
-
         // The trees should have different hashes because they use different hash
         // functions This verifies that ProvableCountTree includes count in its
         // hash calculation
