@@ -89,7 +89,7 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"key".to_vec()], query);
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .expect("should generate proof");
         let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)

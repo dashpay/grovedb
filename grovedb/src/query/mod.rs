@@ -736,7 +736,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
         let proof = temp_db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_one) =
@@ -750,7 +750,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
         let proof = temp_db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_two) =
@@ -763,7 +763,7 @@ mod tests {
                 .expect("should merge path queries");
 
         let proof = temp_db
-            .prove_query(&merged_path_query, None, grove_version)
+            .prove_query(&merged_path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_tree) =
@@ -786,7 +786,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
         let proof = temp_db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_one) =
@@ -800,7 +800,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query_two);
 
         let proof = temp_db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_two) =
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
         let proof = temp_db
-            .prove_query(&merged_path_query, None, grove_version)
+            .prove_query(&merged_path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_merged) =
@@ -842,7 +842,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_one) =
@@ -863,7 +863,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_two) =
@@ -884,7 +884,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_three, None, grove_version)
+            .prove_query(&path_query_three, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_two) =
@@ -1027,7 +1027,7 @@ mod tests {
         assert_eq!(result_set_merged.len(), 7);
 
         let proof = temp_db
-            .prove_query(&merged_path_query, None, grove_version)
+            .prove_query(&merged_path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, proved_result_set_merged) =
@@ -1076,7 +1076,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_one) =
@@ -1097,7 +1097,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_two) =
@@ -1111,7 +1111,7 @@ mod tests {
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
 
         let proof = temp_db
-            .prove_query(&merged_path_query, None, grove_version)
+            .prove_query(&merged_path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set_merged) =
@@ -1155,7 +1155,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
         let proof = temp_db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1169,7 +1169,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
         let proof = temp_db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1185,7 +1185,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_three, None, grove_version)
+            .prove_query(&path_query_three, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1200,7 +1200,7 @@ mod tests {
         .expect("should merge three queries");
 
         let proof = temp_db
-            .prove_query(&merged_path_query, None, grove_version)
+            .prove_query(&merged_path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1224,7 +1224,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
 
         let proof = temp_db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1238,7 +1238,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_two);
 
         let proof = temp_db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1251,7 +1251,7 @@ mod tests {
                 .expect("should merge three queries");
 
         let proof = temp_db
-            .prove_query(&merged_path_query, None, grove_version)
+            .prove_query(&merged_path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1270,7 +1270,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_one, None, grove_version)
+            .prove_query(&path_query_one, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1291,7 +1291,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query_two, None, grove_version)
+            .prove_query(&path_query_two, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =
@@ -1380,7 +1380,7 @@ mod tests {
         assert_eq!(result_set_merged.len(), 4);
 
         let proof = temp_db
-            .prove_query(&merged_path_query, None, grove_version)
+            .prove_query(&merged_path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (_, result_set) =

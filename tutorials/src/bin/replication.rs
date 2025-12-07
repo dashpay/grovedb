@@ -253,7 +253,7 @@ fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>, grove_version: &GroveVer
         println!(">> {:?}", e);
     }
 
-    let proof = db.prove_query(&path_query, None, grove_version).unwrap().unwrap();
+    let proof = db.prove_query(&path_query, None, None, grove_version).unwrap().unwrap();
     // Get hash from query proof and print to terminal along with GroveDB root hash.
     let (verify_hash, _) = GroveDb::verify_query(&proof, &path_query, grove_version).unwrap();
     println!("verify_hash: {:?}", hex::encode(verify_hash));

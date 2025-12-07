@@ -1151,7 +1151,7 @@ mod tests {
             SizedQuery::new(query, None, None),
         );
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .expect("should successfully create proof");
         let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
@@ -1673,7 +1673,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"invalid_path_key".to_vec()], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1694,7 +1694,7 @@ mod tests {
             PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"invalid_key".to_vec()], query);
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1715,7 +1715,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1737,7 +1737,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1759,7 +1759,7 @@ mod tests {
         );
 
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1782,7 +1782,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -1947,7 +1947,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -2100,7 +2100,7 @@ mod tests {
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -2135,7 +2135,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2160,7 +2160,7 @@ mod tests {
         );
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2198,7 +2198,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2239,7 +2239,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2269,7 +2269,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2306,7 +2306,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2373,7 +2373,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2404,7 +2404,7 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![], query);
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2435,7 +2435,7 @@ mod tests {
         let path_query =
             PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()], query);
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2484,7 +2484,7 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![], query);
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2514,7 +2514,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2558,7 +2558,7 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2609,7 +2609,7 @@ mod tests {
 
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2678,7 +2678,7 @@ mod tests {
                                                     * empty proved subtrees */
         );
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -2719,7 +2719,7 @@ mod tests {
 
         // Generate proof
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -2745,7 +2745,7 @@ mod tests {
         );
 
         let proof_no_limit = db
-            .prove_query(&path_query_no_limit, None, grove_version)
+            .prove_query(&path_query_no_limit, None, None, grove_version)
             .unwrap()
             .unwrap();
         let verification_result_no_limit =
@@ -2817,7 +2817,7 @@ mod tests {
 
         // Generate proof
         let proof = db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -2837,7 +2837,7 @@ mod tests {
         );
 
         let proof_no_limit = db
-            .prove_query(&path_query_no_limit, None, grove_version)
+            .prove_query(&path_query_no_limit, None, None, grove_version)
             .unwrap()
             .unwrap();
         let verification_result_no_limit =
@@ -3049,7 +3049,7 @@ mod tests {
                                                     * trees in proofs */
         );
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -3094,7 +3094,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
         let proof = temp_db
-            .prove_query(&path_query, None, grove_version)
+            .prove_query(&path_query, None, None, grove_version)
             .unwrap()
             .unwrap();
         let (hash, result_set) =
@@ -4370,7 +4370,7 @@ mod tests {
             },
         };
         let proof = db
-            .prove_query(&query, None, grove_version)
+            .prove_query(&query, None, None, grove_version)
             .unwrap()
             .unwrap();
 
@@ -4390,7 +4390,7 @@ mod tests {
         .unwrap();
 
         let proof = db
-            .prove_query(&query, None, grove_version)
+            .prove_query(&query, None, None, grove_version)
             .unwrap()
             .unwrap();
 
