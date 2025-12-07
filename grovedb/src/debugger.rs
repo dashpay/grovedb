@@ -448,7 +448,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 key,
                 element_to_grovedbg(element),
                 [0u8; 32], // placeholder hash
-                grovedbg_types::TreeFeatureType::CountedMerkNode(count),
+                grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
             )
         }
         Node::KVHashCount(hash, count) => MerkProofNode::KVValueHashFeatureType(
@@ -458,7 +458,7 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 element_flags: None,
             },
             hash,
-            grovedbg_types::TreeFeatureType::CountedMerkNode(count),
+            grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
         ),
     })
 }
