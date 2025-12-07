@@ -155,7 +155,7 @@ pub enum Error {
 
     // Element errors
     #[error(transparent)]
-    /// Version error
+    /// Element error
     ElementError(grovedb_element::error::ElementError),
 
     #[error("cyclic error")]

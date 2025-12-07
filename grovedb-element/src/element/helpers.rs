@@ -33,8 +33,8 @@ impl Element {
         }
     }
 
-    /// Decoded the integer value in the CountTree element type, returns 1 for
-    /// everything else
+    /// Decoded the count and sum values from the element type, returns (1, 0)
+    /// for elements without count/sum semantics
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
         match self {
             Element::SumItem(sum_value, _)
@@ -268,7 +268,7 @@ impl Element {
         // to follow non-absolute references, we need the path they are stored at
         // this information is lost during the aggregation phase.
         Ok(match &self {
-            Element::Reference(reference_path_type, ..) => match reference_path_type {
+            Element::Reference(reference_path_type, max_hop, flags) => match reference_path_type {
                 ReferencePathType::AbsolutePathReference(..) => self,
                 _ => {
                     // Element is a reference and is not absolute.
@@ -278,8 +278,8 @@ impl Element {
                     // return an absolute reference that contains this info
                     Element::Reference(
                         ReferencePathType::AbsolutePathReference(absolute_path),
-                        None,
-                        None,
+                        *max_hop,
+                        flags.clone(),
                     )
                 }
             },

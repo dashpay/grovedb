@@ -100,7 +100,7 @@ impl ReferencePathType {
                 relative_path.reverse();
                 relative_path.push(key.to_vec());
                 ReferencePathType::UpstreamFromElementHeightReference(
-                    append_path.len() as u8 - 1,
+                    (append_path.len() as u8).saturating_sub(1),
                     relative_path,
                 )
             }

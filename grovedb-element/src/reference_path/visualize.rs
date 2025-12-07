@@ -19,7 +19,7 @@ impl Visualize for ReferencePathType {
             }
             ReferencePathType::UpstreamRootHeightReference(height, end_path) => {
                 drawer.write(b"upstream root height reference: ")?;
-                drawer.write(format!("[height: {height}").as_bytes())?;
+                drawer.write(format!("[height: {height}]").as_bytes())?;
                 drawer.write(
                     end_path
                         .iter()
@@ -34,7 +34,7 @@ impl Visualize for ReferencePathType {
                 end_path,
             ) => {
                 drawer.write(b"upstream root height with parent path addition reference: ")?;
-                drawer.write(format!("[height: {height}").as_bytes())?;
+                drawer.write(format!("[height: {height}]").as_bytes())?;
                 drawer.write(
                     end_path
                         .iter()
@@ -46,7 +46,7 @@ impl Visualize for ReferencePathType {
             }
             ReferencePathType::UpstreamFromElementHeightReference(up, end_path) => {
                 drawer.write(b"upstream from element reference: ")?;
-                drawer.write(format!("[up: {up}").as_bytes())?;
+                drawer.write(format!("[up: {up}]").as_bytes())?;
                 drawer.write(
                     end_path
                         .iter()

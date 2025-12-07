@@ -146,7 +146,7 @@ pub enum Error {
     CorruptedData(String),
 
     #[error(transparent)]
-    /// Version error
+    /// Element error
     ElementError(grovedb_element::error::ElementError),
 }
 
