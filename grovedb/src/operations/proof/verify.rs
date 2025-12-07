@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions,
     proofs::{
         query::{PathKey, VerifyOptions},
         Query,

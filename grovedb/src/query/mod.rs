@@ -431,7 +431,7 @@ impl PathQuery {
         &self,
         path: &[&[u8]],
         grove_version: &GroveVersion,
-    ) -> Result<Option<SinglePathSubquery>, Error> {
+    ) -> Result<Option<SinglePathSubquery<'_>>, Error> {
         check_grovedb_v0!(
             "query_items_at_path",
             grove_version
@@ -681,11 +681,11 @@ impl<'a> SinglePathSubquery<'a> {
         }
     }
 
-    pub fn from_path_query(path_query: &PathQuery) -> SinglePathSubquery {
+    pub fn from_path_query(path_query: &PathQuery) -> SinglePathSubquery<'_> {
         Self::from_query(&path_query.query.query)
     }
 
-    pub fn from_query(query: &Query) -> SinglePathSubquery {
+    pub fn from_query(query: &Query) -> SinglePathSubquery<'_> {
         let has_subquery = if query.default_subquery_branch.subquery.is_some()
             || query.default_subquery_branch.subquery_path.is_some()
         {

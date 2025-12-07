@@ -57,38 +57,326 @@ pub enum Op {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// A selected piece of data about a single tree node, to be contained in a
 /// `Push` operator in a proof.
+///
+/// Each variant carries different amounts of information, allowing proofs to
+/// include only what's necessary for verification while minimizing proof size.
+///
+/// # Tree Structure Reference
+///
+/// ```text
+///                    ┌─────────────────────────────────────────┐
+///                    │              Tree Node                  │
+///                    │  ┌─────┐ ┌───────┐ ┌────────────────┐   │
+///                    │  │ key │ │ value │ │  feature_type  │   │
+///                    │  └──┬──┘ └───┬───┘ └───────┬────────┘   │
+///                    │     │        │             │            │
+///                    │     ▼        ▼             │            │
+///                    │  ┌──────────────┐          │            │
+///                    │  │  value_hash  │◄─────────┘            │
+///                    │  │ H(value) or  │   (combined for       │
+///                    │  │ combined hash│    special trees)     │
+///                    │  └──────┬───────┘                       │
+///                    │         │                               │
+///                    │         ▼                               │
+///                    │  ┌─────────────┐                        │
+///                    │  │   kv_hash   │ = H(key || value_hash) │
+///                    │  └──────┬──────┘                        │
+///                    │         │                               │
+///                    │         ▼                               │
+///                    │  ┌─────────────────────────────────┐    │
+///                    │  │           node_hash             │    │
+///                    │  │ H(kv_hash || left || right      │    │
+///                    │  │   [|| count for ProvableCount]) │    │
+///                    │  └─────────────────────────────────┘    │
+///                    └─────────────────────────────────────────┘
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
-    /// Represents the hash of a tree node.
+    /// The node hash only. Used for sibling/cousin nodes not on the query path.
+    ///
+    /// Contains: `node_hash`
+    ///
+    /// ```text
+    ///     Query: key "C"
+    ///
+    ///            [B]
+    ///           /   \
+    ///        [A]     [C] ◄── queried
+    ///
+    ///     Node [A] is included as Hash(node_hash)
+    ///     - Not on query path, just need hash for parent calculation
+    ///     - Reveals nothing about A's key or value
+    /// ```
+    ///
+    /// **When used**: For nodes whose subtree is not being queried - provides
+    /// the hash needed to compute the parent's node hash without revealing
+    /// any key/value data.
     Hash(CryptoHash),
 
-    /// Represents the hash of the key/value pair of a tree node.
+    /// The key-value hash only. Used for non-queried nodes on the path.
+    ///
+    /// Contains: `kv_hash` (hash of key concatenated with value_hash)
+    ///
+    /// ```text
+    ///     Query: key "D"
+    ///
+    ///            [B] ◄── KVHash (on path, not queried)
+    ///           /   \
+    ///        [A]     [C] ◄── KVHash (on path, not queried)
+    ///         ▲        \
+    ///       Hash       [D] ◄── queried (KVValueHash)
+    ///
+    ///     Node [B] is included as KVHash(kv_hash)
+    ///     - Ancestor of queried node, on the path to [D]
+    ///     - Key/value not revealed, only their combined hash
+    ///
+    ///     Node [C] is also included as KVHash(kv_hash)
+    ///     - Also an ancestor on the path to [D]
+    ///     - Same treatment: only kv_hash revealed
+    ///
+    ///     Node [A] is included as Hash(node_hash)
+    ///     - NOT on the path to [D], just a sibling
+    ///     - Only node_hash needed for [B]'s hash calculation
+    /// ```
+    ///
+    /// **When used**: For nodes that are ancestors of queried nodes but are not
+    /// themselves being queried, in trees without provable counts. Allows
+    /// computing the node hash without revealing the key or value.
     KVHash(CryptoHash),
 
-    /// Represents the key/value_hash pair of a tree node
-    /// same as the Node::KV but the value is not required by the proof
+    /// Key and value_hash. Used for proving key existence/absence at
+    /// boundaries.
+    ///
+    /// Contains: `(key, value_hash)`
+    ///
+    /// ```text
+    ///     Query: range ["B".."D"] (but C doesn't exist)
+    ///
+    ///            [B] ◄── KVDigest (left boundary)
+    ///           /   \
+    ///        [A]     [E] ◄── KVDigest (proves no C or D)
+    ///         ▲
+    ///       Hash
+    ///
+    ///     Nodes [B] and [E] included as KVDigest(key, value_hash)
+    ///     - Key needed to prove range boundaries
+    ///     - Value not returned (not requested or doesn't exist)
+    /// ```
+    ///
+    /// **When used**: For nodes at query boundaries (proving absence of keys
+    /// in a range) or proving a key exists without returning its value.
+    /// The key is needed for range comparisons, but the value is not returned.
     KVDigest(Vec<u8>, CryptoHash),
 
-    /// Represents the key and value of a tree node.
+    /// Key and value. Suitable for items where value_hash = H(value).
+    ///
+    /// Contains: `(key, value)`
+    ///
+    /// ```text
+    ///     Query for an Item (not a subtree):
+    ///
+    ///            [B]
+    ///           /   \
+    ///        [A]     [C] ◄── KV(key, value)
+    ///         ▲
+    ///       Hash
+    ///
+    ///     Hash computation during verification:
+    ///     value_hash = H(value)  ◄── computed from value
+    ///     kv_hash = H(key || value_hash)
+    ///
+    ///     For Items, this works correctly because the stored
+    ///     value_hash in the tree is exactly H(value).
+    ///
+    ///     ─────────────────────────────────────────────────────
+    ///
+    ///     Why current proof generation uses KVValueHash instead:
+    ///
+    ///     ┌─────────────────────────────────────────────────┐
+    ///     │  KVValueHash works for ALL element types:       │
+    ///     │  - Items: value_hash = H(value) ✓               │
+    ///     │  - Subtrees: value_hash = combined hash ✓       │
+    ///     │                                                 │
+    ///     │  KV only works for Items (not subtrees), so     │
+    ///     │  KVValueHash is used uniformly for simplicity.  │
+    ///     └─────────────────────────────────────────────────┘
+    /// ```
+    ///
+    /// **When used**: Theoretically valid for queried Items where the
+    /// value_hash equals `H(value)`. However, current proof generation uses
+    /// `KVValueHash` uniformly for all element types. The verifier supports
+    /// `KV` for compatibility, but it's not generated by GroveDB proofs.
     KV(Vec<u8>, Vec<u8>),
 
-    /// Represents the key, value and value_hash of a tree node
+    /// Key, value, and value_hash. Standard node for queried items.
+    ///
+    /// Contains: `(key, value, value_hash)`
+    ///
+    /// ```text
+    ///     Query: key "C" (a subtree in GroveDB)
+    ///
+    ///            [B]
+    ///           /   \
+    ///        [A]     [C] ◄── KVValueHash
+    ///         ▲
+    ///       Hash
+    ///
+    ///     Node [C] included as KVValueHash(key, value, value_hash)
+    ///
+    ///     For subtrees, value_hash = H(subtree_root || value_bytes)
+    ///     This binding allows GroveDB to verify:
+    ///     ┌──────────────────────────────────────────┐
+    ///     │  Parent Tree          Child Tree        │
+    ///     │  [C].value_hash  ══►  root_hash         │
+    ///     │  (proves binding)     (from child proof)│
+    ///     └──────────────────────────────────────────┘
+    /// ```
+    ///
+    /// **When used**: For items that match the query in non-ProvableCountTree
+    /// trees. The value_hash is included because for subtrees it may be a
+    /// combined hash (e.g., subtree root hash), allowing GroveDB to verify
+    /// parent-child binding across tree layers.
     KVValueHash(Vec<u8>, Vec<u8>, CryptoHash),
 
-    /// Represents, the key, value, value_hash and feature_type of a tree node
-    /// Used by Sum trees
+    /// Key, value, value_hash, and feature type. For trees with special
+    /// features.
+    ///
+    /// Contains: `(key, value, value_hash, feature_type)`
+    ///
+    /// ```text
+    ///     ProvableCountTree Query:
+    ///
+    ///            [B] count=5
+    ///           /   \
+    ///      [A]       [C] ◄── KVValueHashFeatureType
+    ///    count=2    count=2    (key, value, value_hash,
+    ///                           ProvableCountedMerkNode(2))
+    ///
+    ///     The count is needed for hash verification:
+    ///     node_hash = H(kv_hash || left_hash || right_hash || count_bytes)
+    ///
+    ///     ─────────────────────────────────────────────────────
+    ///
+    ///     Chunk Restoration (all tree types):
+    ///
+    ///     Chunks MUST use KVValueHashFeatureType to preserve:
+    ///     - SummedMerkNode(sum)     for SumTree
+    ///     - CountedMerkNode(count)  for CountTree
+    ///     - BasicMerkNode           for regular trees
+    /// ```
+    ///
+    /// **When used**:
+    /// - **Query proofs**: For queried items in ProvableCountTree, where the
+    ///   feature_type contains the aggregate count needed for hash
+    ///   verification.
+    /// - **Chunk restoration**: Required for ALL tree types during sync/restore
+    ///   operations, as the feature_type (SummedMerkNode, CountedMerkNode,
+    ///   etc.) must be preserved when rebuilding trees from chunks.
     KVValueHashFeatureType(Vec<u8>, Vec<u8>, CryptoHash, TreeFeatureType),
 
-    /// Represents the key, value of some referenced node and value_hash of
-    /// current tree node
+    /// Key, referenced value, and current node's value_hash. For GroveDB
+    /// references.
+    ///
+    /// Contains: `(key, referenced_value, value_hash)`
+    ///
+    /// ```text
+    ///     Query: key "ref_to_X" (a Reference element)
+    ///
+    ///     Tree A:                    Tree B:
+    ///     ┌─────────────┐            ┌─────────────┐
+    ///     │ ref_to_X    │───────────►│ X           │
+    ///     │ value: path │  resolves  │ value: data │
+    ///     │ to Tree B/X │    to      │ "secret"    │
+    ///     └─────────────┘            └─────────────┘
+    ///
+    ///     KVRefValueHash returns:
+    ///     - key:              "ref_to_X"
+    ///     - referenced_value: "secret" (from X in Tree B)
+    ///     - value_hash:       H(path to Tree B/X)
+    ///                         ▲
+    ///                         └── hash of THIS node's value,
+    ///                             not the referenced value
+    ///
+    ///     This allows verification against merkle root while
+    ///     returning the dereferenced data to the user.
+    /// ```
+    ///
+    /// **When used**: When a queried element is a GroveDB Reference type. The
+    /// `referenced_value` is the resolved value from the referenced location,
+    /// while `value_hash` is the hash of this node's actual value (the
+    /// reference path itself). This allows returning the dereferenced data
+    /// while still being able to verify the proof against the merkle root.
     KVRefValueHash(Vec<u8>, Vec<u8>, CryptoHash),
 
-    /// Represents the key, value and count of a tree node
-    /// Used by ProvableCountTree
+    /// Key, value, and count. For queried Items in ProvableCountTree.
+    ///
+    /// Contains: `(key, value, count)`
+    ///
+    /// ```text
+    ///     Query for an Item in ProvableCountTree:
+    ///
+    ///            [B] count=5
+    ///           /   \
+    ///        [A]     [C] ◄── KVCount(key, value, count=2)
+    ///      count=2  count=2
+    ///         ▲
+    ///       Hash
+    ///
+    ///     Hash computation during verification:
+    ///     value_hash = H(value)  ◄── computed from value
+    ///     kv_hash = H(key || value_hash)
+    ///     node_hash = H(kv_hash || left || right || count_bytes)
+    ///
+    ///     For Items, this works correctly because value_hash = H(value).
+    ///
+    ///     ─────────────────────────────────────────────────────
+    ///
+    ///     Why current proof generation uses KVValueHashFeatureType:
+    ///
+    ///     ┌─────────────────────────────────────────────────┐
+    ///     │  KVValueHashFeatureType works for ALL elements: │
+    ///     │  - Items: value_hash = H(value) ✓               │
+    ///     │  - Subtrees: value_hash = combined hash ✓       │
+    ///     │                                                 │
+    ///     │  KVCount only works for Items, so               │
+    ///     │  KVValueHashFeatureType is used uniformly.      │
+    ///     └─────────────────────────────────────────────────┘
+    /// ```
+    ///
+    /// **When used**: Valid for queried Items in ProvableCountTree where
+    /// value_hash equals `H(value)`. However, current proof generation uses
+    /// `KVValueHashFeatureType` uniformly for all element types. The verifier
+    /// supports `KVCount` for compatibility.
     KVCount(Vec<u8>, Vec<u8>, u64),
 
-    /// Represents the kv hash and count of a tree node
-    /// Used by ProvableCountTree
+    /// KV hash and count. For non-queried nodes in ProvableCountTree.
+    ///
+    /// Contains: `(kv_hash, count)`
+    ///
+    /// ```text
+    ///     Query: key "D" in ProvableCountTree
+    ///
+    ///            [B] ◄── KVHashCount(kv_hash, count=5)
+    ///          count=5    (on path, not queried)
+    ///           /   \
+    ///        [A]     [C]
+    ///         ▲     count=2
+    ///       Hash       \
+    ///                  [D] ◄── queried (KVValueHashFeatureType)
+    ///                count=1
+    ///
+    ///     Node [B] needs count for hash verification:
+    ///     node_hash = H(kv_hash || left || right || count_bytes)
+    ///                                               ▲
+    ///                            count=5 required ──┘
+    ///
+    ///     Similar to KVHash but with count for ProvableCountTree.
+    /// ```
+    ///
+    /// **When used**: For nodes in a ProvableCountTree that are ancestors of
+    /// queried nodes but are not themselves being queried. Similar to `KVHash`
+    /// but includes the aggregate count needed for ProvableCountTree hash
+    /// verification.
     KVHashCount(CryptoHash, u64),
 }
 

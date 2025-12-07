@@ -2,24 +2,156 @@
 //! Implements functions in Element for inserting into Merk
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
-    CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
+    cost_return_on_error_into_default, cost_return_on_error_no_add, CostResult, CostsExt,
+    OperationCost,
 };
-use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
+use grovedb_element::{Element, Element::SumItem};
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
-use integer_encoding::VarInt;
 
-use crate::{Element, Element::SumItem, Error, Hash};
+use crate::{
+    element::{
+        costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
+        get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
+    },
+    BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
+};
 
-impl Element {
-    #[cfg(feature = "minimal")]
+pub trait ElementInsertToStorageExtensions {
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Add to batch operations a "Put" op with key and serialized element.
+    /// Return CostResult.
+    fn insert_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Insert an element in Merk under a key if it doesn't yet exist; path
+    /// should be resolved and proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    fn insert_if_not_exists<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>;
+
+    /// Adds a "Put" op to batch operations with the element and key if it
+    /// doesn't exist yet. Returns CostResult.
+    fn insert_if_not_exists_into_batch_operations<'db, S: StorageContext<'db>, K: AsRef<[u8]>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>;
+
+    /// Insert an element in Merk under a key if the value is different from
+    /// what already exists; path should be resolved and proper Merk should
+    /// be loaded by this moment If transaction is not passed, the batch
+    /// will be written immediately. If transaction is passed, the operation
+    /// will be committed on the transaction commit.
+    /// The bool represents if we indeed inserted.
+    /// If the value changed we return the old element.
+    fn insert_if_changed_value<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(bool, Option<Element>), Error>;
+
+    /// Adds a "Put" op to batch operations with the element and key if the
+    /// value is different from what already exists; Returns CostResult.
+    /// The bool represents if we indeed inserted.
+    /// If the value changed we return the old element.
+    fn insert_if_changed_value_into_batch_operations<'db, S: StorageContext<'db>, K: AsRef<[u8]>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(bool, Option<Element>), Error>;
+
+    /// Insert a reference element in Merk under a key; path should be resolved
+    /// and proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        referenced_value: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Adds a "Put" op to batch operations with reference and key. Returns
+    /// CostResult.
+    fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        referenced_value: CryptoHash,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Insert a tree element in Merk under a key; path should be resolved
+    /// and proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        subtree_root_hash: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Adds a "Put" op to batch operations for a subtree and key
+    fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        subtree_root_hash: CryptoHash,
+        is_replace: bool,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+}
+
+impl ElementInsertToStorageExtensions for Element {
+    /// Insert an element in Merk under a key; path should be resolved and
+    /// proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -28,15 +160,17 @@ impl Element {
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!("insert", grove_version.grovedb_versions.element.insert);
 
-        let serialized = cost_return_on_error_default!(self.serialize(grove_version));
+        let serialized = cost_return_on_error_into_default!(self.serialize(grove_version));
 
         if !merk.tree_type.allows_sum_item() && self.is_sum_item() {
-            return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
-                .wrap_with_cost(Default::default());
+            return Err(Error::InvalidInputError(
+                "cannot add sum item to non sum tree",
+            ))
+            .wrap_with_cost(Default::default());
         }
 
         let merk_feature_type =
-            cost_return_on_error_default!(self.get_feature_type(merk.tree_type));
+            cost_return_on_error_into_default!(self.get_feature_type(merk.tree_type));
         let batch_operations = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
             let cost = cost_return_on_error_default!(self
                 .specialized_value_defined_cost(grove_version)
@@ -63,7 +197,7 @@ impl Element {
                     tree_type.inner_node_type(),
                     grove_version,
                 )
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                .map_err(|e| Error::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -71,10 +205,9 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "minimal")]
     /// Add to batch operations a "Put" op with key and serialized element.
     /// Return CostResult.
-    pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
+    fn insert_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
@@ -91,7 +224,7 @@ impl Element {
 
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
         let entry = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
@@ -112,13 +245,12 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
-    #[cfg(feature = "minimal")]
     /// Insert an element in Merk under a key if it doesn't yet exist; path
     /// should be resolved and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_if_not_exists<'db, S: StorageContext<'db>>(
+    fn insert_if_not_exists<'db, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -131,7 +263,7 @@ impl Element {
         );
 
         let mut cost = OperationCost::default();
-        let exists = cost_return_on_error!(
+        let exists = cost_return_on_error_into!(
             &mut cost,
             self.element_at_key_already_exists(merk, key, grove_version)
         );
@@ -143,14 +275,9 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations with the element and key if it
     /// doesn't exist yet. Returns CostResult.
-    pub fn insert_if_not_exists_into_batch_operations<
-        'db,
-        S: StorageContext<'db>,
-        K: AsRef<[u8]>,
-    >(
+    fn insert_if_not_exists_into_batch_operations<'db, S: StorageContext<'db>, K: AsRef<[u8]>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -167,7 +294,7 @@ impl Element {
         );
 
         let mut cost = OperationCost::default();
-        let exists = cost_return_on_error!(
+        let exists = cost_return_on_error_into!(
             &mut cost,
             self.element_at_key_already_exists(merk, key.as_ref(), grove_version)
         );
@@ -187,7 +314,6 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "minimal")]
     /// Insert an element in Merk under a key if the value is different from
     /// what already exists; path should be resolved and proper Merk should
     /// be loaded by this moment If transaction is not passed, the batch
@@ -195,7 +321,7 @@ impl Element {
     /// will be committed on the transaction commit.
     /// The bool represents if we indeed inserted.
     /// If the value changed we return the old element.
-    pub fn insert_if_changed_value<'db, S: StorageContext<'db>>(
+    fn insert_if_changed_value<'db, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -227,12 +353,11 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations with the element and key if the
     /// value is different from what already exists; Returns CostResult.
     /// The bool represents if we indeed inserted.
     /// If the value changed we return the old element.
-    pub fn insert_if_changed_value_into_batch_operations<
+    fn insert_if_changed_value_into_batch_operations<
         'db,
         S: StorageContext<'db>,
         K: AsRef<[u8]>,
@@ -277,17 +402,16 @@ impl Element {
         }
     }
 
-    #[cfg(feature = "minimal")]
     /// Insert a reference element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
-        referenced_value: Hash,
+        referenced_value: CryptoHash,
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -298,7 +422,7 @@ impl Element {
 
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
         let mut cost = OperationCost::default();
@@ -324,7 +448,7 @@ impl Element {
                     tree_type.inner_node_type(),
                     grove_version,
                 )
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                .map_err(|e| Error::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -332,13 +456,12 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations with reference and key. Returns
     /// CostResult.
-    pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
+    fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
-        referenced_value: Hash,
+        referenced_value: CryptoHash,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
@@ -353,7 +476,7 @@ impl Element {
 
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
         let entry = (
@@ -364,17 +487,16 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
-    #[cfg(feature = "minimal")]
     /// Insert a tree element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
-        subtree_root_hash: Hash,
+        subtree_root_hash: CryptoHash,
         options: Option<MerkOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -385,7 +507,7 @@ impl Element {
 
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
         let cost = OperationCost::default();
@@ -416,7 +538,7 @@ impl Element {
                     tree_type.inner_node_type(),
                     grove_version,
                 )
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                .map_err(|e| Error::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -424,12 +546,11 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "minimal")]
     /// Adds a "Put" op to batch operations for a subtree and key
-    pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
+    fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
-        subtree_root_hash: Hash,
+        subtree_root_hash: CryptoHash,
         is_replace: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
         feature_type: TreeFeatureType,
@@ -445,7 +566,7 @@ impl Element {
 
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
         let cost = cost_return_on_error_default!(self
@@ -474,10 +595,13 @@ impl Element {
 #[cfg(all(feature = "minimal", feature = "test_utils"))]
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk};
     use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
+    use crate::{
+        element::get::ElementFetchFromStorageExtensions,
+        test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk},
+    };
 
     #[test]
     fn test_success_insert() {
@@ -538,7 +662,8 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let storage = TempStorage::new();
         let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch, grove_version);
+        let transaction = storage.start_transaction();
+        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
 
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None, grove_version)
@@ -555,7 +680,7 @@ mod tests {
             .unwrap();
 
         let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &batch, grove_version);
+        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
         let (inserted, previous) = Element::new_item(b"value2".to_vec())
             .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
             .unwrap()
@@ -568,7 +693,7 @@ mod tests {
             .commit_multi_context_batch(batch, None)
             .unwrap()
             .unwrap();
-        let merk = empty_path_merk_read_only(&*storage, grove_version);
+        let merk = empty_path_merk_read_only(&*storage, &transaction, grove_version);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true, grove_version)

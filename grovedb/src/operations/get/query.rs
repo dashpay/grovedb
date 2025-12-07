@@ -12,7 +12,9 @@ use integer_encoding::VarInt;
 #[cfg(feature = "minimal")]
 use crate::element::SumValue;
 use crate::{
-    element::{BigSumValue, CountValue, QueryOptions},
+    element::{
+        query::ElementQueryExtensions, query_options::QueryOptions, BigSumValue, CountValue,
+    },
     operations::proof::ProveOptions,
     query_result_type::PathKeyOptionalElementTrio,
 };
@@ -288,7 +290,6 @@ where {
 
     /// Queries the backing store and returns element items by their value,
     /// Sum Items are encoded as var vec
-    #[deprecated(note = "use `query_item_value_or_sum` instead")]
     pub fn query_item_value(
         &self,
         path_query: &PathQuery,

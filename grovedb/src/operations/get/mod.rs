@@ -2,39 +2,33 @@
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
-#[cfg(feature = "minimal")]
+
 mod query;
 use grovedb_storage::Storage;
-#[cfg(feature = "minimal")]
 pub use query::QueryItemOrSumReturnType;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
-#[cfg(feature = "minimal")]
 use std::collections::HashSet;
 
-use grovedb_costs::cost_return_on_error_no_add;
-#[cfg(feature = "minimal")]
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
+    CostsExt, OperationCost,
+};
+use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, error::MerkErrorExt};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
-use crate::error::GroveDbErrorExt;
-use crate::util::TxRef;
-#[cfg(feature = "minimal")]
 use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    util::TxRef,
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
-#[cfg(feature = "minimal")]
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
-#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Get an element from the backing store
     /// Merk Caching is on by default
@@ -87,7 +81,7 @@ impl GroveDb {
             )
         ) {
             Element::Reference(reference_path, ..) => {
-                let path_owned = cost_return_on_error!(
+                let path_owned = cost_return_on_error_into!(
                     &mut cost,
                     path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
                         .wrap_with_cost(OperationCost::default())
@@ -164,7 +158,7 @@ impl GroveDb {
             visited.insert(current_path.clone());
             match current_element {
                 Element::Reference(reference_path, ..) => {
-                    current_path = cost_return_on_error!(
+                    current_path = cost_return_on_error_into!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)
                             .wrap_with_cost(OperationCost::default())
@@ -298,6 +292,7 @@ impl GroveDb {
 
         Element::get(&merk_to_get_from, key, allow_cache, grove_version)
             .add_context(format!("path is {}", path))
+            .map_err(|e| e.into())
             .add_cost(cost)
     }
 
@@ -329,7 +324,9 @@ impl GroveDb {
         );
 
         if let Some(merk_to_get_from) = merk {
-            Element::get_optional(&merk_to_get_from, key, allow_cache, grove_version).add_cost(cost)
+            Element::get_optional(&merk_to_get_from, key, allow_cache, grove_version)
+                .map_err(|e| e.into())
+                .add_cost(cost)
         } else {
             Ok(None).wrap_with_cost(cost)
         }
@@ -384,6 +381,7 @@ impl GroveDb {
 
                 Element::get(&merk_to_get_from, parent_key, true, grove_version)
                     .add_context(format!("path is {}", path))
+                    .map_err(|e| e.into())
             }
             .unwrap_add_cost(&mut cost);
             match element {

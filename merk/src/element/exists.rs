@@ -2,16 +2,27 @@
 //! Implements in Element functions for checking if stuff exists
 
 use grovedb_costs::CostResult;
-use grovedb_merk::Merk;
+use grovedb_element::Element;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{Element, Error};
+use crate::{element::costs::ElementCostExtensions, Error, Merk};
 
-impl Element {
+pub trait ElementExistsInStorageExtensions {
     /// Helper function that returns whether an element at the key for the
     /// element already exists.
-    pub fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>;
+}
+
+impl ElementExistsInStorageExtensions for Element {
+    /// Helper function that returns whether an element at the key for the
+    /// element already exists.
+    fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,

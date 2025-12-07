@@ -1,4 +1,9 @@
+#[cfg(feature = "minimal")]
+mod costs;
 use std::fmt;
+
+#[cfg(feature = "minimal")]
+pub use costs::*;
 
 #[cfg(feature = "minimal")]
 use crate::merk::NodeType;

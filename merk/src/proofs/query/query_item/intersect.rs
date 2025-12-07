@@ -555,7 +555,7 @@ impl QueryItem {
     }
 
     // TODO: convert to impl of From/To trait
-    pub fn to_range_set_borrowed(&self) -> Option<RangeSetBorrowed> {
+    pub fn to_range_set_borrowed(&self) -> Option<RangeSetBorrowed<'_>> {
         match self {
             QueryItem::Key(start) => Some(RangeSetBorrowed {
                 start: RangeSetSimpleItemBorrowed::Inclusive(start),

@@ -2,10 +2,10 @@
 
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::proofs::{Decoder, Node, Op};
+    use grovedb_merk::proofs::{Decoder, Op};
     use grovedb_version::version::GroveVersion;
 
-    use crate::{tests::make_test_grovedb, Element, GroveDb, PathQuery, Query};
+    use crate::{tests::make_test_grovedb, Element, PathQuery, Query};
 
     #[test]
     fn debug_feature_type_propagation() {

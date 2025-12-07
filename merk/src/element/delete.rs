@@ -1,26 +1,55 @@
 //! Delete
 //! Implements functions in Element for deleting
 
-#[cfg(feature = "minimal")]
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
-#[cfg(feature = "minimal")]
-use grovedb_merk::tree_type::TreeType;
-#[cfg(feature = "minimal")]
-use grovedb_merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
-#[cfg(feature = "minimal")]
+use grovedb_element::Element;
 use grovedb_storage::StorageContext;
-#[cfg(feature = "minimal")]
-use grovedb_version::check_grovedb_v0_with_cost;
-#[cfg(feature = "minimal")]
-use grovedb_version::version::GroveVersion;
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
-use crate::{Element, Error};
+use crate::{
+    element::costs::ElementCostExtensions, BatchEntry, Error, Merk, MerkOptions, Op, TreeType,
+};
 
-impl Element {
-    #[cfg(feature = "minimal")]
+pub trait ElementDeleteFromStorageExtensions {
     /// Delete an element from Merk under a key
-    pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &mut Merk<S>,
+        key: K,
+        merk_options: Option<MerkOptions>,
+        is_layered: bool,
+        in_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Delete an element from Merk under a key
+    fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &mut Merk<S>,
+        key: K,
+        merk_options: Option<MerkOptions>,
+        is_layered: bool,
+        in_tree_type: TreeType,
+        sectioned_removal: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Delete an element from Merk under a key to batch operations
+    fn delete_into_batch_operations<K: AsRef<[u8]>>(
+        key: K,
+        is_layered: bool,
+        in_tree_type: TreeType,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+}
+
+impl ElementDeleteFromStorageExtensions for Element {
+    /// Delete an element from Merk under a key
+    fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
@@ -57,7 +86,7 @@ impl Element {
                     tree_type.inner_node_type(),
                     grove_version,
                 )
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                .map_err(|e| Error::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -65,9 +94,8 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "minimal")]
     /// Delete an element from Merk under a key
-    pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
@@ -77,10 +105,8 @@ impl Element {
             &Vec<u8>,
             u32,
             u32,
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            MerkError,
-        >,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
@@ -118,7 +144,7 @@ impl Element {
                     tree_type.inner_node_type(),
                     grove_version,
                 )
-                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                .map_err(|e| Error::ClientCorruptionError(e.to_string()))
             },
             Some(&Element::value_defined_cost_for_serialized_value),
             &|_, _| Ok(None),
@@ -129,9 +155,8 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    #[cfg(feature = "minimal")]
     /// Delete an element from Merk under a key to batch operations
-    pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
+    fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,
         is_layered: bool,
         in_tree_type: TreeType,

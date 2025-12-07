@@ -1,8 +1,12 @@
 //! Average case costs
 //! Implements average case cost functions in GroveDb
 
-use grovedb_costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error_into_no_add, cost_return_on_error_no_add, CostResult, CostsExt,
+    OperationCost,
+};
 use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions,
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
         add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
@@ -13,7 +17,7 @@ use grovedb_merk::{
         },
     },
     tree::TreeNode,
-    tree_type::TreeType,
+    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
     HASH_LENGTH,
 };
 use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
@@ -24,7 +28,6 @@ use integer_encoding::VarInt;
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    element::{CostSize, SUM_ITEM_COST_SIZE},
     Element, ElementFlags, Error, GroveDb,
 };
 
@@ -288,7 +291,8 @@ impl GroveDb {
             add_cost_case_merk_insert(
                 &mut cost,
                 key_len,
-                cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32,
+                cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
+                    as u32,
                 in_tree_type,
             )
         }
@@ -344,7 +348,8 @@ impl GroveDb {
                 let sum_item_cost_size = if value.is_sum_item() {
                     SUM_ITEM_COST_SIZE
                 } else {
-                    cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32
+                    cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
+                        as u32
                 };
                 let value_len = sum_item_cost_size + flags_len;
                 add_cost_case_merk_replace_same_size(&mut cost, key_len, value_len, in_tree_type)
@@ -352,7 +357,8 @@ impl GroveDb {
             _ => add_cost_case_merk_replace_same_size(
                 &mut cost,
                 key_len,
-                cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32,
+                cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
+                    as u32,
                 in_tree_type,
             ),
         };
@@ -395,7 +401,8 @@ impl GroveDb {
                 });
                 // Items need to be always the same serialized size for this to work
                 let item_cost_size =
-                    cost_return_on_error_no_add!(cost, value.serialized_size(grove_version)) as u32;
+                    cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
+                        as u32;
                 let value_len = item_cost_size + flags_len;
                 add_cost_case_merk_patch(
                     &mut cost,

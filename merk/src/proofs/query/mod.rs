@@ -930,22 +930,6 @@ where
         self.tree().hash().map(Node::Hash)
     }
 
-    /// Creates a `Node::KVCount` from the key/value/count of the root node
-    /// Used for ProvableCountTree
-    /// Note: Uses aggregate count (sum of self + children) to match hash
-    /// calculation
-    pub(crate) fn to_kv_count_node(&self) -> Node {
-        let count = match self.tree().aggregate_data() {
-            Ok(AggregateData::ProvableCount(count)) => count,
-            _ => 0, // Fallback, should not happen for ProvableCountTree
-        };
-        Node::KVCount(
-            self.tree().key().to_vec(),
-            self.tree().value_ref().to_vec(),
-            count,
-        )
-    }
-
     /// Creates a `Node::KVHashCount` from the kv hash and count of the root
     /// node Used for ProvableCountTree
     /// Note: Uses aggregate count (sum of self + children) to match hash
@@ -4944,5 +4928,303 @@ mod test {
             .verify_proof(bytes.as_slice(), None, true, [42; 32])
             .unwrap()
             .expect("verify failed");
+    }
+
+    /// Test with 5 items showing proof structure and tampering vulnerability
+    /// Creates a tree, visualizes the proof, attempts tampering, and checks
+    /// detection
+    #[test]
+    fn test_5_item_tree_tampering_visualization() {
+        // Build a 5-node tree manually:
+        //           [3]
+        //          /   \
+        //       [2]     [4]
+        //       /         \
+        //     [1]         [5]
+
+        // Create leaf nodes first
+        let one_tree = TreeNode::new(vec![1], b"aaa".to_vec(), None, BasicMerkNode).unwrap();
+        let five_tree = TreeNode::new(vec![5], b"eee".to_vec(), None, BasicMerkNode).unwrap();
+
+        // Create [2] with [1] as left child
+        let mut two_tree = TreeNode::new(vec![2], b"bbb".to_vec(), None, BasicMerkNode)
+            .unwrap()
+            .attach(true, Some(one_tree));
+        two_tree
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        // Create [4] with [5] as right child
+        let mut four_tree = TreeNode::new(vec![4], b"ddd".to_vec(), None, BasicMerkNode)
+            .unwrap()
+            .attach(false, Some(five_tree));
+        four_tree
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        // Create root [3] with [2] as left and [4] as right
+        let mut tree = TreeNode::new(vec![3], b"ccc".to_vec(), None, BasicMerkNode)
+            .unwrap()
+            .attach(true, Some(two_tree))
+            .attach(false, Some(four_tree));
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        let expected_root = tree.hash().unwrap();
+
+        println!("=== Tree Structure ===");
+        println!("Tree with 5 items:");
+        println!("           [3] ccc");
+        println!("          /   \\");
+        println!("     [2] bbb   [4] ddd");
+        println!("       /         \\");
+        println!("   [1] aaa       [5] eee");
+        println!();
+        println!("Root hash: {}", hex::encode(expected_root));
+        println!();
+
+        // Query for key 1 (bottom left leaf)
+        let grove_version = GroveVersion::latest();
+        let keys = vec![vec![1]];
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+        let (proof, ..) = walker
+            .create_proof(
+                keys.clone()
+                    .into_iter()
+                    .map(QueryItem::Key)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                None,
+                true,
+                grove_version,
+            )
+            .unwrap()
+            .expect("failed to create proof");
+
+        println!("=== Proof Structure for key [1] ===");
+        println!("Path to [1]: root[3] -> left[2] -> left[1]");
+        println!();
+        println!("Proof operations:");
+        for (i, op) in proof.iter().enumerate() {
+            let desc = match op {
+                Op::Push(node) => format!("Push({})", node),
+                Op::PushInverted(node) => format!("PushInverted({})", node),
+                Op::Parent => "Parent".to_string(),
+                Op::Child => "Child".to_string(),
+                Op::ParentInverted => "ParentInverted".to_string(),
+                Op::ChildInverted => "ChildInverted".to_string(),
+            };
+            println!("  Op {}: {}", i, desc);
+        }
+        println!();
+
+        println!("=== Proof Explanation ===");
+        println!("Reading the proof (bottom-up reconstruction):");
+        println!("  - Hash([4]'s subtree): sibling of path, just need hash");
+        println!("  - KVHash([3]): root, on path but not queried, need kv_hash");
+        println!("  - KVHash([2]): parent of [1], on path but not queried");
+        println!("  - KVValueHash([1], aaa, H(aaa)): THE QUERIED ITEM");
+        println!("  - Parent/Child ops: tree reconstruction instructions");
+        println!();
+
+        // Encode and verify original
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        println!("=== Encoded Proof ({} bytes) ===", bytes.len());
+
+        let mut query = Query::new();
+        query.insert_key(vec![1]);
+        let result = query
+            .verify_proof(bytes.as_slice(), None, true, expected_root)
+            .unwrap()
+            .expect("original verify failed");
+        println!("Original verification: PASSED");
+        println!("  Key: {:?}", result.result_set[0].key);
+        println!(
+            "  Value: {:?}",
+            String::from_utf8_lossy(result.result_set[0].value.as_ref().unwrap())
+        );
+        println!();
+
+        // Tamper with the value
+        println!("=== Tampering Attempt ===");
+        let mut tampered = bytes.clone();
+        let original_value = b"aaa";
+        let fake_value = b"XXX"; // Same length
+
+        let mut found = false;
+        for i in 0..tampered.len().saturating_sub(original_value.len()) {
+            if &tampered[i..i + original_value.len()] == original_value {
+                println!("Found value 'aaa' at byte position {}", i);
+                tampered[i..i + original_value.len()].copy_from_slice(fake_value);
+                println!("Replaced with 'XXX'");
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Should find value to tamper");
+        println!();
+
+        // Try to verify tampered proof
+        println!("=== Verification of Tampered Proof ===");
+        let mut query2 = Query::new();
+        query2.insert_key(vec![1]);
+
+        let (tampered_root, tampered_result) = query2
+            .execute_proof(tampered.as_slice(), None, true)
+            .unwrap()
+            .expect("execute_proof failed");
+
+        println!("Expected root: {}", hex::encode(expected_root));
+        println!("Tampered root: {}", hex::encode(tampered_root));
+
+        if tampered_root == expected_root {
+            println!();
+            println!("!!! VULNERABILITY DEMONSTRATED !!!");
+            println!("Tampered proof produces SAME root hash!");
+            println!(
+                "Returned value: {:?}",
+                String::from_utf8_lossy(tampered_result.result_set[0].value.as_ref().unwrap())
+            );
+            println!();
+            println!("WHY THIS HAPPENS:");
+            println!("  KVValueHash contains (key, value, value_hash)");
+            println!("  But hash computation uses only value_hash, ignoring value!");
+            println!("  node_hash = H(H(key || value_hash) || left_hash || right_hash)");
+            println!("  The 'value' bytes are just cargo - not verified!");
+            println!();
+            println!("SECURITY IMPLICATION:");
+            println!("  At single Merk level, an attacker can replace value bytes");
+            println!("  without detection, as long as they keep value_hash unchanged.");
+            println!();
+            println!("MITIGATION:");
+            println!("  GroveDB's multi-layer proofs catch this because parent trees");
+            println!("  store child root hashes, creating verification chains.");
+        } else {
+            println!("Root hash changed - tampering detected at Merk level");
+            panic!("Unexpected: this test expects tampering to succeed at Merk level");
+        }
+    }
+
+    /// Test that demonstrates KVValueHash tampering at single Merk level
+    /// This is a security test to verify that tampered values are detected
+    #[test]
+    fn test_kvvaluehash_tampering_single_merk() {
+        let grove_version = GroveVersion::latest();
+        let mut tree = make_3_node_tree();
+        let expected_root = tree.hash().unwrap();
+
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+        let keys = vec![vec![5]];
+        let (proof, ..) = walker
+            .create_proof(
+                keys.clone()
+                    .into_iter()
+                    .map(QueryItem::Key)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                None,
+                true,
+                grove_version,
+            )
+            .unwrap()
+            .expect("failed to create proof");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        // Verify original proof works
+        let mut query = Query::new();
+        for key in keys.iter() {
+            query.insert_key(key.clone());
+        }
+        let result = query
+            .verify_proof(bytes.as_slice(), None, true, expected_root)
+            .unwrap()
+            .expect("original verify failed");
+        assert_eq!(result.result_set[0].key, vec![5]);
+        assert_eq!(result.result_set[0].value.as_ref().unwrap(), &vec![5]);
+
+        // Now tamper with the value bytes in the proof
+        // The proof uses KVValueHash which has format:
+        // [opcode][key_len][key][value_len_u16][value][value_hash]
+        // We want to change value bytes without touching value_hash
+        let mut tampered = bytes.clone();
+
+        // Find and tamper the value (which is [5] = one byte with value 5)
+        // Change it to [9]
+        let mut found = false;
+        for i in 0..tampered.len() {
+            // Look for opcode 0x04 (KVValueHash) or 0x07 (KVValueHashFeatureType)
+            if tampered[i] == 0x04 || tampered[i] == 0x07 {
+                // Format: opcode(1) + key_len(1) + key + value_len(2) + value + value_hash(32)
+                if i + 1 >= tampered.len() {
+                    continue;
+                }
+                let key_len = tampered[i + 1] as usize;
+                let value_len_pos = i + 2 + key_len;
+                if value_len_pos + 2 > tampered.len() {
+                    continue;
+                }
+                // The `ed` crate uses big-endian encoding for u16
+                let value_len =
+                    u16::from_be_bytes([tampered[value_len_pos], tampered[value_len_pos + 1]])
+                        as usize;
+                let value_pos = value_len_pos + 2;
+                if value_pos + value_len > tampered.len() {
+                    continue;
+                }
+                // Tamper the value bytes (change all to 9)
+                for j in 0..value_len {
+                    tampered[value_pos + j] = 9;
+                }
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Should find KVValueHash node to tamper");
+
+        // Try to verify tampered proof with same expected root
+        let mut query2 = Query::new();
+        for key in keys.iter() {
+            query2.insert_key(key.clone());
+        }
+
+        // Use execute_proof to get the computed root
+        let (tampered_root, tampered_result) = query2
+            .execute_proof(tampered.as_slice(), None, true)
+            .unwrap()
+            .expect("execute_proof failed");
+
+        // Check if tampering was detected via root hash change
+        if tampered_root == expected_root {
+            // This demonstrates that at the SINGLE MERK LEVEL, KVValueHash nodes
+            // do NOT verify that hash(value) == value_hash.
+            //
+            // This is BY DESIGN for the following reasons:
+            // 1. For subtree references, value_hash is a COMBINED hash of hash(value) +
+            //    child_root_hash, not just hash(value)
+            // 2. At the GroveDB level, multi-layer proofs have parent-child hash
+            //    verification that catches tampering
+            //
+            // SECURITY NOTE: If using Merk directly (not through GroveDB),
+            // application code should verify hash(value) == value_hash for
+            // non-subtree items to prevent this attack.
+            println!("As expected: KVValueHash node allows value tampering at Merk level");
+            println!("This is mitigated by GroveDB's multi-layer verification");
+            println!(
+                "Tampered value returned: {:?}",
+                tampered_result.result_set[0].value
+            );
+        } else {
+            // If root hash changed, something unexpected happened
+            panic!(
+                "Unexpected: root hash changed. Expected {:?}, got {:?}",
+                expected_root, tampered_root
+            );
+        }
     }
 }

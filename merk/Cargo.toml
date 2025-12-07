@@ -16,6 +16,7 @@ grovedb-path = { version = "3.1.0", path = "../path" }
 grovedb-storage = { version = "3.1.0", path = "../storage", optional = true }
 grovedb-version = { version = "3.1.0", path = "../grovedb-version" }
 grovedb-visualize = { version = "3.1.0", path = "../visualize" }
+grovedb-element = { version = "3.1.0", path = "../grovedb-element" }
 
 bincode = { version = "=2.0.0-rc.3" }
 bincode_derive = { version = "=2.0.0-rc.3" }
@@ -39,7 +40,8 @@ minimal = ["num_cpus",
     "ed",
     "blake3",
     "grovedb-storage",
-    "grovedb-storage/rocksdb_storage"
+    "grovedb-storage/rocksdb_storage",
+    "grovedb-element/visualize"
 ]
 full = ["minimal",
     "test_utils",

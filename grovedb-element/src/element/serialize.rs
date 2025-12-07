@@ -4,25 +4,22 @@
 use bincode::config;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::{Element, Error};
+use crate::{element::Element, error::ElementError};
 
 impl Element {
-    #[cfg(feature = "minimal")]
     /// Serializes self. Returns vector of u8s.
-    pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, Error> {
+    pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, ElementError> {
         check_grovedb_v0!(
             "Element::serialize",
             grove_version.grovedb_versions.element.serialize
         );
         let config = config::standard().with_big_endian().with_no_limit();
         bincode::encode_to_vec(self, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to serialize element {}", e)))
+            .map_err(|e| ElementError::CorruptedData(format!("unable to serialize element {}", e)))
     }
 
-    #[cfg(feature = "minimal")]
     /// Serializes self. Returns usize.
-    pub fn serialized_size(&self, grove_version: &GroveVersion) -> Result<usize, Error> {
+    pub fn serialized_size(&self, grove_version: &GroveVersion) -> Result<usize, ElementError> {
         check_grovedb_v0!(
             "Element::serialized_size",
             grove_version.grovedb_versions.element.serialized_size
@@ -31,21 +28,21 @@ impl Element {
             .map(|serialized| serialized.len())
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Deserializes given bytes and sets as self
-    pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, Error> {
+    pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
         check_grovedb_v0!(
             "Element::deserialize",
             grove_version.grovedb_versions.element.deserialize
         );
         let config = config::standard().with_big_endian().with_no_limit();
         Ok(bincode::decode_from_slice(bytes, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to deserialize element {}", e)))?
+            .map_err(|e| {
+                ElementError::CorruptedData(format!("unable to deserialize element {}", e))
+            })?
             .0)
     }
 }
 
-#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use integer_encoding::VarInt;

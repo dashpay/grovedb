@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_costs::CostsExt;
-    use grovedb_merk::TreeFeatureType;
+    use grovedb_merk::{element::tree_type::ElementTreeTypeExtensions, TreeFeatureType};
     use grovedb_version::version::GroveVersion;
 
     use crate::{tests::make_test_grovedb, Element};

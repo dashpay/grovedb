@@ -40,7 +40,8 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_into_no_add,
+    cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
@@ -48,11 +49,16 @@ use grovedb_costs::{
     CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
+    element::{
+        costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
+        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+        tree_type::ElementTreeTypeExtensions,
+    },
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, AggregateData, NULL_HASH,
     },
-    tree_type::TreeType,
+    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
     CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndAggregateData,
 };
 use grovedb_path::SubtreePath;
@@ -71,10 +77,7 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
-    element::{
-        MaxReferenceHop, BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE,
-        SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
-    },
+    element::MaxReferenceHop,
     operations::{get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
@@ -804,7 +807,7 @@ where
 
             Ok(referenced_element_value_hash).wrap_with_cost(cost)
         } else if let Some(referenced_path) = intermediate_reference_info {
-            let path = cost_return_on_error_no_add!(
+            let path = cost_return_on_error_into_no_add!(
                 cost,
                 path_from_reference_qualified_path_type(referenced_path.clone(), qualified_path)
             );
@@ -998,12 +1001,12 @@ where
         match element {
             Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                 let serialized =
-                    cost_return_on_error_no_add!(cost, element.serialize(grove_version));
+                    cost_return_on_error_into_no_add!(cost, element.serialize(grove_version));
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
             Element::Reference(path, ..) => {
-                let path = cost_return_on_error_no_add!(
+                let path = cost_return_on_error_into_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path, qualified_path)
                 );
@@ -1076,7 +1079,7 @@ where
                 | GroveOp::Patch { element, .. } => {
                     match element {
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                            let serialized = cost_return_on_error_no_add!(
+                            let serialized = cost_return_on_error_into_no_add!(
                                 cost,
                                 element.serialize(grove_version)
                             );
@@ -1123,7 +1126,7 @@ where
                             }
                         }
                         Element::Reference(path, ..) => {
-                            let path = cost_return_on_error_no_add!(
+                            let path = cost_return_on_error_into_no_add!(
                                 cost,
                                 path_from_reference_qualified_path_type(
                                     path.clone(),
@@ -1152,13 +1155,15 @@ where
                 }
                 GroveOp::InsertOnly { element } => match element {
                     Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                        let serialized =
-                            cost_return_on_error_no_add!(cost, element.serialize(grove_version));
+                        let serialized = cost_return_on_error_into_no_add!(
+                            cost,
+                            element.serialize(grove_version)
+                        );
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
                     Element::Reference(path, ..) => {
-                        let path = cost_return_on_error_no_add!(
+                        let path = cost_return_on_error_into_no_add!(
                             cost,
                             path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
@@ -1303,13 +1308,13 @@ where
                 | GroveOp::Replace { element }
                 | GroveOp::Patch { element, .. } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
-                        let merk_feature_type = cost_return_on_error!(
+                        let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
                                 .get_feature_type(in_tree_type)
                                 .wrap_with_cost(OperationCost::default())
                         );
-                        let path_reference = cost_return_on_error!(
+                        let path_reference = cost_return_on_error_into!(
                             &mut cost,
                             path_from_reference_path_type(
                                 path_reference.clone(),
@@ -1337,7 +1342,7 @@ where
                             )
                         );
 
-                        cost_return_on_error!(
+                        cost_return_on_error_into!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
                                 key_info.get_key_clone(),
@@ -1354,13 +1359,13 @@ where
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..) => {
-                        let merk_feature_type = cost_return_on_error!(
+                        let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
                                 .get_feature_type(in_tree_type)
                                 .wrap_with_cost(OperationCost::default())
                         );
-                        cost_return_on_error!(
+                        cost_return_on_error_into!(
                             &mut cost,
                             element.insert_subtree_into_batch_operations(
                                 key_info.get_key_clone(),
@@ -1373,7 +1378,7 @@ where
                         );
                     }
                     Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                        let merk_feature_type = cost_return_on_error!(
+                        let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
                                 .get_feature_type(in_tree_type)
@@ -1382,7 +1387,7 @@ where
                         if batch_apply_options.validate_insertion_does_not_override {
                             let merk = self.merks.get_mut(path).expect("the Merk is cached");
 
-                            let inserted = cost_return_on_error!(
+                            let inserted = cost_return_on_error_into!(
                                 &mut cost,
                                 element.insert_if_not_exists_into_batch_operations(
                                     merk,
@@ -1399,7 +1404,7 @@ where
                                 .wrap_with_cost(cost);
                             }
                         } else {
-                            cost_return_on_error!(
+                            cost_return_on_error_into!(
                                 &mut cost,
                                 element.insert_into_batch_operations(
                                     key_info.get_key(),
@@ -1457,7 +1462,7 @@ where
 
                     let merk_feature_type = in_tree_type.empty_tree_feature_type();
 
-                    let path_reference = cost_return_on_error!(
+                    let path_reference = cost_return_on_error_into!(
                         &mut cost,
                         path_from_reference_path_type(
                             path_reference.clone(),
@@ -1485,7 +1490,7 @@ where
                         )
                     );
 
-                    cost_return_on_error!(
+                    cost_return_on_error_into!(
                         &mut cost,
                         element.insert_reference_into_batch_operations(
                             key_info.get_key_clone(),
@@ -1497,7 +1502,7 @@ where
                     );
                 }
                 GroveOp::Delete => {
-                    cost_return_on_error!(
+                    cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
@@ -1510,7 +1515,7 @@ where
                     );
                 }
                 GroveOp::DeleteTree(tree_type) => {
-                    cost_return_on_error!(
+                    cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
@@ -1583,10 +1588,12 @@ where
                             )
                         }
                     };
-                    let merk_feature_type =
-                        cost_return_on_error_no_add!(cost, element.get_feature_type(in_tree_type));
+                    let merk_feature_type = cost_return_on_error_into_no_add!(
+                        cost,
+                        element.get_feature_type(in_tree_type)
+                    );
 
-                    cost_return_on_error!(
+                    cost_return_on_error_into!(
                         &mut cost,
                         element.insert_subtree_into_batch_operations(
                             key_info.get_key_clone(),
@@ -1674,14 +1681,7 @@ where
                                     | Element::CountSumTree(..)
                                     | Element::ProvableCountTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
-                                        let tree_cost_size = match tree_type {
-                                            TreeType::NormalTree => TREE_COST_SIZE,
-                                            TreeType::SumTree => SUM_TREE_COST_SIZE,
-                                            TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
-                                            TreeType::CountTree => COUNT_TREE_COST_SIZE,
-                                            TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
-                                            TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
-                                        };
+                                        let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
                                             + flags_len
                                             + flags_len.required_space() as u32;

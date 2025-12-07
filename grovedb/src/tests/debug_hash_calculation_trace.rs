@@ -1,4 +1,4 @@
-use grovedb_merk::tree::{combine_hash, value_hash};
+use grovedb_merk::tree::value_hash;
 
 use crate::{tests::make_empty_grovedb, Element};
 

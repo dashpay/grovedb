@@ -12,4 +12,4 @@ members = [
     "grovedbg-types",
     "grovedb-version",
     "grovedb-epoch-based-storage-flags"
-]
+, "grovedb-element"]

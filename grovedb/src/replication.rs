@@ -36,7 +36,7 @@ impl GroveDb {
         &self,
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
-    ) -> Pin<Box<MultiStateSyncSession>> {
+    ) -> Pin<Box<MultiStateSyncSession<'_>>> {
         MultiStateSyncSession::new(self, app_hash, subtrees_batch_size)
     }
 
@@ -220,7 +220,7 @@ impl GroveDb {
         subtrees_batch_size: usize,
         version: u16,
         grove_version: &GroveVersion,
-    ) -> Result<Pin<Box<MultiStateSyncSession>>, Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
         check_grovedb_v0!(
             "start_snapshot_syncing",
             grove_version

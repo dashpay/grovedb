@@ -8,7 +8,6 @@ mod tests {
     use crate::{
         tree::{AggregateData, TreeFeatureType, TreeNode},
         tree_type::TreeType,
-        Error,
     };
 
     #[test]

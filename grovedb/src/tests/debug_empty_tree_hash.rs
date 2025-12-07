@@ -58,10 +58,12 @@ fn debug_empty_tree_hash() {
     let decoded_proof: crate::operations::proof::GroveDBProof =
         bincode::decode_from_slice(&proof_bytes, config).unwrap().0;
 
-    if let crate::operations::proof::GroveDBProof::V0(proof_v0) = decoded_proof {
-        println!("\nProof for empty tree:");
-        for op in &proof_v0.root_layer.merk_proof {
-            println!("  {:?}", op);
+    match decoded_proof {
+        crate::operations::proof::GroveDBProof::V0(proof_v0) => {
+            println!("\nProof for empty tree:");
+            for op in &proof_v0.root_layer.merk_proof {
+                println!("  {:?}", op);
+            }
         }
     }
 }
