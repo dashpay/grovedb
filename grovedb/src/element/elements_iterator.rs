@@ -58,15 +58,4 @@ impl<I: RawIterator> ElementsIterator<I> {
         })
         .wrap_with_cost(cost)
     }
-
-    pub fn fast_forward(&mut self, key: &[u8]) -> Result<(), Error> {
-        while self.raw_iter.valid().unwrap() {
-            if self.raw_iter.key().unwrap().unwrap() == key {
-                break;
-            } else {
-                self.raw_iter.next().unwrap();
-            }
-        }
-        Ok(())
-    }
 }
