@@ -9,6 +9,7 @@ use grovedb_costs::{
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
+use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::{DebugByteVectors, DebugBytes};
 #[cfg(feature = "minimal")]

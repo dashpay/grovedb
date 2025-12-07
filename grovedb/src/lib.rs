@@ -143,7 +143,7 @@ pub mod operations;
 mod query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod query_result_type;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "minimal")]
 pub mod reference_path;
 #[cfg(feature = "minimal")]
 pub mod replication;
@@ -165,9 +165,14 @@ use debugger::start_visualizer;
 pub use element::Element;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
+use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
+use grovedb_merk::element::{
+    costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
+    insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions, ElementExt,
 };
 #[cfg(feature = "estimated_costs")]
 pub use grovedb_merk::estimated_costs::{
@@ -219,8 +224,6 @@ use tokio::net::ToSocketAddrs;
 #[cfg(feature = "minimal")]
 use util::{compat, TxRef};
 
-#[cfg(feature = "minimal")]
-use crate::element::helpers::raw_decode;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use crate::error::Error;
 #[cfg(feature = "minimal")]
@@ -629,6 +632,7 @@ impl GroveDb {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                    .map_err(|e| e.into())
             } else if let Element::SumTree(.., flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
                     maybe_root_key,
@@ -642,6 +646,7 @@ impl GroveDb {
                     None,
                     grove_version,
                 )
+                .map_err(|e| e.into())
             } else if let Element::BigSumTree(.., flag) = element {
                 let tree = Element::new_big_sum_tree_with_flags_and_sum_value(
                     maybe_root_key,
@@ -655,6 +660,7 @@ impl GroveDb {
                     None,
                     grove_version,
                 )
+                .map_err(|e| e.into())
             } else if let Element::CountTree(.., flag) = element {
                 let tree = Element::new_count_tree_with_flags_and_count_value(
                     maybe_root_key,
@@ -668,6 +674,7 @@ impl GroveDb {
                     None,
                     grove_version,
                 )
+                .map_err(|e| e.into())
             } else if let Element::CountSumTree(.., flag) = element {
                 let tree = Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
                     maybe_root_key,
@@ -682,6 +689,7 @@ impl GroveDb {
                     None,
                     grove_version,
                 )
+                .map_err(|e| e.into())
             } else if let Element::ProvableCountTree(.., flag) = element {
                 let tree = Element::new_provable_count_tree_with_flags_and_count_value(
                     maybe_root_key,
@@ -695,6 +703,7 @@ impl GroveDb {
                     None,
                     grove_version,
                 )
+                .map_err(|e| e.into())
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -724,7 +733,7 @@ impl GroveDb {
             |element| {
                 if let Element::Tree(_, flag) = element {
                     let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                    let merk_feature_type = cost_return_on_error!(
+                    let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
@@ -737,13 +746,14 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
+                    .map_err(|e| e.into())
                 } else if let Element::SumTree(.., flag) = element {
                     let tree = Element::new_sum_tree_with_flags_and_sum_value(
                         maybe_root_key,
                         aggregate_data.as_sum_i64(),
                         flag,
                     );
-                    let merk_feature_type = cost_return_on_error!(
+                    let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
@@ -756,13 +766,14 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
+                    .map_err(|e| e.into())
                 } else if let Element::BigSumTree(.., flag) = element {
                     let tree = Element::new_big_sum_tree_with_flags_and_sum_value(
                         maybe_root_key,
                         aggregate_data.as_summed_i128(),
                         flag,
                     );
-                    let merk_feature_type = cost_return_on_error!(
+                    let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
@@ -775,13 +786,14 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
+                    .map_err(|e| e.into())
                 } else if let Element::CountTree(.., flag) = element {
                     let tree = Element::new_count_tree_with_flags_and_count_value(
                         maybe_root_key,
                         aggregate_data.as_count_u64(),
                         flag,
                     );
-                    let merk_feature_type = cost_return_on_error!(
+                    let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
@@ -794,6 +806,7 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
+                    .map_err(|e| e.into())
                 } else if let Element::CountSumTree(.., flag) = element {
                     let tree = Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
                         maybe_root_key,
@@ -801,7 +814,7 @@ impl GroveDb {
                         aggregate_data.as_sum_i64(),
                         flag,
                     );
-                    let merk_feature_type = cost_return_on_error!(
+                    let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
@@ -814,13 +827,14 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
+                    .map_err(|e| e.into())
                 } else if let Element::ProvableCountTree(.., flag) = element {
                     let tree = Element::new_provable_count_tree_with_flags_and_count_value(
                         maybe_root_key,
                         aggregate_data.as_count_u64(),
                         flag,
                     );
-                    let merk_feature_type = cost_return_on_error!(
+                    let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
@@ -833,6 +847,7 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
+                    .map_err(|e| e.into())
                 } else {
                     Err(Error::InvalidPath(
                         "can only propagate on tree items".to_owned(),
@@ -1042,7 +1057,7 @@ impl GroveDb {
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
-            let element = raw_decode(&element_value, grove_version)?;
+            let element = Element::raw_decode(&element_value, grove_version)?;
             match element {
                 Element::SumTree(..)
                 | Element::Tree(..)

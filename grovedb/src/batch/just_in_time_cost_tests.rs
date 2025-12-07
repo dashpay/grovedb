@@ -1371,7 +1371,7 @@ mod tests {
 
             apply_batch(&db, ops, &tx, grove_version);
 
-            let expected_added_bytes = if n < 15 {
+            let _expected_added_bytes = if n < 15 {
                 n as u32 + 3
             } else if n < 124 {
                 n as u32 + 4 // the varint requires an extra byte

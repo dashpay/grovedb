@@ -12,11 +12,16 @@ use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "minimal")]
 pub use delete_up_tree::DeleteUpTreeOptions;
+use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
     cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
+};
+use grovedb_merk::element::{
+    costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
+    tree_type::ElementTreeTypeExtensions,
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
@@ -29,14 +34,11 @@ use grovedb_storage::{
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
+use crate::util::{compat, TxRef};
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
-};
-use crate::{
-    raw_decode,
-    util::{compat, TxRef},
 };
 
 #[cfg(feature = "minimal")]
@@ -224,7 +226,7 @@ impl GroveDb {
             while let Some((key, element_value)) =
                 element_iterator.next_kv().unwrap_add_cost(&mut cost)
             {
-                let element = raw_decode(&element_value, grove_version).unwrap();
+                let element = Element::raw_decode(&element_value, grove_version).unwrap();
                 if element.is_any_tree() {
                     if options.allow_deleting_subtrees {
                         cost_return_on_error!(
@@ -697,7 +699,7 @@ impl GroveDb {
                     })
                 );
                 // We are deleting a tree, a tree uses 3 bytes
-                cost_return_on_error!(
+                cost_return_on_error_into!(
                     &mut cost,
                     Element::delete_with_sectioned_removal_bytes(
                         &mut merk_to_delete_tree_from,
@@ -726,7 +728,7 @@ impl GroveDb {
                 );
             } else {
                 // We are deleting a tree, a tree uses 3 bytes
-                cost_return_on_error!(
+                cost_return_on_error_into!(
                     &mut cost,
                     Element::delete_with_sectioned_removal_bytes(
                         &mut subtree_to_delete_from,
@@ -755,7 +757,7 @@ impl GroveDb {
                 );
             }
         } else {
-            cost_return_on_error!(
+            cost_return_on_error_into!(
                 &mut cost,
                 Element::delete_with_sectioned_removal_bytes(
                     &mut subtree_to_delete_from,

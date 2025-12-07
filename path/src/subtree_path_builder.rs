@@ -228,7 +228,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
     /// Get a derived path for a parent and a chopped segment. Returned
     /// [SubtreePath] will be linked to this [SubtreePath] because it might
     /// contain owned data and it has to outlive [SubtreePath].
-    pub fn derive_parent(&self) -> Option<(SubtreePath<B>, &[u8])> {
+    pub fn derive_parent(&self) -> Option<(SubtreePath<'_, B>, &[u8])> {
         match &self.relative {
             SubtreePathRelative::Empty => self.base.derive_parent(),
             SubtreePathRelative::Single(relative) => Some((self.base.clone(), relative.as_ref())),

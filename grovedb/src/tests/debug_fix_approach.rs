@@ -13,11 +13,9 @@
 // Alternatively:
 // - We could generate a new node type that includes key, value, hash, and count
 // - This would allow verification without needing tree structure
-
-use grovedb_merk::proofs::Query;
 use grovedb_version::version::GroveVersion;
 
-use crate::{tests::make_test_grovedb, Element, GroveDb, PathQuery};
+use crate::{tests::make_test_grovedb, Element};
 
 #[test]
 fn debug_fix_approach() {

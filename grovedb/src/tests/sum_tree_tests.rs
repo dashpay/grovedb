@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::{
+        element::costs::ElementCostExtensions,
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
@@ -273,7 +274,7 @@ mod tests {
         .unwrap()
         .expect("should insert item with sum");
 
-        let mut assert_sum = |expected_sum: i64| {
+        let assert_sum = |expected_sum: i64| {
             let element = db
                 .get([TEST_LEAF].as_ref(), b"sum_mixed", None, grove_version)
                 .unwrap()

@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod count_sum_tree_tests {
     use grovedb_merk::{
+        element::costs::ElementCostExtensions,
         tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType,
     };

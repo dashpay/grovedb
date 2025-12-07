@@ -1029,9 +1029,12 @@ pub fn make_deep_tree_with_sum_trees_mixed_with_items(grove_version: &GroveVersi
 
 mod tests {
     use batch::QualifiedGroveDbOp;
-    use grovedb_merk::proofs::query::SubqueryBranch;
+    use grovedb_merk::{
+        element::get::ElementFetchFromStorageExtensions, proofs::query::SubqueryBranch,
+    };
 
     use super::*;
+    use crate::element::elements_iterator::ElementIteratorExtensions;
 
     #[test]
     fn test_init() {

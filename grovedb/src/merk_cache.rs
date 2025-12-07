@@ -199,6 +199,7 @@ impl<'db> MerkHandle<'db, '_> {
 
 #[cfg(test)]
 mod tests {
+    use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
     use grovedb_path::SubtreePath;
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;

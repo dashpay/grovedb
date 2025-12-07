@@ -2,120 +2,48 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
-#[cfg(feature = "verify")]
+#[cfg(feature = "constructor")]
 mod constructor;
-#[cfg(feature = "verify")]
-mod delete;
-#[cfg(feature = "verify")]
-mod exists;
-#[cfg(feature = "verify")]
-mod get;
 
 pub(crate) mod helpers;
-#[cfg(feature = "verify")]
-mod insert;
-
-mod query;
-
-pub use query::QueryOptions;
-
 mod serialize;
+
+#[cfg(feature = "visualize")]
+mod visualize;
 
 use std::fmt;
 
 use bincode::{Decode, Encode};
-#[cfg(feature = "verify")]
-use grovedb_merk::estimated_costs::SUM_AND_COUNT_LAYER_COST_SIZE;
-#[cfg(feature = "verify")]
-use grovedb_merk::estimated_costs::SUM_VALUE_EXTRA_COST;
-#[cfg(feature = "verify")]
-use grovedb_merk::estimated_costs::{
-    BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_LAYER_COST_SIZE,
-};
-#[cfg(feature = "verify")]
-use grovedb_merk::tree_type::TreeType;
-#[cfg(feature = "verify")]
-use grovedb_visualize::visualize_to_vec;
-
-use crate::operations::proof::util::hex_to_ascii;
 
 use crate::reference_path::ReferencePathType;
-#[cfg(feature = "verify")]
-use crate::OperationCost;
-
 
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
-
 
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
 pub type MaxReferenceHop = Option<u8>;
 
-#[cfg(feature = "verify")]
-/// The cost of a tree
-pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
-#[cfg(feature = "verify")]
-/// The cost of a sum item
-///
-/// It is 11 because we have 9 bytes for the sum value
-/// 1 byte for the item type
-/// 1 byte for the flags option
-pub const SUM_ITEM_COST_SIZE: u32 = SUM_VALUE_EXTRA_COST + 2; // 11
-#[cfg(feature = "verify")]
-/// The cost of a sum tree
-pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
-
-#[cfg(feature = "verify")]
-/// The cost of a big sum tree
-pub const BIG_SUM_TREE_COST_SIZE: u32 = BIG_SUM_LAYER_COST_SIZE; // 19
-
-#[cfg(feature = "verify")]
-/// The cost of a count tree
-pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
-
-#[cfg(feature = "verify")]
-/// The cost of a count tree
-pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
-
-
 /// int 64 sum value
 pub type SumValue = i64;
 
-
 /// int 128 sum value
 pub type BigSumValue = i128;
-
 
 /// int 64 count value
 pub type CountValue = u64;
 
 #[cfg(feature = "verify")]
-pub trait CostSize {
+pub trait ElementCostSizeExtension {
     fn cost_size(&self) -> u32;
 }
-
-#[cfg(feature = "verify")]
-impl CostSize for TreeType {
-    fn cost_size(&self) -> u32 {
-        match self {
-            TreeType::NormalTree => TREE_COST_SIZE,
-            TreeType::SumTree => SUM_TREE_COST_SIZE,
-            TreeType::BigSumTree => BIG_SUM_TREE_COST_SIZE,
-            TreeType::CountTree => COUNT_TREE_COST_SIZE,
-            TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
-            TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
-        }
-    }
-}
-
 
 /// Variants of GroveDB stored entities
 ///
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
 #[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
-#[cfg_attr(not(any(feature = "minimal", feature = "visualize")), derive(Debug))]
+#[cfg_attr(not(feature = "visualize"), derive(Debug))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Element {
     /// An ordinary value
@@ -143,6 +71,23 @@ pub enum Element {
     ProvableCountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
     /// An ordinary value with a sum value
     ItemWithSumItem(Vec<u8>, SumValue, Option<ElementFlags>),
+}
+
+pub fn hex_to_ascii(hex_value: &[u8]) -> String {
+    // Define the set of allowed characters
+    const ALLOWED_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                                  abcdefghijklmnopqrstuvwxyz\
+                                  0123456789_-/\\[]@";
+
+    // Check if all characters in hex_value are allowed
+    if hex_value.iter().all(|&c| ALLOWED_CHARS.contains(&c)) {
+        // Try to convert to UTF-8
+        String::from_utf8(hex_value.to_vec())
+            .unwrap_or_else(|_| format!("0x{}", hex::encode(hex_value)))
+    } else {
+        // Hex encode and prepend "0x"
+        format!("0x{}", hex::encode(hex_value))
+    }
 }
 
 impl fmt::Display for Element {
@@ -274,23 +219,5 @@ impl Element {
             Element::ProvableCountTree(..) => "provable count tree",
             Element::ItemWithSumItem(..) => "item with sum item",
         }
-    }
-
-    #[cfg(feature = "verify")]
-    pub(crate) fn value_hash(
-        &self,
-        grove_version: &grovedb_version::version::GroveVersion,
-    ) -> grovedb_costs::CostResult<grovedb_merk::CryptoHash, crate::Error> {
-        let bytes = grovedb_costs::cost_return_on_error_default!(self.serialize(grove_version));
-        crate::value_hash(&bytes).map(Result::Ok)
-    }
-}
-
-impl fmt::Debug for Element {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut v = Vec::new();
-        visualize_to_vec(&mut v, self);
-
-        f.write_str(&String::from_utf8_lossy(&v))
     }
 }

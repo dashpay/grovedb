@@ -4,6 +4,7 @@
 mod tests {
     use assert_matches::assert_matches;
     use grovedb_merk::{
+        element::costs::ElementCostExtensions,
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType::{BasicMerkNode, CountedMerkNode},

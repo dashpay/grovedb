@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add, CostResult,
-    CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
+    cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
     proofs::{encode_into, query::QueryItem, Node, Op},
@@ -263,7 +263,7 @@ impl GroveDb {
                         let elem = Element::deserialize(value, grove_version);
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
-                                let absolute_path = cost_return_on_error!(
+                                let absolute_path = cost_return_on_error_into!(
                                     &mut cost,
                                     path_from_reference_path_type(
                                         reference_path,
@@ -273,7 +273,7 @@ impl GroveDb {
                                     .wrap_with_cost(OperationCost::default())
                                 );
 
-                                let referenced_elem = cost_return_on_error!(
+                                let referenced_elem = cost_return_on_error_into!(
                                     &mut cost,
                                     self.follow_reference(
                                         absolute_path.as_slice().into(),

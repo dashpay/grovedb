@@ -53,7 +53,7 @@ impl CompactBytes {
         self.n_segments += 1;
     }
 
-    pub fn reverse_iter(&self) -> CompactBytesIter {
+    pub fn reverse_iter(&self) -> CompactBytesIter<'_> {
         CompactBytesIter {
             bytes: self,
             offset_back: self.data.len(),

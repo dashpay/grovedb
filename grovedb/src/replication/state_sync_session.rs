@@ -23,6 +23,7 @@ use super::{
     CURRENT_STATE_SYNC_VERSION,
 };
 use crate::{
+    element::elements_iterator::ElementIteratorExtensions,
     replication,
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
     Element, Error, GroveDb, Transaction,
@@ -617,7 +618,7 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut subtree_keys = BTreeSet::new();
 
         let mut raw_iter = Element::iterator(merk.storage.raw_iter()).unwrap();
-        while let Some((key, value)) = raw_iter.next_element(grove_version).unwrap().unwrap() {
+        while let Some((key, value)) = raw_iter.next_element(grove_version).unwrap()? {
             if value.is_any_tree() {
                 subtree_keys.insert(key.to_vec());
             }

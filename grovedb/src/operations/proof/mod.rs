@@ -64,6 +64,7 @@ pub struct LayerProof {
 }
 
 #[derive(Encode, Decode)]
+#[non_exhaustive]
 pub enum GroveDBProof {
     V0(GroveDBProofV0),
 }

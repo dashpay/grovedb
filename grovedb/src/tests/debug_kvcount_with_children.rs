@@ -72,7 +72,7 @@ fn debug_kvcount_with_children() {
             // Manually execute the proof to understand the tree structure
 
             let ops = Decoder::new(&lower_layer.merk_proof);
-            let mut stack: Vec<String> = Vec::new();
+            let stack: Vec<String> = Vec::new();
 
             for (i, op) in ops.enumerate() {
                 if let Ok(op) = op {
@@ -89,9 +89,7 @@ fn debug_kvcount_with_children() {
                                     );
 
                                     // Calculate what hash this node should have
-                                    use grovedb_merk::tree::{
-                                        kv_digest_to_kv_hash, node_hash_with_count, value_hash,
-                                    };
+                                    use grovedb_merk::tree::{kv_digest_to_kv_hash, value_hash};
                                     let val_hash = value_hash(v).unwrap();
                                     let kv_hash = kv_digest_to_kv_hash(k, &val_hash).unwrap();
 

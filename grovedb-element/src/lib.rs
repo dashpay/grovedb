@@ -1,16 +1,7 @@
 mod element;
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use element::*;
+pub mod error;
+pub mod reference_path;
+#[cfg(feature = "visualize")]
+pub(crate) mod visualize_helpers;

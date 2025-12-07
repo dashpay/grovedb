@@ -13,9 +13,17 @@ documentation = "https://docs.rs/grovedb"
 [dependencies]
 bincode = { version = "=2.0.0-rc.3" }
 bincode_derive = { version = "=2.0.0-rc.3" }
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
 hex = "0.4.3"
+integer-encoding = "4.1.0"
+thiserror = "2.0.17"
+grovedb-version = { version = "3.1.0", path = "../grovedb-version" }
+grovedb-visualize = { version = "3.1.0", path = "../visualize", optional = true }
+grovedb-path = { version = "3.1.0", path = "../path" }
 
 [features]
-default = ["verify"]
+default = ["verify", "constructor"]
 verify = []
+constructor = []
+serde = ["dep:serde"]
+visualize = ["dep:grovedb-visualize"]

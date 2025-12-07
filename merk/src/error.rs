@@ -1,4 +1,7 @@
 //! Errors
+
+use grovedb_costs::CostResult;
+
 #[cfg(feature = "minimal")]
 use crate::proofs::chunk::error::ChunkError;
 
@@ -123,10 +126,74 @@ pub enum Error {
 
     #[error("unknown tree type {0}")]
     UnknownTreeType(String),
+
+    // Path errors
+    /// The path key not found could represent a valid query, just where the
+    /// path key isn't there
+    #[error("path key not found: {0}")]
+    PathKeyNotFound(String),
+    /// The path not found could represent a valid query, just where the path
+    /// isn't there
+    #[error("path not found: {0}")]
+    PathNotFound(String),
+    /// The path not found could represent a valid query, just where the parent
+    /// path merk isn't there
+    #[error("path parent layer not found: {0}")]
+    PathParentLayerNotFound(String),
+
+    #[error("data corruption error: {0}")]
+    /// Corrupted data
+    CorruptedData(String),
+
+    #[error(transparent)]
+    /// Version error
+    ElementError(grovedb_element::error::ElementError),
+}
+
+impl Error {
+    pub(crate) fn add_context(&mut self, append: impl AsRef<str>) {
+        match self {
+            Self::OldChunkRestoringError(s)
+            | Self::InvalidProofError(s)
+            | Self::ProofCreationError(s)
+            | Self::NotSupported(s)
+            | Self::RequestAmountExceeded(s)
+            | Self::ClientCorruptionError(s)
+            | Self::BigSumTreeUnderNormalSumTree(s)
+            | Self::UnknownTreeType(s)
+            | Self::PathKeyNotFound(s)
+            | Self::PathNotFound(s)
+            | Self::PathParentLayerNotFound(s)
+            | Self::CorruptedData(s) => {
+                s.push_str(", ");
+                s.push_str(append.as_ref());
+            }
+            _ => {}
+        }
+    }
 }
 
 impl From<grovedb_version::error::GroveVersionError> for Error {
     fn from(value: grovedb_version::error::GroveVersionError) -> Self {
         Error::VersionError(value)
+    }
+}
+
+impl From<grovedb_element::error::ElementError> for Error {
+    fn from(value: grovedb_element::error::ElementError) -> Self {
+        Error::ElementError(value)
+    }
+}
+
+pub trait MerkErrorExt {
+    fn add_context(self, append: impl AsRef<str>) -> Self;
+}
+
+impl<T> MerkErrorExt for CostResult<T, Error> {
+    fn add_context(self, append: impl AsRef<str>) -> Self {
+        self.map_err(|mut e| {
+            e.add_context(append.as_ref());
+            e
+        })
     }
 }
