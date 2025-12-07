@@ -226,7 +226,15 @@ impl GroveDb {
             while let Some((key, element_value)) =
                 element_iterator.next_kv().unwrap_add_cost(&mut cost)
             {
-                let element = Element::raw_decode(&element_value, grove_version).unwrap();
+                let element = match Element::raw_decode(&element_value, grove_version) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        return Err(Error::CorruptedData(format!(
+                            "unable to decode element while clearing subtree: {e}"
+                        )))
+                        .wrap_with_cost(cost)
+                    }
+                };
                 if element.is_any_tree() {
                     if options.allow_deleting_subtrees {
                         cost_return_on_error!(

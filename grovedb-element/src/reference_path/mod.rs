@@ -92,6 +92,9 @@ impl ReferencePathType {
             // Discarding N latest segments is relative to the previously appended path, so it would
             // be easier to discard appended paths both ways and have a shared prefix.
             ReferencePathType::UpstreamFromElementHeightReference(n, append_path) => {
+                if append_path.len() > u8::MAX as usize {
+                    return None;
+                }
                 let mut relative_path: Vec<Vec<u8>> = path
                     .into_reverse_iter()
                     .take(*n as usize)
@@ -111,6 +114,9 @@ impl ReferencePathType {
             // Here since any number of segments could've been added we need to resort to a more
             // specific option
             ReferencePathType::RemovedCousinReference(append_path) => {
+                if append_path.len() > u8::MAX as usize {
+                    return None;
+                }
                 let mut relative_path =
                     vec![path.into_reverse_iter().next().map(|x| x.to_vec())?];
                 relative_path.push(key.to_vec());
