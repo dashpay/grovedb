@@ -503,9 +503,14 @@ where
                 stack.push(parent);
             }
             Op::Push(node) => {
+                // Check key ordering for ALL node types that contain keys
                 if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
-                | Node::KVRefValueHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..)
+                | Node::KVCount(key, ..)
+                | Node::KVRefValueHashCount(key, ..)
+                | Node::KVDigest(key, _) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
@@ -526,9 +531,14 @@ where
                 stack.push(tree);
             }
             Op::PushInverted(node) => {
+                // Check key ordering for ALL node types that contain keys
                 if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
-                | Node::KVRefValueHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..)
+                | Node::KVCount(key, ..)
+                | Node::KVRefValueHashCount(key, ..)
+                | Node::KVDigest(key, _) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key {

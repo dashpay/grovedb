@@ -23,10 +23,23 @@ pub enum ProofNodeType {
     ///
     /// Security comes from GroveDB's multi-layer proof structure.
     ///
-    /// Used for: Tree, SumTree, BigSumTree, CountTree, CountSumTree,
-    ///           ProvableCountTree (for the tree element itself), Reference
-    ///           (in regular trees)
+    /// Used for: All tree types (Tree, SumTree, BigSumTree, CountTree,
+    ///           CountSumTree, ProvableCountTree) when NOT inside a
+    ///           ProvableCountTree parent
     KvValueHash,
+
+    /// Use `Node::KVRefValueHash` - like KVValueHash but for references.
+    ///
+    /// At the merk layer, this generates `KVValueHash` (since merk doesn't
+    /// know about references). GroveDB post-processes these nodes to
+    /// `Node::KVRefValueHash` with the dereferenced value.
+    ///
+    /// Required for references in regular trees because:
+    /// 1. They need combined hash for reference resolution
+    /// 2. GroveDB needs to identify them for post-processing
+    ///
+    /// Used for: Reference (in regular trees, not ProvableCountTree)
+    KvRefValueHash,
 
     /// Use `Node::KVCount` - the verifier will compute `value_hash = H(value)`
     /// and include the count in the node hash calculation.
@@ -51,6 +64,10 @@ pub enum ProofNodeType {
 
     /// Use `Node::KVRefValueHashCount` - like KVRefValueHash but includes
     /// the count in the node hash calculation.
+    ///
+    /// At the merk layer, this generates `KVValueHashFeatureType` (since merk
+    /// doesn't know about references). GroveDB post-processes these nodes to
+    /// `Node::KVRefValueHashCount` with the dereferenced value.
     ///
     /// Required for references inside ProvableCountTree because:
     /// 1. They need combined hash (like KVRefValueHash) for reference
@@ -136,11 +153,13 @@ impl ElementType {
                 ProofNodeType::Kv
             }
         } else if self.is_reference() {
-            // References
+            // References need combined hash (for reference resolution).
+            // In ProvableCountTree, they also need the count in node_hash.
+            // GroveDB post-processes these to KVRefValueHash/KVRefValueHashCount.
             if is_provable_count_tree {
                 ProofNodeType::KvRefValueHashCount
             } else {
-                ProofNodeType::KvValueHash
+                ProofNodeType::KvRefValueHash
             }
         } else {
             // Subtrees (Tree, SumTree, BigSumTree, CountTree, CountSumTree,
@@ -313,11 +332,14 @@ mod tests {
             ProofNodeType::Kv
         );
 
-        // Trees and references should use KvValueHash (verifier trusts hash)
+        // References should use KvRefValueHash (verifier trusts hash, GroveDB
+        // post-processes)
         assert_eq!(
             ElementType::Reference.proof_node_type(None),
-            ProofNodeType::KvValueHash
+            ProofNodeType::KvRefValueHash
         );
+
+        // Trees should use KvValueHash (verifier trusts hash)
         assert_eq!(
             ElementType::Tree.proof_node_type(None),
             ProofNodeType::KvValueHash
@@ -365,6 +387,7 @@ mod tests {
         );
 
         // References use KvRefValueHashCount (combined hash + count)
+        // GroveDB post-processes these with dereferenced values
         assert_eq!(
             ElementType::Reference.proof_node_type(pct),
             ProofNodeType::KvRefValueHashCount

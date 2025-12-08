@@ -1131,19 +1131,21 @@ where
                 .unwrap_or(ProofNodeType::Kv); // Default to tamper-resistant for raw Merk
 
             // Convert ProofNodeType to actual Node
+            // Note: References use KvRefValueHash or KvRefValueHashCount, but at the merk
+            // level these generate KVValueHash or KVValueHashFeatureType nodes.
+            // GroveDB post-processes these to KVRefValueHash or KVRefValueHashCount
+            // with dereferenced values.
             let node = match proof_node_type {
                 ProofNodeType::Kv => self.to_kv_node(),
                 ProofNodeType::KvCount => self.to_kv_count_node(),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
-                ProofNodeType::KvRefValueHashCount => {
-                    // References in ProvableCountTree are handled at the GroveDB layer.
-                    // At the merk layer, references are stored as regular values with
-                    // combined hash, so we generate KVValueHashFeatureType here.
-                    // The GroveDB layer will post-process this to include the
-                    // dereferenced value with the count.
-                    self.to_kv_value_hash_feature_type_node()
-                }
+                // References: at merk level, generate same node type as non-ref counterpart
+                // GroveDB will post-process to KVRefValueHash with dereferenced value
+                ProofNodeType::KvRefValueHash => self.to_kv_value_hash_node(),
+                // ProvableCountTree references: generate KVValueHashFeatureType
+                // GroveDB will post-process to KVRefValueHashCount with dereferenced value
+                ProofNodeType::KvRefValueHashCount => self.to_kv_value_hash_feature_type_node(),
             };
 
             if proof_params.left_to_right {

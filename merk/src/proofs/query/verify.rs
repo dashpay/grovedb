@@ -371,6 +371,7 @@ impl Query {
                     Some(Node::KVValueHash(..)) => {}
                     Some(Node::KVCount(..)) => {}
                     Some(Node::KVValueHashFeatureType(..)) => {}
+                    Some(Node::KVRefValueHashCount(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items
