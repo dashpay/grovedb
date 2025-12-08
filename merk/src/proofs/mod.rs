@@ -274,10 +274,10 @@ pub enum Node {
     ///   etc.) must be preserved when rebuilding trees from chunks.
     KVValueHashFeatureType(Vec<u8>, Vec<u8>, CryptoHash, TreeFeatureType),
 
-    /// Key, referenced value, and current node's value_hash. For GroveDB
-    /// references.
+    /// Key, referenced value, and hash of serialized Reference element.
+    /// For GroveDB references.
     ///
-    /// Contains: `(key, referenced_value, value_hash)`
+    /// Contains: `(key, referenced_value, reference_element_hash)`
     ///
     /// ```text
     ///     Query: key "ref_to_X" (a Reference element)
@@ -290,22 +290,27 @@ pub enum Node {
     ///     └─────────────┘            └─────────────┘
     ///
     ///     KVRefValueHash returns:
-    ///     - key:              "ref_to_X"
-    ///     - referenced_value: "secret" (from X in Tree B)
-    ///     - value_hash:       H(path to Tree B/X)
-    ///                         ▲
-    ///                         └── hash of THIS node's value,
-    ///                             not the referenced value
+    ///     - key:                    "ref_to_X"
+    ///     - referenced_value:       "secret" (dereferenced value from X)
+    ///     - reference_element_hash: H(serialized_reference_element)
+    ///                               ▲
+    ///                               └── hash of the Reference element bytes,
+    ///                                   NOT the referenced value
     ///
-    ///     This allows verification against merkle root while
-    ///     returning the dereferenced data to the user.
+    ///     Verification computes:
+    ///       combined_value_hash = combine_hash(reference_element_hash, H(referenced_value))
+    ///       kv_hash = H(key || combined_value_hash)
+    ///
+    ///     This matches how References are stored in the merk tree, where:
+    ///       node.value_hash = combine_hash(H(ref_bytes), H(referenced_item_bytes))
     /// ```
     ///
     /// **When used**: When a queried element is a GroveDB Reference type. The
     /// `referenced_value` is the resolved value from the referenced location,
-    /// while `value_hash` is the hash of this node's actual value (the
-    /// reference path itself). This allows returning the dereferenced data
-    /// while still being able to verify the proof against the merkle root.
+    /// while `reference_element_hash` is `H(serialized_reference_element)`.
+    /// During verification, these are combined to reconstruct the node's
+    /// value_hash, allowing proof verification while returning dereferenced
+    /// data.
     KVRefValueHash(Vec<u8>, Vec<u8>, CryptoHash),
 
     /// Key, value, and count. For queried Items in ProvableCountTree.

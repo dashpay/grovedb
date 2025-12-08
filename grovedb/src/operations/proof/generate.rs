@@ -245,12 +245,16 @@ impl GroveDb {
 
         for op in merk_proof.proof.iter_mut() {
             done_with_results |= overall_limit == &Some(0);
-            // Check if node is KVValueHashFeatureType before destructuring
+            // Check if node should preserve its special type before destructuring
             // We need this flag to avoid converting it to Node::KV later
-            let is_kv_value_hash_feature_type = matches!(
+            // - KVValueHashFeatureType: used by ProvableCountTree for trees/references
+            // - KVCount: used by ProvableCountTree for Items (tamper-resistant with count)
+            let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
                     | Op::PushInverted(Node::KVValueHashFeatureType(..))
+                    | Op::Push(Node::KVCount(..))
+                    | Op::PushInverted(Node::KVCount(..))
             );
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
@@ -307,10 +311,10 @@ impl GroveDb {
                                 {
                                     println!("found {}", hex_to_ascii(key));
                                 }
-                                // Only convert to Node::KV if not already a KVValueHashFeatureType
-                                // KVValueHashFeatureType (used by ProvableCountTree) must preserve
-                                // the feature_type for proper hash verification
-                                if !is_kv_value_hash_feature_type {
+                                // Only convert to Node::KV if not already a special node type
+                                // - KVValueHashFeatureType: preserves feature_type for trees/refs
+                                // - KVCount: preserves count for Items in ProvableCountTree
+                                if !should_preserve_node_type {
                                     *node = Node::KV(key.to_owned(), value.to_owned());
                                 }
                                 if let Some(limit) = overall_limit.as_mut() {
