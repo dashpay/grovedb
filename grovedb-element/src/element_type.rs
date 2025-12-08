@@ -13,7 +13,7 @@ pub enum ProofNodeType {
     /// This is secure because any tampering with the value bytes will cause
     /// the computed hash to differ, failing verification.
     ///
-    /// Used for: Item, SumItem, ItemWithSumItem
+    /// Used for: Item, SumItem, ItemWithSumItem (in regular trees)
     Kv,
 
     /// Use `Node::KVValueHash` - the verifier trusts the provided value_hash.
@@ -24,8 +24,18 @@ pub enum ProofNodeType {
     /// Security comes from GroveDB's multi-layer proof structure.
     ///
     /// Used for: Tree, SumTree, BigSumTree, CountTree, CountSumTree,
-    ///           ProvableCountTree, Reference
+    ///           ProvableCountTree (for the tree element itself), Reference
     KvValueHash,
+
+    /// Use `Node::KVCount` - the verifier will compute `value_hash = H(value)`
+    /// and include the count in the node hash calculation.
+    ///
+    /// This is secure because:
+    /// 1. Tampering with value bytes causes hash mismatch (like KV)
+    /// 2. Tampering with count causes hash mismatch (count is in node_hash)
+    ///
+    /// Used for: Item, SumItem, ItemWithSumItem (inside ProvableCountTree)
+    KvCount,
 }
 
 /// Element type discriminants matching the Element enum serialization order.
@@ -79,16 +89,28 @@ impl ElementType {
     }
 
     /// Returns the type of proof node that should be used for this element
-    /// type.
+    /// type, given the parent tree type.
     ///
-    /// - `ProofNodeType::Kv` for items (verifier computes hash from value)
-    /// - `ProofNodeType::KvValueHash` for trees/references (verifier trusts
-    ///   hash)
+    /// The parent tree type affects which proof node to use:
+    /// - In regular trees: Items use `Kv`, trees/references use `KvValueHash`
+    /// - In ProvableCountTree: Items use `KvCount` (includes count in hash)
+    ///
+    /// # Arguments
+    /// * `parent_tree_type` - The type of tree containing this element, or
+    ///   `None` for root-level elements
     #[inline]
-    pub fn proof_node_type(&self) -> ProofNodeType {
+    pub fn proof_node_type(&self, parent_tree_type: Option<ElementType>) -> ProofNodeType {
+        let is_provable_count_tree = parent_tree_type == Some(ElementType::ProvableCountTree);
+
         if self.has_simple_value_hash() {
-            ProofNodeType::Kv
+            if is_provable_count_tree {
+                ProofNodeType::KvCount
+            } else {
+                ProofNodeType::Kv
+            }
         } else {
+            // Trees/references always use KvValueHash (or KVValueHashFeatureType
+            // variant internally for ProvableCountTree, but same enum variant)
             ProofNodeType::KvValueHash
         }
     }
@@ -239,44 +261,82 @@ mod tests {
     }
 
     #[test]
-    fn test_proof_node_type() {
+    fn test_proof_node_type_regular_tree() {
         use super::ProofNodeType;
 
-        // Items should use Kv (verifier computes hash)
-        assert_eq!(ElementType::Item.proof_node_type(), ProofNodeType::Kv);
-        assert_eq!(ElementType::SumItem.proof_node_type(), ProofNodeType::Kv);
+        // In regular trees (or None parent), items should use Kv
+        assert_eq!(ElementType::Item.proof_node_type(None), ProofNodeType::Kv);
         assert_eq!(
-            ElementType::ItemWithSumItem.proof_node_type(),
+            ElementType::SumItem.proof_node_type(Some(ElementType::Tree)),
+            ProofNodeType::Kv
+        );
+        assert_eq!(
+            ElementType::ItemWithSumItem.proof_node_type(Some(ElementType::SumTree)),
             ProofNodeType::Kv
         );
 
         // Trees and references should use KvValueHash (verifier trusts hash)
         assert_eq!(
-            ElementType::Reference.proof_node_type(),
+            ElementType::Reference.proof_node_type(None),
             ProofNodeType::KvValueHash
         );
         assert_eq!(
-            ElementType::Tree.proof_node_type(),
+            ElementType::Tree.proof_node_type(None),
             ProofNodeType::KvValueHash
         );
         assert_eq!(
-            ElementType::SumTree.proof_node_type(),
+            ElementType::SumTree.proof_node_type(Some(ElementType::Tree)),
             ProofNodeType::KvValueHash
         );
         assert_eq!(
-            ElementType::BigSumTree.proof_node_type(),
+            ElementType::BigSumTree.proof_node_type(None),
             ProofNodeType::KvValueHash
         );
         assert_eq!(
-            ElementType::CountTree.proof_node_type(),
+            ElementType::CountTree.proof_node_type(None),
             ProofNodeType::KvValueHash
         );
         assert_eq!(
-            ElementType::CountSumTree.proof_node_type(),
+            ElementType::CountSumTree.proof_node_type(None),
             ProofNodeType::KvValueHash
         );
         assert_eq!(
-            ElementType::ProvableCountTree.proof_node_type(),
+            ElementType::ProvableCountTree.proof_node_type(None),
+            ProofNodeType::KvValueHash
+        );
+    }
+
+    #[test]
+    fn test_proof_node_type_provable_count_tree() {
+        use super::ProofNodeType;
+
+        let pct = Some(ElementType::ProvableCountTree);
+
+        // In ProvableCountTree, items should use KvCount (count in hash)
+        assert_eq!(
+            ElementType::Item.proof_node_type(pct),
+            ProofNodeType::KvCount
+        );
+        assert_eq!(
+            ElementType::SumItem.proof_node_type(pct),
+            ProofNodeType::KvCount
+        );
+        assert_eq!(
+            ElementType::ItemWithSumItem.proof_node_type(pct),
+            ProofNodeType::KvCount
+        );
+
+        // Trees and references still use KvValueHash (with feature type internally)
+        assert_eq!(
+            ElementType::Reference.proof_node_type(pct),
+            ProofNodeType::KvValueHash
+        );
+        assert_eq!(
+            ElementType::Tree.proof_node_type(pct),
+            ProofNodeType::KvValueHash
+        );
+        assert_eq!(
+            ElementType::SumTree.proof_node_type(pct),
             ProofNodeType::KvValueHash
         );
     }

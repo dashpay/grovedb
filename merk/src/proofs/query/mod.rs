@@ -1104,6 +1104,13 @@ where
             TreeFeatureType::ProvableCountedMerkNode(_)
         );
 
+        // Convert is_provable_count_tree to parent tree type for proof_node_type()
+        let parent_tree_type = if is_provable_count_tree {
+            Some(ElementType::ProvableCountTree)
+        } else {
+            None // Regular tree or unknown - treated the same
+        };
+
         let proof_op = if found_item {
             // For query proofs, we need to include the actual key/value data.
             // The node type depends on the element type stored in the value:
@@ -1113,27 +1120,28 @@ where
             //
             // Determine proof node type from element type (first byte of value)
             // - For valid Element types: use the element's proof_node_type()
-            //   - Items (Item, SumItem, ItemWithSumItem) -> Kv (tamper-resistant)
+            //   - Items in regular trees -> Kv (tamper-resistant)
+            //   - Items in ProvableCountTree -> KvCount (tamper-resistant + count)
             //   - Trees/References -> KvValueHash (required for combined hashes)
             // - For invalid/unknown types (raw Merk usage): default to Kv
             //   - Raw Merk values should be tamper-resistant by default
             //   - Only GroveDB subtrees need KvValueHash for combined hash verification
             let proof_node_type = ElementType::from_serialized_value(self.tree().value_as_slice())
-                .map(|et| et.proof_node_type())
+                .map(|et| et.proof_node_type(parent_tree_type))
                 .unwrap_or(ProofNodeType::Kv); // Default to tamper-resistant for raw Merk
 
-            // For ProvableCountTree, we need to include the count in the proof node.
-            // - Items use KVCount (tamper-resistant + uses node_hash_with_count)
-            // - Trees/References use KVValueHashFeatureType (combined hash + count)
-            let node = if is_provable_count_tree {
-                match proof_node_type {
-                    ProofNodeType::Kv => self.to_kv_count_node(),
-                    ProofNodeType::KvValueHash => self.to_kv_value_hash_feature_type_node(),
-                }
-            } else {
-                match proof_node_type {
-                    ProofNodeType::Kv => self.to_kv_node(),
-                    ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
+            // Convert ProofNodeType to actual Node, using feature type variants for
+            // ProvableCountTree
+            let node = match proof_node_type {
+                ProofNodeType::Kv => self.to_kv_node(),
+                ProofNodeType::KvCount => self.to_kv_count_node(),
+                ProofNodeType::KvValueHash => {
+                    if is_provable_count_tree {
+                        // Trees/References in ProvableCountTree use KVValueHashFeatureType
+                        self.to_kv_value_hash_feature_type_node()
+                    } else {
+                        self.to_kv_value_hash_node()
+                    }
                 }
             };
 
