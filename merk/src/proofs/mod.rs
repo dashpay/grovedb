@@ -383,6 +383,39 @@ pub enum Node {
     /// but includes the aggregate count needed for ProvableCountTree hash
     /// verification.
     KVHashCount(CryptoHash, u64),
+
+    /// Key, referenced value, reference element hash, and feature type.
+    /// For queried References in ProvableCountTree.
+    ///
+    /// Contains: `(key, referenced_value, reference_element_hash, count)`
+    ///
+    /// ```text
+    ///     Query: key "ref_to_X" (a Reference element in ProvableCountTree)
+    ///
+    ///     ProvableCountTree:             Tree B:
+    ///     ┌─────────────┐                ┌─────────────┐
+    ///     │ ref_to_X    │───────────────►│ X           │
+    ///     │ count=3     │    resolves    │ value: data │
+    ///     │ value: path │      to        │ "secret"    │
+    ///     └─────────────┘                └─────────────┘
+    ///
+    ///     KVRefValueHashCount returns:
+    ///     - key:                    "ref_to_X"
+    ///     - referenced_value:       "secret" (dereferenced value from X)
+    ///     - reference_element_hash: H(serialized_reference_element)
+    ///     - count:                  3
+    ///
+    ///     Verification computes:
+    ///       combined_value_hash = combine_hash(reference_element_hash,
+    ///                                          H(referenced_value))
+    ///       kv_hash = H(key || combined_value_hash)
+    ///       node_hash = H(kv_hash || left || right || count_bytes)
+    /// ```
+    ///
+    /// **When used**: When a queried element in a ProvableCountTree is a
+    /// Reference type. Like `KVRefValueHash` but includes the count for
+    /// node hash verification.
+    KVRefValueHashCount(Vec<u8>, Vec<u8>, CryptoHash, u64),
 }
 
 use std::fmt;
@@ -429,6 +462,13 @@ impl fmt::Display for Node {
             Node::KVHashCount(kv_hash, count) => {
                 format!("KVHashCount(HASH[{}], {})", hex::encode(kv_hash), count)
             }
+            Node::KVRefValueHashCount(key, value, value_hash, count) => format!(
+                "KVRefValueHashCount({}, {}, HASH[{}], {})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                count
+            ),
         };
         write!(f, "{}", node_string)
     }

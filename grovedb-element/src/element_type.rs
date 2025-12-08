@@ -25,6 +25,7 @@ pub enum ProofNodeType {
     ///
     /// Used for: Tree, SumTree, BigSumTree, CountTree, CountSumTree,
     ///           ProvableCountTree (for the tree element itself), Reference
+    ///           (in regular trees)
     KvValueHash,
 
     /// Use `Node::KVCount` - the verifier will compute `value_hash = H(value)`
@@ -36,6 +37,28 @@ pub enum ProofNodeType {
     ///
     /// Used for: Item, SumItem, ItemWithSumItem (inside ProvableCountTree)
     KvCount,
+
+    /// Use `Node::KVValueHashFeatureType` - like KVValueHash but includes the
+    /// feature type (count) in the node hash calculation.
+    ///
+    /// Required for subtrees inside ProvableCountTree because:
+    /// 1. They need combined hash (like KVValueHash) for subtree root hash
+    /// 2. They need count included in node_hash for tamper resistance
+    ///
+    /// Used for: Tree, SumTree, BigSumTree, CountTree, CountSumTree,
+    ///           ProvableCountTree (inside ProvableCountTree)
+    KvValueHashFeatureType,
+
+    /// Use `Node::KVRefValueHashCount` - like KVRefValueHash but includes
+    /// the count in the node hash calculation.
+    ///
+    /// Required for references inside ProvableCountTree because:
+    /// 1. They need combined hash (like KVRefValueHash) for reference
+    ///    resolution
+    /// 2. They need count included in node_hash for tamper resistance
+    ///
+    /// Used for: Reference (inside ProvableCountTree)
+    KvRefValueHashCount,
 }
 
 /// Element type discriminants matching the Element enum serialization order.
@@ -93,7 +116,10 @@ impl ElementType {
     ///
     /// The parent tree type affects which proof node to use:
     /// - In regular trees: Items use `Kv`, trees/references use `KvValueHash`
-    /// - In ProvableCountTree: Items use `KvCount` (includes count in hash)
+    /// - In ProvableCountTree:
+    ///   - Items use `KvCount` (value hash + count in node hash)
+    ///   - Subtrees use `KvValueHashFeatureType` (combined hash + count)
+    ///   - References use `KvRefValueHashCount` (combined hash + count)
     ///
     /// # Arguments
     /// * `parent_tree_type` - The type of tree containing this element, or
@@ -103,15 +129,27 @@ impl ElementType {
         let is_provable_count_tree = parent_tree_type == Some(ElementType::ProvableCountTree);
 
         if self.has_simple_value_hash() {
+            // Items (Item, SumItem, ItemWithSumItem)
             if is_provable_count_tree {
                 ProofNodeType::KvCount
             } else {
                 ProofNodeType::Kv
             }
+        } else if self.is_reference() {
+            // References
+            if is_provable_count_tree {
+                ProofNodeType::KvRefValueHashCount
+            } else {
+                ProofNodeType::KvValueHash
+            }
         } else {
-            // Trees/references always use KvValueHash (or KVValueHashFeatureType
-            // variant internally for ProvableCountTree, but same enum variant)
-            ProofNodeType::KvValueHash
+            // Subtrees (Tree, SumTree, BigSumTree, CountTree, CountSumTree,
+            // ProvableCountTree)
+            if is_provable_count_tree {
+                ProofNodeType::KvValueHashFeatureType
+            } else {
+                ProofNodeType::KvValueHash
+            }
         }
     }
 
@@ -326,18 +364,36 @@ mod tests {
             ProofNodeType::KvCount
         );
 
-        // Trees and references still use KvValueHash (with feature type internally)
+        // References use KvRefValueHashCount (combined hash + count)
         assert_eq!(
             ElementType::Reference.proof_node_type(pct),
-            ProofNodeType::KvValueHash
+            ProofNodeType::KvRefValueHashCount
         );
+
+        // Subtrees use KvValueHashFeatureType (combined hash + count)
         assert_eq!(
             ElementType::Tree.proof_node_type(pct),
-            ProofNodeType::KvValueHash
+            ProofNodeType::KvValueHashFeatureType
         );
         assert_eq!(
             ElementType::SumTree.proof_node_type(pct),
-            ProofNodeType::KvValueHash
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::BigSumTree.proof_node_type(pct),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::CountTree.proof_node_type(pct),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::CountSumTree.proof_node_type(pct),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::ProvableCountTree.proof_node_type(pct),
+            ProofNodeType::KvValueHashFeatureType
         );
     }
 
@@ -372,5 +428,126 @@ mod tests {
         assert!(ElementType::CountSumTree.is_tree());
         assert!(ElementType::ProvableCountTree.is_tree());
         assert!(!ElementType::ItemWithSumItem.is_tree());
+    }
+
+    /// Verifies that serialized Element discriminants match ElementType
+    /// constants.
+    ///
+    /// This test ensures that the ElementType enum values stay in sync with
+    /// the actual bincode serialization of Element variants. If the Element
+    /// enum order changes, this test will catch the drift.
+    #[test]
+    fn test_element_serialization_discriminants_match_element_type() {
+        use grovedb_version::version::GroveVersion;
+
+        use crate::{element::Element, reference_path::ReferencePathType};
+
+        let grove_version = GroveVersion::latest();
+
+        // Build vector of (Element, ElementType, variant_name) for all 10 variants
+        let test_cases: Vec<(Element, ElementType, &str)> = vec![
+            // discriminant 0
+            (
+                Element::Item(vec![1, 2, 3], None),
+                ElementType::Item,
+                "Item",
+            ),
+            // discriminant 1
+            (
+                Element::Reference(
+                    ReferencePathType::AbsolutePathReference(vec![vec![1]]),
+                    None,
+                    None,
+                ),
+                ElementType::Reference,
+                "Reference",
+            ),
+            // discriminant 2
+            (Element::Tree(None, None), ElementType::Tree, "Tree"),
+            // discriminant 3
+            (Element::SumItem(42, None), ElementType::SumItem, "SumItem"),
+            // discriminant 4
+            (
+                Element::SumTree(None, 0, None),
+                ElementType::SumTree,
+                "SumTree",
+            ),
+            // discriminant 5
+            (
+                Element::BigSumTree(None, 0, None),
+                ElementType::BigSumTree,
+                "BigSumTree",
+            ),
+            // discriminant 6
+            (
+                Element::CountTree(None, 0, None),
+                ElementType::CountTree,
+                "CountTree",
+            ),
+            // discriminant 7
+            (
+                Element::CountSumTree(None, 0, 0, None),
+                ElementType::CountSumTree,
+                "CountSumTree",
+            ),
+            // discriminant 8
+            (
+                Element::ProvableCountTree(None, 0, None),
+                ElementType::ProvableCountTree,
+                "ProvableCountTree",
+            ),
+            // discriminant 9
+            (
+                Element::ItemWithSumItem(vec![1, 2, 3], 42, None),
+                ElementType::ItemWithSumItem,
+                "ItemWithSumItem",
+            ),
+        ];
+
+        // Verify we're testing all 10 discriminants
+        assert_eq!(
+            test_cases.len(),
+            10,
+            "Expected 10 Element variants, got {}",
+            test_cases.len()
+        );
+
+        for (element, expected_type, variant_name) in test_cases {
+            let serialized = element
+                .serialize(grove_version)
+                .unwrap_or_else(|e| panic!("Failed to serialize {}: {:?}", variant_name, e));
+
+            // Verify serialized buffer is non-empty
+            assert!(
+                !serialized.is_empty(),
+                "Serialized {} should not be empty",
+                variant_name
+            );
+
+            // Verify first byte matches ElementType discriminant
+            let first_byte = serialized[0];
+            let expected_discriminant = expected_type as u8;
+
+            assert_eq!(
+                first_byte, expected_discriminant,
+                "Element::{} serialized with discriminant {}, but ElementType::{} = {}. The \
+                 Element enum order may have changed!",
+                variant_name, first_byte, variant_name, expected_discriminant
+            );
+
+            // Also verify round-trip through ElementType::from_serialized_value
+            let parsed_type = ElementType::from_serialized_value(&serialized).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to parse ElementType from serialized {}: {:?}",
+                    variant_name, e
+                )
+            });
+
+            assert_eq!(
+                parsed_type, expected_type,
+                "ElementType::from_serialized_value for {} returned {:?}, expected {:?}",
+                variant_name, parsed_type, expected_type
+            );
+        }
     }
 }

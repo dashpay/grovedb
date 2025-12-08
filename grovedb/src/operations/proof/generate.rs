@@ -9,7 +9,7 @@ use grovedb_costs::{
 use grovedb_merk::{
     proofs::{encode_into, query::QueryItem, Node, Op},
     tree::value_hash,
-    Merk, ProofWithoutEncodingResult,
+    Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
@@ -256,6 +256,15 @@ impl GroveDb {
                     | Op::Push(Node::KVCount(..))
                     | Op::PushInverted(Node::KVCount(..))
             );
+            // Extract count if present for ProvableCountTree references
+            let count_for_ref = match op {
+                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
+                    TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    _ => None,
+                },
+                _ => None,
+            };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value)
@@ -296,11 +305,22 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                *node = Node::KVRefValueHash(
-                                    key.to_owned(),
-                                    serialized_referenced_elem.expect("confirmed ok above"),
-                                    value_hash(value).unwrap_add_cost(&mut cost),
-                                );
+                                // Use KVRefValueHashCount if in ProvableCountTree,
+                                // otherwise use KVRefValueHash
+                                *node = if let Some(count) = count_for_ref {
+                                    Node::KVRefValueHashCount(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        count,
+                                    )
+                                } else {
+                                    Node::KVRefValueHash(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                    )
+                                };
                                 if let Some(limit) = overall_limit.as_mut() {
                                     *limit -= 1;
                                 }

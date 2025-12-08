@@ -461,8 +461,9 @@ mod test {
                 Node::KVDigest(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
                 Node::KVValueHashFeatureType(..) => counts.kv_value_hash_feature_type += 1,
-                Node::KVCount(..) => counts.kv += 1, // Treat KVCount similar to KV
-                Node::KVHashCount(..) => counts.kv_hash += 1, // Treat KVHashCount similar to KVHash
+                Node::KVCount(..) => counts.kv += 1,
+                Node::KVHashCount(..) => counts.kv_hash += 1,
+                Node::KVRefValueHashCount(..) => counts.kv_ref_value_hash += 1,
             };
         });
 

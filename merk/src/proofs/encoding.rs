@@ -88,6 +88,17 @@ impl Encode for Op {
                 dest.write_all(kv_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::Push(Node::KVRefValueHashCount(key, value, value_hash, count)) => {
+                debug_assert!(key.len() < 256);
+                debug_assert!(value.len() < 65536);
+
+                dest.write_all(&[0x18, key.len() as u8])?;
+                dest.write_all(key)?;
+                (value.len() as u16).encode_into(dest)?;
+                dest.write_all(value)?;
+                dest.write_all(value_hash)?;
+                count.encode_into(dest)?;
+            }
 
             // PushInverted
             Op::PushInverted(Node::Hash(hash)) => {
@@ -165,6 +176,17 @@ impl Encode for Op {
                 dest.write_all(kv_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::PushInverted(Node::KVRefValueHashCount(key, value, value_hash, count)) => {
+                debug_assert!(key.len() < 256);
+                debug_assert!(value.len() < 65536);
+
+                dest.write_all(&[0x19, key.len() as u8])?;
+                dest.write_all(key)?;
+                (value.len() as u16).encode_into(dest)?;
+                dest.write_all(value)?;
+                dest.write_all(value_hash)?;
+                count.encode_into(dest)?;
+            }
 
             Op::Parent => dest.write_all(&[0x10])?,
             Op::Child => dest.write_all(&[0x11])?,
@@ -191,6 +213,9 @@ impl Encode for Op {
                 4 + key.len() + value.len() + count.encoding_length()?
             }
             Op::Push(Node::KVHashCount(_, count)) => 1 + HASH_LENGTH + count.encoding_length()?,
+            Op::Push(Node::KVRefValueHashCount(key, value, _, count)) => {
+                4 + key.len() + value.len() + HASH_LENGTH + count.encoding_length()?
+            }
             Op::PushInverted(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVHash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVDigest(key, _)) => 2 + key.len() + HASH_LENGTH,
@@ -209,6 +234,9 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KVHashCount(_, count)) => {
                 1 + HASH_LENGTH + count.encoding_length()?
+            }
+            Op::PushInverted(Node::KVRefValueHashCount(key, value, _, count)) => {
+                4 + key.len() + value.len() + HASH_LENGTH + count.encoding_length()?
             }
             Op::Parent => 1,
             Op::Child => 1,
@@ -421,6 +449,36 @@ impl Decode for Op {
                 let count: u64 = Decode::decode(&mut input)?;
 
                 Self::PushInverted(Node::KVHashCount(kv_hash, count))
+            }
+            0x18 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let count: u64 = Decode::decode(&mut input)?;
+                Self::Push(Node::KVRefValueHashCount(key, value, value_hash, count))
+            }
+            0x19 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let count: u64 = Decode::decode(&mut input)?;
+                Self::PushInverted(Node::KVRefValueHashCount(key, value, value_hash, count))
             }
             0x10 => Self::Parent,
             0x11 => Self::Child,
@@ -1166,5 +1224,47 @@ mod test {
         let decoded_ops: Result<Vec<Op>, _> = decoder.collect();
         assert!(decoded_ops.is_ok());
         assert_eq!(decoded_ops.unwrap(), ops);
+    }
+
+    #[test]
+    fn encode_decode_push_kvrefvaluehash_count() {
+        let op = Op::Push(Node::KVRefValueHashCount(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            42,
+        ));
+        // 1 opcode + 1 key_len + key + 2 value_len + value + 32 hash + 8 count
+        let expected_length = 4 + 3 + 3 + HASH_LENGTH + 8;
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x18); // Check opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_push_inverted_kvrefvaluehash_count() {
+        let op = Op::PushInverted(Node::KVRefValueHashCount(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            100,
+        ));
+        // 1 opcode + 1 key_len + key + 2 value_len + value + 32 hash + 8 count
+        let expected_length = 4 + 3 + 3 + HASH_LENGTH + 8;
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x19); // Check opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
     }
 }

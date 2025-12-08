@@ -1130,18 +1130,19 @@ where
                 .map(|et| et.proof_node_type(parent_tree_type))
                 .unwrap_or(ProofNodeType::Kv); // Default to tamper-resistant for raw Merk
 
-            // Convert ProofNodeType to actual Node, using feature type variants for
-            // ProvableCountTree
+            // Convert ProofNodeType to actual Node
             let node = match proof_node_type {
                 ProofNodeType::Kv => self.to_kv_node(),
                 ProofNodeType::KvCount => self.to_kv_count_node(),
-                ProofNodeType::KvValueHash => {
-                    if is_provable_count_tree {
-                        // Trees/References in ProvableCountTree use KVValueHashFeatureType
-                        self.to_kv_value_hash_feature_type_node()
-                    } else {
-                        self.to_kv_value_hash_node()
-                    }
+                ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
+                ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
+                ProofNodeType::KvRefValueHashCount => {
+                    // References in ProvableCountTree are handled at the GroveDB layer.
+                    // At the merk layer, references are stored as regular values with
+                    // combined hash, so we generate KVValueHashFeatureType here.
+                    // The GroveDB layer will post-process this to include the
+                    // dereferenced value with the count.
+                    self.to_kv_value_hash_feature_type_node()
                 }
             };
 

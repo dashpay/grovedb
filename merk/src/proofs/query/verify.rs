@@ -331,6 +331,15 @@ impl Query {
                     // from merkle root verification.
                     execute_node(key, Some(value), *value_hash)?;
                 }
+                Node::KVRefValueHashCount(key, value, value_hash, _count) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHashCount node");
+                    }
+                    // Similar to KVRefValueHash but in a ProvableCountTree context.
+                    // Security comes from merkle root verification with count.
+                    execute_node(key, Some(value), *value_hash)?;
+                }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
