@@ -64,31 +64,30 @@ pub enum Op {
 /// # Tree Structure Reference
 ///
 /// ```text
-///                    ┌─────────────────────────────────────────┐
-///                    │              Tree Node                  │
-///                    │  ┌─────┐ ┌───────┐ ┌────────────────┐   │
-///                    │  │ key │ │ value │ │  feature_type  │   │
-///                    │  └──┬──┘ └───┬───┘ └───────┬────────┘   │
-///                    │     │        │             │            │
-///                    │     ▼        ▼             │            │
-///                    │  ┌──────────────┐          │            │
-///                    │  │  value_hash  │◄─────────┘            │
-///                    │  │ H(value) or  │   (combined for       │
-///                    │  │ combined hash│    special trees)     │
-///                    │  └──────┬───────┘                       │
-///                    │         │                               │
-///                    │         ▼                               │
-///                    │  ┌─────────────┐                        │
-///                    │  │   kv_hash   │ = H(key || value_hash) │
-///                    │  └──────┬──────┘                        │
-///                    │         │                               │
-///                    │         ▼                               │
-///                    │  ┌─────────────────────────────────┐    │
-///                    │  │           node_hash             │    │
-///                    │  │ H(kv_hash || left || right      │    │
-///                    │  │   [|| count for ProvableCount]) │    │
-///                    │  └─────────────────────────────────┘    │
-///                    └─────────────────────────────────────────┘
+///                    ┌───────────────────────────────────────────────────────────┐
+///                    │                        Tree Node                          │
+///                    │  ┌─────┐ ┌───────┐ ┌────────────────┐                     │
+///                    │  │ key │ │ value │ │  feature_type  │                     │
+///                    │  └──┬──┘ └───┬───┘ └───────┬────────┘                     │
+///                    │     │        │             │                              │
+///                    │     ▼        ▼             │                              │
+///                    │  ┌──────────────┐          │                              │
+///                    │  │  value_hash  │◄─────────┘                              │
+///                    │  │ H(value) or  │   (combined for special trees)          │
+///                    │  │ combined hash│                                         │
+///                    │  └──────┬───────┘                                         │
+///                    │         │                                                 │
+///                    │         ▼                                                 │
+///                    │  ┌─────────────────────────────────────────────────────┐  │
+///                    │  │ kv_hash = H(varint(key.len()) || key || value_hash) │  │
+///                    │  └────────────────────────┬────────────────────────────┘  │
+///                    │                           │                               │
+///                    │                           ▼                               │
+///                    │  ┌─────────────────────────────────────────────────────┐  │
+///                    │  │                     node_hash                       │  │
+///                    │  │ H(kv_hash || left || right [|| count.to_be_bytes()])│  │
+///                    │  └─────────────────────────────────────────────────────┘  │
+///                    └───────────────────────────────────────────────────────────┘
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
@@ -183,7 +182,7 @@ pub enum Node {
     ///
     ///     Hash computation during verification:
     ///     value_hash = H(value)  ◄── computed from value
-    ///     kv_hash = H(key || value_hash)
+    ///     kv_hash = H(varint(key.len()) || key || value_hash)
     ///
     ///     For Items, this works correctly because the stored
     ///     value_hash in the tree is exactly H(value).
@@ -253,7 +252,7 @@ pub enum Node {
     ///                           ProvableCountedMerkNode(2))
     ///
     ///     The count is needed for hash verification:
-    ///     node_hash = H(kv_hash || left_hash || right_hash || count_bytes)
+    ///     node_hash = H(kv_hash || left_hash || right_hash || count.to_be_bytes())
     ///
     ///     ─────────────────────────────────────────────────────
     ///
@@ -299,7 +298,7 @@ pub enum Node {
     ///
     ///     Verification computes:
     ///       combined_value_hash = combine_hash(reference_element_hash, H(referenced_value))
-    ///       kv_hash = H(key || combined_value_hash)
+    ///       kv_hash = H(varint(key.len()) || key || combined_value_hash)
     ///
     ///     This matches how References are stored in the merk tree, where:
     ///       node.value_hash = combine_hash(H(ref_bytes), H(referenced_item_bytes))
@@ -329,8 +328,8 @@ pub enum Node {
     ///
     ///     Hash computation during verification:
     ///     value_hash = H(value)  ◄── computed from value
-    ///     kv_hash = H(key || value_hash)
-    ///     node_hash = H(kv_hash || left || right || count_bytes)
+    ///     kv_hash = H(varint(key.len()) || key || value_hash)
+    ///     node_hash = H(kv_hash || left || right || count.to_be_bytes())
     ///
     ///     For Items, this works correctly because value_hash = H(value).
     ///
@@ -371,7 +370,7 @@ pub enum Node {
     ///                count=1
     ///
     ///     Node [B] needs count for hash verification:
-    ///     node_hash = H(kv_hash || left || right || count_bytes)
+    ///     node_hash = H(kv_hash || left || right || count.to_be_bytes())
     ///                                               ▲
     ///                            count=5 required ──┘
     ///
@@ -408,8 +407,8 @@ pub enum Node {
     ///     Verification computes:
     ///       combined_value_hash = combine_hash(reference_element_hash,
     ///                                          H(referenced_value))
-    ///       kv_hash = H(key || combined_value_hash)
-    ///       node_hash = H(kv_hash || left || right || count_bytes)
+    ///       kv_hash = H(varint(key.len()) || key || combined_value_hash)
+    ///       node_hash = H(kv_hash || left || right || count.to_be_bytes())
     /// ```
     ///
     /// **When used**: When a queried element in a ProvableCountTree is a

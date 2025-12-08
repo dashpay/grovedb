@@ -23,8 +23,8 @@ In many Merkle tree designs, only leaf nodes contain key/value pairs (inner node
 Each node contains a "kv hash", which is the hash of its key/value pair, in addition to its child hashes. The hash of the node is just the hash of the concatenation of these three hashes:
 
 ```
-kv_hash = H(key, value)
-node_hash = H(kv_hash, left_child_hash, right_child_hash)
+kv_hash = H(varint(key.len()) || key || H(value))
+node_hash = H(kv_hash || left_child_hash || right_child_hash)
 ```
 
 Note that the `left_child_hash` and/or `right_child_hash` values may be null since it is possible for the node to have no children or only one child.
