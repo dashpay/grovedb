@@ -22,14 +22,14 @@ bincode = { version = "=2.0.0-rc.3" }
 bincode_derive = { version = "=2.0.0-rc.3" }
 hex = "0.4.3"
 indexmap = "2.2.6"
-integer-encoding = "4.0.0"
-thiserror = "2.0.12"
+integer-encoding = "4.1.0"
+thiserror = "2.0.17"
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 rand = { version = "0.8.5", features = ["small_rng"], optional = true }
 byteorder = { version = "1.5.0" }
 blake3 = { version = "1.8.1", optional = true }
 ed = { version = "0.2.2", optional = true }
-num_cpus = { version = "1.16.0", optional = true }
+num_cpus = { version = "1.17.0", optional = true }
 colored = { version = "3.0.0", optional = true }
 
 [features]
