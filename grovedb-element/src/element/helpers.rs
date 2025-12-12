@@ -17,7 +17,8 @@ impl Element {
         match self {
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
-            | Element::SumTree(_, sum_value, _) => *sum_value,
+            | Element::SumTree(_, sum_value, _)
+            | Element::CountSumTree(_, _, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
@@ -53,7 +54,8 @@ impl Element {
         match self {
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
-            | Element::SumTree(_, sum_value, _) => *sum_value as i128,
+            | Element::SumTree(_, sum_value, _)
+            | Element::CountSumTree(_, _, sum_value, _) => *sum_value as i128,
             Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
