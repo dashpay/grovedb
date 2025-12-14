@@ -9,7 +9,7 @@ use grovedb_costs::{
 use grovedb_merk::{
     proofs::{encode_into, query::QueryItem, Node, Op},
     tree::value_hash,
-    Merk, ProofWithoutEncodingResult,
+    Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
@@ -245,13 +245,26 @@ impl GroveDb {
 
         for op in merk_proof.proof.iter_mut() {
             done_with_results |= overall_limit == &Some(0);
-            // Check if node is KVValueHashFeatureType before destructuring
+            // Check if node should preserve its special type before destructuring
             // We need this flag to avoid converting it to Node::KV later
-            let is_kv_value_hash_feature_type = matches!(
+            // - KVValueHashFeatureType: used by ProvableCountTree for trees/references
+            // - KVCount: used by ProvableCountTree for Items (tamper-resistant with count)
+            let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
                     | Op::PushInverted(Node::KVValueHashFeatureType(..))
+                    | Op::Push(Node::KVCount(..))
+                    | Op::PushInverted(Node::KVCount(..))
             );
+            // Extract count if present for ProvableCountTree references
+            let count_for_ref = match op {
+                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
+                    TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    _ => None,
+                },
+                _ => None,
+            };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value)
@@ -292,11 +305,22 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                *node = Node::KVRefValueHash(
-                                    key.to_owned(),
-                                    serialized_referenced_elem.expect("confirmed ok above"),
-                                    value_hash(value).unwrap_add_cost(&mut cost),
-                                );
+                                // Use KVRefValueHashCount if in ProvableCountTree,
+                                // otherwise use KVRefValueHash
+                                *node = if let Some(count) = count_for_ref {
+                                    Node::KVRefValueHashCount(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        count,
+                                    )
+                                } else {
+                                    Node::KVRefValueHash(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                    )
+                                };
                                 if let Some(limit) = overall_limit.as_mut() {
                                     *limit -= 1;
                                 }
@@ -307,10 +331,10 @@ impl GroveDb {
                                 {
                                     println!("found {}", hex_to_ascii(key));
                                 }
-                                // Only convert to Node::KV if not already a KVValueHashFeatureType
-                                // KVValueHashFeatureType (used by ProvableCountTree) must preserve
-                                // the feature_type for proper hash verification
-                                if !is_kv_value_hash_feature_type {
+                                // Only convert to Node::KV if not already a special node type
+                                // - KVValueHashFeatureType: preserves feature_type for trees/refs
+                                // - KVCount: preserves count for Items in ProvableCountTree
+                                if !should_preserve_node_type {
                                     *node = Node::KV(key.to_owned(), value.to_owned());
                                 }
                                 if let Some(limit) = overall_limit.as_mut() {

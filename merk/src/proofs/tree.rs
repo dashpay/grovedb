@@ -170,6 +170,22 @@ impl Tree {
                 &self.child_hash(false),
                 *count,
             ),
+            Node::KVRefValueHashCount(key, referenced_value, node_value_hash, count) => {
+                let mut cost = OperationCost::default();
+                let referenced_value_hash =
+                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
+                    .unwrap_add_cost(&mut cost);
+
+                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).flat_map(|kv_hash| {
+                    node_hash_with_count(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                    )
+                })
+            }
         }
     }
 
@@ -487,9 +503,14 @@ where
                 stack.push(parent);
             }
             Op::Push(node) => {
+                // Check key ordering for ALL node types that contain keys
                 if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
-                | Node::KVRefValueHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..)
+                | Node::KVCount(key, ..)
+                | Node::KVRefValueHashCount(key, ..)
+                | Node::KVDigest(key, _) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
@@ -510,9 +531,14 @@ where
                 stack.push(tree);
             }
             Op::PushInverted(node) => {
+                // Check key ordering for ALL node types that contain keys
                 if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
-                | Node::KVRefValueHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..)
+                | Node::KVCount(key, ..)
+                | Node::KVRefValueHashCount(key, ..)
+                | Node::KVDigest(key, _) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key {

@@ -48,7 +48,8 @@ pub struct KV {
 
 Each node computes its hash as:
 ```
-kv_hash = Hash(key || value)
+value_hash = Hash(value)
+kv_hash = Hash(varint(key.len()) || key || value_hash)
 node_hash = Hash(kv_hash || left_child_hash || right_child_hash)
 ```
 

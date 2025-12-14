@@ -29,6 +29,8 @@ use bincode::{
 #[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "minimal")]
+use grovedb_element::{ElementType, ProofNodeType};
+#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use indexmap::IndexMap;
@@ -942,6 +944,23 @@ where
         Node::KVHashCount(*self.tree().kv_hash(), count)
     }
 
+    /// Creates a `Node::KVCount` from the key/value pair and count of the root
+    /// node. Used for Items in ProvableCountTree - tamper-resistant (verifier
+    /// computes hash from value) while including the count.
+    /// Note: Uses aggregate count (sum of self + children) to match hash
+    /// calculation
+    pub(crate) fn to_kv_count_node(&self) -> Node {
+        let count = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCount(count)) => count,
+            _ => 0, // Fallback, should not happen for ProvableCountTree
+        };
+        Node::KVCount(
+            self.tree().key().to_vec(),
+            self.tree().value_as_slice().to_vec(),
+            count,
+        )
+    }
+
     #[cfg(feature = "minimal")]
     pub(crate) fn create_proof(
         &mut self,
@@ -1085,21 +1104,54 @@ where
             TreeFeatureType::ProvableCountedMerkNode(_)
         );
 
+        // Convert is_provable_count_tree to parent tree type for proof_node_type()
+        let parent_tree_type = if is_provable_count_tree {
+            Some(ElementType::ProvableCountTree)
+        } else {
+            None // Regular tree or unknown - treated the same
+        };
+
         let proof_op = if found_item {
-            // For query proofs, we need to include the actual key/value data
-            // For ProvableCountTree, use KVValueHashFeatureType to include both
-            // the value_hash (needed for subtree binding verification) and the
-            // feature_type (which contains the count)
-            if is_provable_count_tree {
-                if proof_params.left_to_right {
-                    Op::Push(self.to_kv_value_hash_feature_type_node())
-                } else {
-                    Op::PushInverted(self.to_kv_value_hash_feature_type_node())
-                }
-            } else if proof_params.left_to_right {
-                Op::Push(self.to_kv_value_hash_node())
+            // For query proofs, we need to include the actual key/value data.
+            // The node type depends on the element type stored in the value:
+            // - Items (simple hash): use KV or KVCount (verifier computes hash -
+            //   tamper-proof)
+            // - Trees/References (combined hash): use KVValueHash or KVValueHashFeatureType
+            //
+            // Determine proof node type from element type (first byte of value)
+            // - For valid Element types: use the element's proof_node_type()
+            //   - Items in regular trees -> Kv (tamper-resistant)
+            //   - Items in ProvableCountTree -> KvCount (tamper-resistant + count)
+            //   - Trees/References -> KvValueHash (required for combined hashes)
+            // - For invalid/unknown types (raw Merk usage): default to Kv
+            //   - Raw Merk values should be tamper-resistant by default
+            //   - Only GroveDB subtrees need KvValueHash for combined hash verification
+            let proof_node_type = ElementType::from_serialized_value(self.tree().value_as_slice())
+                .map(|et| et.proof_node_type(parent_tree_type))
+                .unwrap_or(ProofNodeType::Kv); // Default to tamper-resistant for raw Merk
+
+            // Convert ProofNodeType to actual Node
+            // Note: References use KvRefValueHash or KvRefValueHashCount, but at the merk
+            // level these generate KVValueHash or KVValueHashFeatureType nodes.
+            // GroveDB post-processes these to KVRefValueHash or KVRefValueHashCount
+            // with dereferenced values.
+            let node = match proof_node_type {
+                ProofNodeType::Kv => self.to_kv_node(),
+                ProofNodeType::KvCount => self.to_kv_count_node(),
+                ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
+                ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
+                // References: at merk level, generate same node type as non-ref counterpart
+                // GroveDB will post-process to KVRefValueHash with dereferenced value
+                ProofNodeType::KvRefValueHash => self.to_kv_value_hash_node(),
+                // ProvableCountTree references: generate KVValueHashFeatureType
+                // GroveDB will post-process to KVRefValueHashCount with dereferenced value
+                ProofNodeType::KvRefValueHashCount => self.to_kv_value_hash_feature_type_node(),
+            };
+
+            if proof_params.left_to_right {
+                Op::Push(node)
             } else {
-                Op::PushInverted(self.to_kv_value_hash_node())
+                Op::PushInverted(node)
             }
         } else if on_boundary_not_found || left_absence.1 || right_absence.0 {
             if proof_params.left_to_right {
@@ -1626,17 +1678,9 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
+        // Value [3] maps to SumItem discriminant (3), which has simple value hash,
+        // so it uses Node::KV instead of Node::KVValueHash for tamper-resistance.
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -1682,17 +1726,8 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
+        // Value [3] maps to SumItem discriminant (3) → simple hash → Node::KV
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -1701,6 +1736,8 @@ mod test {
             ])))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
+        // Value [7] maps to CountSumTree discriminant (7) → combined hash →
+        // Node::KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -1749,17 +1786,10 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
+        // Value [3] maps to SumItem discriminant (3) → simple hash → Node::KV
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        // Value [5] maps to BigSumTree discriminant (5) → combined hash →
+        // Node::KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -1772,6 +1802,8 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
+        // Value [7] maps to CountSumTree discriminant (7) → combined hash →
+        // Node::KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2006,6 +2038,7 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
+        // Value [1] maps to Reference discriminant (1) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2017,6 +2050,7 @@ mod test {
                 ]
             )))
         );
+        // Value [2] maps to Tree discriminant (2) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2029,17 +2063,9 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
+        // Value [3] maps to SumItem discriminant (3) → simple hash → KV
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        // Value [4] maps to SumTree discriminant (4) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2072,25 +2098,9 @@ mod test {
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, false));
 
-        let mut bytes = vec![];
-        encode_into(proof.iter(), &mut bytes);
-        assert_eq!(
-            bytes,
-            vec![
-                4, 1, 1, 0, 1, 1, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73,
-                98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21,
-                4, 1, 2, 0, 1, 2, 183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190,
-                166, 110, 16, 139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96,
-                178, 16, 4, 1, 3, 0, 1, 3, 210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81,
-                192, 139, 153, 104, 205, 4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169,
-                129, 231, 144, 4, 1, 4, 0, 1, 4, 198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146,
-                71, 4, 16, 82, 205, 89, 51, 227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156,
-                38, 239, 192, 16, 17, 2, 61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44,
-                165, 68, 87, 7, 52, 238, 68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88,
-                197, 16, 1, 12, 156, 232, 212, 220, 65, 226, 32, 91, 101, 248, 64, 225, 206, 63,
-                12, 153, 191, 183, 10, 233, 251, 249, 76, 184, 200, 88, 57, 219, 2, 250, 113, 17
-            ]
-        );
+        // Note: We no longer check exact byte encoding since Node::KV is now used for
+        // value [3] (SumItem discriminant) instead of Node::KVValueHash. The
+        // node-by-node assertions above verify the proof structure correctly.
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
@@ -2195,25 +2205,17 @@ mod test {
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 5],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -2329,37 +2331,25 @@ mod test {
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 5],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 7],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
@@ -2650,6 +2640,7 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
+        // Value [2] maps to Tree discriminant (2) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2661,18 +2652,10 @@ mod test {
                 ]
             )))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
+        // Value [3] maps to SumItem discriminant (3) → simple hash → KV
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
+        // Value [4] maps to SumTree discriminant (4) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2685,6 +2668,7 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
+        // Value [5] maps to BigSumTree discriminant (5) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2920,6 +2904,7 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
+        // Value [2] maps to Tree discriminant (2) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2931,18 +2916,10 @@ mod test {
                 ]
             )))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
+        // Value [3] maps to SumItem discriminant (3) → simple hash → KV
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
+        // Value [4] maps to SumTree discriminant (4) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -2955,6 +2932,7 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
+        // Value [5] maps to BigSumTree discriminant (5) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -3929,6 +3907,7 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
+        // Value [2] maps to Tree discriminant (2) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -3940,18 +3919,10 @@ mod test {
                 ]
             )))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
-        );
+        // Value [3] maps to SumItem discriminant (3) → simple hash → KV
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
+        // Value [4] maps to SumTree discriminant (4) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -3964,6 +3935,7 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
+        // Value [5] maps to BigSumTree discriminant (5) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -3976,6 +3948,7 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
+        // Value [7] maps to CountSumTree discriminant (7) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -3987,6 +3960,8 @@ mod test {
                 ]
             )))
         );
+        // Value [8] maps to ProvableCountTree discriminant (8) → combined hash →
+        // KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVValueHash(
@@ -4286,6 +4261,8 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
+        // Value [8] maps to ProvableCountTree discriminant (8) → combined hash →
+        // KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::PushInverted(Node::KVValueHash(
@@ -4297,6 +4274,7 @@ mod test {
                 ]
             )))
         );
+        // Value [7] maps to CountSumTree discriminant (7) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::PushInverted(Node::KVValueHash(
@@ -4309,6 +4287,7 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::ChildInverted));
+        // Value [5] maps to BigSumTree discriminant (5) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::PushInverted(Node::KVValueHash(
@@ -4321,6 +4300,7 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::ParentInverted));
+        // Value [4] maps to SumTree discriminant (4) → combined hash → KVValueHash
         assert_eq!(
             iter.next(),
             Some(&Op::PushInverted(Node::KVValueHash(
@@ -4332,16 +4312,10 @@ mod test {
                 ]
             )))
         );
+        // Value [3] maps to SumItem discriminant (3) → simple hash → KV
         assert_eq!(
             iter.next(),
-            Some(&Op::PushInverted(Node::KVValueHash(
-                vec![3],
-                vec![3],
-                [
-                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
-                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
-                ]
-            )))
+            Some(&Op::PushInverted(Node::KV(vec![3], vec![3])))
         );
         assert_eq!(iter.next(), Some(&Op::ParentInverted));
         assert_eq!(
@@ -4418,25 +4392,17 @@ mod test {
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 5],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -4533,13 +4499,9 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KVValueHash(
+            Some(&Op::Push(Node::KV(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
                 vec![123; 60],
-                [
-                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
-                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
-                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -4930,11 +4892,30 @@ mod test {
             .expect("verify failed");
     }
 
-    /// Test with 5 items showing proof structure and tampering vulnerability
-    /// Creates a tree, visualizes the proof, attempts tampering, and checks
-    /// detection
+    /// Test with 5 Element::Item values showing that tampering IS NOW DETECTED
+    /// With our fix, Items use Node::KV which causes the verifier to recompute
+    /// the hash from the value bytes, so any tampering changes the root hash.
     #[test]
-    fn test_5_item_tree_tampering_visualization() {
+    fn test_5_item_tree_tampering_detected_with_elements() {
+        let grove_version = GroveVersion::latest();
+
+        // Create serialized Element::Item values
+        let val1 = grovedb_element::Element::new_item(b"aaa".to_vec())
+            .serialize(grove_version)
+            .unwrap();
+        let val2 = grovedb_element::Element::new_item(b"bbb".to_vec())
+            .serialize(grove_version)
+            .unwrap();
+        let val3 = grovedb_element::Element::new_item(b"ccc".to_vec())
+            .serialize(grove_version)
+            .unwrap();
+        let val4 = grovedb_element::Element::new_item(b"ddd".to_vec())
+            .serialize(grove_version)
+            .unwrap();
+        let val5 = grovedb_element::Element::new_item(b"eee".to_vec())
+            .serialize(grove_version)
+            .unwrap();
+
         // Build a 5-node tree manually:
         //           [3]
         //          /   \
@@ -4943,11 +4924,11 @@ mod test {
         //     [1]         [5]
 
         // Create leaf nodes first
-        let one_tree = TreeNode::new(vec![1], b"aaa".to_vec(), None, BasicMerkNode).unwrap();
-        let five_tree = TreeNode::new(vec![5], b"eee".to_vec(), None, BasicMerkNode).unwrap();
+        let one_tree = TreeNode::new(vec![1], val1.clone(), None, BasicMerkNode).unwrap();
+        let five_tree = TreeNode::new(vec![5], val5.clone(), None, BasicMerkNode).unwrap();
 
         // Create [2] with [1] as left child
-        let mut two_tree = TreeNode::new(vec![2], b"bbb".to_vec(), None, BasicMerkNode)
+        let mut two_tree = TreeNode::new(vec![2], val2.clone(), None, BasicMerkNode)
             .unwrap()
             .attach(true, Some(one_tree));
         two_tree
@@ -4956,7 +4937,7 @@ mod test {
             .expect("commit failed");
 
         // Create [4] with [5] as right child
-        let mut four_tree = TreeNode::new(vec![4], b"ddd".to_vec(), None, BasicMerkNode)
+        let mut four_tree = TreeNode::new(vec![4], val4.clone(), None, BasicMerkNode)
             .unwrap()
             .attach(false, Some(five_tree));
         four_tree
@@ -4965,7 +4946,7 @@ mod test {
             .expect("commit failed");
 
         // Create root [3] with [2] as left and [4] as right
-        let mut tree = TreeNode::new(vec![3], b"ccc".to_vec(), None, BasicMerkNode)
+        let mut tree = TreeNode::new(vec![3], val3.clone(), None, BasicMerkNode)
             .unwrap()
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
@@ -4976,18 +4957,17 @@ mod test {
         let expected_root = tree.hash().unwrap();
 
         println!("=== Tree Structure ===");
-        println!("Tree with 5 items:");
-        println!("           [3] ccc");
+        println!("Tree with 5 Element::Item values:");
+        println!("           [3] Item(ccc)");
         println!("          /   \\");
-        println!("     [2] bbb   [4] ddd");
+        println!("     [2] Item(bbb)   [4] Item(ddd)");
         println!("       /         \\");
-        println!("   [1] aaa       [5] eee");
+        println!("   [1] Item(aaa)       [5] Item(eee)");
         println!();
         println!("Root hash: {}", hex::encode(expected_root));
         println!();
 
         // Query for key 1 (bottom left leaf)
-        let grove_version = GroveVersion::latest();
         let keys = vec![vec![1]];
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, ..) = walker
@@ -5021,13 +5001,180 @@ mod test {
         }
         println!();
 
-        println!("=== Proof Explanation ===");
-        println!("Reading the proof (bottom-up reconstruction):");
-        println!("  - Hash([4]'s subtree): sibling of path, just need hash");
-        println!("  - KVHash([3]): root, on path but not queried, need kv_hash");
-        println!("  - KVHash([2]): parent of [1], on path but not queried");
-        println!("  - KVValueHash([1], aaa, H(aaa)): THE QUERIED ITEM");
-        println!("  - Parent/Child ops: tree reconstruction instructions");
+        // Verify that the proof uses Node::KV (not KVValueHash) for Items
+        let has_kv_node = proof
+            .iter()
+            .any(|op| matches!(op, Op::Push(Node::KV(..)) | Op::PushInverted(Node::KV(..))));
+        assert!(
+            has_kv_node,
+            "Element::Item should produce Node::KV in proof (tamper-resistant)"
+        );
+        println!("VERIFIED: Proof uses Node::KV for Element::Item (tamper-resistant)");
+        println!();
+
+        // Encode and verify original
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        println!("=== Encoded Proof ({} bytes) ===", bytes.len());
+
+        let mut query = Query::new();
+        query.insert_key(vec![1]);
+        let result = query
+            .verify_proof(bytes.as_slice(), None, true, expected_root)
+            .unwrap()
+            .expect("original verify failed");
+        println!("Original verification: PASSED");
+        println!("  Key: {:?}", result.result_set[0].key);
+        println!();
+
+        // Tamper with the value - find "aaa" within the serialized Element
+        println!("=== Tampering Attempt ===");
+        let mut tampered = bytes.clone();
+        let original_value = b"aaa";
+        let fake_value = b"XXX"; // Same length
+
+        let mut found = false;
+        for i in 0..tampered.len().saturating_sub(original_value.len()) {
+            if &tampered[i..i + original_value.len()] == original_value {
+                println!("Found value 'aaa' at byte position {}", i);
+                tampered[i..i + original_value.len()].copy_from_slice(fake_value);
+                println!("Replaced with 'XXX'");
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Should find value to tamper");
+        println!();
+
+        // Try to verify tampered proof
+        println!("=== Verification of Tampered Proof ===");
+        let mut query2 = Query::new();
+        query2.insert_key(vec![1]);
+
+        let (tampered_root, _tampered_result) = query2
+            .execute_proof(tampered.as_slice(), None, true)
+            .unwrap()
+            .expect("execute_proof failed");
+
+        println!("Expected root: {}", hex::encode(expected_root));
+        println!("Tampered root: {}", hex::encode(tampered_root));
+
+        if tampered_root == expected_root {
+            panic!("SECURITY BUG: Tampering was NOT detected! Root hash should have changed.");
+        } else {
+            println!();
+            println!("=== TAMPERING DETECTED ===");
+            println!("Root hash changed - proof verification would fail!");
+            println!();
+            println!("WHY TAMPERING IS NOW DETECTED:");
+            println!("  Node::KV contains only (key, value) - no separate value_hash");
+            println!("  The verifier computes value_hash = H(value) during verification");
+            println!("  Any change to value bytes changes the computed hash");
+            println!("  This causes the root hash to differ, failing verification");
+            println!();
+            println!("SECURITY IMPROVEMENT:");
+            println!("  Element::Item now uses Node::KV instead of Node::KVValueHash");
+            println!("  This makes single-Merk proofs tamper-resistant for Items");
+        }
+    }
+
+    /// Test with 5 raw (non-Element) values showing that tampering IS DETECTED
+    /// Raw Merk values now default to Node::KV for tamper-resistance.
+    #[test]
+    fn test_5_item_tree_tampering_detected_raw_values() {
+        // Build a 5-node tree manually with RAW values (not Elements):
+        //           [3]
+        //          /   \
+        //       [2]     [4]
+        //       /         \
+        //     [1]         [5]
+
+        // Create leaf nodes first with raw byte values
+        let one_tree = TreeNode::new(vec![1], b"aaa".to_vec(), None, BasicMerkNode).unwrap();
+        let five_tree = TreeNode::new(vec![5], b"eee".to_vec(), None, BasicMerkNode).unwrap();
+
+        // Create [2] with [1] as left child
+        let mut two_tree = TreeNode::new(vec![2], b"bbb".to_vec(), None, BasicMerkNode)
+            .unwrap()
+            .attach(true, Some(one_tree));
+        two_tree
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        // Create [4] with [5] as right child
+        let mut four_tree = TreeNode::new(vec![4], b"ddd".to_vec(), None, BasicMerkNode)
+            .unwrap()
+            .attach(false, Some(five_tree));
+        four_tree
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        // Create root [3] with [2] as left and [4] as right
+        let mut tree = TreeNode::new(vec![3], b"ccc".to_vec(), None, BasicMerkNode)
+            .unwrap()
+            .attach(true, Some(two_tree))
+            .attach(false, Some(four_tree));
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        let expected_root = tree.hash().unwrap();
+
+        println!("=== Tree Structure (RAW values) ===");
+        println!("Tree with 5 raw byte values (NOT Element):");
+        println!("           [3] 'ccc'");
+        println!("          /   \\");
+        println!("     [2] 'bbb'   [4] 'ddd'");
+        println!("       /         \\");
+        println!("   [1] 'aaa'       [5] 'eee'");
+        println!();
+        println!("Root hash: {}", hex::encode(expected_root));
+        println!();
+
+        // Query for key 1 (bottom left leaf)
+        let grove_version = GroveVersion::latest();
+        let keys = vec![vec![1]];
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+        let (proof, ..) = walker
+            .create_proof(
+                keys.clone()
+                    .into_iter()
+                    .map(QueryItem::Key)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                None,
+                true,
+                grove_version,
+            )
+            .unwrap()
+            .expect("failed to create proof");
+
+        println!("=== Proof Structure for key [1] ===");
+        println!("Proof operations:");
+        for (i, op) in proof.iter().enumerate() {
+            let desc = match op {
+                Op::Push(node) => format!("Push({})", node),
+                Op::PushInverted(node) => format!("PushInverted({})", node),
+                Op::Parent => "Parent".to_string(),
+                Op::Child => "Child".to_string(),
+                Op::ParentInverted => "ParentInverted".to_string(),
+                Op::ChildInverted => "ChildInverted".to_string(),
+            };
+            println!("  Op {}: {}", i, desc);
+        }
+        println!();
+
+        // Verify that raw values now use Node::KV (tamper-resistant default)
+        let has_kv_node = proof
+            .iter()
+            .any(|op| matches!(op, Op::Push(Node::KV(..)) | Op::PushInverted(Node::KV(..))));
+        assert!(
+            has_kv_node,
+            "Raw values should now produce Node::KV (tamper-resistant default)"
+        );
+        println!("Raw values now use Node::KV (tamper-resistant by default)");
         println!();
 
         // Encode and verify original
@@ -5073,7 +5220,7 @@ mod test {
         let mut query2 = Query::new();
         query2.insert_key(vec![1]);
 
-        let (tampered_root, tampered_result) = query2
+        let (tampered_root, _tampered_result) = query2
             .execute_proof(tampered.as_slice(), None, true)
             .unwrap()
             .expect("execute_proof failed");
@@ -5082,39 +5229,37 @@ mod test {
         println!("Tampered root: {}", hex::encode(tampered_root));
 
         if tampered_root == expected_root {
-            println!();
-            println!("!!! VULNERABILITY DEMONSTRATED !!!");
-            println!("Tampered proof produces SAME root hash!");
-            println!(
-                "Returned value: {:?}",
-                String::from_utf8_lossy(tampered_result.result_set[0].value.as_ref().unwrap())
-            );
-            println!();
-            println!("WHY THIS HAPPENS:");
-            println!("  KVValueHash contains (key, value, value_hash)");
-            println!("  But hash computation uses only value_hash, ignoring value!");
-            println!("  node_hash = H(H(key || value_hash) || left_hash || right_hash)");
-            println!("  The 'value' bytes are just cargo - not verified!");
-            println!();
-            println!("SECURITY IMPLICATION:");
-            println!("  At single Merk level, an attacker can replace value bytes");
-            println!("  without detection, as long as they keep value_hash unchanged.");
-            println!();
-            println!("MITIGATION:");
-            println!("  GroveDB's multi-layer proofs catch this because parent trees");
-            println!("  store child root hashes, creating verification chains.");
+            panic!("SECURITY BUG: Tampering was NOT detected! Root hash should have changed.");
         } else {
-            println!("Root hash changed - tampering detected at Merk level");
-            panic!("Unexpected: this test expects tampering to succeed at Merk level");
+            println!();
+            println!("=== TAMPERING DETECTED ===");
+            println!("Root hash changed - proof verification would fail!");
+            println!();
+            println!("Raw Merk values now default to Node::KV, making them tamper-resistant.");
+            println!("Only GroveDB subtrees/references use KVValueHash (for combined hashes).");
         }
     }
 
-    /// Test that demonstrates KVValueHash tampering at single Merk level
-    /// This is a security test to verify that tampered values are detected
+    /// Test that tampering is detected for values with invalid Element
+    /// discriminants These values default to Node::KV, making them
+    /// tamper-resistant
     #[test]
-    fn test_kvvaluehash_tampering_single_merk() {
+    fn test_tampering_detected_invalid_discriminant() {
         let grove_version = GroveVersion::latest();
-        let mut tree = make_3_node_tree();
+
+        // Create a tree with values that have invalid Element discriminants (>= 10)
+        // These will default to Node::KV (tamper-resistant)
+        // Values 99, 100, 101 are invalid Element discriminants
+        let left = TreeNode::new(vec![3], vec![100], None, BasicMerkNode).unwrap();
+        let right = TreeNode::new(vec![7], vec![101], None, BasicMerkNode).unwrap();
+        let mut tree = TreeNode::new(vec![5], vec![99], None, BasicMerkNode)
+            .unwrap()
+            .attach(true, Some(left))
+            .attach(false, Some(right));
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
         let expected_root = tree.hash().unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -5133,6 +5278,16 @@ mod test {
             .unwrap()
             .expect("failed to create proof");
 
+        // Verify that the proof uses Node::KV (tamper-resistant) for invalid
+        // discriminants
+        let has_kv_node = proof
+            .iter()
+            .any(|op| matches!(op, Op::Push(Node::KV(..)) | Op::PushInverted(Node::KV(..))));
+        assert!(
+            has_kv_node,
+            "Invalid discriminants should produce Node::KV (tamper-resistant)"
+        );
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
 
@@ -5146,21 +5301,20 @@ mod test {
             .unwrap()
             .expect("original verify failed");
         assert_eq!(result.result_set[0].key, vec![5]);
-        assert_eq!(result.result_set[0].value.as_ref().unwrap(), &vec![5]);
+        assert_eq!(result.result_set[0].value.as_ref().unwrap(), &vec![99]);
 
         // Now tamper with the value bytes in the proof
-        // The proof uses KVValueHash which has format:
-        // [opcode][key_len][key][value_len_u16][value][value_hash]
-        // We want to change value bytes without touching value_hash
+        // Node::KV format: [opcode][key_len][key][value_len_u16][value]
+        // Tampering the value will change the computed hash
         let mut tampered = bytes.clone();
 
-        // Find and tamper the value (which is [5] = one byte with value 5)
-        // Change it to [9]
+        // Find and tamper the value (which is [99])
+        // Change it to [200]
         let mut found = false;
         for i in 0..tampered.len() {
-            // Look for opcode 0x04 (KVValueHash) or 0x07 (KVValueHashFeatureType)
-            if tampered[i] == 0x04 || tampered[i] == 0x07 {
-                // Format: opcode(1) + key_len(1) + key + value_len(2) + value + value_hash(32)
+            // Look for opcode 0x03 (Push KV) or 0x0a (PushInverted KV)
+            if tampered[i] == 0x03 || tampered[i] == 0x0a {
+                // Format: opcode(1) + key_len(1) + key + value_len(2) + value
                 if i + 1 >= tampered.len() {
                     continue;
                 }
@@ -5177,7 +5331,126 @@ mod test {
                 if value_pos + value_len > tampered.len() {
                     continue;
                 }
-                // Tamper the value bytes (change all to 9)
+                // Tamper the value bytes (change all to 200)
+                for j in 0..value_len {
+                    tampered[value_pos + j] = 200;
+                }
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Should find KV node to tamper");
+
+        // Try to verify tampered proof with same expected root
+        let mut query2 = Query::new();
+        for key in keys.iter() {
+            query2.insert_key(key.clone());
+        }
+
+        // Use execute_proof to get the computed root
+        let (tampered_root, _tampered_result) = query2
+            .execute_proof(tampered.as_slice(), None, true)
+            .unwrap()
+            .expect("execute_proof failed");
+
+        // Check that tampering was detected via root hash change
+        if tampered_root == expected_root {
+            panic!("SECURITY BUG: Tampering was NOT detected! Root hash should have changed.");
+        } else {
+            // Tampering detected - this is the expected behavior
+            println!(
+                "Tampering detected: root hash changed from {:?} to {:?}",
+                hex::encode(expected_root),
+                hex::encode(tampered_root)
+            );
+            println!(
+                "Node::KV nodes are tamper-resistant because the verifier computes value_hash \
+                 from value bytes"
+            );
+        }
+    }
+
+    /// Test that KVValueHash is still used for values with Tree/Reference
+    /// discriminants These have combined hashes and REQUIRE KVValueHash at
+    /// the Merk level. Tampering at single-Merk level is still possible but
+    /// caught by GroveDB's multi-layer proofs.
+    #[test]
+    fn test_kvvaluehash_still_used_for_tree_discriminants() {
+        let grove_version = GroveVersion::latest();
+
+        // make_3_node_tree uses values [3], [5], [7] which map to:
+        // 3 = SumItem (simple hash -> KV)
+        // 5 = BigSumTree (combined hash -> KVValueHash)
+        // 7 = CountSumTree (combined hash -> KVValueHash)
+        let mut tree = make_3_node_tree();
+        let expected_root = tree.hash().unwrap();
+
+        // Query for key [5] which has value [5] (BigSumTree discriminant)
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+        let keys = vec![vec![5]];
+        let (proof, ..) = walker
+            .create_proof(
+                keys.clone()
+                    .into_iter()
+                    .map(QueryItem::Key)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                None,
+                true,
+                grove_version,
+            )
+            .unwrap()
+            .expect("failed to create proof");
+
+        // Verify that the proof uses Node::KVValueHash for BigSumTree discriminant
+        let has_kv_value_hash = proof.iter().any(|op| {
+            matches!(
+                op,
+                Op::Push(Node::KVValueHash(..)) | Op::PushInverted(Node::KVValueHash(..))
+            )
+        });
+        assert!(
+            has_kv_value_hash,
+            "Tree discriminant (5=BigSumTree) should produce Node::KVValueHash"
+        );
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+
+        // Verify original proof works
+        let mut query = Query::new();
+        for key in keys.iter() {
+            query.insert_key(key.clone());
+        }
+        let result = query
+            .verify_proof(bytes.as_slice(), None, true, expected_root)
+            .unwrap()
+            .expect("original verify failed");
+        assert_eq!(result.result_set[0].key, vec![5]);
+        assert_eq!(result.result_set[0].value.as_ref().unwrap(), &vec![5]);
+
+        // Tamper with the value bytes in the KVValueHash node
+        let mut tampered = bytes.clone();
+        let mut found = false;
+        for i in 0..tampered.len() {
+            // Look for opcode 0x04 (KVValueHash)
+            if tampered[i] == 0x04 {
+                if i + 1 >= tampered.len() {
+                    continue;
+                }
+                let key_len = tampered[i + 1] as usize;
+                let value_len_pos = i + 2 + key_len;
+                if value_len_pos + 2 > tampered.len() {
+                    continue;
+                }
+                let value_len =
+                    u16::from_be_bytes([tampered[value_len_pos], tampered[value_len_pos + 1]])
+                        as usize;
+                let value_pos = value_len_pos + 2;
+                if value_pos + value_len > tampered.len() {
+                    continue;
+                }
+                // Tamper the value bytes (change to 9)
                 for j in 0..value_len {
                     tampered[value_pos + j] = 9;
                 }
@@ -5187,44 +5460,31 @@ mod test {
         }
         assert!(found, "Should find KVValueHash node to tamper");
 
-        // Try to verify tampered proof with same expected root
+        // Execute tampered proof
         let mut query2 = Query::new();
         for key in keys.iter() {
             query2.insert_key(key.clone());
         }
-
-        // Use execute_proof to get the computed root
         let (tampered_root, tampered_result) = query2
             .execute_proof(tampered.as_slice(), None, true)
             .unwrap()
             .expect("execute_proof failed");
 
-        // Check if tampering was detected via root hash change
+        // For KVValueHash, tampering is NOT detected at single-Merk level
+        // This is expected - these are subtree placeholders where combined hash
+        // verification happens at the GroveDB level
         if tampered_root == expected_root {
-            // This demonstrates that at the SINGLE MERK LEVEL, KVValueHash nodes
-            // do NOT verify that hash(value) == value_hash.
-            //
-            // This is BY DESIGN for the following reasons:
-            // 1. For subtree references, value_hash is a COMBINED hash of hash(value) +
-            //    child_root_hash, not just hash(value)
-            // 2. At the GroveDB level, multi-layer proofs have parent-child hash
-            //    verification that catches tampering
-            //
-            // SECURITY NOTE: If using Merk directly (not through GroveDB),
-            // application code should verify hash(value) == value_hash for
-            // non-subtree items to prevent this attack.
-            println!("As expected: KVValueHash node allows value tampering at Merk level");
-            println!("This is mitigated by GroveDB's multi-layer verification");
+            println!(
+                "As expected: KVValueHash (for Tree discriminants) allows value tampering at \
+                 single-Merk level"
+            );
             println!(
                 "Tampered value returned: {:?}",
                 tampered_result.result_set[0].value
             );
+            println!("This is BY DESIGN - GroveDB's multi-layer proofs catch this tampering");
         } else {
-            // If root hash changed, something unexpected happened
-            panic!(
-                "Unexpected: root hash changed. Expected {:?}, got {:?}",
-                expected_root, tampered_root
-            );
+            panic!("Unexpected: root hash changed for KVValueHash node");
         }
     }
 }

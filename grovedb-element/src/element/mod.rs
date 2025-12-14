@@ -15,7 +15,7 @@ use std::fmt;
 
 use bincode::{Decode, Encode};
 
-use crate::reference_path::ReferencePathType;
+use crate::{element_type::ElementType, reference_path::ReferencePathType};
 
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
@@ -206,18 +206,23 @@ impl fmt::Display for Element {
 }
 
 impl Element {
-    pub fn type_str(&self) -> &str {
+    /// Returns the ElementType for this element.
+    pub fn element_type(&self) -> ElementType {
         match self {
-            Element::Item(..) => "item",
-            Element::Reference(..) => "reference",
-            Element::Tree(..) => "tree",
-            Element::SumItem(..) => "sum item",
-            Element::SumTree(..) => "sum tree",
-            Element::BigSumTree(..) => "big sum tree",
-            Element::CountTree(..) => "count tree",
-            Element::CountSumTree(..) => "count sum tree",
-            Element::ProvableCountTree(..) => "provable count tree",
-            Element::ItemWithSumItem(..) => "item with sum item",
+            Element::Item(..) => ElementType::Item,
+            Element::Reference(..) => ElementType::Reference,
+            Element::Tree(..) => ElementType::Tree,
+            Element::SumItem(..) => ElementType::SumItem,
+            Element::SumTree(..) => ElementType::SumTree,
+            Element::BigSumTree(..) => ElementType::BigSumTree,
+            Element::CountTree(..) => ElementType::CountTree,
+            Element::CountSumTree(..) => ElementType::CountSumTree,
+            Element::ProvableCountTree(..) => ElementType::ProvableCountTree,
+            Element::ItemWithSumItem(..) => ElementType::ItemWithSumItem,
         }
+    }
+
+    pub fn type_str(&self) -> &str {
+        self.element_type().as_str()
     }
 }

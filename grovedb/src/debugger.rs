@@ -462,6 +462,17 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
             hash,
             grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
         ),
+        Node::KVRefValueHashCount(key, value, hash, count) => {
+            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            // Note: Treating as KVValueHashFeatureType for debug display purposes
+            // since grovedbg_types may not have KVRefValueHashCount
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                element_to_grovedbg(element),
+                hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
+            )
+        }
     })
 }
 
