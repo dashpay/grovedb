@@ -54,7 +54,7 @@ where
         let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
 
         fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
-        zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
+        zip_extensions::inflate::zip_extract::zip_extract(&grovedbg_zip, &grovedbg_www)
             .expect("cannot extract grovedbg contents");
 
         let cancellation_token = CancellationToken::new();

@@ -11,6 +11,6 @@ repository = "https://github.com/dashpay/grovedb"
 grovedb-costs = { version = "3.1.0", path = "../costs" }
 
 hex = { version = "0.4.3" }
-integer-encoding = { version = "4.0.0" }
-intmap = { version = "3.0.1", features = ["serde"]}
-thiserror = { version = "2.0.12" }
+integer-encoding = { version = "4.1.0" }
+intmap = { version = "3.1.3", features = ["serde"]}
+thiserror = { version = "2.0.17" }
