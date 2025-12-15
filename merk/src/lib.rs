@@ -56,4 +56,8 @@ pub use crate::merk::{
     KVIterator, Merk, MerkType, RootHashKeyAndAggregateData,
 };
 #[cfg(feature = "minimal")]
+pub use crate::proofs::branch::{
+    calculate_chunk_depths, calculate_tree_depth_from_count, BranchQueryResult, TrunkQueryResult,
+};
+#[cfg(feature = "minimal")]
 pub use crate::visualize::VisualizeableMerk;

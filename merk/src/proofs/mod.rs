@@ -1,6 +1,8 @@
 //! Merk proofs
 
 #[cfg(feature = "minimal")]
+pub mod branch;
+#[cfg(feature = "minimal")]
 pub mod chunk;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod encoding;
