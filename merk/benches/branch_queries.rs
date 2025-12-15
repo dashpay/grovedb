@@ -65,8 +65,12 @@
 //! leaf. With 127 trunk leaves and 1000 targets, optimal grouping could
 //! potentially reduce branch queries from ~1000 to ~127.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
+use grovedb_costs::{CostsExt, OperationCost};
 use grovedb_element::Element;
 use grovedb_merk::{
     proofs::{Node, Op},
@@ -157,7 +161,7 @@ impl KeyTerminalTracker {
 // execute()
 
 /// Metrics for tracking query performance
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct QueryMetrics {
     /// Number of queries performed (trunk + branch)
     total_queries: usize,
@@ -167,6 +171,29 @@ struct QueryMetrics {
     keys_found: usize,
     /// Number of keys proven absent
     keys_absent: usize,
+    /// Total bytes loaded from storage across all queries
+    storage_loaded_bytes: u64,
+    /// Total storage seek operations
+    seek_count: u32,
+    /// Total hash node calls
+    hash_node_calls: u32,
+    /// Total time spent executing queries
+    query_duration: Duration,
+}
+
+impl Default for QueryMetrics {
+    fn default() -> Self {
+        Self {
+            total_queries: 0,
+            total_nodes_processed: 0,
+            keys_found: 0,
+            keys_absent: 0,
+            storage_loaded_bytes: 0,
+            seek_count: 0,
+            hash_node_calls: 0,
+            query_duration: Duration::ZERO,
+        }
+    }
 }
 
 /// Result of analyzing a proof for target keys
@@ -406,10 +433,17 @@ pub fn run_branch_query_benchmark() {
                 max_depth_per_query
             );
 
-            match merk
+            let mut query_cost = OperationCost::default();
+            let query_start = Instant::now();
+            let trunk_query_result = merk
                 .trunk_query(max_depth_per_query, grove_version)
-                .unwrap()
-            {
+                .unwrap_add_cost(&mut query_cost);
+            metrics.query_duration += query_start.elapsed();
+            metrics.storage_loaded_bytes += query_cost.storage_loaded_bytes;
+            metrics.seek_count += query_cost.seek_count;
+            metrics.hash_node_calls += query_cost.hash_node_calls;
+
+            match trunk_query_result {
                 Ok(trunk_result) => {
                     metrics.total_queries += 1;
                     metrics.total_nodes_processed += count_nodes_in_proof(&trunk_result.proof);
@@ -501,12 +535,18 @@ pub fn run_branch_query_benchmark() {
             let remaining_before = tracker.remaining_count();
 
             for terminal_key in terminal_keys_to_query {
+                let mut query_cost = OperationCost::default();
+                let query_start = Instant::now();
+                let branch_query_result = merk
+                    .branch_query(&terminal_key, max_depth_per_query, grove_version)
+                    .unwrap_add_cost(&mut query_cost);
+                metrics.query_duration += query_start.elapsed();
+                metrics.storage_loaded_bytes += query_cost.storage_loaded_bytes;
+                metrics.seek_count += query_cost.seek_count;
+                metrics.hash_node_calls += query_cost.hash_node_calls;
                 metrics.total_queries += 1;
 
-                match merk
-                    .branch_query(&terminal_key, max_depth_per_query, grove_version)
-                    .unwrap()
-                {
+                match branch_query_result {
                     Ok(branch_result) => {
                         metrics.total_nodes_processed += count_nodes_in_proof(&branch_result.proof);
                         let proof_keys = extract_keys_from_proof(&branch_result.proof);
@@ -620,9 +660,43 @@ pub fn run_branch_query_benchmark() {
     );
 
     println!();
+    println!("=== Performance Metrics ===");
+    println!(
+        "Total query time: {:.3}s",
+        metrics.query_duration.as_secs_f64()
+    );
+    println!(
+        "Average time per query: {:.3}ms",
+        metrics.query_duration.as_secs_f64() * 1000.0 / metrics.total_queries as f64
+    );
     println!(
         "Efficiency: {:.1} queries per target key",
         metrics.total_queries as f64 / (num_existing_keys + num_nonexistent_keys) as f64
+    );
+
+    println!();
+    println!("=== I/O Metrics ===");
+    println!(
+        "Storage bytes loaded: {} ({:.2} MB)",
+        metrics.storage_loaded_bytes,
+        metrics.storage_loaded_bytes as f64 / (1024.0 * 1024.0)
+    );
+    println!("Storage seek operations: {}", metrics.seek_count);
+    println!(
+        "Average bytes per query: {:.0}",
+        metrics.storage_loaded_bytes as f64 / metrics.total_queries as f64
+    );
+    println!(
+        "Average seeks per query: {:.1}",
+        metrics.seek_count as f64 / metrics.total_queries as f64
+    );
+
+    println!();
+    println!("=== Hashing Metrics ===");
+    println!("Total hash node calls: {}", metrics.hash_node_calls);
+    println!(
+        "Average hashes per query: {:.1}",
+        metrics.hash_node_calls as f64 / metrics.total_queries as f64
     );
 }
 

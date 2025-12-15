@@ -839,14 +839,15 @@ where
         let root_hash = self.root_hash().unwrap_add_cost(&mut cost);
 
         // Generate proof using create_chunk
-        let proof_result = self.walk(|maybe_walker| match maybe_walker {
+        let proof_cost_result = self.walk(|maybe_walker| match maybe_walker {
             None => Err(Error::InvalidOperation(
                 "trunk_query cannot be performed on an empty tree",
-            )),
+            ))
+            .wrap_with_cost(OperationCost::default()),
             Some(mut walker) => walker.create_chunk(first_chunk_depth, grove_version),
         });
 
-        let proof = match proof_result {
+        let proof = match proof_cost_result.unwrap_add_cost(&mut cost) {
             Ok(p) => p,
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
@@ -958,16 +959,17 @@ where
         };
 
         // Now use traverse_and_build_chunk to generate the proof
-        let proof_result = self.walk(|maybe_walker| match maybe_walker {
+        let proof_cost_result = self.walk(|maybe_walker| match maybe_walker {
             None => Err(Error::InvalidOperation(
                 "branch_query cannot be performed on an empty tree",
-            )),
+            ))
+            .wrap_with_cost(OperationCost::default()),
             Some(mut walker) => {
                 walker.traverse_and_build_chunk(&traversal_path, depth as usize, grove_version)
             }
         });
 
-        let proof = match proof_result {
+        let proof = match proof_cost_result.unwrap_add_cost(&mut cost) {
             Ok(p) => p,
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
