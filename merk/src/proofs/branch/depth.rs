@@ -57,6 +57,10 @@ pub fn calculate_tree_depth_from_count(count: u64) -> u8 {
 /// assert_eq!(calculate_chunk_depths(5, 10), vec![5]);
 /// ```
 pub fn calculate_chunk_depths(tree_depth: u8, max_depth: u8) -> Vec<u8> {
+    if max_depth == 0 {
+        panic!("max_depth must be > 0");
+    }
+
     if tree_depth == 0 {
         return vec![0];
     }
@@ -157,6 +161,12 @@ mod tests {
     fn test_calculate_chunk_depths_edge_cases() {
         assert_eq!(calculate_chunk_depths(0, 8), vec![0]);
         assert_eq!(calculate_chunk_depths(1, 1), vec![1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_depth must be > 0")]
+    fn test_calculate_chunk_depths_zero_max_depth_panics() {
+        calculate_chunk_depths(5, 0);
     }
 
     #[test]

@@ -817,10 +817,7 @@ where
         }
 
         // Get count from aggregate data
-        let aggregate_data = match self.aggregate_data() {
-            Ok(data) => data,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        };
+        let aggregate_data = cost_return_on_error_no_add!(cost, self.aggregate_data());
         let count = aggregate_data.as_count_u64();
 
         if count == 0 {
