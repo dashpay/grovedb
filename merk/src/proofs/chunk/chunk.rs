@@ -49,13 +49,18 @@ where
         &mut self,
         depth: usize,
         grove_version: &GroveVersion,
-    ) -> Result<Vec<Op>, Error> {
+    ) -> CostResult<Vec<Op>, Error> {
+        let mut cost = OperationCost::default();
+
         // build the proof vector
         let mut proof = vec![];
 
-        self.create_chunk_internal(&mut proof, depth, grove_version)?;
+        cost_return_on_error!(
+            &mut cost,
+            self.create_chunk_internal(&mut proof, depth, grove_version)
+        );
 
-        Ok(proof)
+        Ok(proof).wrap_with_cost(cost)
     }
 
     fn create_chunk_internal(
@@ -63,26 +68,32 @@ where
         proof: &mut Vec<Op>,
         remaining_depth: usize,
         grove_version: &GroveVersion,
-    ) -> Result<(), Error> {
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
         // at some point we will reach the depth
         // here we need to put the node hash
         if remaining_depth == 0 {
             proof.push(Op::Push(self.to_hash_node().unwrap()));
-            return Ok(());
+            return Ok(()).wrap_with_cost(cost);
         }
 
         // traverse left
         let has_left_child = self.tree().link(true).is_some();
         if has_left_child {
-            let mut left = self
-                .walk(
+            let mut left = cost_return_on_error!(
+                &mut cost,
+                self.walk(
                     true,
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
-                .expect("confirmed is some");
-            left.create_chunk_internal(proof, remaining_depth - 1, grove_version)?;
+            )
+            .expect("confirmed is some");
+            cost_return_on_error!(
+                &mut cost,
+                left.create_chunk_internal(proof, remaining_depth - 1, grove_version)
+            );
         }
 
         // add current node's data
@@ -100,20 +111,24 @@ where
         }
 
         // traverse right
-        if let Some(mut right) = self
-            .walk(
+        let maybe_right = cost_return_on_error!(
+            &mut cost,
+            self.walk(
                 false,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
-            .unwrap()?
-        {
-            right.create_chunk_internal(proof, remaining_depth - 1, grove_version)?;
+        );
+        if let Some(mut right) = maybe_right {
+            cost_return_on_error!(
+                &mut cost,
+                right.create_chunk_internal(proof, remaining_depth - 1, grove_version)
+            );
 
             proof.push(Op::Child);
         }
 
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Returns a chunk of a given depth after applying some traversal
@@ -123,7 +138,9 @@ where
         instructions: &[bool],
         depth: usize,
         grove_version: &GroveVersion,
-    ) -> Result<Vec<Op>, Error> {
+    ) -> CostResult<Vec<Op>, Error> {
+        let mut cost = OperationCost::default();
+
         // base case
         if instructions.is_empty() {
             // we are at the desired node
@@ -135,21 +152,25 @@ where
         if !has_link {
             return Err(Error::ChunkingError(ChunkError::BadTraversalInstruction(
                 "no node found at given traversal instruction",
-            )));
+            )))
+            .wrap_with_cost(cost);
         }
 
         // grab child
-        let mut child = self
-            .walk(
+        let mut child = cost_return_on_error!(
+            &mut cost,
+            self.walk(
                 instructions[0],
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
-            .unwrap()?
-            .expect("confirmed link exists so cannot be none");
+        )
+        .expect("confirmed link exists so cannot be none");
 
         // recurse on child
-        child.traverse_and_build_chunk(&instructions[1..], depth, grove_version)
+        child
+            .traverse_and_build_chunk(&instructions[1..], depth, grove_version)
+            .add_cost(cost)
     }
 
     /// Returns the smallest amount of tree ops, that can convince
@@ -348,6 +369,7 @@ pub mod tests {
         // should return the node hash of the root node
         let chunk = tree_walker
             .create_chunk(0, grove_version)
+            .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 1);
         assert_eq!(
@@ -374,6 +396,7 @@ pub mod tests {
         //        Hash(1)   Hash(7)
         let chunk = tree_walker
             .create_chunk(1, grove_version)
+            .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 5);
         assert_eq!(
@@ -422,6 +445,7 @@ pub mod tests {
         //             H(4) H(6)   H(9)
         let chunk = tree_walker
             .create_chunk(3, grove_version)
+            .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
         assert_eq!(
@@ -511,6 +535,7 @@ pub mod tests {
         //               4   6      9
         let chunk = tree_walker
             .create_chunk(4, grove_version)
+            .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
         assert_eq!(
@@ -594,9 +619,11 @@ pub mod tests {
         // we should get the same result as building with the exact depth
         let large_depth_chunk = tree_walker
             .create_chunk(100, grove_version)
+            .unwrap()
             .expect("should build chunk");
         let exact_depth_chunk = tree_walker
             .create_chunk(4, grove_version)
+            .unwrap()
             .expect("should build chunk");
         assert_eq!(large_depth_chunk, exact_depth_chunk);
 
@@ -626,6 +653,7 @@ pub mod tests {
         // right traversal
         let chunk = tree_walker
             .traverse_and_build_chunk(&[RIGHT], 2, grove_version)
+            .unwrap()
             .expect("should build chunk");
         assert_eq!(
             chunk,
@@ -695,6 +723,7 @@ pub mod tests {
         // instruction traversal
         let chunk = tree_walker
             .traverse_and_build_chunk(&[RIGHT, LEFT], 1, grove_version)
+            .unwrap()
             .expect("should build chunk");
         assert_eq!(
             chunk,

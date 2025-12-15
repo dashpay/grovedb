@@ -67,3 +67,7 @@ harness = false
 [[bench]]
 name = "ops"
 harness = false
+
+[[bench]]
+name = "branch_queries"
+harness = false

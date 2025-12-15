@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use ed::Encode;
+use grovedb_costs::CostsExt;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
@@ -143,16 +144,20 @@ where
 
         let chunk_height = chunk_height(self.height, index).unwrap();
 
-        let chunk = self.merk.walk(|maybe_walker| match maybe_walker {
-            Some(mut walker) => walker.traverse_and_build_chunk(
-                &traversal_instructions,
-                chunk_height,
-                grove_version,
-            ),
-            None => Err(Error::ChunkingError(ChunkError::EmptyTree(
-                "cannot create chunk producer for empty Merk",
-            ))),
-        })?;
+        let chunk = self
+            .merk
+            .walk(|maybe_walker| match maybe_walker {
+                Some(mut walker) => walker.traverse_and_build_chunk(
+                    &traversal_instructions,
+                    chunk_height,
+                    grove_version,
+                ),
+                None => Err(Error::ChunkingError(ChunkError::EmptyTree(
+                    "cannot create chunk producer for empty Merk",
+                )))
+                .wrap_with_cost(Default::default()),
+            })
+            .unwrap()?;
 
         // now we need to return the next index
         // how do we know if we should return some or none
