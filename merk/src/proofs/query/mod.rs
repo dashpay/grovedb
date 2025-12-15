@@ -793,7 +793,7 @@ impl<'a> ProofItems<'a> {
         let mut item_on_boundary = false;
 
         for &query_item_key in self.key_query_items.iter() {
-            match query_item_key.cmp(&key) {
+            match query_item_key.cmp(key) {
                 std::cmp::Ordering::Less => left_key_query_items.insert(query_item_key),
                 std::cmp::Ordering::Greater => right_key_query_items.insert(query_item_key),
                 std::cmp::Ordering::Equal => {
