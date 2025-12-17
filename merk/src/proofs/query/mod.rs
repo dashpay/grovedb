@@ -895,15 +895,18 @@ where
 
     /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
     /// root node
-    /// Note: For ProvableCountTree, uses aggregate count to match hash
-    /// calculation
+    /// Note: For ProvableCountTree and ProvableCountSumTree, uses aggregate
+    /// count to match hash calculation
     pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
-        // For ProvableCountTree, we need to use the aggregate count (sum of self +
-        // children) because the hash calculation uses aggregate_data(), not
-        // feature_type()
+        // For ProvableCountTree and ProvableCountSumTree, we need to use the aggregate
+        // count (sum of self + children) because the hash calculation uses
+        // aggregate_data(), not feature_type()
         let feature_type = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => {
                 TreeFeatureType::ProvableCountedMerkNode(count)
+            }
+            Ok(AggregateData::ProvableCountAndSum(count, sum)) => {
+                TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
             }
             _ => self.tree().feature_type(),
         };
@@ -933,26 +936,28 @@ where
     }
 
     /// Creates a `Node::KVHashCount` from the kv hash and count of the root
-    /// node Used for ProvableCountTree
+    /// node Used for ProvableCountTree and ProvableCountSumTree
     /// Note: Uses aggregate count (sum of self + children) to match hash
     /// calculation
     pub(crate) fn to_kvhash_count_node(&self) -> Node {
         let count = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => count,
-            _ => 0, // Fallback, should not happen for ProvableCountTree
+            Ok(AggregateData::ProvableCountAndSum(count, _)) => count,
+            _ => 0, // Fallback, should not happen for ProvableCount trees
         };
         Node::KVHashCount(*self.tree().kv_hash(), count)
     }
 
     /// Creates a `Node::KVCount` from the key/value pair and count of the root
-    /// node. Used for Items in ProvableCountTree - tamper-resistant (verifier
-    /// computes hash from value) while including the count.
-    /// Note: Uses aggregate count (sum of self + children) to match hash
+    /// node. Used for Items in ProvableCountTree or ProvableCountSumTree -
+    /// tamper-resistant (verifier computes hash from value) while including the
+    /// count. Note: Uses aggregate count (sum of self + children) to match hash
     /// calculation
     pub(crate) fn to_kv_count_node(&self) -> Node {
         let count = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => count,
-            _ => 0, // Fallback, should not happen for ProvableCountTree
+            Ok(AggregateData::ProvableCountAndSum(count, _)) => count,
+            _ => 0, // Fallback, should not happen for ProvableCount trees
         };
         Node::KVCount(
             self.tree().key().to_vec(),
@@ -1102,10 +1107,14 @@ where
         let is_provable_count_tree = matches!(
             self.tree().feature_type(),
             TreeFeatureType::ProvableCountedMerkNode(_)
+                | TreeFeatureType::ProvableCountedSummedMerkNode(..)
         );
 
         // Convert is_provable_count_tree to parent tree type for proof_node_type()
+        // Both ProvableCountTree and ProvableCountSumTree use count in hash
         let parent_tree_type = if is_provable_count_tree {
+            // Use ProvableCountTree for both since proof handling is the same (count in
+            // hash)
             Some(ElementType::ProvableCountTree)
         } else {
             None // Regular tree or unknown - treated the same

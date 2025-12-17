@@ -444,7 +444,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::BigSumTree(_, _, flags))
             | Some(Element::CountTree(_, _, flags))
             | Some(Element::CountSumTree(.., flags))
-            | Some(Element::ProvableCountTree(_, _, flags)) => {
+            | Some(Element::ProvableCountTree(_, _, flags))
+            | Some(Element::ProvableCountSumTree(.., flags)) => {
                 let tree_cost_size = element.as_ref().unwrap().tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -539,7 +540,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::BigSumTree(_, _, flags)
             | Element::CountTree(_, _, flags)
             | Element::CountSumTree(.., flags)
-            | Element::ProvableCountTree(_, _, flags) => {
+            | Element::ProvableCountTree(_, _, flags)
+            | Element::ProvableCountSumTree(.., flags) => {
                 let tree_cost_size = element.tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;

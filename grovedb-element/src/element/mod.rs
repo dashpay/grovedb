@@ -71,6 +71,9 @@ pub enum Element {
     ProvableCountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
     /// An ordinary value with a sum value
     ItemWithSumItem(Vec<u8>, SumValue, Option<ElementFlags>),
+    /// Same as Element::CountSumTree but includes counts in cryptographic state
+    /// (sum is tracked but NOT included in hash, only count is)
+    ProvableCountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -190,6 +193,18 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags) => {
+                write!(
+                    f,
+                    "ProvableCountSumTree({}, {}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
             Element::ItemWithSumItem(data, sum_value, flags) => {
                 write!(
                     f,
@@ -218,6 +233,7 @@ impl Element {
             Element::CountTree(..) => ElementType::CountTree,
             Element::CountSumTree(..) => ElementType::CountSumTree,
             Element::ProvableCountTree(..) => ElementType::ProvableCountTree,
+            Element::ProvableCountSumTree(..) => ElementType::ProvableCountSumTree,
             Element::ItemWithSumItem(..) => ElementType::ItemWithSumItem,
         }
     }

@@ -18,7 +18,8 @@ impl Element {
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
-            | Element::CountSumTree(_, _, sum_value, _) => *sum_value,
+            | Element::CountSumTree(_, _, sum_value, _)
+            | Element::ProvableCountSumTree(_, _, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
@@ -29,7 +30,8 @@ impl Element {
         match self {
             Element::CountTree(_, count_value, _)
             | Element::CountSumTree(_, count_value, ..)
-            | Element::ProvableCountTree(_, count_value, _) => *count_value,
+            | Element::ProvableCountTree(_, count_value, _)
+            | Element::ProvableCountSumTree(_, count_value, ..) => *count_value,
             _ => 1,
         }
     }
@@ -42,7 +44,10 @@ impl Element {
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _) => (1, *sum_value),
             Element::CountTree(_, count_value, _) => (*count_value, 0),
-            Element::CountSumTree(_, count_value, sum_value, _) => (*count_value, *sum_value),
+            Element::CountSumTree(_, count_value, sum_value, _)
+            | Element::ProvableCountSumTree(_, count_value, sum_value, _) => {
+                (*count_value, *sum_value)
+            }
             Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
             _ => (1, 0),
         }
@@ -55,7 +60,8 @@ impl Element {
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
-            | Element::CountSumTree(_, _, sum_value, _) => *sum_value as i128,
+            | Element::CountSumTree(_, _, sum_value, _)
+            | Element::ProvableCountSumTree(_, _, sum_value, _) => *sum_value as i128,
             Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
@@ -146,6 +152,7 @@ impl Element {
                 | Element::CountTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountTree(..)
+                | Element::ProvableCountSumTree(..)
         )
     }
 
@@ -193,8 +200,9 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
-            | Element::ProvableCountTree(.., flags) => flags,
-            Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ProvableCountTree(.., flags)
+            | Element::ProvableCountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -209,8 +217,9 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
-            | Element::ProvableCountTree(.., flags) => flags,
-            Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ProvableCountTree(.., flags)
+            | Element::ProvableCountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -225,8 +234,9 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
-            | Element::ProvableCountTree(.., flags) => flags,
-            Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ProvableCountTree(.., flags)
+            | Element::ProvableCountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => flags,
         }
     }
 
@@ -241,8 +251,9 @@ impl Element {
             | Element::CountTree(.., flags)
             | Element::SumItem(_, flags)
             | Element::CountSumTree(.., flags)
-            | Element::ProvableCountTree(.., flags) => *flags = new_flags,
-            Element::ItemWithSumItem(.., flags) => *flags = new_flags,
+            | Element::ProvableCountTree(.., flags)
+            | Element::ProvableCountSumTree(.., flags)
+            | Element::ItemWithSumItem(.., flags) => *flags = new_flags,
         }
     }
 

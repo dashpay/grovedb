@@ -46,6 +46,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountTree))
             }
+            Element::ProvableCountSumTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableCountSumTree))
+            }
             _ => None,
         }
     }
@@ -62,6 +65,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountTree))
             }
+            Element::ProvableCountSumTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableCountSumTree))
+            }
             _ => None,
         }
     }
@@ -75,6 +81,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountTree(_, _, flags) => Some((flags, TreeType::CountTree)),
             Element::CountSumTree(.., flags) => Some((flags, TreeType::CountSumTree)),
             Element::ProvableCountTree(_, _, flags) => Some((flags, TreeType::ProvableCountTree)),
+            Element::ProvableCountSumTree(.., flags) => {
+                Some((flags, TreeType::ProvableCountSumTree))
+            }
             _ => None,
         }
     }
@@ -88,6 +97,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountTree(..) => Some(TreeType::CountTree),
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
+            Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
             _ => None,
         }
     }
@@ -104,6 +114,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(_, value, _) => {
                 Some(TreeFeatureType::ProvableCountedMerkNode(*value))
             }
+            Element::ProvableCountSumTree(_, count, sum, _) => {
+                Some(TreeFeatureType::ProvableCountedSummedMerkNode(*count, *sum))
+            }
             _ => None,
         }
     }
@@ -117,6 +130,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountTree(..) => MaybeTree::Tree(TreeType::CountTree),
             Element::CountSumTree(..) => MaybeTree::Tree(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
+            Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
             _ => MaybeTree::NotTree,
         }
     }
@@ -135,6 +149,10 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::ProvableCountTree => Ok(TreeFeatureType::ProvableCountedMerkNode(
                 self.count_value_or_default(),
             )),
+            TreeType::ProvableCountSumTree => {
+                let v = self.count_sum_value_or_default();
+                Ok(TreeFeatureType::ProvableCountedSummedMerkNode(v.0, v.1))
+            }
         }
     }
 }

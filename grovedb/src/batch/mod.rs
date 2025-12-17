@@ -1024,7 +1024,8 @@ where
             | Element::BigSumTree(..)
             | Element::CountTree(..)
             | Element::CountSumTree(..)
-            | Element::ProvableCountTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::ProvableCountTree(..)
+            | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1147,7 +1148,8 @@ where
                         | Element::BigSumTree(..)
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
-                        | Element::ProvableCountTree(..) => Err(Error::InvalidBatchOperation(
+                        | Element::ProvableCountTree(..)
+                        | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
@@ -1181,7 +1183,8 @@ where
                     | Element::BigSumTree(..)
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
-                    | Element::ProvableCountTree(..) => Err(Error::InvalidBatchOperation(
+                    | Element::ProvableCountTree(..)
+                    | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
@@ -1358,7 +1361,8 @@ where
                     | Element::BigSumTree(..)
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
-                    | Element::ProvableCountTree(..) => {
+                    | Element::ProvableCountTree(..)
+                    | Element::ProvableCountSumTree(..) => {
                         let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
@@ -1587,6 +1591,14 @@ where
                                 flags,
                             )
                         }
+                        AggregateData::ProvableCountAndSum(count_value, sum_value) => {
+                            Element::new_provable_count_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
                     };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
@@ -1679,7 +1691,8 @@ where
                                     | Element::BigSumTree(..)
                                     | Element::CountTree(..)
                                     | Element::CountSumTree(..)
-                                    | Element::ProvableCountTree(..) => {
+                                    | Element::ProvableCountTree(..)
+                                    | Element::ProvableCountSumTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
                                         let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
@@ -1914,6 +1927,30 @@ impl GroveDb {
                                                             }
                                                     } else if let Element::CountSumTree(.., flags) =
                                                         element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                            }
+                                                    } else if let Element::ProvableCountTree(
+                                                        ..,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                            }
+                                                    } else if let Element::ProvableCountSumTree(
+                                                        ..,
+                                                        flags,
+                                                    ) = element
                                                     {
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertTreeWithRootHash {

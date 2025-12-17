@@ -688,6 +688,14 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             }
         }
+        crate::Element::ProvableCountSumTree(root_key, count, sum, element_flags) => {
+            grovedbg_types::Element::ProvableCountSumTree {
+                root_key,
+                count,
+                sum,
+                element_flags,
+            }
+        }
     }
 }
 

@@ -349,6 +349,7 @@ impl GroveDb {
                             | Ok(Element::CountTree(Some(_), ..))
                             | Ok(Element::CountSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
+                            | Ok(Element::ProvableCountSumTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -392,6 +393,7 @@ impl GroveDb {
                             | Ok(Element::CountTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::CountSumTree(..))
+                            | Ok(Element::ProvableCountSumTree(..))
                                 if !done_with_results =>
                             {
                                 #[cfg(feature = "proof_debug")]

@@ -35,6 +35,7 @@ mod debug_provable_count_trace_verification;
 mod debug_provable_count_tree_issue;
 mod debug_simple_proof_check;
 mod debug_simple_provable_count;
+mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;
 mod provable_count_tree_test;

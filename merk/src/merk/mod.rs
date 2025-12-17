@@ -255,6 +255,7 @@ pub enum NodeType {
     CountNode,
     CountSumNode,
     ProvableCountNode,
+    ProvableCountSumNode,
 }
 
 impl NodeType {
@@ -266,6 +267,7 @@ impl NodeType {
             NodeType::CountNode => 9,
             NodeType::CountSumNode => 17,
             NodeType::ProvableCountNode => 9,
+            NodeType::ProvableCountSumNode => 17, // count (varint) + sum (varint)
         }
     }
 
@@ -277,6 +279,7 @@ impl NodeType {
             NodeType::CountNode => 8,
             NodeType::CountSumNode => 16,
             NodeType::ProvableCountNode => 8,
+            NodeType::ProvableCountSumNode => 16, // count (8) + sum (8)
         }
     }
 }
