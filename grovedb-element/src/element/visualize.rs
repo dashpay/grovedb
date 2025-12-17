@@ -110,6 +110,17 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags) => {
+                drawer.write(b"provable_count_sum_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!("count: {count_value}, sum {sum_value}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
             Element::ItemWithSumItem(value, sum_value, flags) => {
                 drawer.write(b"item_with_sum_item: ")?;
                 drawer = value.visualize(drawer)?;

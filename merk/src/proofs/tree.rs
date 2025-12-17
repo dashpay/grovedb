@@ -130,7 +130,8 @@ impl Tree {
                 // Note: Same as KVValueHash - cannot verify hash(value) == value_hash
                 // because value_hash may be combined for subtrees. Security via merkle root.
                 kv_digest_to_kv_hash(key.as_slice(), value_hash).flat_map(|kv_hash| {
-                    // For ProvableCountTree, use node_hash_with_count
+                    // For ProvableCountTree and ProvableCountSumTree, use node_hash_with_count
+                    // Note: ProvableCountSumTree only includes count in hash, not sum
                     match feature_type {
                         TreeFeatureType::ProvableCountedMerkNode(count) => node_hash_with_count(
                             &kv_hash,
@@ -138,6 +139,15 @@ impl Tree {
                             &self.child_hash(false),
                             *count,
                         ),
+                        TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
+                            // Only count is included in hash, sum is tracked but not hashed
+                            node_hash_with_count(
+                                &kv_hash,
+                                &self.child_hash(true),
+                                &self.child_hash(false),
+                                *count,
+                            )
+                        }
                         _ => compute_hash(self, kv_hash),
                     }
                 })

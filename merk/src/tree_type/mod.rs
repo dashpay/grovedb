@@ -24,6 +24,7 @@ pub enum TreeType {
     CountTree = 3,
     CountSumTree = 4,
     ProvableCountTree = 5,
+    ProvableCountSumTree = 6,
 }
 
 impl TryFrom<u8> for TreeType {
@@ -37,7 +38,8 @@ impl TryFrom<u8> for TreeType {
             3 => Ok(TreeType::CountTree),
             4 => Ok(TreeType::CountSumTree),
             5 => Ok(TreeType::ProvableCountTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 5", n))), // Error handling
+            6 => Ok(TreeType::ProvableCountSumTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 6", n))),
         }
     }
 }
@@ -51,6 +53,7 @@ impl fmt::Display for TreeType {
             TreeType::CountTree => "Count Tree",
             TreeType::CountSumTree => "Count Sum Tree",
             TreeType::ProvableCountTree => "Provable Count Tree",
+            TreeType::ProvableCountSumTree => "Provable Count Sum Tree",
         };
         write!(f, "{}", s)
     }
@@ -65,6 +68,7 @@ impl TreeType {
             TreeType::CountTree => false,
             TreeType::CountSumTree => true,
             TreeType::ProvableCountTree => false,
+            TreeType::ProvableCountSumTree => true, // allows sum items
         }
     }
 
@@ -77,6 +81,7 @@ impl TreeType {
             TreeType::CountTree => NodeType::CountNode,
             TreeType::CountSumTree => NodeType::CountSumNode,
             TreeType::ProvableCountTree => NodeType::ProvableCountNode,
+            TreeType::ProvableCountSumTree => NodeType::ProvableCountSumNode,
         }
     }
 
@@ -88,6 +93,7 @@ impl TreeType {
             TreeType::CountTree => TreeFeatureType::CountedMerkNode(0),
             TreeType::CountSumTree => TreeFeatureType::CountedSummedMerkNode(0, 0),
             TreeType::ProvableCountTree => TreeFeatureType::ProvableCountedMerkNode(0),
+            TreeType::ProvableCountSumTree => TreeFeatureType::ProvableCountedSummedMerkNode(0, 0),
         }
     }
 
@@ -105,6 +111,7 @@ impl TreeType {
             TreeType::CountTree => Some(ElementType::CountTree),
             TreeType::CountSumTree => Some(ElementType::CountSumTree),
             TreeType::ProvableCountTree => Some(ElementType::ProvableCountTree),
+            TreeType::ProvableCountSumTree => Some(ElementType::ProvableCountSumTree),
         }
     }
 }

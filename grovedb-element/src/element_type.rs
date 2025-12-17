@@ -106,6 +106,8 @@ pub enum ElementType {
     ProvableCountTree = 8,
     /// Item with sum value - discriminant 9
     ItemWithSumItem = 9,
+    /// Provable count sum tree - discriminant 10
+    ProvableCountSumTree = 10,
 }
 
 impl ElementType {
@@ -133,7 +135,7 @@ impl ElementType {
     ///
     /// The parent tree type affects which proof node to use:
     /// - In regular trees: Items use `Kv`, trees/references use `KvValueHash`
-    /// - In ProvableCountTree:
+    /// - In ProvableCountTree or ProvableCountSumTree:
     ///   - Items use `KvCount` (value hash + count in node hash)
     ///   - Subtrees use `KvValueHashFeatureType` (combined hash + count)
     ///   - References use `KvRefValueHashCount` (combined hash + count)
@@ -143,7 +145,10 @@ impl ElementType {
     ///   `None` for root-level elements
     #[inline]
     pub fn proof_node_type(&self, parent_tree_type: Option<ElementType>) -> ProofNodeType {
-        let is_provable_count_tree = parent_tree_type == Some(ElementType::ProvableCountTree);
+        let is_provable_count_tree = matches!(
+            parent_tree_type,
+            Some(ElementType::ProvableCountTree) | Some(ElementType::ProvableCountSumTree)
+        );
 
         if self.has_simple_value_hash() {
             // Items (Item, SumItem, ItemWithSumItem)
@@ -210,6 +215,7 @@ impl ElementType {
                 | ElementType::CountTree
                 | ElementType::CountSumTree
                 | ElementType::ProvableCountTree
+                | ElementType::ProvableCountSumTree
         )
     }
 
@@ -242,6 +248,7 @@ impl ElementType {
             ElementType::CountSumTree => "count sum tree",
             ElementType::ProvableCountTree => "provable count tree",
             ElementType::ItemWithSumItem => "item with sum item",
+            ElementType::ProvableCountSumTree => "provable count sum tree",
         }
     }
 }
@@ -261,6 +268,7 @@ impl TryFrom<u8> for ElementType {
             7 => Ok(ElementType::CountSumTree),
             8 => Ok(ElementType::ProvableCountTree),
             9 => Ok(ElementType::ItemWithSumItem),
+            10 => Ok(ElementType::ProvableCountSumTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -297,7 +305,11 @@ mod tests {
             ElementType::try_from(9).unwrap(),
             ElementType::ItemWithSumItem
         );
-        assert!(ElementType::try_from(10).is_err());
+        assert_eq!(
+            ElementType::try_from(10).unwrap(),
+            ElementType::ProvableCountSumTree
+        );
+        assert!(ElementType::try_from(11).is_err());
     }
 
     #[test]

@@ -404,7 +404,8 @@ impl GroveDb {
                             | Element::BigSumTree(Some(_), ..)
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..)
-                            | Element::ProvableCountTree(Some(_), ..) => {
+                            | Element::ProvableCountTree(Some(_), ..)
+                            | Element::ProvableCountSumTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -522,6 +523,7 @@ impl GroveDb {
                             | Element::CountTree(None, ..)
                             | Element::CountSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
+                            | Element::ProvableCountSumTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -1145,13 +1147,14 @@ impl GroveDb {
         }
     }
 
-    /// Extract the count from a CountTree, CountSumTree, or ProvableCountTree
-    /// element.
+    /// Extract the count from a CountTree, CountSumTree, ProvableCountTree,
+    /// or ProvableCountSumTree element.
     fn extract_count_from_element(element: &Element) -> Option<u64> {
         match element {
             Element::CountTree(_, count, _)
             | Element::CountSumTree(_, count, ..)
-            | Element::ProvableCountTree(_, count, _) => Some(*count),
+            | Element::ProvableCountTree(_, count, _)
+            | Element::ProvableCountSumTree(_, count, ..) => Some(*count),
             _ => None,
         }
     }

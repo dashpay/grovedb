@@ -254,4 +254,38 @@ impl Element {
     ) -> Self {
         Element::ProvableCountTree(maybe_root_key, count_value, flags)
     }
+
+    /// Set element to default empty provable count sum tree without flags
+    pub fn empty_provable_count_sum_tree() -> Self {
+        Element::new_provable_count_sum_tree(Default::default())
+    }
+
+    /// Set element to default empty provable count sum tree with flags
+    pub fn empty_provable_count_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_provable_count_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    /// Set element to a provable count sum tree without flags
+    pub fn new_provable_count_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::ProvableCountSumTree(maybe_root_key, 0, 0, None)
+    }
+
+    /// Set element to a provable count sum tree with flags
+    pub fn new_provable_count_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableCountSumTree(maybe_root_key, 0, 0, flags)
+    }
+
+    /// Set element to a provable count sum tree with flags, count, and sum
+    /// value
+    pub fn new_provable_count_sum_tree_with_flags_and_sum_and_count_value(
+        maybe_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableCountSumTree(maybe_root_key, count_value, sum_value, flags)
+    }
 }

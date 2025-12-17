@@ -62,6 +62,7 @@ impl ElementCostPrivateExtensions for Element {
             Element::CountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
+            Element::ProvableCountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
@@ -153,6 +154,17 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
+            Element::ProvableCountSumTree(.., flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_SUM_TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -215,7 +227,8 @@ impl ElementCostExtensions for Element {
             | Element::BigSumTree(..)
             | Element::CountTree(..)
             | Element::CountSumTree(..)
-            | Element::ProvableCountTree(..) => Some(cost),
+            | Element::ProvableCountTree(..)
+            | Element::ProvableCountSumTree(..) => Some(cost),
             _ => None,
         }
     }
@@ -236,6 +249,7 @@ impl ElementCostExtensions for Element {
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableCountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;

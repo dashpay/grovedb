@@ -293,7 +293,9 @@ impl Link {
                     //    sum_len for sum vale
                     key.len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
-                AggregateData::BigSum(_) | AggregateData::CountAndSum(..) => {
+                AggregateData::BigSum(_)
+                | AggregateData::CountAndSum(..)
+                | AggregateData::ProvableCountAndSum(..) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -322,7 +324,9 @@ impl Link {
                 | AggregateData::ProvableCount(_) => {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
-                AggregateData::BigSum(_) | AggregateData::CountAndSum(..) => {
+                AggregateData::BigSum(_)
+                | AggregateData::CountAndSum(..)
+                | AggregateData::ProvableCountAndSum(..) => {
                     tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
             },
@@ -391,6 +395,11 @@ impl Encode for Link {
                 out.write_all(&[5])?;
                 out.write_varint(*count_value)?;
             }
+            AggregateData::ProvableCountAndSum(count_value, sum_value) => {
+                out.write_all(&[6])?;
+                out.write_varint(*count_value)?;
+                out.write_varint(*sum_value)?;
+            }
         }
 
         Ok(())
@@ -451,6 +460,11 @@ impl Encode for Link {
                     let encoded_count_value = count.encode_var_vec();
                     key.len() + encoded_count_value.len() + 36
                 }
+                AggregateData::ProvableCountAndSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
+                }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
             Link::Uncommitted {
@@ -483,6 +497,11 @@ impl Encode for Link {
                 AggregateData::ProvableCount(count) => {
                     let encoded_count_value = count.encode_var_vec();
                     tree.key().len() + encoded_count_value.len() + 36
+                }
+                AggregateData::ProvableCountAndSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    tree.key().len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
             },
         })
@@ -559,6 +578,11 @@ impl Decode for Link {
                 5 => {
                     let encoded_count: u64 = input.read_varint()?;
                     AggregateData::ProvableCount(encoded_count)
+                }
+                6 => {
+                    let encoded_count: u64 = input.read_varint()?;
+                    let encoded_sum: i64 = input.read_varint()?;
+                    AggregateData::ProvableCountAndSum(encoded_count, encoded_sum)
                 }
                 byte => return Err(ed::Error::UnexpectedByte(byte)),
             };

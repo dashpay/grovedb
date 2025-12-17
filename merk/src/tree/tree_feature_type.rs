@@ -40,6 +40,8 @@ pub enum TreeFeatureType {
     CountedSummedMerkNode(u64, i64),
     /// Provable Counted Merk Tree Node
     ProvableCountedMerkNode(u64),
+    /// Provable Counted and Summed Merk Tree Node (count in hash, sum tracked)
+    ProvableCountedSummedMerkNode(u64, i64),
 }
 
 #[cfg(feature = "minimal")]
@@ -52,6 +54,7 @@ impl TreeFeatureType {
             CountedMerkNode(_) => NodeType::CountNode,
             CountedSummedMerkNode(..) => NodeType::CountSumNode,
             ProvableCountedMerkNode(_) => NodeType::ProvableCountNode,
+            TreeFeatureType::ProvableCountedSummedMerkNode(..) => NodeType::ProvableCountSumNode,
         }
     }
 }
@@ -65,6 +68,7 @@ pub enum AggregateData {
     Count(u64),
     CountAndSum(u64, i64),
     ProvableCount(u64),
+    ProvableCountAndSum(u64, i64),
 }
 
 #[cfg(feature = "minimal")]
@@ -77,6 +81,7 @@ impl AggregateData {
             AggregateData::Count(_) => TreeType::CountTree,
             AggregateData::CountAndSum(..) => TreeType::CountSumTree,
             AggregateData::ProvableCount(_) => TreeType::ProvableCountTree,
+            AggregateData::ProvableCountAndSum(..) => TreeType::ProvableCountSumTree,
         }
     }
 
@@ -95,6 +100,7 @@ impl AggregateData {
             AggregateData::Count(_) => 0,
             AggregateData::CountAndSum(_, s) => *s,
             AggregateData::ProvableCount(_) => 0,
+            AggregateData::ProvableCountAndSum(_, s) => *s,
         }
     }
 
@@ -106,6 +112,7 @@ impl AggregateData {
             AggregateData::Count(c) => *c,
             AggregateData::CountAndSum(c, _) => *c,
             AggregateData::ProvableCount(c) => *c,
+            AggregateData::ProvableCountAndSum(c, _) => *c,
         }
     }
 
@@ -117,6 +124,7 @@ impl AggregateData {
             AggregateData::Count(_) => 0,
             AggregateData::CountAndSum(_, s) => *s as i128,
             AggregateData::ProvableCount(_) => 0,
+            AggregateData::ProvableCountAndSum(_, s) => *s as i128,
         }
     }
 }
@@ -131,6 +139,9 @@ impl From<TreeFeatureType> for AggregateData {
             CountedMerkNode(val) => AggregateData::Count(val),
             CountedSummedMerkNode(count, sum) => AggregateData::CountAndSum(count, sum),
             TreeFeatureType::ProvableCountedMerkNode(val) => AggregateData::ProvableCount(val),
+            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                AggregateData::ProvableCountAndSum(count, sum)
+            }
         }
     }
 }
@@ -159,6 +170,10 @@ impl TreeFeatureType {
                 TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
                 m.encode_var_vec().len() as u32,
             )),
+            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => Some((
+                TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
+                count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32,
+            )),
         }
     }
 
@@ -172,6 +187,7 @@ impl TreeFeatureType {
             CountedMerkNode(_) => 9,
             CountedSummedMerkNode(..) => 17,
             TreeFeatureType::ProvableCountedMerkNode(_) => 9,
+            TreeFeatureType::ProvableCountedSummedMerkNode(..) => 17,
         }
     }
 }
@@ -214,6 +230,12 @@ impl Encode for TreeFeatureType {
                 dest.write_varint(*count)?;
                 Ok(())
             }
+            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                dest.write_all(&[6])?;
+                dest.write_varint(*count)?;
+                dest.write_varint(*sum)?;
+                Ok(())
+            }
         }
     }
 
@@ -244,6 +266,11 @@ impl Encode for TreeFeatureType {
                 // 1 for the enum type
                 // encoded_sum.len() for the length of the encoded vector
                 Ok(1 + encoded_sum.len())
+            }
+            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                let encoded_lengths = count.encode_var_vec().len() + sum.encode_var_vec().len();
+                // 1 for the enum type
+                Ok(1 + encoded_lengths)
             }
         }
     }
@@ -277,6 +304,14 @@ impl Decode for TreeFeatureType {
             [5] => {
                 let encoded_count: u64 = input.read_varint()?;
                 Ok(ProvableCountedMerkNode(encoded_count))
+            }
+            [6] => {
+                let encoded_count: u64 = input.read_varint()?;
+                let encoded_sum: i64 = input.read_varint()?;
+                Ok(TreeFeatureType::ProvableCountedSummedMerkNode(
+                    encoded_count,
+                    encoded_sum,
+                ))
             }
             _ => Err(ed::Error::UnexpectedByte(55)),
         }

@@ -41,6 +41,7 @@ impl CostSize for TreeType {
             TreeType::CountTree => COUNT_TREE_COST_SIZE,
             TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
             TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
+            TreeType::ProvableCountSumTree => COUNT_SUM_TREE_COST_SIZE,
         }
     }
 }
