@@ -497,7 +497,7 @@ mod tests {
         let parent_aggregate = parent_merk
             .aggregate_data()
             .expect("expected to get aggregate data");
-        // Parent sees the child tree as 1 element with sum from child tree
+        // Parent propagates the child tree's count and sum values
         assert_eq!(parent_aggregate, AggregateData::ProvableCountAndSum(2, 15));
     }
 
