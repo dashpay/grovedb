@@ -309,6 +309,7 @@ pub enum TreeFeatureType {
     CountedMerkNode(u64),
     CountedSummedMerkNode(u64, i64),
     ProvableCountedMerkNode(u64),
+    ProvableCountedSummedMerkNode(u64, i64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

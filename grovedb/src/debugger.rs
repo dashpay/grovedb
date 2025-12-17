@@ -431,6 +431,9 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 TreeFeatureType::ProvableCountedMerkNode(count) => {
                     grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count)
                 }
+                TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                    grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+                }
             };
             MerkProofNode::KVValueHashFeatureType(
                 key,
@@ -741,6 +744,9 @@ fn node_to_update(
             }
             TreeFeatureType::ProvableCountedMerkNode(count) => {
                 grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count)
+            }
+            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
             }
         },
         value_hash,
