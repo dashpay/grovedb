@@ -757,7 +757,7 @@ impl<'a> ProofItems<'a> {
     pub fn new_with_query_items(
         query_items: &[QueryItem],
         left_to_right: bool,
-    ) -> (ProofItems, ProofParams) {
+    ) -> (ProofItems<'_>, ProofParams) {
         let mut key_query_items = BTreeSet::new();
         let mut range_query_items = vec![];
         for query_item in query_items {

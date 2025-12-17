@@ -144,12 +144,14 @@ where
 
         let chunk_height = chunk_height(self.height, index).unwrap();
 
+        let tree_type = self.merk.tree_type;
         let chunk = self
             .merk
             .walk(|maybe_walker| match maybe_walker {
                 Some(mut walker) => walker.traverse_and_build_chunk(
                     &traversal_instructions,
                     chunk_height,
+                    tree_type,
                     grove_version,
                 ),
                 None => Err(Error::ChunkingError(ChunkError::EmptyTree(

@@ -1,6 +1,6 @@
 //! Merk proofs
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod branch;
 #[cfg(feature = "minimal")]
 pub mod chunk;
@@ -17,8 +17,8 @@ pub use encoding::encode_into;
 pub use encoding::Decoder;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::Query;
-#[cfg(feature = "minimal")]
-pub use tree::Tree;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use tree::{execute, Tree};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{tree::CryptoHash, TreeFeatureType};
