@@ -55,7 +55,7 @@ where
         left: bool,
         value_defined_cost_fn: Option<&V>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<RefWalker<S>>, Error>
+    ) -> CostResult<Option<RefWalker<'_, S>>, Error>
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {

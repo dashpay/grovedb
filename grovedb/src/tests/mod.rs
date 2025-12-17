@@ -6,6 +6,7 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod chunk_branch_proof_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
 mod debug_empty_tree_hash;
@@ -39,6 +40,7 @@ mod provable_count_tree_structure_test;
 mod provable_count_tree_test;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
+mod trunk_proof_tests;
 
 use std::{
     ops::{Deref, DerefMut},

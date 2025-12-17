@@ -1,5 +1,10 @@
 //! Queries
 
+mod grove_branch_query_result;
+mod grove_trunk_query_result;
+mod path_branch_chunk_query;
+mod path_trunk_chunk_query;
+
 use std::{
     borrow::{Cow, Cow::Borrowed},
     cmp::Ordering,
@@ -8,12 +13,20 @@ use std::{
 
 use bincode::{Decode, Encode};
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grove_branch_query_result::GroveBranchQueryResult;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grove_trunk_query_result::GroveTrunkQueryResult;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::Query;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use path_branch_chunk_query::PathBranchChunkQuery;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use path_trunk_chunk_query::PathTrunkChunkQuery;
 
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "minimal", feature = "verify"))]

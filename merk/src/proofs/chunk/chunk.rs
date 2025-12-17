@@ -27,6 +27,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_element::{ElementType, ProofNodeType};
 use grovedb_version::version::GroveVersion;
 
 // TODO: add copyright comment
@@ -34,6 +35,7 @@ use crate::proofs::{Node, Op, Tree};
 use crate::{
     proofs::{chunk::error::ChunkError, tree::execute},
     tree::{kv::ValueDefinedCostType, Fetch, RefWalker},
+    tree_type::TreeType,
     CryptoHash, Error,
 };
 
@@ -45,9 +47,16 @@ where
     S: Fetch + Sized + Clone,
 {
     /// Returns a chunk of a given depth from a RefWalker
+    ///
+    /// # Arguments
+    /// * `depth` - The depth of the chunk to create
+    /// * `tree_type` - The type of tree this chunk is from (determines node
+    ///   types)
+    /// * `grove_version` - The grove version for compatibility
     pub fn create_chunk(
         &mut self,
         depth: usize,
+        tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Op>, Error> {
         let mut cost = OperationCost::default();
@@ -57,7 +66,7 @@ where
 
         cost_return_on_error!(
             &mut cost,
-            self.create_chunk_internal(&mut proof, depth, grove_version)
+            self.create_chunk_internal(&mut proof, depth, tree_type, grove_version)
         );
 
         Ok(proof).wrap_with_cost(cost)
@@ -67,6 +76,7 @@ where
         &mut self,
         proof: &mut Vec<Op>,
         remaining_depth: usize,
+        tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -92,19 +102,13 @@ where
             .expect("confirmed is some");
             cost_return_on_error!(
                 &mut cost,
-                left.create_chunk_internal(proof, remaining_depth - 1, grove_version)
+                left.create_chunk_internal(proof, remaining_depth - 1, tree_type, grove_version)
             );
         }
 
-        // add current node's data
-        // For chunks, we always use value hash (not node hash)
-        // since chunks are for restoration, not query proofs
-        proof.push(Op::Push(Node::KVValueHashFeatureType(
-            self.tree().key().to_vec(),
-            self.tree().value_ref().to_vec(),
-            *self.tree().value_hash(),
-            self.tree().feature_type(),
-        )));
+        // Determine the correct node type based on element type and tree type
+        let node = self.create_proof_node_for_chunk(tree_type);
+        proof.push(Op::Push(node));
 
         if has_left_child {
             proof.push(Op::Parent);
@@ -122,7 +126,7 @@ where
         if let Some(mut right) = maybe_right {
             cost_return_on_error!(
                 &mut cost,
-                right.create_chunk_internal(proof, remaining_depth - 1, grove_version)
+                right.create_chunk_internal(proof, remaining_depth - 1, tree_type, grove_version)
             );
 
             proof.push(Op::Child);
@@ -131,12 +135,48 @@ where
         Ok(()).wrap_with_cost(cost)
     }
 
+    /// Creates the appropriate proof node based on element type and tree type.
+    ///
+    /// This uses the same logic as query proofs to determine the correct node
+    /// type:
+    /// - Items in regular trees: KV (verifier computes hash)
+    /// - Items in ProvableCountTree: KVCount (includes count in hash)
+    /// - Subtrees in regular trees: KVValueHash (combined hash)
+    /// - Subtrees in ProvableCountTree: KVValueHashFeatureType (includes count)
+    ///
+    /// For raw merk values (not GroveDB Elements), defaults to
+    /// KVValueHashFeatureType for backward compatibility with
+    /// restore/chunking operations.
+    fn create_proof_node_for_chunk(&self, tree_type: TreeType) -> Node {
+        let parent_tree_type = tree_type.to_element_type();
+
+        // Determine the proof node type based on element type
+        // Default to KVValueHashFeatureType for raw merk (non-Element) values
+        // to maintain backward compatibility with restore/chunking
+        let proof_node_type = ElementType::from_serialized_value(self.tree().value_as_slice())
+            .map(|et| et.proof_node_type(parent_tree_type))
+            .unwrap_or(ProofNodeType::KvValueHashFeatureType);
+
+        // Convert ProofNodeType to actual Node
+        match proof_node_type {
+            ProofNodeType::Kv => self.to_kv_node(),
+            ProofNodeType::KvCount => self.to_kv_count_node(),
+            ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
+            ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
+            // References: at merk level, generate same node type as non-ref counterpart
+            // GroveDB will post-process if needed
+            ProofNodeType::KvRefValueHash => self.to_kv_value_hash_node(),
+            ProofNodeType::KvRefValueHashCount => self.to_kv_value_hash_feature_type_node(),
+        }
+    }
+
     /// Returns a chunk of a given depth after applying some traversal
     /// instruction to the RefWalker
     pub fn traverse_and_build_chunk(
         &mut self,
         instructions: &[bool],
         depth: usize,
+        tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Op>, Error> {
         let mut cost = OperationCost::default();
@@ -144,7 +184,7 @@ where
         // base case
         if instructions.is_empty() {
             // we are at the desired node
-            return self.create_chunk(depth, grove_version);
+            return self.create_chunk(depth, tree_type, grove_version);
         }
 
         // link must exist
@@ -169,7 +209,7 @@ where
 
         // recurse on child
         child
-            .traverse_and_build_chunk(&instructions[1..], depth, grove_version)
+            .traverse_and_build_chunk(&instructions[1..], depth, tree_type, grove_version)
             .add_cost(cost)
     }
 
@@ -269,6 +309,7 @@ pub mod tests {
         },
         test_utils::make_tree_seq_with_start_key,
         tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
+        tree_type::TreeType,
         PanicSource, TreeFeatureType,
     };
 
@@ -368,7 +409,7 @@ pub mod tests {
 
         // should return the node hash of the root node
         let chunk = tree_walker
-            .create_chunk(0, grove_version)
+            .create_chunk(0, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 1);
@@ -395,7 +436,7 @@ pub mod tests {
         //           /      \
         //        Hash(1)   Hash(7)
         let chunk = tree_walker
-            .create_chunk(1, grove_version)
+            .create_chunk(1, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 5);
@@ -444,7 +485,7 @@ pub mod tests {
         //                / \      \
         //             H(4) H(6)   H(9)
         let chunk = tree_walker
-            .create_chunk(3, grove_version)
+            .create_chunk(3, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
@@ -534,7 +575,7 @@ pub mod tests {
         //                / \      \
         //               4   6      9
         let chunk = tree_walker
-            .create_chunk(4, grove_version)
+            .create_chunk(4, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         assert_eq!(chunk.len(), 19);
@@ -618,11 +659,11 @@ pub mod tests {
         // build chunk with depth greater than tree
         // we should get the same result as building with the exact depth
         let large_depth_chunk = tree_walker
-            .create_chunk(100, grove_version)
+            .create_chunk(100, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         let exact_depth_chunk = tree_walker
-            .create_chunk(4, grove_version)
+            .create_chunk(4, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         assert_eq!(large_depth_chunk, exact_depth_chunk);
@@ -652,7 +693,7 @@ pub mod tests {
 
         // right traversal
         let chunk = tree_walker
-            .traverse_and_build_chunk(&[RIGHT], 2, grove_version)
+            .traverse_and_build_chunk(&[RIGHT], 2, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         assert_eq!(
@@ -722,7 +763,7 @@ pub mod tests {
 
         // instruction traversal
         let chunk = tree_walker
-            .traverse_and_build_chunk(&[RIGHT, LEFT], 1, grove_version)
+            .traverse_and_build_chunk(&[RIGHT, LEFT], 1, TreeType::NormalTree, grove_version)
             .unwrap()
             .expect("should build chunk");
         assert_eq!(

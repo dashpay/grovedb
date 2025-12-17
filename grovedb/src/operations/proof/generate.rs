@@ -20,6 +20,7 @@ use crate::{
     operations::proof::{
         util::hex_to_ascii, GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions,
     },
+    query::PathTrunkChunkQuery,
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery,
 };
@@ -477,5 +478,194 @@ impl GroveDb {
                     e
                 ))
             })
+    }
+
+    /// Generate a trunk chunk proof for a tree at the given path.
+    ///
+    /// This retrieves the top N levels of a count-based tree, returning a proof
+    /// that can be verified to obtain a `TrunkQueryResult`.
+    ///
+    /// # Arguments
+    /// * `query` - The path trunk chunk query containing the path and max_depth
+    /// * `grove_version` - The grove version for compatibility
+    ///
+    /// # Returns
+    /// A serialized `TrunkChunkProof` that can be verified
+    pub fn prove_trunk_chunk(
+        &self,
+        query: &PathTrunkChunkQuery,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error> {
+        let mut cost = OperationCost::default();
+
+        let proof = cost_return_on_error!(
+            &mut cost,
+            self.prove_trunk_chunk_non_serialized(query, grove_version)
+        );
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let encoded_proof = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(proof, config)
+                .map_err(|e| Error::CorruptedData(format!("unable to encode proof {}", e)))
+        );
+
+        Ok(encoded_proof).wrap_with_cost(cost)
+    }
+
+    /// Generate a trunk chunk proof without serializing.
+    ///
+    /// Returns a `GroveDBProof` with the standard `LayerProof` hierarchy.
+    /// The path is navigated layer by layer, and at the target tree the
+    /// merk_proof contains the trunk chunk proof (not a query proof).
+    pub fn prove_trunk_chunk_non_serialized(
+        &self,
+        query: &PathTrunkChunkQuery,
+        grove_version: &GroveVersion,
+    ) -> CostResult<GroveDBProof, Error> {
+        let mut cost = OperationCost::default();
+
+        let tx = self.start_transaction();
+
+        // Build the proof from the target tree back to the root
+        // We collect proofs for each layer, then nest them
+        let path_slices: Vec<&[u8]> = query.path.iter().map(|p| p.as_slice()).collect();
+
+        // First, generate the trunk proof for the target tree
+        let target_tree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path_slices.as_slice().into(),
+                &tx,
+                None,
+                grove_version
+            )
+        );
+
+        // Perform the trunk query
+        let trunk_result = cost_return_on_error!(
+            &mut cost,
+            target_tree
+                .trunk_query(query.max_depth, grove_version)
+                .map_err(Error::MerkError)
+        );
+
+        // Encode the trunk proof ops
+        let mut trunk_proof_encoded = Vec::new();
+        encode_into(trunk_result.proof.iter(), &mut trunk_proof_encoded);
+
+        // Start with the innermost LayerProof (the trunk proof at target tree)
+        let mut current_layer = LayerProof {
+            merk_proof: trunk_proof_encoded,
+            lower_layers: BTreeMap::new(),
+        };
+
+        // Build nested LayerProofs from inside out (target -> root)
+        for i in (0..query.path.len()).rev() {
+            let current_path: Vec<&[u8]> = path_slices[..i].to_vec();
+            let key = query.path[i].clone();
+
+            // Open the merk at the current path
+            let subtree = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(
+                    current_path.as_slice().into(),
+                    &tx,
+                    None,
+                    grove_version
+                )
+            );
+
+            // Generate a proof for the path segment key
+            let query_item = QueryItem::Key(key.clone());
+            let merk_proof = cost_return_on_error!(
+                &mut cost,
+                self.generate_merk_proof(&subtree, &[query_item], true, None, grove_version)
+            );
+
+            // Encode the merk proof
+            let mut encoded_proof = Vec::new();
+            encode_into(merk_proof.proof.iter(), &mut encoded_proof);
+
+            // Create the new layer with the current layer as a lower layer
+            let mut lower_layers = BTreeMap::new();
+            lower_layers.insert(key, current_layer);
+
+            current_layer = LayerProof {
+                merk_proof: encoded_proof,
+                lower_layers,
+            };
+        }
+
+        Ok(GroveDBProof::V0(GroveDBProofV0 {
+            root_layer: current_layer,
+            prove_options: ProveOptions::default(),
+        }))
+        .wrap_with_cost(cost)
+    }
+
+    /// Generate a serialized branch chunk proof.
+    ///
+    /// Navigates to the specified key in the tree at the given path,
+    /// then returns a proof of the subtree rooted at that key.
+    /// The proof can be verified against the `Node::Hash` from a trunk query's
+    /// terminal node.
+    pub fn prove_branch_chunk(
+        &self,
+        query: &crate::query::PathBranchChunkQuery,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error> {
+        let mut cost = OperationCost::default();
+
+        let branch_result = cost_return_on_error!(
+            &mut cost,
+            self.prove_branch_chunk_non_serialized(query, grove_version)
+        );
+
+        // Encode just the proof ops - the verifier will execute them
+        let mut encoded_proof = Vec::new();
+        encode_into(branch_result.proof.iter(), &mut encoded_proof);
+
+        Ok(encoded_proof).wrap_with_cost(cost)
+    }
+
+    /// Generate a branch chunk proof without serializing.
+    ///
+    /// Returns a `BranchQueryResult` containing the proof ops and branch root
+    /// hash. The `branch_root_hash` should match a `Node::Hash` from the
+    /// trunk query's terminal nodes.
+    pub fn prove_branch_chunk_non_serialized(
+        &self,
+        query: &crate::query::PathBranchChunkQuery,
+        grove_version: &GroveVersion,
+    ) -> CostResult<grovedb_merk::BranchQueryResult, Error> {
+        let mut cost = OperationCost::default();
+
+        let tx = self.start_transaction();
+
+        let path_slices: Vec<&[u8]> = query.path.iter().map(|p| p.as_slice()).collect();
+
+        // Open the target tree and perform the branch query
+        let target_tree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path_slices.as_slice().into(),
+                &tx,
+                None,
+                grove_version
+            )
+        );
+
+        // Perform the branch query - returns BranchQueryResult directly
+        let branch_result = cost_return_on_error!(
+            &mut cost,
+            target_tree
+                .branch_query(&query.key, query.depth, grove_version)
+                .map_err(Error::MerkError)
+        );
+
+        Ok(branch_result).wrap_with_cost(cost)
     }
 }
