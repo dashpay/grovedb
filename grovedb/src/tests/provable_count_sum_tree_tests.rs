@@ -47,22 +47,20 @@ mod tests {
 
     /// Walk a proof tree and collect all nodes with their counts
     /// Returns (key, count) for each node that has count data
-    fn collect_tree_node_counts(
-        tree: &grovedb_merk::proofs::tree::Tree,
-    ) -> Vec<(Vec<u8>, u64)> {
+    fn collect_tree_node_counts(tree: &grovedb_merk::proofs::tree::Tree) -> Vec<(Vec<u8>, u64)> {
         let mut results = Vec::new();
 
         // Get count from current node
         if let Some(count) = get_node_count(&tree.node) {
             let key = match &tree.node {
-                Node::KVCount(k, _, _) => k.clone(),
-                Node::KVValueHashFeatureType(k, _, _, _) => k.clone(),
+                Node::KVCount(k, ..) => k.clone(),
+                Node::KVValueHashFeatureType(k, ..) => k.clone(),
                 Node::KV(k, _) => k.clone(),
-                Node::KVValueHash(k, _, _) => k.clone(),
+                Node::KVValueHash(k, ..) => k.clone(),
                 Node::KVDigest(k, _) => k.clone(),
-                Node::KVRefValueHash(k, _, _) => k.clone(),
-                Node::KVRefValueHashCount(k, _, _, _) => k.clone(),
-                Node::KVHashCount(_, _) => vec![],
+                Node::KVRefValueHash(k, ..) => k.clone(),
+                Node::KVRefValueHashCount(k, ..) => k.clone(),
+                Node::KVHashCount(..) => vec![],
                 Node::Hash(_) | Node::KVHash(_) => vec![],
             };
             results.push((key, count));
