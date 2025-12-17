@@ -14,7 +14,7 @@
 
 pub mod depth;
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{
     error::Error,
     proofs::{tree::execute, Node, Op},
@@ -26,7 +26,7 @@ use crate::{
 /// A trunk query retrieves the top N levels of a count tree, providing
 /// enough structure to understand the tree's shape and plan subsequent
 /// branch queries.
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrunkQueryResult {
     /// The proof operations representing the trunk of the tree.
@@ -40,12 +40,9 @@ pub struct TrunkQueryResult {
 
     /// The calculated total depth of the tree based on element count.
     pub tree_depth: u8,
-
-    /// The root hash of the tree for proof verification.
-    pub root_hash: CryptoHash,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl TrunkQueryResult {
     /// Returns the keys of trunk leaf nodes (nodes whose children are
     /// `Node::Hash`).
@@ -268,7 +265,7 @@ impl TrunkQueryResult {
 ///
 /// A branch query navigates to a specific key in the tree and returns
 /// the subtree rooted at that key, up to a specified depth.
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchQueryResult {
     /// The proof operations representing the branch subtree.
@@ -286,7 +283,7 @@ pub struct BranchQueryResult {
     pub branch_root_hash: CryptoHash,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 impl BranchQueryResult {
     /// Traces a target key through the proof's BST structure to find which
     /// terminal node (node with Hash children) the key would be under.
@@ -384,5 +381,5 @@ impl BranchQueryResult {
     }
 }
 
-#[cfg(feature = "minimal")]
-pub use depth::{calculate_chunk_depths, calculate_tree_depth_from_count};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use depth::{calculate_chunk_depths, calculate_max_tree_depth_from_count};

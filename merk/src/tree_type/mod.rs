@@ -4,6 +4,7 @@ use std::fmt;
 
 #[cfg(feature = "minimal")]
 pub use costs::*;
+use grovedb_element::ElementType;
 
 #[cfg(feature = "minimal")]
 use crate::merk::NodeType;
@@ -87,6 +88,23 @@ impl TreeType {
             TreeType::CountTree => TreeFeatureType::CountedMerkNode(0),
             TreeType::CountSumTree => TreeFeatureType::CountedSummedMerkNode(0, 0),
             TreeType::ProvableCountTree => TreeFeatureType::ProvableCountedMerkNode(0),
+        }
+    }
+
+    /// Converts TreeType to the corresponding ElementType for proof generation.
+    ///
+    /// This is used to determine the correct proof node type based on
+    /// the parent tree type. The returned ElementType is used with
+    /// `ElementType::proof_node_type()` to select the appropriate
+    /// proof node format.
+    pub fn to_element_type(&self) -> Option<ElementType> {
+        match self {
+            TreeType::NormalTree => Some(ElementType::Tree),
+            TreeType::SumTree => Some(ElementType::SumTree),
+            TreeType::BigSumTree => Some(ElementType::BigSumTree),
+            TreeType::CountTree => Some(ElementType::CountTree),
+            TreeType::CountSumTree => Some(ElementType::CountSumTree),
+            TreeType::ProvableCountTree => Some(ElementType::ProvableCountTree),
         }
     }
 }

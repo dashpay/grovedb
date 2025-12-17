@@ -3,35 +3,71 @@
 //! This module provides functions for calculating tree depth from element count
 //! and for calculating optimal chunk depth splitting.
 
-/// Calculate the depth of a balanced binary tree from its element count.
+/// Calculate the maximum possible height of an AVL tree from its element count.
 ///
-/// For a balanced AVL tree, the minimum depth needed to hold `count` elements
-/// is `ceil(log2(count + 1))`.
+/// AVL trees have a worst-case height based on Fibonacci numbers. The minimum
+/// number of nodes for an AVL tree of height h is `N(h) = F(h+2) - 1`, where F
+/// is the Fibonacci sequence.
+///
+/// This function returns the maximum height an AVL tree with `count` nodes
+/// could have, which is the largest h where `N(h) <= count`.
+///
+/// Reference values for N(h):
+/// - N(1)=1, N(2)=2, N(3)=4, N(4)=7, N(5)=12, N(6)=20, N(7)=33
+/// - N(8)=54, N(9)=88, N(10)=143, N(11)=232, N(12)=376
 ///
 /// # Arguments
 /// * `count` - The number of elements in the tree
 ///
 /// # Returns
-/// The depth of the tree as a u8
+/// The maximum possible height of the tree as a u8
 ///
 /// # Examples
 /// ```
-/// use grovedb_merk::proofs::branch::depth::calculate_tree_depth_from_count;
+/// use grovedb_merk::proofs::branch::depth::calculate_max_tree_depth_from_count;
 ///
-/// assert_eq!(calculate_tree_depth_from_count(0), 0);
-/// assert_eq!(calculate_tree_depth_from_count(1), 1);
-/// assert_eq!(calculate_tree_depth_from_count(3), 2);
-/// assert_eq!(calculate_tree_depth_from_count(7), 3);
-/// assert_eq!(calculate_tree_depth_from_count(15), 4);
+/// assert_eq!(calculate_max_tree_depth_from_count(0), 0);
+/// assert_eq!(calculate_max_tree_depth_from_count(1), 1); // N(1)=1
+/// assert_eq!(calculate_max_tree_depth_from_count(2), 2); // N(2)=2
+/// assert_eq!(calculate_max_tree_depth_from_count(4), 3); // N(3)=4
+/// assert_eq!(calculate_max_tree_depth_from_count(7), 4); // N(4)=7
+/// assert_eq!(calculate_max_tree_depth_from_count(12), 5); // N(5)=12
+/// assert_eq!(calculate_max_tree_depth_from_count(88), 9); // N(9)=88
+/// assert_eq!(calculate_max_tree_depth_from_count(100), 9); // 88 <= 100 < 143
 /// ```
-pub fn calculate_tree_depth_from_count(count: u64) -> u8 {
+pub fn calculate_max_tree_depth_from_count(count: u64) -> u8 {
     if count == 0 {
         return 0;
     }
-    // For a balanced tree, depth = ceil(log2(count + 1))
-    // We compute this as: number of bits needed to represent count
-    // 64 - leading_zeros gives us the position of the highest set bit + 1
-    (64 - count.leading_zeros()) as u8
+
+    // Fibonacci: F(1)=1, F(2)=1, F(3)=2, F(4)=3, F(5)=5, ...
+    // Minimum nodes for AVL height h: N(h) = F(h+2) - 1
+    // We find the largest h where N(h) <= count.
+
+    let mut f_prev: u64 = 1; // F(2)
+    let mut f_curr: u64 = 2; // F(3)
+    let mut height: u8 = 1;
+
+    loop {
+        // Calculate N(height+1) = F(height+3) - 1
+        let f_next = f_prev.saturating_add(f_curr);
+        let next_min_nodes = f_next.saturating_sub(1);
+
+        if next_min_nodes > count {
+            // height+1 would require more nodes than we have
+            return height;
+        }
+
+        // Move to next height
+        height += 1;
+        f_prev = f_curr;
+        f_curr = f_next;
+
+        // F(93) overflows u64, so cap at height 92
+        if height >= 92 {
+            return height;
+        }
+    }
 }
 
 /// Calculate optimal chunk depths for even splitting of a tree.
@@ -70,7 +106,7 @@ pub fn calculate_chunk_depths(tree_depth: u8, max_depth: u8) -> Vec<u8> {
     }
 
     // Calculate number of chunks needed: ceil(tree_depth / max_depth)
-    let num_chunks = ((tree_depth as u32) + (max_depth as u32) - 1) / (max_depth as u32);
+    let num_chunks = (tree_depth as u32).div_ceil(max_depth as u32);
 
     // Calculate base depth per chunk and remainder
     let base_depth = (tree_depth as u32) / num_chunks;
@@ -95,37 +131,177 @@ mod tests {
 
     #[test]
     fn test_calculate_tree_depth_from_count_edge_cases() {
-        assert_eq!(calculate_tree_depth_from_count(0), 0);
-        assert_eq!(calculate_tree_depth_from_count(1), 1);
+        assert_eq!(calculate_max_tree_depth_from_count(0), 0);
+        assert_eq!(calculate_max_tree_depth_from_count(1), 1);
+    }
+
+    /// Verifies that calculated max depth is always >= actual merk tree height
+    /// when inserting sequential keys.
+    #[test]
+    fn test_calculate_tree_depth_vs_actual_merk_height_sequential_keys() {
+        use grovedb_version::version::GroveVersion;
+
+        use crate::{test_utils::TempMerk, tree::Op, TreeFeatureType::BasicMerkNode};
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        for i in 0u32..130 {
+            let key = i.to_be_bytes().to_vec();
+            let value = vec![i as u8];
+
+            merk.apply::<_, Vec<_>>(
+                &[(key.clone(), Op::Put(value, BasicMerkNode))],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("apply should succeed");
+
+            merk.commit(grove_version);
+
+            let count = (i + 1) as u64;
+            let calculated = calculate_max_tree_depth_from_count(count);
+            let actual_height = merk.height().unwrap_or(0);
+
+            assert!(
+                calculated >= actual_height,
+                "calculated max depth {} should be >= actual height {} for count {}",
+                calculated,
+                actual_height,
+                count
+            );
+        }
+    }
+
+    /// Verifies that calculated max depth is always >= actual merk tree height
+    /// when inserting random hash keys in sorted order.
+    #[test]
+    fn test_calculate_tree_depth_vs_actual_merk_height_random_hash_keys_sorted() {
+        use grovedb_version::version::GroveVersion;
+
+        use crate::{test_utils::TempMerk, tree::Op, TreeFeatureType::BasicMerkNode};
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        // Pre-generate and sort keys
+        let mut keys_with_index: Vec<(Vec<u8>, u32)> = (0u32..130)
+            .map(|i| {
+                let hash = blake3::hash(&i.to_be_bytes());
+                (hash.as_bytes().to_vec(), i)
+            })
+            .collect();
+        keys_with_index.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (idx, (key, original_i)) in keys_with_index.into_iter().enumerate() {
+            let value = vec![original_i as u8];
+
+            merk.apply::<_, Vec<_>>(
+                &[(key, Op::Put(value, BasicMerkNode))],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("apply should succeed");
+
+            merk.commit(grove_version);
+
+            let count = (idx + 1) as u64;
+            let calculated = calculate_max_tree_depth_from_count(count);
+            let actual_height = merk.height().unwrap_or(0);
+
+            assert!(
+                calculated >= actual_height,
+                "calculated max depth {} should be >= actual height {} for count {}",
+                calculated,
+                actual_height,
+                count
+            );
+        }
+    }
+
+    /// Verifies that calculated max depth is always >= actual merk tree height
+    /// when inserting random hash keys in unsorted order (simulating real-world
+    /// usage).
+    #[test]
+    fn test_calculate_tree_depth_vs_actual_merk_height_random_hash_keys_unsorted() {
+        use grovedb_version::version::GroveVersion;
+
+        use crate::{test_utils::TempMerk, tree::Op, TreeFeatureType::BasicMerkNode};
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        // Insert keys one at a time in hash order (simulates arbitrary insertion order)
+        for i in 0u32..130 {
+            let hash = blake3::hash(&i.to_be_bytes());
+            let key = hash.as_bytes().to_vec();
+            let value = vec![i as u8];
+
+            merk.apply::<_, Vec<_>>(
+                &[(key, Op::Put(value, BasicMerkNode))],
+                &[],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("apply should succeed");
+
+            merk.commit(grove_version);
+
+            let count = (i + 1) as u64;
+            let calculated = calculate_max_tree_depth_from_count(count);
+            let actual_height = merk.height().unwrap_or(0);
+
+            assert!(
+                calculated >= actual_height,
+                "calculated max depth {} should be >= actual height {} for count {}",
+                calculated,
+                actual_height,
+                count
+            );
+        }
     }
 
     #[test]
-    fn test_calculate_tree_depth_from_count_powers_of_two_minus_one() {
-        // Perfect binary trees: 2^n - 1 elements fit in n levels
-        assert_eq!(calculate_tree_depth_from_count(1), 1); // 2^1 - 1
-        assert_eq!(calculate_tree_depth_from_count(3), 2); // 2^2 - 1
-        assert_eq!(calculate_tree_depth_from_count(7), 3); // 2^3 - 1
-        assert_eq!(calculate_tree_depth_from_count(15), 4); // 2^4 - 1
-        assert_eq!(calculate_tree_depth_from_count(31), 5); // 2^5 - 1
-        assert_eq!(calculate_tree_depth_from_count(63), 6); // 2^6 - 1
-        assert_eq!(calculate_tree_depth_from_count(127), 7); // 2^7 - 1
-        assert_eq!(calculate_tree_depth_from_count(255), 8); // 2^8 - 1
+    fn test_calculate_tree_depth_from_count_fibonacci_boundaries() {
+        // AVL max height follows Fibonacci: N(h) = F(h+2) - 1
+        // N(1)=1, N(2)=2, N(3)=4, N(4)=7, N(5)=12, N(6)=20, N(7)=33, N(8)=54, N(9)=88
+        assert_eq!(calculate_max_tree_depth_from_count(1), 1); // N(1)=1
+        assert_eq!(calculate_max_tree_depth_from_count(2), 2); // N(2)=2
+        assert_eq!(calculate_max_tree_depth_from_count(3), 2); // N(2)=2 <= 3 < N(3)=4
+        assert_eq!(calculate_max_tree_depth_from_count(4), 3); // N(3)=4
+        assert_eq!(calculate_max_tree_depth_from_count(7), 4); // N(4)=7
+        assert_eq!(calculate_max_tree_depth_from_count(12), 5); // N(5)=12
+        assert_eq!(calculate_max_tree_depth_from_count(20), 6); // N(6)=20
+        assert_eq!(calculate_max_tree_depth_from_count(33), 7); // N(7)=33
+        assert_eq!(calculate_max_tree_depth_from_count(54), 8); // N(8)=54
+        assert_eq!(calculate_max_tree_depth_from_count(88), 9); // N(9)=88
     }
 
     #[test]
-    fn test_calculate_tree_depth_from_count_powers_of_two() {
-        // One more element than perfect requires one more level
-        assert_eq!(calculate_tree_depth_from_count(2), 2);
-        assert_eq!(calculate_tree_depth_from_count(4), 3);
-        assert_eq!(calculate_tree_depth_from_count(8), 4);
-        assert_eq!(calculate_tree_depth_from_count(16), 5);
+    fn test_calculate_tree_depth_from_count_between_boundaries() {
+        // Values between Fibonacci boundaries use the lower height
+        assert_eq!(calculate_max_tree_depth_from_count(5), 3); // N(3)=4 <= 5 < N(4)=7
+        assert_eq!(calculate_max_tree_depth_from_count(6), 3); // N(3)=4 <= 6 < N(4)=7
+        assert_eq!(calculate_max_tree_depth_from_count(10), 4); // N(4)=7 <= 10 < N(5)=12
+        assert_eq!(calculate_max_tree_depth_from_count(15), 5); // N(5)=12 <= 15 < N(6)=20
+        assert_eq!(calculate_max_tree_depth_from_count(50), 7); // N(7)=33 <= 50 < N(8)=54
+        assert_eq!(calculate_max_tree_depth_from_count(100), 9); // N(9)=88 <=
+                                                                 // 100 < N(10)=143
     }
 
     #[test]
     fn test_calculate_tree_depth_from_count_large_values() {
-        assert_eq!(calculate_tree_depth_from_count(1000), 10);
-        assert_eq!(calculate_tree_depth_from_count(1_000_000), 20);
-        assert_eq!(calculate_tree_depth_from_count(1_000_000_000), 30);
+        // N(14)=986, N(15)=1596
+        assert_eq!(calculate_max_tree_depth_from_count(1000), 14);
+        // N(28)=832039, N(29)=1346268
+        assert_eq!(calculate_max_tree_depth_from_count(1_000_000), 28);
+        // N(42)=701408732, N(43)=1134903169
+        assert_eq!(calculate_max_tree_depth_from_count(1_000_000_000), 42);
     }
 
     #[test]

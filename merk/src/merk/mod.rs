@@ -63,7 +63,7 @@ use crate::{
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
     proofs::{
         branch::{
-            calculate_chunk_depths, calculate_tree_depth_from_count, BranchQueryResult,
+            calculate_chunk_depths, calculate_max_tree_depth_from_count, BranchQueryResult,
             TrunkQueryResult,
         },
         chunk::{
@@ -827,21 +827,19 @@ where
             .wrap_with_cost(cost);
         }
 
-        // Calculate tree depth and chunk depths
-        let tree_depth = calculate_tree_depth_from_count(count);
+        // DO NOT CHANGE THIS
+        let tree_depth = calculate_max_tree_depth_from_count(count);
         let chunk_depths = calculate_chunk_depths(tree_depth, max_depth);
         let first_chunk_depth = chunk_depths[0] as usize;
 
-        // Get root hash
-        let root_hash = self.root_hash().unwrap_add_cost(&mut cost);
-
         // Generate proof using create_chunk
+        let tree_type = self.tree_type;
         let proof_cost_result = self.walk(|maybe_walker| match maybe_walker {
             None => Err(Error::InvalidOperation(
                 "trunk_query cannot be performed on an empty tree",
             ))
             .wrap_with_cost(OperationCost::default()),
-            Some(mut walker) => walker.create_chunk(first_chunk_depth, grove_version),
+            Some(mut walker) => walker.create_chunk(first_chunk_depth, tree_type, grove_version),
         });
 
         let proof = match proof_cost_result.unwrap_add_cost(&mut cost) {
@@ -853,7 +851,6 @@ where
             proof,
             chunk_depths,
             tree_depth,
-            root_hash,
         })
         .wrap_with_cost(cost)
     }
@@ -956,14 +953,18 @@ where
         };
 
         // Now use traverse_and_build_chunk to generate the proof
+        let tree_type = self.tree_type;
         let proof_cost_result = self.walk(|maybe_walker| match maybe_walker {
             None => Err(Error::InvalidOperation(
                 "branch_query cannot be performed on an empty tree",
             ))
             .wrap_with_cost(OperationCost::default()),
-            Some(mut walker) => {
-                walker.traverse_and_build_chunk(&traversal_path, depth as usize, grove_version)
-            }
+            Some(mut walker) => walker.traverse_and_build_chunk(
+                &traversal_path,
+                depth as usize,
+                tree_type,
+                grove_version,
+            ),
         });
 
         let proof = match proof_cost_result.unwrap_add_cost(&mut cost) {
