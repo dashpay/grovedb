@@ -21,6 +21,8 @@ pub struct PathTrunkChunkQuery {
     pub path: Vec<Vec<u8>>,
     /// Maximum depth per chunk (determines how the tree is split)
     pub max_depth: u8,
+    /// Minimum depth per chunk (optional, for provable count trees)
+    pub min_depth: Option<u8>,
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -34,12 +36,41 @@ impl PathTrunkChunkQuery {
         Self {
             path,
             max_depth: max_depth.max(1),
+            min_depth: None,
+        }
+    }
+
+    /// Create a new path trunk chunk query with min_depth for provable count
+    /// trees
+    ///
+    /// # Arguments
+    /// * `path` - Path to the tree to query
+    /// * `max_depth` - Maximum depth per chunk (minimum 1)
+    /// * `min_depth` - Minimum depth per chunk (for privacy control)
+    pub fn new_with_min_depth(path: Vec<Vec<u8>>, max_depth: u8, min_depth: u8) -> Self {
+        Self {
+            path,
+            max_depth: max_depth.max(1),
+            min_depth: Some(min_depth),
         }
     }
 
     /// Create a new path trunk chunk query from a slice path
     pub fn new_from_slice_path(path: &[&[u8]], max_depth: u8) -> Self {
         Self::new(path.iter().map(|p| p.to_vec()).collect(), max_depth)
+    }
+
+    /// Create a new path trunk chunk query from a slice path with min_depth
+    pub fn new_from_slice_path_with_min_depth(
+        path: &[&[u8]],
+        max_depth: u8,
+        min_depth: u8,
+    ) -> Self {
+        Self::new_with_min_depth(
+            path.iter().map(|p| p.to_vec()).collect(),
+            max_depth,
+            min_depth,
+        )
     }
 
     /// Get the path as a slice of slices

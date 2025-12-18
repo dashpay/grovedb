@@ -382,4 +382,7 @@ impl BranchQueryResult {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use depth::{calculate_chunk_depths, calculate_max_tree_depth_from_count};
+pub use depth::{
+    calculate_chunk_depths, calculate_chunk_depths_with_minimum,
+    calculate_max_tree_depth_from_count,
+};

@@ -105,7 +105,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
         if root_traversal_instruction.is_empty() {
-            let _ = self.merk.set_base_root_key(Some(chunk_tree.key().to_vec()));
+            let _ = self
+                .merk
+                .set_base_root_key(chunk_tree.key().map(|k| k.to_vec()));
         } else {
             // every non root chunk has some associated parent with an placeholder link
             // here we update the placeholder link to represent the true data
@@ -315,7 +317,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .last()
             .expect("rewrite is only called when traversal_instruction is not empty");
 
-        let updated_key = chunk_tree.key();
+        let updated_key = chunk_tree
+            .key()
+            .expect("chunk tree must have a key during restore");
         let updated_sum = chunk_tree.aggregate_data();
 
         if let Some(Link::Reference {

@@ -436,7 +436,7 @@ pub fn run_branch_query_benchmark() {
             let mut query_cost = OperationCost::default();
             let query_start = Instant::now();
             let trunk_query_result = merk
-                .trunk_query(max_depth_per_query, grove_version)
+                .trunk_query(max_depth_per_query, None, grove_version)
                 .unwrap_add_cost(&mut query_cost);
             metrics.query_duration += query_start.elapsed();
             metrics.storage_loaded_bytes += query_cost.storage_loaded_bytes;

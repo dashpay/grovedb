@@ -65,6 +65,8 @@ use crate::tree::AggregateData;
 use crate::tree::{Fetch, Link, RefWalker};
 #[cfg(feature = "minimal")]
 use crate::TreeFeatureType;
+#[cfg(feature = "minimal")]
+use crate::TreeType;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for a path.
@@ -933,6 +935,13 @@ where
     /// Creates a `Node::Hash` from the hash of the node.
     pub(crate) fn to_hash_node(&self) -> CostContext<Node> {
         self.tree().hash().map(Node::Hash)
+    }
+
+    /// Creates a `Node::Hash` from the hash of the node, using tree type
+    /// aware hashing. For ProvableCountTree and ProvableCountSumTree, this
+    /// uses `hash_for_link` which includes the count in the hash computation.
+    pub(crate) fn to_hash_node_for_tree_type(&self, tree_type: TreeType) -> CostContext<Node> {
+        self.tree().hash_for_link(tree_type).map(Node::Hash)
     }
 
     /// Creates a `Node::KVHashCount` from the kv hash and count of the root

@@ -44,6 +44,23 @@ pub enum TreeFeatureType {
     ProvableCountedSummedMerkNode(u64, i64),
 }
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+impl TreeFeatureType {
+    /// Returns the count of elements in this subtree, if available.
+    /// Returns Some(count) for CountedMerkNode, ProvableCountedMerkNode,
+    /// CountedSummedMerkNode, and ProvableCountedSummedMerkNode variants.
+    /// Returns None for BasicMerkNode, SummedMerkNode, BigSummedMerkNode.
+    pub fn count(&self) -> Option<u64> {
+        match self {
+            CountedMerkNode(count)
+            | ProvableCountedMerkNode(count)
+            | CountedSummedMerkNode(count, _)
+            | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => Some(*count),
+            BasicMerkNode | SummedMerkNode(_) | BigSummedMerkNode(_) => None,
+        }
+    }
+}
+
 #[cfg(feature = "minimal")]
 impl TreeFeatureType {
     pub fn node_type(&self) -> NodeType {

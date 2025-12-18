@@ -550,7 +550,7 @@ impl GroveDb {
         let trunk_result = cost_return_on_error!(
             &mut cost,
             target_tree
-                .trunk_query(query.max_depth, grove_version)
+                .trunk_query(query.max_depth, query.min_depth, grove_version)
                 .map_err(Error::MerkError)
         );
 
