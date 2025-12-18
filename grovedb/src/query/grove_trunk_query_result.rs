@@ -118,14 +118,14 @@ impl GroveTrunkQueryResult {
         }
 
         // If no node had sufficient count, return the node one below root (index 1)
-        // unless we're already at or near the root
-        if path.len() > 1 {
+        // but only if that node is strictly above the leaf (not the leaf itself)
+        if path.len() > 1 && min_idx < leaf_idx {
             let (node_tree, key, hash) = &path[min_idx];
             let levels_up = (leaf_idx - min_idx) as u8;
             let count = Self::get_node_count(node_tree).unwrap_or(0);
             Some((levels_up, count, key.clone(), *hash))
         } else {
-            // Path only has root, can't go anywhere
+            // Path only has root, or leaf is a direct child of root (no valid ancestor)
             None
         }
     }

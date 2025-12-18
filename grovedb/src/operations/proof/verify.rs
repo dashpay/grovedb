@@ -1107,10 +1107,10 @@ impl GroveDb {
             let node_hash = tree.hash().unwrap();
 
             // Extract count from TreeFeatureType if available
+            // Note: KVHashCount is not included as it never reaches this code path
             let count = match &tree.node {
                 Node::KVValueHashFeatureType(_, _, _, feature_type) => feature_type.count(),
                 Node::KVCount(_, _, count) => Some(*count),
-                Node::KVHashCount(_, count) => Some(*count),
                 Node::KVRefValueHashCount(_, _, _, count) => Some(*count),
                 _ => None,
             };

@@ -1139,10 +1139,6 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
     // Track elements we've already seen (to check new keys against)
     let mut seen_elements: BTreeSet<Vec<u8>> = BTreeSet::new();
 
-    // Track leaves we've seen but decided not to query (for re-evaluation when keys
-    // are added) Maps leaf_key -> (leaf_info, source_tree)
-    let mut skipped_leaves: BTreeMap<Vec<u8>, (LeafInfo, Option<Tree>)> = BTreeMap::new();
-
     // Store branch trees with their leaf_keys so we can trace new keys through them
     // when gap extension happens and trunk_result.trace_key_to_leaf() returns None
     let mut branch_trees: Vec<(Tree, BTreeMap<Vec<u8>, LeafInfo>)> = Vec::new();
@@ -1211,11 +1207,6 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
     // Store trunk elements as seen
     for key in trunk_result.elements.keys() {
         seen_elements.insert(key.clone());
-    }
-
-    // Store trunk leaf keys for later re-evaluation
-    for (leaf_key, leaf_info) in &trunk_result.leaf_keys {
-        skipped_leaves.insert(leaf_key.clone(), (*leaf_info, None));
     }
 
     metrics.total_elements_seen += trunk_result.elements.len();
@@ -1520,14 +1511,6 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
             // Store branch elements in seen_elements
             for key in branch_result.elements.keys() {
                 seen_elements.insert(key.clone());
-            }
-
-            // Store branch leaf keys for later re-evaluation
-            for (leaf_key, leaf_info) in &branch_result.leaf_keys {
-                skipped_leaves.insert(
-                    leaf_key.clone(),
-                    (*leaf_info, Some(branch_result.tree.clone())),
-                );
             }
 
             // Store this branch tree so we can trace new keys through it during gap
