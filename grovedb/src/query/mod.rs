@@ -15,7 +15,7 @@ use bincode::{Decode, Encode};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grove_branch_query_result::GroveBranchQueryResult;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use grove_trunk_query_result::GroveTrunkQueryResult;
+pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};

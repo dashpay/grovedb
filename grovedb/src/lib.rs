@@ -219,7 +219,8 @@ use grovedb_version::version::GroveVersion;
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
-    GroveTrunkQueryResult, PathBranchChunkQuery, PathQuery, PathTrunkChunkQuery, SizedQuery,
+    GroveBranchQueryResult, GroveTrunkQueryResult, LeafInfo, PathBranchChunkQuery, PathQuery,
+    PathTrunkChunkQuery, SizedQuery,
 };
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;

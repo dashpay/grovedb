@@ -840,6 +840,9 @@ impl GroveDb {
         struct LayerInfo {
             value_bytes: Vec<u8>,
             expected_hash: CryptoHash,
+            /// The root hash of this layer's merk tree (used as child hash for
+            /// parent layer)
+            layer_root_hash: CryptoHash,
         }
         let mut layer_infos: Vec<LayerInfo> = Vec::new();
 
@@ -918,6 +921,7 @@ impl GroveDb {
             layer_infos.push(LayerInfo {
                 value_bytes,
                 expected_hash,
+                layer_root_hash,
             });
 
             // Move to the next layer
@@ -988,11 +992,9 @@ impl GroveDb {
                 ));
             }
 
-            // For the next iteration, this layer's expected hash becomes the lower hash
-            // But we need to execute the parent layer's proof to get its contribution
-            // Actually, we already verified the chain - the expected_hash was verified
-            // against the parent layer when we executed its proof
-            lower_hash = layer_info.expected_hash;
+            // For the next iteration, use this layer's merk tree root hash.
+            // This is what the parent layer uses as the child hash for this subtree.
+            lower_hash = layer_info.layer_root_hash;
         }
 
         // Extract elements and leaf keys from the proof tree
@@ -1021,6 +1023,7 @@ impl GroveDb {
             leaf_keys,
             chunk_depths,
             max_tree_depth: tree_depth,
+            tree: target_tree,
         };
 
         Ok((grovedb_root_hash, trunk_result))
@@ -1030,19 +1033,19 @@ impl GroveDb {
     ///
     /// Elements are nodes with key-value data that can be deserialized.
     /// Leaf keys are nodes that have at least one `Node::Hash` child, mapped
-    /// to their node hash (for verification when doing branch queries).
+    /// to their LeafInfo (hash + optional count for branch verification).
     ///
     /// # Arguments
     /// * `tree` - The proof tree to extract from
     /// * `elements` - Output map of key -> Element
-    /// * `leaf_keys` - Output map of key -> node hash (for branch verification)
+    /// * `leaf_keys` - Output map of key -> LeafInfo (hash + count)
     /// * `current_depth` - Current depth in the tree (0 = root)
     /// * `max_depth` - Maximum allowed depth (nodes beyond this should be Hash)
     /// * `grove_version` - Version for Element deserialization
     fn extract_elements_and_leaf_keys(
         tree: &grovedb_merk::proofs::tree::Tree,
         elements: &mut BTreeMap<Vec<u8>, Element>,
-        leaf_keys: &mut BTreeMap<Vec<u8>, CryptoHash>,
+        leaf_keys: &mut BTreeMap<Vec<u8>, crate::query::LeafInfo>,
         current_depth: usize,
         max_depth: usize,
         grove_version: &GroveVersion,
@@ -1098,11 +1101,27 @@ impl GroveDb {
         let has_hash_child = left_is_hash.unwrap_or(false) || right_is_hash.unwrap_or(false);
 
         if has_hash_child {
-            // Store the node's hash as the expected hash for branch queries.
+            // Store the node's hash and count as LeafInfo for branch queries.
             // When a branch query is made for this key, the branch proof's root hash
             // should match this node's hash.
             let node_hash = tree.hash().unwrap();
-            leaf_keys.insert(key, node_hash);
+
+            // Extract count from TreeFeatureType if available
+            let count = match &tree.node {
+                Node::KVValueHashFeatureType(_, _, _, feature_type) => feature_type.count(),
+                Node::KVCount(_, _, count) => Some(*count),
+                Node::KVHashCount(_, count) => Some(*count),
+                Node::KVRefValueHashCount(_, _, _, count) => Some(*count),
+                _ => None,
+            };
+
+            leaf_keys.insert(
+                key,
+                crate::query::LeafInfo {
+                    hash: node_hash,
+                    count,
+                },
+            );
         }
 
         // Recurse into non-Hash children
@@ -1227,6 +1246,7 @@ impl GroveDb {
             elements,
             leaf_keys,
             branch_root_hash,
+            tree: branch_tree,
         })
     }
 }

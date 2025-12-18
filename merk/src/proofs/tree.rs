@@ -31,7 +31,7 @@ use crate::{
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Child {
     /// Tree
     pub tree: Box<Tree>,
@@ -71,7 +71,7 @@ impl Child {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// A binary tree data structure used to represent a select subset of a tree
 /// when verifying Merkle proofs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tree {
     /// Node
     pub node: Node,
@@ -256,7 +256,7 @@ impl Tree {
             base_traversal_instruction.push(LEFT);
             child.tree.visit_refs_track_traversal_and_parent(
                 base_traversal_instruction,
-                Some(self.key()),
+                self.key(),
                 visit_node,
             )?;
             base_traversal_instruction.pop();
@@ -268,7 +268,7 @@ impl Tree {
             base_traversal_instruction.push(RIGHT);
             child.tree.visit_refs_track_traversal_and_parent(
                 base_traversal_instruction,
-                Some(self.key()),
+                self.key(),
                 visit_node,
             )?;
             base_traversal_instruction.pop();
@@ -345,14 +345,21 @@ impl Tree {
         self.hash().map(|hash| Node::Hash(hash).into())
     }
 
-    #[cfg(feature = "minimal")]
-    pub(crate) fn key(&self) -> &[u8] {
-        match self.node {
-            Node::KV(ref key, _)
-            | Node::KVValueHash(ref key, ..)
-            | Node::KVRefValueHash(ref key, ..)
-            | Node::KVValueHashFeatureType(ref key, ..) => key,
-            _ => panic!("Expected node to be type KV"),
+    /// Returns the key from this tree node if it's a KV-type node with a key.
+    /// Returns None for Hash, KVHash, or KVHashCount node types (which only
+    /// have hashes, not keys).
+    #[cfg(any(feature = "minimal", feature = "verify"))]
+    pub fn key(&self) -> Option<&[u8]> {
+        match &self.node {
+            Node::KV(key, _)
+            | Node::KVValueHash(key, ..)
+            | Node::KVRefValueHash(key, ..)
+            | Node::KVValueHashFeatureType(key, ..)
+            | Node::KVDigest(key, ..)
+            | Node::KVCount(key, ..)
+            | Node::KVRefValueHashCount(key, ..) => Some(key.as_slice()),
+            // These nodes don't have keys, only hashes
+            Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => None,
         }
     }
 

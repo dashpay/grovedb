@@ -63,8 +63,8 @@ use crate::{
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
     proofs::{
         branch::{
-            calculate_chunk_depths, calculate_max_tree_depth_from_count, BranchQueryResult,
-            TrunkQueryResult,
+            calculate_chunk_depths, calculate_chunk_depths_with_minimum,
+            calculate_max_tree_depth_from_count, BranchQueryResult, TrunkQueryResult,
         },
         chunk::{
             chunk::{LEFT, RIGHT},
@@ -789,6 +789,10 @@ where
     ///
     /// # Arguments
     /// * `max_depth` - Maximum depth per chunk for splitting
+    /// * `min_depth` - Optional minimum depth per chunk (for privacy control).
+    ///   When provided for ProvableCountTree or ProvableCountSumTree, the first
+    ///   chunk depth will be clamped to at least this value, preventing
+    ///   information leakage about small subtrees.
     /// * `grove_version` - The grove version for compatibility
     ///
     /// # Returns
@@ -797,12 +801,13 @@ where
     ///
     /// # Errors
     /// Returns an error if:
-    /// - The tree type doesn't support count (not CountTree, CountSumTree, or
-    ///   ProvableCountTree)
+    /// - The tree type doesn't support count (not CountTree, CountSumTree,
+    ///   ProvableCountTree, or ProvableCountSumTree)
     /// - The tree is empty
     pub fn trunk_query(
         &self,
         max_depth: u8,
+        min_depth: Option<u8>,
         grove_version: &GroveVersion,
     ) -> CostResult<TrunkQueryResult, Error> {
         let mut cost = OperationCost::default();
@@ -810,11 +815,15 @@ where
         // Verify tree type supports count
         let supports_count = matches!(
             self.tree_type,
-            TreeType::CountTree | TreeType::CountSumTree | TreeType::ProvableCountTree
+            TreeType::CountTree
+                | TreeType::CountSumTree
+                | TreeType::ProvableCountTree
+                | TreeType::ProvableCountSumTree
         );
         if !supports_count {
             return Err(Error::InvalidOperation(
-                "trunk_query requires a count tree (CountTree, CountSumTree, or ProvableCountTree)",
+                "trunk_query requires a count tree (CountTree, CountSumTree, ProvableCountTree, \
+                 or ProvableCountSumTree)",
             ))
             .wrap_with_cost(cost);
         }
@@ -830,10 +839,25 @@ where
             .wrap_with_cost(cost);
         }
 
-        // DO NOT CHANGE THIS
+        // calculate the tree depth
         let tree_depth = calculate_max_tree_depth_from_count(count);
-        let chunk_depths = calculate_chunk_depths(tree_depth, max_depth);
-        let first_chunk_depth = chunk_depths[0] as usize;
+
+        // For provable count trees with min_depth, use
+        // calculate_chunk_depths_with_minimum to ensure privacy by using a
+        // minimum depth even for small subtrees
+        let is_provable_count_tree = matches!(
+            self.tree_type,
+            TreeType::ProvableCountTree | TreeType::ProvableCountSumTree
+        );
+        let chunk_depths = if let Some(min) = min_depth {
+            if is_provable_count_tree {
+                calculate_chunk_depths_with_minimum(tree_depth, max_depth, min)
+            } else {
+                calculate_chunk_depths(tree_depth, max_depth)
+            }
+        } else {
+            calculate_chunk_depths(tree_depth, max_depth)
+        };
 
         // Generate proof using create_chunk
         let tree_type = self.tree_type;
@@ -842,7 +866,9 @@ where
                 "trunk_query cannot be performed on an empty tree",
             ))
             .wrap_with_cost(OperationCost::default()),
-            Some(mut walker) => walker.create_chunk(first_chunk_depth, tree_type, grove_version),
+            Some(mut walker) => {
+                walker.create_chunk(chunk_depths[0] as usize, tree_type, grove_version)
+            }
         });
 
         let proof = match proof_cost_result.unwrap_add_cost(&mut cost) {
@@ -1613,7 +1639,7 @@ mod test {
             .expect("apply failed");
 
         // Trunk query should succeed on count tree
-        let result = merk.trunk_query(8, grove_version).unwrap();
+        let result = merk.trunk_query(8, None, grove_version).unwrap();
         if let Err(ref e) = result {
             eprintln!("trunk_query error: {:?}", e);
         }
@@ -1650,7 +1676,7 @@ mod test {
             .expect("apply failed");
 
         // Trunk query should fail on normal tree
-        let result = merk.trunk_query(8, grove_version).unwrap();
+        let result = merk.trunk_query(8, None, grove_version).unwrap();
         assert!(result.is_err(), "trunk_query should fail on NormalTree");
     }
 
@@ -1714,7 +1740,7 @@ mod test {
         let merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountTree);
 
         // Trunk query should fail on empty tree
-        let result = merk.trunk_query(8, grove_version).unwrap();
+        let result = merk.trunk_query(8, None, grove_version).unwrap();
         assert!(result.is_err(), "trunk_query should fail on empty tree");
     }
 

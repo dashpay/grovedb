@@ -84,7 +84,10 @@ where
         // at some point we will reach the depth
         // here we need to put the node hash
         if remaining_depth == 0 {
-            proof.push(Op::Push(self.to_hash_node().unwrap()));
+            // Use tree_type-aware hashing so ProvableCountTree/ProvableCountSumTree
+            // include the count in their hash computation
+            let hash_node = self.to_hash_node_for_tree_type(tree_type).unwrap();
+            proof.push(Op::Push(hash_node));
             return Ok(()).wrap_with_cost(cost);
         }
 

@@ -50,6 +50,10 @@ assert_matches = "1.5.0"
 name = "insertion_benchmark"
 harness = false
 
+[[bench]]
+name = "branch_chunk_queries"
+harness = false
+
 [features]
 default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]

@@ -57,8 +57,8 @@ pub use crate::merk::{
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use crate::proofs::branch::{
-    calculate_chunk_depths, calculate_max_tree_depth_from_count, BranchQueryResult,
-    TrunkQueryResult,
+    calculate_chunk_depths, calculate_chunk_depths_with_minimum,
+    calculate_max_tree_depth_from_count, BranchQueryResult, TrunkQueryResult,
 };
 #[cfg(feature = "minimal")]
 pub use crate::visualize::VisualizeableMerk;
