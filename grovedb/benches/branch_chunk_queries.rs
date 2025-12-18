@@ -2449,15 +2449,14 @@ async fn run_async_latency_benchmark_inner() {
     println!("  p95 latency: {}ms", latency_stats.percentile(95.0));
     println!("  p99 latency: {}ms", latency_stats.percentile(99.0));
     println!(
-        println!(
-            "  Requests over 300ms: {} ({:.1}%)",
-            latency_stats.count_over(300),
-            if latency_stats.samples.is_empty() {
-                0.0
-            } else {
-                100.0 * latency_stats.count_over(300) as f64 / latency_stats.samples.len() as f64
-            }
-        );
+        "  Requests over 300ms: {} ({:.1}%)",
+        latency_stats.count_over(300),
+        if latency_stats.samples.is_empty() {
+            0.0
+        } else {
+            100.0 * latency_stats.count_over(300) as f64 / latency_stats.samples.len() as f64
+        }
+    );
 
     println!("\n=== Timing ===");
     println!(
