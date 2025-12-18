@@ -264,6 +264,48 @@ fn get_tree_root_count(tree: &Tree) -> Option<u64> {
     }
 }
 
+/// Traces a key through a tree's BST structure to find which leaf node's subtree
+/// would contain it.
+///
+/// Returns the leaf key and its LeafInfo if the key would be in a truncated subtree,
+/// or None if the key doesn't trace to any leaf in this tree.
+fn trace_key_in_tree(
+    key: &[u8],
+    tree: &Tree,
+    leaf_keys: &BTreeMap<Vec<u8>, LeafInfo>,
+) -> Option<(Vec<u8>, LeafInfo)> {
+    use std::cmp::Ordering;
+
+    let node_key = tree.key()?;
+
+    // Check if this node is a leaf key
+    if let Some(leaf_info) = leaf_keys.get(node_key) {
+        // This node is a leaf - the key would be in this subtree
+        return Some((node_key.to_vec(), *leaf_info));
+    }
+
+    // Not a leaf, continue BST traversal
+    match key.cmp(node_key) {
+        Ordering::Equal => None, // Key found at this node (not in a leaf subtree)
+        Ordering::Less => {
+            // Go left
+            if let Some(left) = &tree.left {
+                trace_key_in_tree(key, &left.tree, leaf_keys)
+            } else {
+                None // No left child
+            }
+        }
+        Ordering::Greater => {
+            // Go right
+            if let Some(right) = &tree.right {
+                trace_key_in_tree(key, &right.tree, leaf_keys)
+            } else {
+                None // No right child
+            }
+        }
+    }
+}
+
 /// Privacy metrics - tracks the size of result sets when keys are found
 #[derive(Debug, Default)]
 struct PrivacyMetrics {
@@ -1098,6 +1140,10 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
     // are added) Maps leaf_key -> (leaf_info, source_tree)
     let mut skipped_leaves: BTreeMap<Vec<u8>, (LeafInfo, Option<Tree>)> = BTreeMap::new();
 
+    // Store branch trees with their leaf_keys so we can trace new keys through them
+    // when gap extension happens and trunk_result.trace_key_to_leaf() returns None
+    let mut branch_trees: Vec<(Tree, BTreeMap<Vec<u8>, LeafInfo>)> = Vec::new();
+
     println!(
         "Starting HD wallet search: indices 0-{} (gap_limit={})\n",
         current_gap_end - 1,
@@ -1243,31 +1289,42 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
     }
 
     // Check newly added keys against trunk elements and trace to leaves
-    let new_keys: Vec<Vec<u8>> = pending_indices
-        .values()
-        .filter(|k| !target_keys.contains(*k))
-        .cloned()
-        .collect();
-
+    // Need to loop because extend_gap can add more keys that also need processing
     let mut new_found_in_trunk = 0;
-    for new_key in &new_keys {
-        if trunk_result.elements.contains_key(new_key) {
-            metrics.keys_found += 1;
-            privacy.record_key_found(trunk_set_size);
-            new_found_in_trunk += 1;
-            extend_gap(
-                new_key,
-                &mut pending_indices,
-                &mut key_to_index,
-                &mut current_gap_end,
-            );
-        } else if let Some((leaf_key, leaf_info)) = trunk_result.trace_key_to_leaf(new_key) {
-            tracker.add_key(new_key.clone(), leaf_key, leaf_info);
-        } else {
-            // No leaf = absent
-            metrics.keys_absent += 1;
-            if let Some(&index) = key_to_index.get(new_key) {
-                pending_indices.remove(&index);
+    let mut processed_keys: BTreeSet<Vec<u8>> = target_keys.clone();
+
+    loop {
+        let new_keys: Vec<Vec<u8>> = pending_indices
+            .values()
+            .filter(|k| !processed_keys.contains(*k))
+            .cloned()
+            .collect();
+
+        if new_keys.is_empty() {
+            break;
+        }
+
+        for new_key in &new_keys {
+            processed_keys.insert(new_key.clone());
+
+            if trunk_result.elements.contains_key(new_key) {
+                metrics.keys_found += 1;
+                privacy.record_key_found(trunk_set_size);
+                new_found_in_trunk += 1;
+                extend_gap(
+                    new_key,
+                    &mut pending_indices,
+                    &mut key_to_index,
+                    &mut current_gap_end,
+                );
+            } else if let Some((leaf_key, leaf_info)) = trunk_result.trace_key_to_leaf(new_key) {
+                tracker.add_key(new_key.clone(), leaf_key, leaf_info);
+            } else {
+                // No leaf = absent
+                metrics.keys_absent += 1;
+                if let Some(&index) = key_to_index.get(new_key) {
+                    pending_indices.remove(&index);
+                }
             }
         }
     }
@@ -1470,6 +1527,11 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
                 );
             }
 
+            // Store this branch tree so we can trace new keys through it during gap extension
+            if !branch_result.leaf_keys.is_empty() {
+                branch_trees.push((branch_result.tree.clone(), branch_result.leaf_keys.clone()));
+            }
+
             // Process all original leaves that were consolidated into this query
             for original_leaf in leaf_keys_under_query {
                 let keys_for_this_leaf = tracker.keys_for_leaf(&original_leaf);
@@ -1521,14 +1583,30 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
                                             found_this_round += 1;
                                             pending_indices.remove(&new_idx);
                                         } else {
-                                            // Need to trace through skipped leaves to find where
-                                            // this key would be
-                                            // For now, add to tracker for next round using trunk
-                                            // result
-                                            if let Some((leaf_key, leaf_info)) =
-                                                trunk_result.trace_key_to_leaf(&new_key)
-                                            {
+                                            // Try to trace through trunk first
+                                            let traced = trunk_result
+                                                .trace_key_to_leaf(&new_key)
+                                                .or_else(|| {
+                                                    // If trunk doesn't have it, try branch trees
+                                                    for (tree, leaf_keys) in &branch_trees {
+                                                        if let Some(result) =
+                                                            trace_key_in_tree(&new_key, tree, leaf_keys)
+                                                        {
+                                                            return Some(result);
+                                                        }
+                                                    }
+                                                    None
+                                                });
+
+                                            if let Some((leaf_key, leaf_info)) = traced {
                                                 tracker.add_key(new_key, leaf_key, leaf_info);
+                                            } else {
+                                                // Key doesn't trace to any leaf - it's in a fully
+                                                // queried subtree. Since it's not in seen_elements,
+                                                // it doesn't exist (absent).
+                                                metrics.keys_absent += 1;
+                                                absent_this_round += 1;
+                                                pending_indices.remove(&new_idx);
                                             }
                                         }
                                     }
@@ -1608,6 +1686,29 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
             println!("Reached depth limit, stopping.");
             break;
         }
+    }
+
+    // Diagnostic: Check for unaccounted indices
+    println!("\n=== Diagnostic: Accounting Check ===");
+    let accounted = metrics.keys_found + metrics.keys_absent;
+    let unaccounted_in_pending = pending_indices.len();
+    let tracker_remaining = tracker.remaining_count();
+    println!("Total indices searched (current_gap_end): {}", current_gap_end);
+    println!("Keys found: {}", metrics.keys_found);
+    println!("Keys absent: {}", metrics.keys_absent);
+    println!("Total accounted (found + absent): {}", accounted);
+    println!("Still in pending_indices: {}", unaccounted_in_pending);
+    println!("Still in tracker: {}", tracker_remaining);
+    println!(
+        "Discrepancy (gap_end - accounted - pending - tracker): {}",
+        current_gap_end as i64 - accounted as i64 - unaccounted_in_pending as i64 - tracker_remaining as i64
+    );
+
+    if !pending_indices.is_empty() {
+        println!(
+            "Unaccounted pending indices: {:?}",
+            pending_indices.keys().take(20).collect::<Vec<_>>()
+        );
     }
 
     // Print final metrics
