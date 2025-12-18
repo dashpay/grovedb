@@ -264,11 +264,11 @@ fn get_tree_root_count(tree: &Tree) -> Option<u64> {
     }
 }
 
-/// Traces a key through a tree's BST structure to find which leaf node's subtree
-/// would contain it.
+/// Traces a key through a tree's BST structure to find which leaf node's
+/// subtree would contain it.
 ///
-/// Returns the leaf key and its LeafInfo if the key would be in a truncated subtree,
-/// or None if the key doesn't trace to any leaf in this tree.
+/// Returns the leaf key and its LeafInfo if the key would be in a truncated
+/// subtree, or None if the key doesn't trace to any leaf in this tree.
 fn trace_key_in_tree(
     key: &[u8],
     tree: &Tree,
@@ -1527,7 +1527,8 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
                 );
             }
 
-            // Store this branch tree so we can trace new keys through it during gap extension
+            // Store this branch tree so we can trace new keys through it during gap
+            // extension
             if !branch_result.leaf_keys.is_empty() {
                 branch_trees.push((branch_result.tree.clone(), branch_result.leaf_keys.clone()));
             }
@@ -1589,9 +1590,9 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
                                                 .or_else(|| {
                                                     // If trunk doesn't have it, try branch trees
                                                     for (tree, leaf_keys) in &branch_trees {
-                                                        if let Some(result) =
-                                                            trace_key_in_tree(&new_key, tree, leaf_keys)
-                                                        {
+                                                        if let Some(result) = trace_key_in_tree(
+                                                            &new_key, tree, leaf_keys,
+                                                        ) {
                                                             return Some(result);
                                                         }
                                                     }
@@ -1693,7 +1694,10 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
     let accounted = metrics.keys_found + metrics.keys_absent;
     let unaccounted_in_pending = pending_indices.len();
     let tracker_remaining = tracker.remaining_count();
-    println!("Total indices searched (current_gap_end): {}", current_gap_end);
+    println!(
+        "Total indices searched (current_gap_end): {}",
+        current_gap_end
+    );
     println!("Keys found: {}", metrics.keys_found);
     println!("Keys absent: {}", metrics.keys_absent);
     println!("Total accounted (found + absent): {}", accounted);
@@ -1701,7 +1705,10 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
     println!("Still in tracker: {}", tracker_remaining);
     println!(
         "Discrepancy (gap_end - accounted - pending - tracker): {}",
-        current_gap_end as i64 - accounted as i64 - unaccounted_in_pending as i64 - tracker_remaining as i64
+        current_gap_end as i64
+            - accounted as i64
+            - unaccounted_in_pending as i64
+            - tracker_remaining as i64
     );
 
     if !pending_indices.is_empty() {
