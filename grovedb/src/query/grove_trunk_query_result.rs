@@ -194,8 +194,8 @@ impl GroveTrunkQueryResult {
 
         // Not a leaf, continue BST traversal
         match key.cmp(node_key) {
-            Ordering::Equal => None, /* Key found at this node (shouldn't happen since we
-                                       * checked elements) */
+            Ordering::Equal => None, // Key found at this node (shouldn't happen since we
+            // checked elements)
             Ordering::Less => {
                 // Go left
                 if let Some(left) = &tree.left {

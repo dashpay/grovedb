@@ -668,8 +668,8 @@ pub fn run_branch_chunk_query_benchmark() {
                         levels_up
                     );
                     ancestor_redirects += 1;
-                    // Query the ancestor with tree_depth + levels up
-                    (ancestor_key, ancestor_hash, tree_depth + levels_up)
+                    // Query the ancestor with max_depth
+                    (ancestor_key, ancestor_hash, max_depth)
                 } else {
                     // Couldn't find ancestor, query leaf directly
                     println!(
@@ -753,8 +753,11 @@ pub fn run_branch_chunk_query_benchmark() {
 
             let root_count = get_tree_root_count(&branch_result.tree);
             println!(
-                "returned elements={}, root_count={:?}, query_depth={}",
-                branch_set_size, root_count, query_depth
+                "returned elements={}, root_count={:?}, query_depth={}, leaf keys count={}",
+                branch_set_size,
+                root_count,
+                query_depth,
+                branch_result.leaf_keys.len()
             );
 
             // Process all original leaves that were consolidated into this query
@@ -795,6 +798,20 @@ pub fn run_branch_chunk_query_benchmark() {
             "  Active leaves for next round: {}",
             tracker.active_leaves().len()
         );
+        if depth > 1 {
+            println!(
+                "  Active leaves for next round are: {:?}",
+                tracker
+                    .active_leaves()
+                    .iter()
+                    .map(|(key, leaf_info)| format!(
+                        "{}: {}",
+                        hex::encode(key),
+                        leaf_info.count.expect("expected count")
+                    ))
+                    .collect::<Vec<_>>()
+            );
+        }
         println!(
             "  Branch depths used: {:?}",
             depth_usage
