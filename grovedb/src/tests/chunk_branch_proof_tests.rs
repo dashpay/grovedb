@@ -107,7 +107,7 @@ mod tests {
         let mut total_elements_from_branches = 0;
         let remaining_depth = chunk_depths[1]; // Should be 4
 
-        for (leaf_key, expected_hash) in leaf_keys {
+        for (leaf_key, leaf_info) in leaf_keys {
             use crate::query::PathBranchChunkQuery;
 
             let branch_query = PathBranchChunkQuery::new(
@@ -125,14 +125,14 @@ mod tests {
             let branch_result = GroveDb::verify_branch_chunk_proof(
                 &branch_proof,
                 &branch_query,
-                *expected_hash,
+                leaf_info.hash,
                 grove_version,
             )
             .expect("successful branch proof verification");
 
             // Branch should have a valid root hash that matches the expected hash
             assert_eq!(
-                branch_result.branch_root_hash, *expected_hash,
+                branch_result.branch_root_hash, leaf_info.hash,
                 "branch root hash should match expected hash from trunk"
             );
 
@@ -275,7 +275,7 @@ mod tests {
         let mut total_elements_from_branches = 0;
         let remaining_depth = chunk_depths[1]; // Should be 4
 
-        for (leaf_key, expected_hash) in leaf_keys {
+        for (leaf_key, leaf_info) in leaf_keys {
             use crate::query::PathBranchChunkQuery;
 
             // Path is now two levels deep for branch queries too
@@ -294,14 +294,14 @@ mod tests {
             let branch_result = GroveDb::verify_branch_chunk_proof(
                 &branch_proof,
                 &branch_query,
-                *expected_hash,
+                leaf_info.hash,
                 grove_version,
             )
             .expect("successful branch proof verification");
 
             // Branch should have a valid root hash that matches the expected hash
             assert_eq!(
-                branch_result.branch_root_hash, *expected_hash,
+                branch_result.branch_root_hash, leaf_info.hash,
                 "branch root hash should match expected hash from trunk"
             );
 
