@@ -45,6 +45,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -56,7 +57,9 @@ use grovedb_merk::{
 };
 use grovedb_version::version::GroveVersion;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand_distr::{Distribution, LogNormal};
 use tempfile::TempDir;
+use tokio::sync::Mutex as TokioMutex;
 
 /// Tracks which leaf key each remaining target key should be queried under.
 struct KeyLeafTracker {
@@ -1816,8 +1819,708 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
     );
 }
 
+/// Generates a realistic network latency in milliseconds.
+///
+/// Distribution: shifted log-normal with peak around 90ms, min 60ms,
+/// rarely over 300ms, max capped at 3000ms.
+///
+/// Parameters tuned for: mode ≈ 30ms above base (so total mode ≈ 90ms),
+/// with a long tail for occasional slow responses.
+fn generate_latency(rng: &mut impl Rng) -> Duration {
+    const BASE_LATENCY_MS: f64 = 60.0;
+    const MAX_LATENCY_MS: f64 = 3000.0;
+
+    // Log-normal parameters: μ=4.0, σ=0.8
+    // This gives: mode ≈ exp(4.0 - 0.64) ≈ 29ms, so total mode ≈ 89ms
+    // median ≈ exp(4.0) ≈ 55ms, so total median ≈ 115ms
+    // 95th percentile ≈ 263ms, 99th percentile ≈ 412ms
+    let log_normal = LogNormal::new(4.0, 0.8).unwrap();
+    let sample: f64 = log_normal.sample(rng);
+    let latency_ms = (BASE_LATENCY_MS + sample).min(MAX_LATENCY_MS);
+    Duration::from_millis(latency_ms as u64)
+}
+
+/// Latency statistics tracker
+#[derive(Debug, Default)]
+struct LatencyStats {
+    samples: Vec<u64>,
+}
+
+impl LatencyStats {
+    fn record(&mut self, latency: Duration) {
+        self.samples.push(latency.as_millis() as u64);
+    }
+
+    fn min(&self) -> u64 {
+        *self.samples.iter().min().unwrap_or(&0)
+    }
+
+    fn max(&self) -> u64 {
+        *self.samples.iter().max().unwrap_or(&0)
+    }
+
+    fn mean(&self) -> f64 {
+        if self.samples.is_empty() {
+            0.0
+        } else {
+            self.samples.iter().sum::<u64>() as f64 / self.samples.len() as f64
+        }
+    }
+
+    fn percentile(&self, p: f64) -> u64 {
+        if self.samples.is_empty() {
+            return 0;
+        }
+        let mut sorted = self.samples.clone();
+        sorted.sort_unstable();
+        let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    }
+
+    fn count_over(&self, threshold_ms: u64) -> usize {
+        self.samples.iter().filter(|&&s| s > threshold_ms).count()
+    }
+}
+
+/// Run the HD wallet benchmark with simulated async network latency.
+///
+/// This simulates a real-world client scenario where:
+/// 1. Proof requests are sent to remote nodes with network latency
+/// 2. Multiple requests can be in-flight concurrently
+/// 3. Latency follows a realistic distribution (log-normal, peak ~90ms)
+pub fn run_async_latency_benchmark() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(run_async_latency_benchmark_inner());
+}
+
+async fn run_async_latency_benchmark_inner() {
+    let grove_version = GroveVersion::latest();
+    let mut rng = SmallRng::seed_from_u64(12345);
+
+    println!("=== GroveDB Async Latency Simulation Benchmark ===\n");
+
+    // Configuration
+    let num_elements = 1_000_000;
+    let batch_size = 100_000;
+    let num_batches = num_elements / batch_size;
+    let max_used_index: u32 = 500;
+    let gap_limit: u32 = 100;
+    let max_depth: u8 = 8;
+    let min_depth: u8 = 6;
+    let min_privacy_tree_count: u64 = 32;
+    let max_concurrent_requests: usize = 40; // Simulate querying up to N nodes concurrently
+
+    println!("Configuration:");
+    println!("  Elements in tree: {}", num_elements);
+    println!("  Max used index (wallet): {}", max_used_index);
+    println!("  Gap limit: {}", gap_limit);
+    println!("  Max depth per chunk: {}", max_depth);
+    println!("  Min depth per chunk: {}", min_depth);
+    println!("  Max concurrent requests: {}", max_concurrent_requests);
+    println!("  Latency: 60-3000ms (log-normal, peak ~90ms)");
+    println!();
+
+    // Create temporary directory and GroveDb
+    let tmp_dir = TempDir::new().expect("failed to create temp dir");
+    let db = Arc::new(GroveDb::open(tmp_dir.path()).expect("failed to open grovedb"));
+
+    // Create structure
+    println!("Creating GroveDb structure...");
+
+    db.insert::<&[u8], _>(
+        &[],
+        b"data",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("failed to insert data tree");
+
+    db.insert(
+        &[b"data".as_slice()],
+        b"count_sum_tree",
+        Element::empty_provable_count_sum_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("failed to insert count_sum_tree");
+
+    let path: &[&[u8]] = &[b"data", b"count_sum_tree"];
+
+    // Insert wallet keys
+    println!(
+        "Inserting {} wallet keys (indices 0-{})...",
+        max_used_index,
+        max_used_index - 1
+    );
+
+    let mut wallet_keys: BTreeSet<Vec<u8>> = BTreeSet::new();
+
+    for index in 0..max_used_index {
+        let key = derive_key_from_index(index);
+        let value_num: u8 = rng.random_range(1..=20);
+        let item_value = vec![value_num];
+        let sum_value: i64 = rng.random_range(1000..=1_000_000);
+
+        db.insert(
+            path,
+            &key,
+            Element::new_item_with_sum_item(item_value, sum_value),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("failed to insert wallet key");
+
+        wallet_keys.insert(key);
+    }
+
+    // Insert noise keys
+    let noise_count = num_elements - max_used_index as usize;
+    println!("Inserting {} noise keys...", noise_count);
+
+    for batch_num in 0..num_batches {
+        let keys_this_batch = batch_size.min(noise_count - batch_num * batch_size);
+        if keys_this_batch == 0 {
+            break;
+        }
+
+        for _ in 0..keys_this_batch {
+            let mut key = [0u8; 32];
+            rng.fill(&mut key);
+            let value_num: u8 = rng.random_range(1..=20);
+            let item_value = vec![value_num];
+            let sum_value: i64 = rng.random_range(1000..=1_000_000);
+
+            db.insert(
+                path,
+                &key,
+                Element::new_item_with_sum_item(item_value, sum_value),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("failed to insert noise key");
+        }
+
+        if (batch_num + 1) % 2 == 0 {
+            println!(
+                "  Inserted {} noise elements ({:.1}%)",
+                (batch_num + 1) * batch_size,
+                ((batch_num + 1) as f64 / num_batches as f64) * 100.0
+            );
+        }
+    }
+
+    println!("Tree created successfully.\n");
+
+    // HD Wallet state
+    let mut highest_found_index: Option<u32> = None;
+    let mut current_gap_end: u32 = gap_limit;
+
+    let mut pending_indices: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    for index in 0..current_gap_end {
+        pending_indices.insert(index, derive_key_from_index(index));
+    }
+
+    let mut seen_elements: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut key_to_index: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+    for (index, key) in &pending_indices {
+        key_to_index.insert(key.clone(), *index);
+    }
+
+    // Metrics
+    let mut metrics = QueryMetrics::default();
+    let mut privacy = PrivacyMetrics::new();
+    let mut tracker = KeyLeafTracker::new();
+    let mut latency_stats = LatencyStats::default();
+    let mut branch_trees: Vec<(Tree, BTreeMap<Vec<u8>, LeafInfo>)> = Vec::new();
+
+    let tree_path = vec![b"data".to_vec(), b"count_sum_tree".to_vec()];
+
+    // RNG for latency simulation (wrapped in mutex for async use)
+    let latency_rng = Arc::new(TokioMutex::new(SmallRng::seed_from_u64(67890)));
+
+    let overall_start = Instant::now();
+
+    println!("Starting async HD wallet search with simulated latency...\n");
+
+    // === TRUNK QUERY (single request) ===
+    println!("=== Iteration 0: Trunk Query ===");
+
+    let trunk_query =
+        PathTrunkChunkQuery::new_with_min_depth(tree_path.clone(), max_depth, min_depth);
+
+    // Simulate latency for trunk request
+    let latency = {
+        let mut rng_guard = latency_rng.lock().await;
+        generate_latency(&mut *rng_guard)
+    };
+    println!("  Simulating network latency: {}ms", latency.as_millis());
+    tokio::time::sleep(latency).await;
+    latency_stats.record(latency);
+
+    let proof_start = Instant::now();
+    let trunk_proof = db
+        .prove_trunk_chunk(&trunk_query, grove_version)
+        .unwrap()
+        .expect("failed to generate trunk proof");
+    metrics.proof_gen_duration += proof_start.elapsed();
+    metrics.record_query(0);
+    metrics.total_proof_bytes += trunk_proof.len();
+
+    let verify_start = Instant::now();
+    let (root_hash, trunk_result) =
+        GroveDb::verify_trunk_chunk_proof(&trunk_proof, &trunk_query, grove_version)
+            .expect("failed to verify trunk proof");
+    metrics.verify_duration += verify_start.elapsed();
+
+    println!("  Root hash: {}", hex::encode(&root_hash[..8]));
+    println!("  Elements in trunk: {}", trunk_result.elements.len());
+    println!("  Leaf keys: {}", trunk_result.leaf_keys.len());
+
+    // Store trunk elements
+    for key in trunk_result.elements.keys() {
+        seen_elements.insert(key.clone());
+    }
+    metrics.total_elements_seen += trunk_result.elements.len();
+
+    // Process trunk results (similar to sync version but simplified)
+    let trunk_set_size = trunk_result.elements.len();
+    let target_keys: BTreeSet<Vec<u8>> = pending_indices.values().cloned().collect();
+
+    for target in &target_keys {
+        if trunk_result.elements.contains_key(target) {
+            metrics.keys_found += 1;
+            privacy.record_key_found(trunk_set_size);
+
+            // Check for gap extension
+            if let Some(&index) = key_to_index.get(target) {
+                if wallet_keys.contains(target) {
+                    let new_highest = highest_found_index.map_or(index, |h| h.max(index));
+                    highest_found_index = Some(new_highest);
+                    let new_gap_end = new_highest + gap_limit + 1;
+                    if new_gap_end > current_gap_end {
+                        for new_idx in current_gap_end..new_gap_end {
+                            let new_key = derive_key_from_index(new_idx);
+                            pending_indices.insert(new_idx, new_key.clone());
+                            key_to_index.insert(new_key, new_idx);
+                        }
+                        current_gap_end = new_gap_end;
+                    }
+                }
+                pending_indices.remove(&index);
+            }
+        } else if let Some((leaf_key, leaf_info)) = trunk_result.trace_key_to_leaf(target) {
+            tracker.add_key(target.clone(), leaf_key, leaf_info);
+        } else {
+            metrics.keys_absent += 1;
+            if let Some(&index) = key_to_index.get(target) {
+                pending_indices.remove(&index);
+            }
+        }
+    }
+
+    // Process newly added keys from gap extension
+    let mut processed_keys: BTreeSet<Vec<u8>> = target_keys.clone();
+    loop {
+        let new_keys: Vec<Vec<u8>> = pending_indices
+            .values()
+            .filter(|k| !processed_keys.contains(*k))
+            .cloned()
+            .collect();
+
+        if new_keys.is_empty() {
+            break;
+        }
+
+        for new_key in &new_keys {
+            processed_keys.insert(new_key.clone());
+
+            if trunk_result.elements.contains_key(new_key) {
+                metrics.keys_found += 1;
+                privacy.record_key_found(trunk_set_size);
+
+                if let Some(&index) = key_to_index.get(new_key) {
+                    if wallet_keys.contains(new_key) {
+                        let new_highest = highest_found_index.map_or(index, |h| h.max(index));
+                        highest_found_index = Some(new_highest);
+                        let new_gap_end = new_highest + gap_limit + 1;
+                        if new_gap_end > current_gap_end {
+                            for new_idx in current_gap_end..new_gap_end {
+                                let nk = derive_key_from_index(new_idx);
+                                pending_indices.insert(new_idx, nk.clone());
+                                key_to_index.insert(nk, new_idx);
+                            }
+                            current_gap_end = new_gap_end;
+                        }
+                    }
+                    pending_indices.remove(&index);
+                }
+            } else if let Some((leaf_key, leaf_info)) = trunk_result.trace_key_to_leaf(new_key) {
+                tracker.add_key(new_key.clone(), leaf_key, leaf_info);
+            } else {
+                metrics.keys_absent += 1;
+                if let Some(&index) = key_to_index.get(new_key) {
+                    pending_indices.remove(&index);
+                }
+            }
+        }
+    }
+
+    println!(
+        "  Keys found: {}, Keys needing branch queries: {}",
+        metrics.keys_found,
+        tracker.remaining_count()
+    );
+
+    // === ITERATIVE BRANCH QUERIES WITH CONCURRENT REQUESTS ===
+    let mut iteration = 0usize;
+
+    while !tracker.is_empty() {
+        iteration += 1;
+        let active_leaves = tracker.active_leaves();
+
+        if active_leaves.is_empty() {
+            let remaining = tracker.remaining_count();
+            metrics.keys_absent += remaining;
+            break;
+        }
+
+        println!(
+            "\n=== Iteration {}: Branch Queries ({} leaves, {} targets remaining) ===",
+            iteration,
+            active_leaves.len(),
+            tracker.remaining_count()
+        );
+
+        // Build query plan
+        let mut query_plan: Vec<(Vec<u8>, CryptoHash, u8, Vec<Vec<u8>>)> = Vec::new();
+
+        for (leaf_key, leaf_info) in &active_leaves {
+            let keys_for_this_leaf = tracker.keys_for_leaf(leaf_key);
+            if keys_for_this_leaf.is_empty() {
+                continue;
+            }
+
+            let count = leaf_info.count.expect("expected a count");
+            let tree_depth = calculate_max_tree_depth_from_count(count);
+
+            let (query_key, query_hash, query_depth) = if min_privacy_tree_count > count {
+                let ancestor = if iteration == 1 {
+                    trunk_result.get_ancestor(leaf_key, min_privacy_tree_count)
+                } else {
+                    tracker.get_source_tree(leaf_key).and_then(|source_tree| {
+                        get_ancestor_from_tree(leaf_key, min_privacy_tree_count, source_tree)
+                    })
+                };
+
+                if let Some((_, _, ancestor_key, ancestor_hash)) = ancestor {
+                    (ancestor_key, ancestor_hash, max_depth)
+                } else {
+                    (leaf_key.clone(), leaf_info.hash, min_depth.max(tree_depth))
+                }
+            } else {
+                let chunk_depths =
+                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth);
+                let depth = if chunk_depths.len() == 1 {
+                    max_depth
+                } else {
+                    chunk_depths[0]
+                };
+                (leaf_key.clone(), leaf_info.hash, depth)
+            };
+
+            // Check if already in query plan
+            if let Some(existing) = query_plan.iter_mut().find(|(k, ..)| k == &query_key) {
+                existing.3.push(leaf_key.clone());
+            } else {
+                query_plan.push((query_key, query_hash, query_depth, vec![leaf_key.clone()]));
+            }
+        }
+
+        // Execute queries in batches with concurrency
+        let mut batch_results: Vec<(
+            Vec<u8>,
+            CryptoHash,
+            Vec<Vec<u8>>,
+            grovedb::GroveBranchQueryResult,
+            Duration,
+        )> = Vec::new();
+
+        for chunk in query_plan.chunks(max_concurrent_requests) {
+            let mut handles = Vec::new();
+
+            for (query_key, query_hash, query_depth, leaf_keys) in chunk {
+                let db_clone = Arc::clone(&db);
+                let tree_path_clone = tree_path.clone();
+                let query_key_clone = query_key.clone();
+                let query_hash_clone = *query_hash;
+                let query_depth_clone = *query_depth;
+                let leaf_keys_clone = leaf_keys.clone();
+                let latency_rng_clone = Arc::clone(&latency_rng);
+                let grove_version_clone = grove_version;
+
+                let handle = tokio::spawn(async move {
+                    // Simulate network latency
+                    let latency = {
+                        let mut rng_guard = latency_rng_clone.lock().await;
+                        generate_latency(&mut *rng_guard)
+                    };
+                    tokio::time::sleep(latency).await;
+
+                    let branch_query = PathBranchChunkQuery::new(
+                        tree_path_clone,
+                        query_key_clone.clone(),
+                        query_depth_clone,
+                    );
+
+                    let branch_proof_unserialized = db_clone
+                        .prove_branch_chunk_non_serialized(&branch_query, grove_version_clone)
+                        .unwrap()
+                        .expect("failed to generate branch proof");
+
+                    let mut branch_proof = Vec::new();
+                    encode_into(branch_proof_unserialized.proof.iter(), &mut branch_proof);
+
+                    let branch_result = GroveDb::verify_branch_chunk_proof(
+                        &branch_proof,
+                        &branch_query,
+                        query_hash_clone,
+                        grove_version_clone,
+                    )
+                    .expect("failed to verify branch proof");
+
+                    (
+                        query_key_clone,
+                        query_hash_clone,
+                        leaf_keys_clone,
+                        branch_result,
+                        latency,
+                        branch_proof.len(),
+                    )
+                });
+
+                handles.push(handle);
+            }
+
+            // Wait for all concurrent requests in this batch
+            for handle in handles {
+                let (query_key, query_hash, leaf_keys, branch_result, latency, proof_len) =
+                    handle.await.unwrap();
+                latency_stats.record(latency);
+                metrics.record_query(iteration);
+                metrics.total_proof_bytes += proof_len;
+
+                batch_results.push((query_key, query_hash, leaf_keys, branch_result, latency));
+            }
+        }
+
+        // Process results
+        let mut found_this_round = 0;
+        let mut absent_this_round = 0;
+
+        for (_, _, leaf_keys_under_query, branch_result, _) in batch_results {
+            let branch_set_size = branch_result.elements.len();
+            metrics.total_elements_seen += branch_set_size;
+
+            // Store seen elements
+            for key in branch_result.elements.keys() {
+                seen_elements.insert(key.clone());
+            }
+
+            // Store branch tree for future tracing
+            if !branch_result.leaf_keys.is_empty() {
+                branch_trees.push((branch_result.tree.clone(), branch_result.leaf_keys.clone()));
+            }
+
+            // Process keys
+            for original_leaf in leaf_keys_under_query {
+                let keys_for_this_leaf = tracker.keys_for_leaf(&original_leaf);
+
+                for target in keys_for_this_leaf {
+                    if branch_result.elements.contains_key(&target) {
+                        tracker.key_found(&target);
+                        metrics.keys_found += 1;
+                        privacy.record_key_found(branch_set_size);
+                        found_this_round += 1;
+
+                        // Gap extension
+                        if let Some(&index) = key_to_index.get(&target) {
+                            if wallet_keys.contains(&target) {
+                                let new_highest =
+                                    highest_found_index.map_or(index, |h| h.max(index));
+                                highest_found_index = Some(new_highest);
+                                let new_gap_end = new_highest + gap_limit + 1;
+                                if new_gap_end > current_gap_end {
+                                    for new_idx in current_gap_end..new_gap_end {
+                                        let new_key = derive_key_from_index(new_idx);
+                                        pending_indices.insert(new_idx, new_key.clone());
+                                        key_to_index.insert(new_key.clone(), new_idx);
+
+                                        if seen_elements.contains(&new_key) {
+                                            metrics.keys_found += 1;
+                                            privacy.record_key_found(branch_set_size);
+                                            found_this_round += 1;
+                                            pending_indices.remove(&new_idx);
+                                        } else {
+                                            let traced = trunk_result
+                                                .trace_key_to_leaf(&new_key)
+                                                .or_else(|| {
+                                                    for (tree, leaf_keys) in &branch_trees {
+                                                        if let Some(result) = trace_key_in_tree(
+                                                            &new_key, tree, leaf_keys,
+                                                        ) {
+                                                            return Some(result);
+                                                        }
+                                                    }
+                                                    None
+                                                });
+
+                                            if let Some((leaf_key, leaf_info)) = traced {
+                                                tracker.add_key(new_key, leaf_key, leaf_info);
+                                            } else {
+                                                metrics.keys_absent += 1;
+                                                absent_this_round += 1;
+                                                pending_indices.remove(&new_idx);
+                                            }
+                                        }
+                                    }
+                                    current_gap_end = new_gap_end;
+                                }
+                            }
+                            pending_indices.remove(&index);
+                        }
+                    } else if let Some((new_leaf, new_info)) =
+                        branch_result.trace_key_to_leaf(&target)
+                    {
+                        tracker.update_leaf(
+                            &target,
+                            new_leaf,
+                            new_info,
+                            branch_result.tree.clone(),
+                        );
+                    } else {
+                        tracker.key_found(&target);
+                        metrics.keys_absent += 1;
+                        absent_this_round += 1;
+                        if let Some(&index) = key_to_index.get(&target) {
+                            pending_indices.remove(&index);
+                        }
+                    }
+                }
+            }
+        }
+
+        println!(
+            "  Keys found: {}, Absent: {}, Remaining: {}",
+            found_this_round,
+            absent_this_round,
+            tracker.remaining_count()
+        );
+
+        if iteration > 50 {
+            println!("Reached iteration limit, stopping.");
+            break;
+        }
+    }
+
+    let overall_duration = overall_start.elapsed();
+
+    // Print final metrics
+    println!("\n=== Final Results ===");
+    println!("Keys found: {}", metrics.keys_found);
+    println!("Keys proven absent: {}", metrics.keys_absent);
+    println!(
+        "Highest found index: {:?}, gap ended at: {}",
+        highest_found_index, current_gap_end
+    );
+    println!(
+        "Expected: {} wallet keys (indices 0-{})",
+        max_used_index,
+        max_used_index - 1
+    );
+
+    let total_queries = metrics.total_queries();
+    println!("\n=== Query Metrics ===");
+    println!("Total queries: {}", total_queries);
+    println!("  Trunk (iteration 0): {}", metrics.trunk_queries());
+    println!("  Branch (iteration 1+): {}", metrics.branch_queries());
+
+    println!("\n=== Latency Statistics ===");
+    println!(
+        "  Total simulated requests: {}",
+        latency_stats.samples.len()
+    );
+    println!("  Min latency: {}ms", latency_stats.min());
+    println!("  Max latency: {}ms", latency_stats.max());
+    println!("  Mean latency: {:.1}ms", latency_stats.mean());
+    println!("  Median (p50): {}ms", latency_stats.percentile(50.0));
+    println!("  p90 latency: {}ms", latency_stats.percentile(90.0));
+    println!("  p95 latency: {}ms", latency_stats.percentile(95.0));
+    println!("  p99 latency: {}ms", latency_stats.percentile(99.0));
+    println!(
+        "  Requests over 300ms: {} ({:.1}%)",
+        latency_stats.count_over(300),
+        100.0 * latency_stats.count_over(300) as f64 / latency_stats.samples.len() as f64
+    );
+
+    println!("\n=== Timing ===");
+    println!(
+        "Total wall-clock time: {:.2}s",
+        overall_duration.as_secs_f64()
+    );
+    println!(
+        "Total simulated network time: {:.2}s",
+        latency_stats.samples.iter().sum::<u64>() as f64 / 1000.0
+    );
+    println!(
+        "Actual proof gen time: {:.3}s",
+        metrics.proof_gen_duration.as_secs_f64()
+    );
+    println!(
+        "Actual verify time: {:.3}s",
+        metrics.verify_duration.as_secs_f64()
+    );
+
+    println!("\n=== Proof Size Metrics ===");
+    println!(
+        "Total proof bytes: {} ({:.2} KB)",
+        metrics.total_proof_bytes,
+        metrics.total_proof_bytes as f64 / 1024.0
+    );
+
+    println!("\n=== Privacy Metrics ===");
+    println!(
+        "Worst privacy: 1/{} = {:.6}",
+        privacy.worst_privacy_set_size,
+        privacy.worst_privacy()
+    );
+    println!(
+        "Best privacy: 1/{} = {:.6}",
+        privacy.best_privacy_set_size,
+        privacy.best_privacy()
+    );
+    println!(
+        "Average privacy: {:.6} (avg result set size: {:.1})",
+        privacy.average_privacy(),
+        if privacy.keys_found_count > 0 {
+            privacy.total_set_sizes as f64 / privacy.keys_found_count as f64
+        } else {
+            0.0
+        }
+    );
+}
+
 fn main() {
     // Uncomment the one you want to run:
     // run_branch_chunk_query_benchmark();
-    run_branch_chunk_query_benchmark_with_key_increase();
+    // run_branch_chunk_query_benchmark_with_key_increase();
+    run_async_latency_benchmark();
 }
