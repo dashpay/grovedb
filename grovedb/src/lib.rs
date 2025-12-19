@@ -127,6 +127,7 @@
 
 #[cfg(feature = "minimal")]
 pub mod batch;
+#[cfg(feature = "minimal")]
 mod checkpoints;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;

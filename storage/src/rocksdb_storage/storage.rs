@@ -41,7 +41,7 @@ use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
-    Transaction, WriteBatchWithTransaction, DB, DEFAULT_COLUMN_FAMILY_NAME,
+    Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
 
 use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
