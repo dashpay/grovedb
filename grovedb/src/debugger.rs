@@ -233,7 +233,7 @@ async fn fetch_node(
         request: NodeFetchRequest { path, key },
     }): Json<WithSession<NodeFetchRequest>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
     let transaction = db.start_transaction();
 
     let merk = db
@@ -261,7 +261,7 @@ async fn fetch_root_node(
         request: (),
     }): Json<WithSession<()>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
     let transaction = db.start_transaction();
 
     let merk = db
@@ -290,7 +290,7 @@ async fn prove_path_query(
         request: json_path_query,
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<grovedbg_types::Proof>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 
@@ -307,7 +307,7 @@ async fn fetch_with_path_query(
         request: json_path_query,
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<Vec<grovedbg_types::NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 
