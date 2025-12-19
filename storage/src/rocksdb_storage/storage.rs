@@ -84,6 +84,28 @@ lazy_static! {
     };
 }
 
+lazy_static! {
+    static ref READ_ONLY_CHECKPOINTS_OPTS: rocksdb::Options = {
+        let mut opts = rocksdb::Options::default();
+        // Absolutely do NOT create or modify anything
+        opts.create_if_missing(false);
+        opts.create_missing_column_families(false);
+
+        // Read-only DBs should not write WALs or SSTs
+        opts.set_allow_mmap_writes(false);
+
+        // mmap reads are fine and often beneficial for read-heavy workloads
+        opts.set_allow_mmap_reads(true);
+
+        // Avoid background work that could try to write files
+        opts.set_disable_auto_compactions(true);
+
+        // Optional but recommended: reduce background threads
+        opts.increase_parallelism(1);
+        opts
+    };
+}
+
 /// Type alias for a database
 pub(crate) type Db = OptimisticTransactionDB;
 
@@ -94,12 +116,29 @@ pub(crate) type Tx<'db> = Transaction<'db, Db>;
 pub struct RocksDbStorage {
     db: OptimisticTransactionDB,
 }
+const DEFAULT_LOG_SIZE_FOR_CHECKPOINT_FLUSH: u64 = u64::MAX; // Never flush
 
 impl RocksDbStorage {
     /// Create RocksDb storage with default parameters using `path`.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Db::open_cf_descriptors(
             &DEFAULT_OPTS,
+            &path,
+            [
+                ColumnFamilyDescriptor::new(AUX_CF_NAME, DEFAULT_OPTS.clone()),
+                ColumnFamilyDescriptor::new(ROOTS_CF_NAME, DEFAULT_OPTS.clone()),
+                ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
+            ],
+        )
+        .map_err(RocksDBError)?;
+        Ok(RocksDbStorage { db })
+    }
+
+    /// Create RocksDb storage with checkpoint parameters using `path` in read
+    /// only mode.
+    pub fn checkpoint_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let db = Db::open_cf_descriptors(
+            &READ_ONLY_CHECKPOINTS_OPTS,
             &path,
             [
                 ColumnFamilyDescriptor::new(AUX_CF_NAME, DEFAULT_OPTS.clone()),
@@ -527,7 +566,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         Checkpoint::new(&self.db)
-            .and_then(|x| x.create_checkpoint(path))
+            .and_then(|x| {
+                x.create_checkpoint_with_log_size(path, DEFAULT_LOG_SIZE_FOR_CHECKPOINT_FLUSH)
+            })
             .map_err(RocksDBError)
     }
 }

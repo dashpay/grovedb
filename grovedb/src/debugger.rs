@@ -145,13 +145,19 @@ impl AppState {
         self.sessions.write().await.remove(&id);
     }
 
-    async fn get_snapshot(&self, id: SessionId) -> Result<RwLockReadGuard<GroveDb>, AppError> {
+    async fn get_checkpointed_grovedb(
+        &self,
+        id: SessionId,
+    ) -> Result<RwLockReadGuard<GroveDb>, AppError> {
         self.verify_running()?;
         let mut lock = self.sessions.write().await;
         if let Some(session) = lock.get_mut(&id) {
             session.last_access = Instant::now();
             Ok(RwLockReadGuard::map(lock.downgrade(), |l| {
-                &l.get(&id).as_ref().expect("checked above").snapshot
+                &l.get(&id)
+                    .as_ref()
+                    .expect("checked above")
+                    .checkpointed_grovedb
             }))
         } else {
             Err(AppError::NoSession)
@@ -162,7 +168,7 @@ impl AppState {
 struct Session {
     last_access: Instant,
     _tempdir: tempfile::TempDir,
-    snapshot: GroveDb,
+    checkpointed_grovedb: GroveDb,
 }
 
 impl Session {
@@ -172,11 +178,11 @@ impl Session {
         grovedb
             .create_checkpoint(&path)
             .map_err(|e| AppError::Any(e.to_string()))?;
-        let snapshot = GroveDb::open(path).map_err(|e| AppError::Any(e.to_string()))?;
+        let checkpointed_grovedb = GroveDb::open(path).map_err(|e| AppError::Any(e.to_string()))?;
         Ok(Session {
             last_access: Instant::now(),
             _tempdir: tempdir,
-            snapshot,
+            checkpointed_grovedb,
         })
     }
 }
@@ -227,7 +233,7 @@ async fn fetch_node(
         request: NodeFetchRequest { path, key },
     }): Json<WithSession<NodeFetchRequest>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
     let transaction = db.start_transaction();
 
     let merk = db
@@ -255,7 +261,7 @@ async fn fetch_root_node(
         request: (),
     }): Json<WithSession<()>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
     let transaction = db.start_transaction();
 
     let merk = db
@@ -284,7 +290,7 @@ async fn prove_path_query(
         request: json_path_query,
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<grovedbg_types::Proof>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 
@@ -301,7 +307,7 @@ async fn fetch_with_path_query(
         request: json_path_query,
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<Vec<grovedbg_types::NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 

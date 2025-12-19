@@ -6,6 +6,7 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod checkpoint_tests;
 mod chunk_branch_proof_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
@@ -39,6 +40,7 @@ mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;
 mod provable_count_tree_test;
+mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
@@ -1030,7 +1032,7 @@ pub fn make_deep_tree_with_sum_trees_mixed_with_items(grove_version: &GroveVersi
     temp_db
 }
 
-mod tests {
+mod general_tests {
     use batch::QualifiedGroveDbOp;
     use grovedb_merk::{
         element::get::ElementFetchFromStorageExtensions, proofs::query::SubqueryBranch,
@@ -3178,165 +3180,6 @@ mod tests {
         let elements = values.map(|x| Element::new_item(x).serialize(grove_version).unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         compare_result_tuples(result_set, expected_result_set);
-    }
-
-    #[test]
-    fn test_checkpoint() {
-        let grove_version = GroveVersion::latest();
-        let db = make_test_grovedb(grove_version);
-        let element1 = Element::new_item(b"ayy".to_vec());
-
-        db.insert(
-            EMPTY_PATH,
-            b"key1",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("cannot insert a subtree 1 into GroveDB");
-        db.insert(
-            [b"key1".as_ref()].as_ref(),
-            b"key2",
-            Element::empty_tree(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("cannot insert a subtree 2 into GroveDB");
-        db.insert(
-            [b"key1".as_ref(), b"key2".as_ref()].as_ref(),
-            b"key3",
-            element1.clone(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("cannot insert an item into GroveDB");
-
-        assert_eq!(
-            db.get(
-                [b"key1".as_ref(), b"key2".as_ref()].as_ref(),
-                b"key3",
-                None,
-                grove_version
-            )
-            .unwrap()
-            .expect("cannot get from grovedb"),
-            element1
-        );
-
-        let tempdir_parent = TempDir::new().expect("cannot open tempdir");
-        let checkpoint_tempdir = tempdir_parent.path().join("checkpoint");
-        db.create_checkpoint(&checkpoint_tempdir)
-            .expect("cannot create checkpoint");
-
-        let checkpoint_db =
-            GroveDb::open(checkpoint_tempdir).expect("cannot open grovedb from checkpoint");
-
-        assert_eq!(
-            db.get(
-                [b"key1".as_ref(), b"key2".as_ref()].as_ref(),
-                b"key3",
-                None,
-                grove_version
-            )
-            .unwrap()
-            .expect("cannot get from grovedb"),
-            element1
-        );
-        assert_eq!(
-            checkpoint_db
-                .get(
-                    [b"key1".as_ref(), b"key2".as_ref()].as_ref(),
-                    b"key3",
-                    None,
-                    grove_version
-                )
-                .unwrap()
-                .expect("cannot get from checkpoint"),
-            element1
-        );
-
-        let element2 = Element::new_item(b"ayy2".to_vec());
-        let element3 = Element::new_item(b"ayy3".to_vec());
-
-        checkpoint_db
-            .insert(
-                [b"key1".as_ref()].as_ref(),
-                b"key4",
-                element2.clone(),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("cannot insert into checkpoint");
-
-        db.insert(
-            [b"key1".as_ref()].as_ref(),
-            b"key4",
-            element3.clone(),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("cannot insert into GroveDB");
-
-        assert_eq!(
-            checkpoint_db
-                .get([b"key1".as_ref()].as_ref(), b"key4", None, grove_version)
-                .unwrap()
-                .expect("cannot get from checkpoint"),
-            element2,
-        );
-
-        assert_eq!(
-            db.get([b"key1".as_ref()].as_ref(), b"key4", None, grove_version)
-                .unwrap()
-                .expect("cannot get from GroveDB"),
-            element3
-        );
-
-        checkpoint_db
-            .insert(
-                [b"key1".as_ref()].as_ref(),
-                b"key5",
-                element3.clone(),
-                None,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("cannot insert into checkpoint");
-
-        db.insert(
-            [b"key1".as_ref()].as_ref(),
-            b"key6",
-            element3,
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("cannot insert into GroveDB");
-
-        assert!(matches!(
-            checkpoint_db
-                .get([b"key1".as_ref()].as_ref(), b"key6", None, grove_version)
-                .unwrap(),
-            Err(Error::PathKeyNotFound(_))
-        ));
-
-        assert!(matches!(
-            db.get([b"key1".as_ref()].as_ref(), b"key5", None, grove_version)
-                .unwrap(),
-            Err(Error::PathKeyNotFound(_))
-        ));
     }
 
     #[test]

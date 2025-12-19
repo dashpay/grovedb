@@ -676,7 +676,7 @@ impl StorageFlags {
     /// Create Storage flags from optional element flags ref
     pub fn map_cow_some_element_flags_ref(
         data: &Option<ElementFlags>,
-    ) -> Result<Option<Cow<Self>>, StorageFlagsError> {
+    ) -> Result<Option<Cow<'_, Self>>, StorageFlagsError> {
         match data {
             None => Ok(None),
             Some(data) => Self::from_slice(data.as_slice()).map(|option| option.map(Cow::Owned)),
