@@ -127,6 +127,7 @@
 
 #[cfg(feature = "minimal")]
 pub mod batch;
+mod checkpoints;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -444,11 +445,6 @@ impl GroveDb {
                 TreeType::NormalTree,
             ))
         }
-    }
-
-    /// Creates a checkpoint
-    pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        self.db.create_checkpoint(path).map_err(|e| e.into())
     }
 
     /// Returns root key of GroveDb.
