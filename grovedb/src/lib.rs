@@ -186,9 +186,13 @@ pub use grovedb_merk::estimated_costs::{
     worst_case_costs::WorstCaseLayerInformation,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::proofs::branch::{BranchQueryResult, TrunkQueryResult};
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::VerifyOptions;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::proofs::tree::Tree;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
 #[cfg(feature = "minimal")]
@@ -204,6 +208,11 @@ use grovedb_merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
+};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::{
+    calculate_chunk_depths, calculate_chunk_depths_with_minimum,
+    calculate_max_tree_depth_from_count,
 };
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
