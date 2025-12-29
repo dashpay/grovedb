@@ -154,6 +154,15 @@ impl Tree {
             }
             Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
+            Node::KVDigestCount(key, value_hash, count) => kv_digest_to_kv_hash(key, value_hash)
+                .flat_map(|kv_hash| {
+                    node_hash_with_count(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                    )
+                }),
             Node::KVRefValueHash(key, referenced_value, node_value_hash) => {
                 let mut cost = OperationCost::default();
                 let referenced_value_hash =
@@ -356,6 +365,7 @@ impl Tree {
             | Node::KVRefValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVDigest(key, ..)
+            | Node::KVDigestCount(key, ..)
             | Node::KVCount(key, ..)
             | Node::KVRefValueHashCount(key, ..) => Some(key.as_slice()),
             // These nodes don't have keys, only hashes
@@ -527,7 +537,8 @@ where
                 | Node::KVRefValueHash(key, ..)
                 | Node::KVCount(key, ..)
                 | Node::KVRefValueHashCount(key, ..)
-                | Node::KVDigest(key, _) = &node
+                | Node::KVDigest(key, _)
+                | Node::KVDigestCount(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
@@ -555,7 +566,8 @@ where
                 | Node::KVRefValueHash(key, ..)
                 | Node::KVCount(key, ..)
                 | Node::KVRefValueHashCount(key, ..)
-                | Node::KVDigest(key, _) = &node
+                | Node::KVDigest(key, _)
+                | Node::KVDigestCount(key, ..) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key {

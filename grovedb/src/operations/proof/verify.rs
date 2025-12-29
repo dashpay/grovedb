@@ -1162,7 +1162,12 @@ impl GroveDb {
             | Node::KVCount(key, value, ..)
             | Node::KVRefValueHash(key, value, ..)
             | Node::KVRefValueHashCount(key, value, ..) => Some((key.clone(), value.clone())),
-            Node::KVDigest(..) | Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => None,
+            // These nodes don't have values, only key+hash or just hash
+            Node::KVDigest(..)
+            | Node::KVDigestCount(..)
+            | Node::Hash(_)
+            | Node::KVHash(_)
+            | Node::KVHashCount(..) => None,
         }
     }
 

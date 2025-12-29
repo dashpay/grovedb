@@ -112,6 +112,7 @@ impl TrunkQueryResult {
             | Node::KVValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVDigest(key, _)
+            | Node::KVDigestCount(key, ..)
             | Node::KVRefValueHash(key, ..)
             | Node::KVCount(key, ..)
             | Node::KVRefValueHashCount(key, ..) => Some(key.clone()),
@@ -373,6 +374,7 @@ impl BranchQueryResult {
             | Node::KVValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
             | Node::KVDigest(key, _)
+            | Node::KVDigestCount(key, ..)
             | Node::KVRefValueHash(key, ..)
             | Node::KVCount(key, ..)
             | Node::KVRefValueHashCount(key, ..) => Some(key.clone()),

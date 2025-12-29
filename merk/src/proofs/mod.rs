@@ -417,6 +417,36 @@ pub enum Node {
     /// Reference type. Like `KVRefValueHash` but includes the count for
     /// node hash verification.
     KVRefValueHashCount(Vec<u8>, Vec<u8>, CryptoHash, u64),
+
+    /// Key, value_hash, and count. For proving absence in ProvableCountTree.
+    ///
+    /// Contains: `(key, value_hash, count)`
+    ///
+    /// ```text
+    ///     Query: range ["B".."D"] in ProvableCountTree (but C doesn't exist)
+    ///
+    ///            [B] ◄── KVDigestCount(key, value_hash, count=3)
+    ///          count=5    (left boundary)
+    ///           /   \
+    ///        [A]     [E] ◄── KVDigestCount(key, value_hash, count=2)
+    ///      count=2  count=2  (proves no C or D)
+    ///         ▲
+    ///       Hash
+    ///
+    ///     Hash computation during verification:
+    ///     kv_hash = H(varint(key.len()) || key || value_hash)
+    ///     node_hash = H(kv_hash || left || right || count.to_be_bytes())
+    ///                                               ▲
+    ///                            count required ────┘
+    ///
+    ///     Similar to KVDigest but with count for ProvableCountTree.
+    /// ```
+    ///
+    /// **When used**: For nodes at query boundaries in ProvableCountTree
+    /// (proving absence of keys in a range). The key is needed for range
+    /// comparisons, the value is not returned, and the count is needed
+    /// for hash verification.
+    KVDigestCount(Vec<u8>, CryptoHash, u64),
 }
 
 use std::fmt;
@@ -467,6 +497,12 @@ impl fmt::Display for Node {
                 "KVRefValueHashCount({}, {}, HASH[{}], {})",
                 hex_to_ascii(key),
                 hex_to_ascii(value),
+                hex::encode(value_hash),
+                count
+            ),
+            Node::KVDigestCount(key, value_hash, count) => format!(
+                "KVDigestCount({}, HASH[{}], {})",
+                hex_to_ascii(key),
                 hex::encode(value_hash),
                 count
             ),

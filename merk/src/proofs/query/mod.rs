@@ -932,6 +932,20 @@ where
         Node::KVDigest(self.tree().key().to_vec(), *self.tree().value_hash())
     }
 
+    /// Creates a `Node::KVDigestCount` from the key/value_hash pair and count
+    /// of the root node. Used for boundary nodes (proving absence) in
+    /// ProvableCountTree and ProvableCountSumTree.
+    /// Note: Uses aggregate count (sum of self + children) to match hash
+    /// calculation
+    pub(crate) fn to_kvdigest_count_node(&self) -> Node {
+        let count = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCount(count)) => count,
+            Ok(AggregateData::ProvableCountAndSum(count, _)) => count,
+            _ => 0, // Fallback, should not happen for ProvableCount trees
+        };
+        Node::KVDigestCount(self.tree().key().to_vec(), *self.tree().value_hash(), count)
+    }
+
     /// Creates a `Node::Hash` from the hash of the node.
     pub(crate) fn to_hash_node(&self) -> CostContext<Node> {
         self.tree().hash().map(Node::Hash)
@@ -1172,10 +1186,17 @@ where
                 Op::PushInverted(node)
             }
         } else if on_boundary_not_found || left_absence.1 || right_absence.0 {
-            if proof_params.left_to_right {
-                Op::Push(self.to_kvdigest_node())
+            // On boundary (proving absence): use KVDigest or KVDigestCount
+            // depending on whether this is a ProvableCountTree
+            let node = if is_provable_count_tree {
+                self.to_kvdigest_count_node()
             } else {
-                Op::PushInverted(self.to_kvdigest_node())
+                self.to_kvdigest_node()
+            };
+            if proof_params.left_to_right {
+                Op::Push(node)
+            } else {
+                Op::PushInverted(node)
             }
         } else if is_provable_count_tree {
             if proof_params.left_to_right {
