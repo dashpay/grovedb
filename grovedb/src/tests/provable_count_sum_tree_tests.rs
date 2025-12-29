@@ -21,6 +21,7 @@ mod tests {
     use crate::{
         batch::QualifiedGroveDbOp,
         operations::proof::GroveDBProof,
+        query::SizedQuery,
         tests::{make_test_grovedb, TEST_LEAF},
         Element, GroveDb, PathQuery,
     };
@@ -1744,8 +1745,388 @@ mod tests {
         );
     }
 
-    // ==================== ABSENCE PROOF WITH KVDigestCount TEST
-    // ====================
+    // ==================== ABSENCE PROOF TESTS ====================
+
+    #[test]
+    fn test_provable_count_sum_tree_query_existing_and_nonexistent_keys_on_right() {
+        // This test mirrors the platform query that queries for multiple addresses
+        // including one that doesn't exist in a ProvableCountSumTree.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a ProvableCountSumTree (like the platform address balances tree)
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"balances",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        // Insert two known items (like platform addresses with balances)
+        let address1 = b"address_1_xxxxxxxxxxxxxxxx"; // 26 bytes like platform addresses
+        let address2 = b"address_2_xxxxxxxxxxxxxxxx";
+        let unknown_address = b"unknown_address_xxxxxxxxx";
+
+        let item_value1 = b"some_data_for_address_1".to_vec();
+        let item_value2 = b"some_data_for_address_2".to_vec();
+        let sum_value1: i64 = 1000000;
+        let sum_value2: i64 = 2000000;
+
+        db.insert(
+            [TEST_LEAF, b"balances"].as_ref(),
+            address1,
+            Element::new_item_with_sum_item(item_value1, sum_value1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert address 1");
+
+        db.insert(
+            [TEST_LEAF, b"balances"].as_ref(),
+            address2,
+            Element::new_item_with_sum_item(item_value2, sum_value2),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert address 2");
+
+        // Query for all three keys (two existing + one non-existent)
+        let mut query = Query::new();
+        query.insert_key(address1.to_vec());
+        query.insert_key(address2.to_vec());
+        query.insert_key(unknown_address.to_vec());
+
+        // Use sized query with limit (required for absence proof verification)
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"balances".to_vec()],
+            SizedQuery::new(query, Some(100), None),
+        );
+
+        // Generate proof
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof for mixed existing/nonexistent keys");
+
+        // Verify the proof with absence proof verification
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_with_absence_proof(&proof, &path_query, grove_version)
+                .expect("should verify proof with mixed existing/nonexistent keys");
+
+        let actual_root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
+        assert_eq!(root_hash, actual_root_hash, "Root hash should match");
+
+        // Should have 3 results (2 existing + 1 absent)
+        assert_eq!(
+            proved_values.len(),
+            3,
+            "Should have 3 results (2 existing + 1 absent)"
+        );
+
+        // Verify the proved values contain our keys with correct presence/absence
+        let address1_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &address1.to_vec());
+        let address2_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &address2.to_vec());
+        let unknown_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &unknown_address.to_vec());
+
+        assert!(
+            address1_result.is_some(),
+            "Should contain address1 in results"
+        );
+        assert!(
+            address2_result.is_some(),
+            "Should contain address2 in results"
+        );
+        assert!(
+            unknown_result.is_some(),
+            "Should contain unknown_address in results"
+        );
+
+        // Existing keys should have Some(element), unknown should have None
+        assert!(
+            address1_result.unwrap().2.is_some(),
+            "address1 should have an element"
+        );
+        assert!(
+            address2_result.unwrap().2.is_some(),
+            "address2 should have an element"
+        );
+        assert!(
+            unknown_result.unwrap().2.is_none(),
+            "unknown_address should be absent (None)"
+        );
+    }
+
+    #[test]
+    fn test_provable_count_sum_tree_query_existing_and_nonexistent_keys_on_left() {
+        // This test mirrors the platform query that queries for multiple addresses
+        // including one that doesn't exist in a ProvableCountSumTree.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a ProvableCountSumTree (like the platform address balances tree)
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"balances",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        // Insert two known items (like platform addresses with balances)
+        let address1 = b"address_1_xxxxxxxxxxxxxxxx"; // 26 bytes like platform addresses
+        let address2 = b"address_2_xxxxxxxxxxxxxxxx";
+        let unknown_address = b"aa_unknown_address_xxxxxxxxx";
+
+        let item_value1 = b"some_data_for_address_1".to_vec();
+        let item_value2 = b"some_data_for_address_2".to_vec();
+        let sum_value1: i64 = 1000000;
+        let sum_value2: i64 = 2000000;
+
+        db.insert(
+            [TEST_LEAF, b"balances"].as_ref(),
+            address1,
+            Element::new_item_with_sum_item(item_value1, sum_value1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert address 1");
+
+        db.insert(
+            [TEST_LEAF, b"balances"].as_ref(),
+            address2,
+            Element::new_item_with_sum_item(item_value2, sum_value2),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert address 2");
+
+        // Query for all three keys (two existing + one non-existent)
+        let mut query = Query::new();
+        query.insert_key(address1.to_vec());
+        query.insert_key(address2.to_vec());
+        query.insert_key(unknown_address.to_vec());
+
+        // Use sized query with limit (required for absence proof verification)
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"balances".to_vec()],
+            SizedQuery::new(query, Some(100), None),
+        );
+
+        // Generate proof
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof for mixed existing/nonexistent keys");
+
+        // Verify the proof with absence proof verification
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_with_absence_proof(&proof, &path_query, grove_version)
+                .expect("should verify proof with mixed existing/nonexistent keys");
+
+        let actual_root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
+        assert_eq!(root_hash, actual_root_hash, "Root hash should match");
+
+        // Should have 3 results (2 existing + 1 absent)
+        assert_eq!(
+            proved_values.len(),
+            3,
+            "Should have 3 results (2 existing + 1 absent)"
+        );
+
+        // Verify the proved values contain our keys with correct presence/absence
+        let address1_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &address1.to_vec());
+        let address2_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &address2.to_vec());
+        let unknown_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &unknown_address.to_vec());
+
+        assert!(
+            address1_result.is_some(),
+            "Should contain address1 in results"
+        );
+        assert!(
+            address2_result.is_some(),
+            "Should contain address2 in results"
+        );
+        assert!(
+            unknown_result.is_some(),
+            "Should contain unknown_address in results"
+        );
+
+        // Existing keys should have Some(element), unknown should have None
+        assert!(
+            address1_result.unwrap().2.is_some(),
+            "address1 should have an element"
+        );
+        assert!(
+            address2_result.unwrap().2.is_some(),
+            "address2 should have an element"
+        );
+        assert!(
+            unknown_result.unwrap().2.is_none(),
+            "unknown_address should be absent (None)"
+        );
+    }
+
+    #[test]
+    fn test_provable_count_sum_tree_query_existing_and_nonexistent_keys_in_middle() {
+        // This test mirrors the platform query that queries for multiple addresses
+        // including one that doesn't exist in a ProvableCountSumTree.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a ProvableCountSumTree (like the platform address balances tree)
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"balances",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        // Insert two known items (like platform addresses with balances)
+        let address1 = b"address_1_xxxxxxxxxxxxxxxx"; // 26 bytes like platform addresses
+        let address2 = b"address_3_xxxxxxxxxxxxxxxx";
+        let unknown_address = b"address_2_xxxxxxxxxxxxxxxx";
+
+        let item_value1 = b"some_data_for_address_1".to_vec();
+        let item_value2 = b"some_data_for_address_3".to_vec();
+        let sum_value1: i64 = 1000000;
+        let sum_value2: i64 = 2000000;
+
+        db.insert(
+            [TEST_LEAF, b"balances"].as_ref(),
+            address1,
+            Element::new_item_with_sum_item(item_value1, sum_value1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert address 1");
+
+        db.insert(
+            [TEST_LEAF, b"balances"].as_ref(),
+            address2,
+            Element::new_item_with_sum_item(item_value2, sum_value2),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert address 2");
+
+        // Query for all three keys (two existing + one non-existent)
+        let mut query = Query::new();
+        query.insert_key(address1.to_vec());
+        query.insert_key(address2.to_vec());
+        query.insert_key(unknown_address.to_vec());
+
+        // Use sized query with limit (required for absence proof verification)
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"balances".to_vec()],
+            SizedQuery::new(query, Some(100), None),
+        );
+
+        // Generate proof
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof for mixed existing/nonexistent keys");
+
+        // Verify the proof with absence proof verification
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_with_absence_proof(&proof, &path_query, grove_version)
+                .expect("should verify proof with mixed existing/nonexistent keys");
+
+        let actual_root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
+        assert_eq!(root_hash, actual_root_hash, "Root hash should match");
+
+        // Should have 3 results (2 existing + 1 absent)
+        assert_eq!(
+            proved_values.len(),
+            3,
+            "Should have 3 results (2 existing + 1 absent)"
+        );
+
+        // Verify the proved values contain our keys with correct presence/absence
+        let address1_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &address1.to_vec());
+        let address2_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &address2.to_vec());
+        let unknown_result = proved_values
+            .iter()
+            .find(|(_, key, _)| key == &unknown_address.to_vec());
+
+        assert!(
+            address1_result.is_some(),
+            "Should contain address1 in results"
+        );
+        assert!(
+            address2_result.is_some(),
+            "Should contain address2 in results"
+        );
+        assert!(
+            unknown_result.is_some(),
+            "Should contain unknown_address in results"
+        );
+
+        // Existing keys should have Some(element), unknown should have None
+        assert!(
+            address1_result.unwrap().2.is_some(),
+            "address1 should have an element"
+        );
+        assert!(
+            address2_result.unwrap().2.is_some(),
+            "address2 should have an element"
+        );
+        assert!(
+            unknown_result.unwrap().2.is_none(),
+            "unknown_address should be absent (None)"
+        );
+    }
 
     #[test]
     fn test_provable_count_sum_tree_absence_proof_uses_kvdigest_count() {

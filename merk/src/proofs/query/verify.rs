@@ -163,6 +163,9 @@ impl Query {
                                 Some(Node::KVDigestCount(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
+                                Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVRefValueHashCount(..)) => {}
+                                Some(Node::KVCount(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
@@ -192,6 +195,9 @@ impl Query {
                                 Some(Node::KVDigestCount(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
+                                Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVRefValueHashCount(..)) => {}
+                                Some(Node::KVCount(..)) => {}
 
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
