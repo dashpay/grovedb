@@ -172,6 +172,8 @@ use grovedb_costs::cost_return_on_error_into;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::calculate_max_tree_depth_from_count;
 #[cfg(feature = "minimal")]
 use grovedb_merk::element::{
     costs::ElementCostExtensions, decode::ElementDecodeExtensions,
