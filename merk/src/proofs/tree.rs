@@ -211,7 +211,7 @@ impl Tree {
     /// Creates an iterator that yields the in-order traversal of the nodes at
     /// the given depth.
     #[cfg(feature = "minimal")]
-    pub fn layer(&self, depth: usize) -> LayerIter {
+    pub fn layer(&self, depth: usize) -> LayerIter<'_> {
         LayerIter::new(self, depth)
     }
 
