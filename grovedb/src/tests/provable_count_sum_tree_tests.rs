@@ -29,6 +29,7 @@ mod tests {
     fn get_node_count(node: &Node) -> Option<u64> {
         match node {
             Node::KVCount(_, _, count) => Some(*count),
+            Node::KVDigestCount(_, _, count) => Some(*count),
             Node::KVValueHashFeatureType(
                 _,
                 _,
@@ -58,6 +59,7 @@ mod tests {
                 Node::KV(k, _) => k.clone(),
                 Node::KVValueHash(k, ..) => k.clone(),
                 Node::KVDigest(k, _) => k.clone(),
+                Node::KVDigestCount(k, ..) => k.clone(),
                 Node::KVRefValueHash(k, ..) => k.clone(),
                 Node::KVRefValueHashCount(k, ..) => k.clone(),
                 Node::KVHashCount(..) => vec![],
@@ -1740,5 +1742,152 @@ mod tests {
             "Total tree count should be {}",
             item_count
         );
+    }
+
+    // ==================== ABSENCE PROOF WITH KVDigestCount TEST
+    // ====================
+
+    #[test]
+    fn test_provable_count_sum_tree_absence_proof_uses_kvdigest_count() {
+        // This test verifies that absence proofs in ProvableCountSumTree use
+        // KVDigestCount nodes (not just KVDigest) so that the count information
+        // is available for hash verification.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a ProvableCountSumTree with multiple items
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"counted_tree",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        // Insert items: "aaa", "ccc", "eee" (leaving gaps for absence proofs)
+        for (key, value) in [
+            (b"aaa".as_slice(), 10i64),
+            (b"ccc".as_slice(), 20i64),
+            (b"eee".as_slice(), 30i64),
+        ] {
+            db.insert(
+                [TEST_LEAF, b"counted_tree"].as_ref(),
+                key,
+                Element::new_sum_item(value),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert item");
+        }
+
+        // Query for a non-existent key "bbb" (between "aaa" and "ccc")
+        // This should generate an absence proof with KVDigestCount nodes
+        let mut query = Query::new();
+        query.insert_key(b"bbb".to_vec());
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"counted_tree".to_vec()], query);
+
+        // Generate proof
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate absence proof");
+
+        // Verify the proof works
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify absence proof");
+
+        let actual_root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
+        assert_eq!(root_hash, actual_root_hash, "Root hash should match");
+        assert_eq!(
+            proved_values.len(),
+            0,
+            "Should have no proved values for absence"
+        );
+
+        // Now inspect the proof to verify KVDigestCount is used
+        // Parse the GroveDB proof to get the merk layer proof
+        let grove_proof: GroveDBProof =
+            bincode::decode_from_slice(&proof, bincode::config::standard())
+                .expect("should decode proof")
+                .0;
+
+        // Helper function to check if any op contains KVDigestCount
+        fn has_kvdigest_count(ops: &[Op]) -> bool {
+            ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::Push(Node::KVDigestCount(..)) | Op::PushInverted(Node::KVDigestCount(..))
+                )
+            })
+        }
+
+        // Helper function to check if any op contains plain KVDigest (without count)
+        fn has_plain_kvdigest(ops: &[Op]) -> bool {
+            ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::Push(Node::KVDigest(..)) | Op::PushInverted(Node::KVDigest(..))
+                )
+            })
+        }
+
+        // Extract ops from the proof layers
+        match grove_proof {
+            GroveDBProof::V0(proof_v0) => {
+                // Check the inner merk proofs for KVDigestCount usage
+                let mut found_kvdigest_count = false;
+                let mut found_plain_kvdigest = false;
+
+                // Check the root layer and lower layers
+                fn check_layer_proof(
+                    layer: &crate::operations::proof::LayerProof,
+                    found_kvdigest_count: &mut bool,
+                    found_plain_kvdigest: &mut bool,
+                ) {
+                    // Decode the merk proof ops
+                    let decoder = Decoder::new(&layer.merk_proof);
+                    let ops: Vec<Op> = decoder.collect::<Result<Vec<_>, _>>().unwrap_or_default();
+
+                    if has_kvdigest_count(&ops) {
+                        *found_kvdigest_count = true;
+                    }
+                    if has_plain_kvdigest(&ops) {
+                        *found_plain_kvdigest = true;
+                    }
+
+                    // Recursively check lower layers
+                    for (_, lower_layer) in &layer.lower_layers {
+                        check_layer_proof(lower_layer, found_kvdigest_count, found_plain_kvdigest);
+                    }
+                }
+
+                check_layer_proof(
+                    &proof_v0.root_layer,
+                    &mut found_kvdigest_count,
+                    &mut found_plain_kvdigest,
+                );
+
+                // For ProvableCountSumTree absence proofs, we should have KVDigestCount
+                // and NOT plain KVDigest nodes in the counted tree layer
+                assert!(
+                    found_kvdigest_count,
+                    "Absence proof should contain KVDigestCount nodes for ProvableCountSumTree"
+                );
+                // Note: Plain KVDigest may still exist in non-counted parent
+                // layers (e.g., root) So we don't assert
+                // !found_plain_kvdigest here
+            }
+        }
     }
 }

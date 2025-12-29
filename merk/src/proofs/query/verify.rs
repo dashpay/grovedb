@@ -160,6 +160,7 @@ impl Query {
                                 // is lower than the bound
                                 Some(Node::KV(..)) => {}
                                 Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVDigestCount(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
 
@@ -188,6 +189,7 @@ impl Query {
                                 // is greater than the bound
                                 Some(Node::KV(..)) => {}
                                 Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVDigestCount(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
 
@@ -307,6 +309,16 @@ impl Query {
                     }
                     execute_node(key, None, *value_hash)?;
                 }
+                Node::KVDigestCount(key, value_hash, _count) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigestCount node");
+                    }
+                    // Similar to KVDigest but in a ProvableCountTree context.
+                    // The count is used for hash verification (handled in tree.rs),
+                    // but we don't return a value since this is for absence proofs.
+                    execute_node(key, None, *value_hash)?;
+                }
                 Node::KVRefValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
@@ -367,6 +379,7 @@ impl Query {
                     // last node in tree was less than queried item
                     Some(Node::KV(..)) => {}
                     Some(Node::KVDigest(..)) => {}
+                    Some(Node::KVDigestCount(..)) => {}
                     Some(Node::KVRefValueHash(..)) => {}
                     Some(Node::KVValueHash(..)) => {}
                     Some(Node::KVCount(..)) => {}
