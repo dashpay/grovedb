@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-visualize"
-version = "3.1.0"
+version = "4.0.0"
 edition = "2021"
 license = "MIT"
 description = "Debug prints extension crate for GroveDB"
