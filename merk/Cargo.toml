@@ -4,7 +4,7 @@ description = "Merkle key/value store adapted for GroveDB"
 version = "4.0.0"
 authors = [
         "Samuel Westrich <sam@dash.org>",
-        "Wisdom Ogwu <wisdom@dash.org",
+        "Wisdom Ogwu <wisdom@dash.org>",
         "Evgeny Fomin <evgeny.fomin@dash.org>",
         "Matt Bell <mappum@gmail.com>",
 ]
