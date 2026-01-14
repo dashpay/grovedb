@@ -35,9 +35,11 @@ use grovedb_merk::{
         apply_memonly_unchecked, make_batch_rand, make_batch_seq, make_tree_rand, make_tree_seq,
     },
 };
+use grovedb_version::version::GroveVersion;
 
 /// 1m sequential inserts in 10k batches, memonly
 fn insert_1m_10k_seq_memonly(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
@@ -62,6 +64,7 @@ fn insert_1m_10k_seq_memonly(c: &mut Criterion) {
 
 /// 1m random inserts in 10k batches, memonly
 fn insert_1m_10k_rand_memonly(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
@@ -92,6 +95,7 @@ fn insert_1m_10k_rand_memonly(c: &mut Criterion) {
 
 /// 1m sequential updates in 10k batches, memonly
 fn update_1m_10k_seq_memonly(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
@@ -118,6 +122,7 @@ fn update_1m_10k_seq_memonly(c: &mut Criterion) {
 
 /// 1m random updates in 10k batches, memonly
 fn update_1m_10k_rand_memonly(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let initial_size = 1_000_000;
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;

@@ -70,7 +70,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use grovedb_costs::{CostsExt, OperationCost};
+use grovedb_costs::OperationCost;
 use grovedb_element::Element;
 use grovedb_merk::{
     proofs::{Node, Op},
@@ -228,6 +228,7 @@ fn get_key_from_node(node: &Node) -> Option<Vec<u8>> {
         Node::KVValueHash(key, ..) => Some(key.clone()),
         Node::KVValueHashFeatureType(key, ..) => Some(key.clone()),
         Node::KVDigest(key, _) => Some(key.clone()),
+        Node::KVDigestCount(key, ..) => Some(key.clone()),
         Node::KVRefValueHash(key, ..) => Some(key.clone()),
         Node::KVCount(key, ..) => Some(key.clone()),
         Node::KVRefValueHashCount(key, ..) => Some(key.clone()),
