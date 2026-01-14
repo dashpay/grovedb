@@ -2,7 +2,11 @@
 name = "grovedb"
 description = "Fully featured database using balanced hierarchical authenticated data structures"
 version = "4.0.0"
-authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
+authors = [
+    "Samuel Westrich <sam@dash.org>",
+    "Wisdom Ogwu <wisdom@dash.org",
+    "Evgeny Fomin <evgeny.fomin@dash.org>",
+]
 edition = "2021"
 license = "MIT"
 homepage = "https://www.grovedb.org"
@@ -11,7 +15,7 @@ readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [dependencies]
-grovedb-costs = { version = "4.0.0", path = "../costs" , optional = true }
+grovedb-costs = { version = "4.0.0", path = "../costs", optional = true }
 grovedbg-types = { version = "4.0.0", path = "../grovedbg-types", optional = true }
 grovedb-merk = { version = "4.0.0", path = "../merk", optional = true, default-features = false }
 grovedb-path = { version = "4.0.0", path = "../path" }
@@ -21,8 +25,8 @@ grovedb-visualize = { version = "4.0.0", path = "../visualize", optional = true 
 grovedb-element = { version = "4.0.0", path = "../grovedb-element" }
 
 axum = { version = "0.8", features = ["macros"], optional = true }
-bincode = { version = "=2.0.0-rc.3" }
-bincode_derive = { version = "=2.0.0-rc.3" }
+bincode = { git = "https://github.com/dashpay/bincode", tag = "v2.0.0-rc.3", version = "=2.0.0-rc.3" }
+bincode_derive = { git = "https://github.com/dashpay/bincode", tag = "v2.0.0-rc.3", version = "=2.0.0-rc.3" }
 blake3 = "1.8.1"
 hex = "0.4.3"
 indexmap = "2.7.0"
@@ -32,7 +36,10 @@ itertools = { version = "0.14.0", optional = true }
 tempfile = { version = "3.23.0", optional = true }
 thiserror = { version = "2.0.17", optional = true }
 tokio-util = { version = "0.7.17", optional = true }
-tokio = { version = "1.48.0", features = ["rt-multi-thread", "net"], optional = true }
+tokio = { version = "1.48.0", features = [
+    "rt-multi-thread",
+    "net",
+], optional = true }
 tower-http = { version = "0.6.8", features = ["fs"], optional = true }
 zip-extensions = { version = "0.13.0", optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
@@ -60,10 +67,7 @@ harness = false
 default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
 serde = ["dep:serde", "grovedb-merk/serde", "indexmap/serde"]
-full = [
-    "grovedb-merk/full",
-    "minimal",
-]
+full = ["grovedb-merk/full", "minimal"]
 minimal = [
     "grovedb-merk/minimal",
     "thiserror",
@@ -75,9 +79,7 @@ minimal = [
     "grovedb-costs",
     "intmap",
 ]
-visualize = [
-    "grovedb-visualize",
-]
+visualize = ["grovedb-visualize"]
 verify = [
     "grovedb-merk/verify",
     "grovedb-costs",
@@ -94,7 +96,7 @@ grovedbg = [
     "axum",
     "tower-http",
     "zip-extensions",
-    "tempfile"
+    "tempfile",
 ]
 
 [build-dependencies]
