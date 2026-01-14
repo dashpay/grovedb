@@ -193,6 +193,10 @@ pub use grovedb_merk::proofs::query::query_item::QueryItem;
 pub use grovedb_merk::proofs::query::VerifyOptions;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::proofs::{
+    encoding::Decoder as MerkProofDecoder, Node as MerkProofNode, Op as MerkProofOp,
+};
 #[cfg(feature = "minimal")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
