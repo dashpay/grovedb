@@ -17,6 +17,12 @@ use crate::{error::Error, tree::HASH_LENGTH, TreeFeatureType};
 // Push large variants: 0x20-0x25
 // PushInverted large variants: 0x28-0x2d
 
+/// Maximum allowed value length for large value variants (64MB).
+/// This prevents DoS attacks via malicious proofs specifying unreasonably large
+/// allocations.
+#[cfg(any(feature = "minimal", feature = "verify"))]
+const MAX_VALUE_LEN: u32 = 64 * 1024 * 1024;
+
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
@@ -632,6 +638,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x20));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -643,6 +652,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x21));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -657,6 +669,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x22));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -671,6 +686,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x23));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -691,6 +709,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x24));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -704,6 +725,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x25));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -721,6 +745,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x28));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -732,6 +759,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x29));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -746,6 +776,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2a));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -760,6 +793,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2b));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -780,6 +816,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2c));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
@@ -793,6 +832,9 @@ impl Decode for Op {
                 input.read_exact(key.as_mut_slice())?;
 
                 let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2d));
+                }
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
