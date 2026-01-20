@@ -13,6 +13,10 @@ use super::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{error::Error, tree::HASH_LENGTH, TreeFeatureType};
 
+// Large value opcodes use u32 for value length (values >= 64KB)
+// Push large variants: 0x20-0x25
+// PushInverted large variants: 0x28-0x2d
+
 #[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
@@ -28,22 +32,33 @@ impl Encode for Op {
             }
             Op::Push(Node::KV(key, value)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x03, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x03, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                } else {
+                    dest.write_all(&[0x20, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                }
             }
             Op::Push(Node::KVValueHash(key, value, value_hash)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x04, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x04, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                } else {
+                    dest.write_all(&[0x21, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                }
             }
             Op::Push(Node::KVDigest(key, value_hash)) => {
                 debug_assert!(key.len() < 256);
@@ -54,34 +69,53 @@ impl Encode for Op {
             }
             Op::Push(Node::KVRefValueHash(key, value, value_hash)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x06, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x06, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                } else {
+                    dest.write_all(&[0x22, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                }
             }
             Op::Push(Node::KVValueHashFeatureType(key, value, value_hash, feature_type)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x07, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
-                feature_type.encode_into(dest)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x07, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x23, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                }
             }
             Op::Push(Node::KVCount(key, value, count)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x14, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                count.encode_into(dest)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x14, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    count.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x24, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    count.encode_into(dest)?;
+                }
             }
             Op::Push(Node::KVHashCount(kv_hash, count)) => {
                 dest.write_all(&[0x15])?;
@@ -90,14 +124,21 @@ impl Encode for Op {
             }
             Op::Push(Node::KVRefValueHashCount(key, value, value_hash, count)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x18, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
-                count.encode_into(dest)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x18, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x25, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                }
             }
             Op::Push(Node::KVDigestCount(key, value_hash, count)) => {
                 debug_assert!(key.len() < 256);
@@ -119,22 +160,33 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KV(key, value)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x0a, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x0a, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                } else {
+                    dest.write_all(&[0x28, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                }
             }
             Op::PushInverted(Node::KVValueHash(key, value, value_hash)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x0b, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x0b, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                } else {
+                    dest.write_all(&[0x29, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                }
             }
             Op::PushInverted(Node::KVDigest(key, value_hash)) => {
                 debug_assert!(key.len() < 256);
@@ -145,13 +197,19 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KVRefValueHash(key, value, value_hash)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x0d, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x0d, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                } else {
+                    dest.write_all(&[0x2a, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                }
             }
             Op::PushInverted(Node::KVValueHashFeatureType(
                 key,
@@ -160,24 +218,37 @@ impl Encode for Op {
                 feature_type,
             )) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x0e, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
-                feature_type.encode_into(dest)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x0e, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x2b, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                }
             }
             Op::PushInverted(Node::KVCount(key, value, count)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x16, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                count.encode_into(dest)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x16, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    count.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x2c, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    count.encode_into(dest)?;
+                }
             }
             Op::PushInverted(Node::KVHashCount(kv_hash, count)) => {
                 dest.write_all(&[0x17])?;
@@ -186,14 +257,21 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KVRefValueHashCount(key, value, value_hash, count)) => {
                 debug_assert!(key.len() < 256);
-                debug_assert!(value.len() < 65536);
-
-                dest.write_all(&[0x19, key.len() as u8])?;
-                dest.write_all(key)?;
-                (value.len() as u16).encode_into(dest)?;
-                dest.write_all(value)?;
-                dest.write_all(value_hash)?;
-                count.encode_into(dest)?;
+                if value.len() < 65536 {
+                    dest.write_all(&[0x19, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                } else {
+                    dest.write_all(&[0x2d, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    count.encode_into(dest)?;
+                }
             }
             Op::PushInverted(Node::KVDigestCount(key, value_hash, count)) => {
                 debug_assert!(key.len() < 256);
@@ -213,24 +291,37 @@ impl Encode for Op {
     }
 
     fn encoding_length(&self) -> ed::Result<usize> {
+        // Header size: 1 (opcode) + 1 (key_len) + 2 (value_len u16) = 4 for small
+        // values Header size: 1 (opcode) + 1 (key_len) + 4 (value_len u32) = 6
+        // for large values
         Ok(match self {
             Op::Push(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::Push(Node::KVHash(_)) => 1 + HASH_LENGTH,
             Op::Push(Node::KVDigest(key, _)) => 2 + key.len() + HASH_LENGTH,
-            Op::Push(Node::KV(key, value)) => 4 + key.len() + value.len(),
-            Op::Push(Node::KVValueHash(key, value, _)) => 4 + key.len() + value.len() + HASH_LENGTH,
+            Op::Push(Node::KV(key, value)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len()
+            }
+            Op::Push(Node::KVValueHash(key, value, _)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH
+            }
             Op::Push(Node::KVRefValueHash(key, value, _)) => {
-                4 + key.len() + value.len() + HASH_LENGTH
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH
             }
             Op::Push(Node::KVValueHashFeatureType(key, value, _, feature_type)) => {
-                4 + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
             }
             Op::Push(Node::KVCount(key, value, count)) => {
-                4 + key.len() + value.len() + count.encoding_length()?
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + count.encoding_length()?
             }
             Op::Push(Node::KVHashCount(_, count)) => 1 + HASH_LENGTH + count.encoding_length()?,
             Op::Push(Node::KVRefValueHashCount(key, value, _, count)) => {
-                4 + key.len() + value.len() + HASH_LENGTH + count.encoding_length()?
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH + count.encoding_length()?
             }
             Op::Push(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
@@ -238,24 +329,32 @@ impl Encode for Op {
             Op::PushInverted(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVHash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVDigest(key, _)) => 2 + key.len() + HASH_LENGTH,
-            Op::PushInverted(Node::KV(key, value)) => 4 + key.len() + value.len(),
+            Op::PushInverted(Node::KV(key, value)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len()
+            }
             Op::PushInverted(Node::KVValueHash(key, value, _)) => {
-                4 + key.len() + value.len() + HASH_LENGTH
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH
             }
             Op::PushInverted(Node::KVRefValueHash(key, value, _)) => {
-                4 + key.len() + value.len() + HASH_LENGTH
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH
             }
             Op::PushInverted(Node::KVValueHashFeatureType(key, value, _, feature_type)) => {
-                4 + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
             }
             Op::PushInverted(Node::KVCount(key, value, count)) => {
-                4 + key.len() + value.len() + count.encoding_length()?
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + count.encoding_length()?
             }
             Op::PushInverted(Node::KVHashCount(_, count)) => {
                 1 + HASH_LENGTH + count.encoding_length()?
             }
             Op::PushInverted(Node::KVRefValueHashCount(key, value, _, count)) => {
-                4 + key.len() + value.len() + HASH_LENGTH + count.encoding_length()?
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header + key.len() + value.len() + HASH_LENGTH + count.encoding_length()?
             }
             Op::PushInverted(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
@@ -524,6 +623,186 @@ impl Decode for Op {
                 let count: u64 = Decode::decode(&mut input)?;
                 Self::PushInverted(Node::KVDigestCount(key, value_hash, count))
             }
+
+            // Large value variants (value_len as u32)
+            // Push large variants: 0x20-0x25
+            0x20 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                Self::Push(Node::KV(key, value))
+            }
+            0x21 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                Self::Push(Node::KVValueHash(key, value, value_hash))
+            }
+            0x22 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                Self::Push(Node::KVRefValueHash(key, value, value_hash))
+            }
+            0x23 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(input)?;
+                Self::Push(Node::KVValueHashFeatureType(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                ))
+            }
+            0x24 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let count: u64 = Decode::decode(&mut input)?;
+
+                Self::Push(Node::KVCount(key, value, count))
+            }
+            0x25 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let count: u64 = Decode::decode(&mut input)?;
+                Self::Push(Node::KVRefValueHashCount(key, value, value_hash, count))
+            }
+
+            // PushInverted large variants: 0x28-0x2d
+            0x28 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                Self::PushInverted(Node::KV(key, value))
+            }
+            0x29 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                Self::PushInverted(Node::KVValueHash(key, value, value_hash))
+            }
+            0x2a => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                Self::PushInverted(Node::KVRefValueHash(key, value, value_hash))
+            }
+            0x2b => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(input)?;
+                Self::PushInverted(Node::KVValueHashFeatureType(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                ))
+            }
+            0x2c => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let count: u64 = Decode::decode(&mut input)?;
+
+                Self::PushInverted(Node::KVCount(key, value, count))
+            }
+            0x2d => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let count: u64 = Decode::decode(&mut input)?;
+                Self::PushInverted(Node::KVRefValueHashCount(key, value, value_hash, count))
+            }
+
             0x10 => Self::Parent,
             0x11 => Self::Child,
             0x12 => Self::ParentInverted,
