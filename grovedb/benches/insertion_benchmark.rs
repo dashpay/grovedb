@@ -34,6 +34,8 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use grovedb::{Element, GroveDb};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
+use grovedb_version::version::GroveVersion;
+#[cfg(feature = "minimal")]
 use rand::Rng;
 #[cfg(feature = "minimal")]
 use tempfile::TempDir;
@@ -47,6 +49,7 @@ const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::empty();
 /// without a transaction
 #[cfg(feature = "minimal")]
 pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
@@ -84,6 +87,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
 /// with a transaction
 #[cfg(feature = "minimal")]
 pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
@@ -122,6 +126,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
 /// Benchmark function to insert 10 root leaves without a transaction
 #[cfg(feature = "minimal")]
 pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10);
@@ -147,6 +152,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
 /// Benchmark function to insert 10 root leaves with a transaction
 #[cfg(feature = "minimal")]
 pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10);
@@ -175,6 +181,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
 /// and insert key-values into it without a transaction
 #[cfg(feature = "minimal")]
 pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let mut nested_subtrees: Vec<[u8; 32]> = Vec::new();
@@ -216,6 +223,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
 /// and insert key-values into it with a transaction
 #[cfg(feature = "minimal")]
 pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
+    let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let mut nested_subtrees: Vec<[u8; 32]> = Vec::new();

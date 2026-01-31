@@ -11,8 +11,8 @@ readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [dependencies]
-bincode = { version = "=2.0.0-rc.3" }
-bincode_derive = { version = "=2.0.0-rc.3" }
+bincode = { version = "=2.0.1" }
+bincode_derive = { version = "=2.0.1" }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 hex = "0.4.3"
 integer-encoding = "4.1.0"

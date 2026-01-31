@@ -178,8 +178,10 @@ impl Encode for Query {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl Decode for Query {
-    fn decode<D: bincode::de::Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+impl<Context> Decode<Context> for Query {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
         let _version = u8::decode(decoder)?;
         // Decode the items vector
         let items = Vec::<QueryItem>::decode(decoder)?;
@@ -218,8 +220,8 @@ impl Decode for Query {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-impl<'de> BorrowDecode<'de> for Query {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+impl<'de, Context> BorrowDecode<'de, Context> for Query {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         let _version = u8::borrow_decode(decoder)?;
