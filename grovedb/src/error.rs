@@ -161,6 +161,10 @@ pub enum Error {
     #[error("cyclic error")]
     /// Cyclic reference
     CyclicError(&'static str),
+
+    #[error("commitment tree error: {0}")]
+    /// Commitment tree operation error
+    CommitmentTreeError(String),
 }
 
 impl Error {

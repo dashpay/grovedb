@@ -59,8 +59,8 @@ impl ElementDeleteFromStorageExtensions for Element {
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!("delete", grove_version.grovedb_versions.element.delete);
         let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree, false) => Op::Delete,
+            (TreeType::NormalTree | TreeType::CommitmentTree, true) => Op::DeleteLayered,
+            (TreeType::NormalTree | TreeType::CommitmentTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
@@ -119,8 +119,8 @@ impl ElementDeleteFromStorageExtensions for Element {
                 .delete_with_sectioned_removal_bytes
         );
         let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree, false) => Op::Delete,
+            (TreeType::NormalTree | TreeType::CommitmentTree, true) => Op::DeleteLayered,
+            (TreeType::NormalTree | TreeType::CommitmentTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
@@ -175,8 +175,8 @@ impl ElementDeleteFromStorageExtensions for Element {
                 .delete_into_batch_operations
         );
         let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree, false) => Op::Delete,
+            (TreeType::NormalTree | TreeType::CommitmentTree, true) => Op::DeleteLayered,
+            (TreeType::NormalTree | TreeType::CommitmentTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)

@@ -153,7 +153,13 @@ impl Element {
                 | Element::CountSumTree(..)
                 | Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
+                | Element::CommitmentTree(..)
         )
+    }
+
+    /// Check if the element is a commitment tree
+    pub fn is_commitment_tree(&self) -> bool {
+        matches!(self, Element::CommitmentTree(..))
     }
 
     /// Check if the element is a reference
@@ -202,7 +208,8 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags) => flags,
         }
     }
 
@@ -219,7 +226,8 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags) => flags,
         }
     }
 
@@ -236,7 +244,8 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags) => flags,
         }
     }
 
@@ -253,7 +262,8 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => *flags = new_flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags) => *flags = new_flags,
         }
     }
 

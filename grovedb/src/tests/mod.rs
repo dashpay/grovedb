@@ -16,6 +16,7 @@ mod provable_count_tree_structure_test;
 mod provable_count_tree_test;
 mod test_compaction_sizes;
 mod test_provable_count_fresh;
+mod commitment_tree_tests;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
 

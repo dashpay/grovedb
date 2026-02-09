@@ -55,7 +55,7 @@ impl ElementCostPrivateExtensions for Element {
             grove_version.grovedb_versions.element.get_specialized_cost
         );
         match self {
-            Element::Tree(..) => Ok(TREE_COST_SIZE),
+            Element::Tree(..) | Element::CommitmentTree(..) => Ok(TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
             Element::SumItem(..) | Element::ItemWithSumItem(..) => Ok(SUM_ITEM_COST_SIZE),
@@ -88,7 +88,7 @@ impl ElementCostExtensions for Element {
         // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value, grove_version)?;
         let cost = match element {
-            Element::Tree(_, flags) => {
+            Element::Tree(_, flags) | Element::CommitmentTree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -228,7 +228,8 @@ impl ElementCostExtensions for Element {
             | Element::CountTree(..)
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
-            | Element::ProvableCountSumTree(..) => Some(cost),
+            | Element::ProvableCountSumTree(..)
+            | Element::CommitmentTree(..) => Some(cost),
             _ => None,
         }
     }
@@ -243,7 +244,7 @@ impl ElementCostExtensions for Element {
                 flags_len + flags_len.required_space() as u32
             });
         match self {
-            Element::Tree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::Tree(..) | Element::CommitmentTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::BigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),

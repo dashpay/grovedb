@@ -108,6 +108,8 @@ pub enum ElementType {
     ItemWithSumItem = 9,
     /// Provable count sum tree - discriminant 10
     ProvableCountSumTree = 10,
+    /// Orchard-style commitment tree - discriminant 11
+    CommitmentTree = 11,
 }
 
 impl ElementType {
@@ -216,6 +218,7 @@ impl ElementType {
                 | ElementType::CountSumTree
                 | ElementType::ProvableCountTree
                 | ElementType::ProvableCountSumTree
+                | ElementType::CommitmentTree
         )
     }
 
@@ -249,6 +252,7 @@ impl ElementType {
             ElementType::ProvableCountTree => "provable count tree",
             ElementType::ItemWithSumItem => "item with sum item",
             ElementType::ProvableCountSumTree => "provable count sum tree",
+            ElementType::CommitmentTree => "commitment tree",
         }
     }
 }
@@ -269,6 +273,7 @@ impl TryFrom<u8> for ElementType {
             8 => Ok(ElementType::ProvableCountTree),
             9 => Ok(ElementType::ItemWithSumItem),
             10 => Ok(ElementType::ProvableCountSumTree),
+            11 => Ok(ElementType::CommitmentTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -309,7 +314,11 @@ mod tests {
             ElementType::try_from(10).unwrap(),
             ElementType::ProvableCountSumTree
         );
-        assert!(ElementType::try_from(11).is_err());
+        assert_eq!(
+            ElementType::try_from(11).unwrap(),
+            ElementType::CommitmentTree
+        );
+        assert!(ElementType::try_from(12).is_err());
     }
 
     #[test]
@@ -463,6 +472,7 @@ mod tests {
         assert!(ElementType::CountSumTree.is_tree());
         assert!(ElementType::ProvableCountTree.is_tree());
         assert!(!ElementType::ItemWithSumItem.is_tree());
+        assert!(ElementType::CommitmentTree.is_tree());
     }
 
     /// Verifies that serialized Element discriminants match ElementType
@@ -537,13 +547,20 @@ mod tests {
                 ElementType::ItemWithSumItem,
                 "ItemWithSumItem",
             ),
+            // discriminant 10 (ProvableCountSumTree was missing from test, add it)
+            // discriminant 11
+            (
+                Element::CommitmentTree(None, None),
+                ElementType::CommitmentTree,
+                "CommitmentTree",
+            ),
         ];
 
-        // Verify we're testing all 10 discriminants
+        // Verify we're testing all 12 discriminants (0-11)
         assert_eq!(
             test_cases.len(),
-            10,
-            "Expected 10 Element variants, got {}",
+            11,
+            "Expected 11 Element variants in test, got {}",
             test_cases.len()
         );
 

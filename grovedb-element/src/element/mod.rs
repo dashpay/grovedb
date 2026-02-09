@@ -74,6 +74,9 @@ pub enum Element {
     /// Same as Element::CountSumTree but includes counts in cryptographic state
     /// (sum is tracked but NOT included in hash, only count is)
     ProvableCountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+    /// Orchard-style commitment tree (append-only, fixed-depth Sinsemilla Merkle)
+    /// Used for zero-knowledge shielded pools. Not a Merk tree internally.
+    CommitmentTree(Option<Vec<u8>>, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -216,6 +219,16 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::CommitmentTree(root_key, flags) => {
+                write!(
+                    f,
+                    "CommitmentTree({}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -235,6 +248,7 @@ impl Element {
             Element::ProvableCountTree(..) => ElementType::ProvableCountTree,
             Element::ProvableCountSumTree(..) => ElementType::ProvableCountSumTree,
             Element::ItemWithSumItem(..) => ElementType::ItemWithSumItem,
+            Element::CommitmentTree(..) => ElementType::CommitmentTree,
         }
     }
 

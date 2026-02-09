@@ -15,4 +15,7 @@ pub(crate) mod is_empty_tree;
 pub mod proof;
 
 #[cfg(feature = "minimal")]
+pub mod commitment_tree;
+
+#[cfg(feature = "minimal")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};

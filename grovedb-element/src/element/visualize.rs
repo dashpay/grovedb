@@ -132,6 +132,16 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::CommitmentTree(root_key, flags) => {
+                drawer.write(b"commitment_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

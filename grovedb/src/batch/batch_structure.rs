@@ -133,9 +133,14 @@ where
                 GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     Ok(())
                 }
-                GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
+                GroveOp::ReplaceTreeRootKey { .. } => {
+                    // ReplaceTreeRootKey is used internally and also produced by
+                    // preprocessing CommitmentTreeAppend ops
+                    Ok(())
+                }
+                GroveOp::CommitmentTreeAppend { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
                     Err(Error::InvalidBatchOperation(
-                        "replace and insert tree hash are internal operations only",
+                        "commitment tree append and insert tree hash are internal operations only",
                     ))
                 }
             };

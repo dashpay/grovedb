@@ -11,5 +11,7 @@ members = [
     "path",
     "grovedbg-types",
     "grovedb-version",
-    "grovedb-epoch-based-storage-flags"
-, "grovedb-element"]
+    "grovedb-epoch-based-storage-flags",
+    "grovedb-element",
+    "grovedb-commitment-tree",
+]

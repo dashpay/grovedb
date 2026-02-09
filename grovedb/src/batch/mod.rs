@@ -147,6 +147,13 @@ pub enum GroveOp {
     Delete,
     /// Delete tree
     DeleteTree(TreeType),
+    /// Append a leaf to a CommitmentTree's Sinsemilla tree
+    CommitmentTreeAppend {
+        /// 32-byte leaf hash (must be a valid Pallas field element)
+        leaf: [u8; 32],
+        /// Monotonically increasing checkpoint identifier
+        checkpoint_id: u64,
+    },
 }
 
 impl GroveOp {
@@ -162,6 +169,7 @@ impl GroveOp {
             GroveOp::Patch { .. } => 7,
             GroveOp::InsertOrReplace { .. } => 8,
             GroveOp::InsertOnly { .. } => 9,
+            GroveOp::CommitmentTreeAppend { .. } => 10,
         }
     }
 }
@@ -383,6 +391,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::DeleteTree(tree_type) => format!("Delete Tree {}", tree_type),
             GroveOp::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
             GroveOp::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
+            GroveOp::CommitmentTreeAppend { .. } => "Commitment Tree Append".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
@@ -534,6 +543,24 @@ impl QualifiedGroveDbOp {
             path,
             key,
             op: GroveOp::DeleteTree(tree_type),
+        }
+    }
+
+    /// A commitment tree append op using a known owned path and known key
+    pub fn commitment_tree_append_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        leaf: [u8; 32],
+        checkpoint_id: u64,
+    ) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: GroveOp::CommitmentTreeAppend {
+                leaf,
+                checkpoint_id,
+            },
         }
     }
 
@@ -1025,7 +1052,8 @@ where
             | Element::CountTree(..)
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
-            | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::ProvableCountSumTree(..)
+            | Element::CommitmentTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1071,9 +1099,11 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
-                GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => Err(
-                    Error::InvalidBatchOperation("references can not point to trees being updated"),
-                )
+                GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::CommitmentTreeAppend { .. } => Err(Error::InvalidBatchOperation(
+                    "references can not point to trees being updated",
+                ))
                 .wrap_with_cost(cost),
                 GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
@@ -1149,7 +1179,8 @@ where
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
                         | Element::ProvableCountTree(..)
-                        | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
+                        | Element::ProvableCountSumTree(..)
+                        | Element::CommitmentTree(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
@@ -1184,7 +1215,8 @@ where
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
-                    | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
+                    | Element::ProvableCountSumTree(..)
+                    | Element::CommitmentTree(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
@@ -1362,7 +1394,8 @@ where
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
-                    | Element::ProvableCountSumTree(..) => {
+                    | Element::ProvableCountSumTree(..)
+                    | Element::CommitmentTree(..) => {
                         let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
@@ -1617,6 +1650,12 @@ where
                         )
                     );
                 }
+                GroveOp::CommitmentTreeAppend { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "CommitmentTreeAppend should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
             }
         }
 
@@ -1692,7 +1731,8 @@ where
                                     | Element::CountTree(..)
                                     | Element::CountSumTree(..)
                                     | Element::ProvableCountTree(..)
-                                    | Element::ProvableCountSumTree(..) => {
+                                    | Element::ProvableCountSumTree(..)
+                                    | Element::CommitmentTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
                                         let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
@@ -1959,6 +1999,18 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
+                                                    } else if let Element::CommitmentTree(
+                                                        _,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                            }
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -1981,6 +2033,13 @@ impl GroveDb {
                                                         ))
                                                         .wrap_with_cost(cost);
                                                     }
+                                                }
+                                                GroveOp::CommitmentTreeAppend { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "CommitmentTreeAppend should have been \
+                                                         preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
                                                 }
                                             }
                                         }
@@ -2166,6 +2225,24 @@ impl GroveDb {
                             options.clone().map(|o| o.as_delete_options()),
                             transaction,
                             grove_version
+                        )
+                    );
+                }
+                GroveOp::CommitmentTreeAppend {
+                    leaf,
+                    checkpoint_id,
+                } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.commitment_tree_append(
+                            path_slices.as_slice(),
+                            op.key.as_slice(),
+                            leaf,
+                            checkpoint_id,
+                            transaction,
+                            grove_version,
                         )
                     );
                 }
@@ -2364,6 +2441,13 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
+        // Preprocess CommitmentTreeAppend ops: execute Sinsemilla operations in aux
+        // storage, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
+        );
+
         // Determines whether to check batch operation consistency
         // return false if the disable option is set to true, returns true for any other
         // case
@@ -2483,6 +2567,12 @@ impl GroveDb {
         if ops.is_empty() {
             return Ok(()).wrap_with_cost(cost);
         }
+
+        // Preprocess CommitmentTreeAppend ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
+        );
 
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();
         if batch_apply_options.batch_pause_height.is_none() {

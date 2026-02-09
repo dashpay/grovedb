@@ -288,4 +288,27 @@ impl Element {
     ) -> Self {
         Element::ProvableCountSumTree(maybe_root_key, count_value, sum_value, flags)
     }
+
+    /// Set element to an empty commitment tree
+    pub fn empty_commitment_tree() -> Self {
+        Element::CommitmentTree(None, None)
+    }
+
+    /// Set element to an empty commitment tree with flags
+    pub fn empty_commitment_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::CommitmentTree(None, flags)
+    }
+
+    /// Set element to a commitment tree
+    pub fn new_commitment_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::CommitmentTree(maybe_root_key, None)
+    }
+
+    /// Set element to a commitment tree with flags
+    pub fn new_commitment_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CommitmentTree(maybe_root_key, flags)
+    }
 }
