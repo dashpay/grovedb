@@ -9,52 +9,46 @@
 //!
 //! - Uses `shardtree::ShardTree` for efficient tree management with pruning
 //! - Uses `orchard::tree::MerkleHashOrchard` for Sinsemilla-based node hashing
-//! - Stores tree data via the `ShardStore` trait (must be implemented for
-//!   the backing storage)
+//! - Stores tree data via the `ShardStore` trait (must be implemented for the
+//!   backing storage)
 //! - Produces 32-byte root hashes compatible with GroveDB's `Hash` type
 
-mod storage;
-pub mod serialization;
 pub mod kv_store;
+pub mod serialization;
+mod storage;
 
 // Incremental Merkle tree primitives
+use std::fmt::Debug;
+
 pub use incrementalmerkletree::{Address, Hashable, Level, Position, Retention};
-pub use shardtree::store::ShardStore;
-
-// Orchard tree types
-pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
-pub use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath};
-pub use orchard::NOTE_COMMITMENT_TREE_DEPTH;
-
-// Proof creation/verification (requires orchard "circuit" feature)
-pub use orchard::circuit::{ProvingKey, VerifyingKey};
-pub use orchard::Proof;
-
+pub use kv_store::{KvShardStore, MemKvStore};
 // Builder for constructing shielded transactions
 pub use orchard::builder::{Builder, BundleType};
-
 // Bundle/Action types
-pub use orchard::bundle::{Authorized, Flags};
-pub use orchard::{Action, Bundle, Note};
-
+pub use orchard::bundle::{Authorized, BatchValidator, Flags};
+// Proof creation/verification (requires orchard "circuit" feature)
+pub use orchard::circuit::{ProvingKey, VerifyingKey};
 // Key management
 pub use orchard::keys::{
     FullViewingKey, IncomingViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey,
     SpendValidatingKey, SpendingKey,
 };
-
 // Note types (orchard::Address aliased to avoid conflict with incrementalmerkletree::Address)
 pub use orchard::note::Rho;
-pub use orchard::value::NoteValue;
-pub use orchard::Address as PaymentAddress;
-
-use std::fmt::Debug;
-
+// Bundle reconstruction types (needed for deserializing bundles from bytes)
+pub use orchard::note::TransmittedNoteCiphertext;
+// Orchard tree types
+pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
+pub use orchard::{
+    primitives::redpallas,
+    tree::{Anchor, MerkleHashOrchard, MerklePath},
+    value::{NoteValue, ValueCommitment},
+    Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
+};
+pub use shardtree::store::ShardStore;
 use shardtree::ShardTree;
-use thiserror::Error;
-
-pub use kv_store::{KvShardStore, MemKvStore};
 pub use storage::{new_memory_store, MemoryCommitmentStore};
+use thiserror::Error;
 
 /// Height of each shard in the commitment tree.
 ///
@@ -179,10 +173,7 @@ where
     /// Create a checkpoint at the current tree state.
     ///
     /// Checkpoints allow computing roots and witnesses at historical states.
-    pub fn checkpoint(
-        &mut self,
-        id: S::CheckpointId,
-    ) -> Result<(), CommitmentTreeError<S::Error>> {
+    pub fn checkpoint(&mut self, id: S::CheckpointId) -> Result<(), CommitmentTreeError<S::Error>> {
         self.inner.checkpoint(id)?;
         Ok(())
     }
@@ -242,8 +233,9 @@ pub fn verify_inclusion(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use incrementalmerkletree::Hashable;
+
+    use super::*;
 
     /// Create a deterministic test leaf from an index.
     fn test_leaf(index: u64) -> MerkleHashOrchard {
@@ -255,11 +247,7 @@ mod tests {
         MerkleHashOrchard::combine(Level::from(0), &empty, &{
             // Create a slightly different leaf for each index by combining
             // the empty leaf with itself at different levels.
-            MerkleHashOrchard::combine(
-                Level::from((index % 31) as u8 + 1),
-                &empty,
-                &empty,
-            )
+            MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty)
         })
     }
 
@@ -334,10 +322,7 @@ mod tests {
         tree.append_raw(leaf, Retention::Marked).unwrap();
         tree.checkpoint(0u32).unwrap();
 
-        let path = tree
-            .orchard_witness(Position::from(0u64))
-            .unwrap()
-            .unwrap();
+        let path = tree.orchard_witness(Position::from(0u64)).unwrap().unwrap();
         let anchor = tree.anchor().unwrap();
 
         assert!(

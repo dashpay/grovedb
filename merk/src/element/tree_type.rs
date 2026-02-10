@@ -49,9 +49,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(root_key, _) => {
-                Some((root_key, TreeType::CommitmentTree))
-            }
+            Element::CommitmentTree(root_key, _) => Some((root_key, TreeType::CommitmentTree)),
             _ => None,
         }
     }
@@ -71,9 +69,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(root_key, _) => {
-                Some((root_key, TreeType::CommitmentTree))
-            }
+            Element::CommitmentTree(root_key, _) => Some((root_key, TreeType::CommitmentTree)),
             _ => None,
         }
     }

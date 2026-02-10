@@ -151,7 +151,11 @@ pub enum GroveOp {
     CommitmentTreeAppend {
         /// 32-byte leaf hash (must be a valid Pallas field element)
         leaf: [u8; 32],
-        /// Monotonically increasing checkpoint identifier
+    },
+    /// Create a checkpoint in a CommitmentTree's Sinsemilla tree
+    CommitmentTreeCheckpoint {
+        /// Monotonically increasing checkpoint identifier (typically block
+        /// height)
         checkpoint_id: u64,
     },
 }
@@ -170,6 +174,7 @@ impl GroveOp {
             GroveOp::InsertOrReplace { .. } => 8,
             GroveOp::InsertOnly { .. } => 9,
             GroveOp::CommitmentTreeAppend { .. } => 10,
+            GroveOp::CommitmentTreeCheckpoint { .. } => 11,
         }
     }
 }
@@ -392,6 +397,9 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
             GroveOp::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
             GroveOp::CommitmentTreeAppend { .. } => "Commitment Tree Append".to_string(),
+            GroveOp::CommitmentTreeCheckpoint { checkpoint_id } => {
+                format!("Commitment Tree Checkpoint({})", checkpoint_id)
+            }
         };
 
         f.debug_struct("GroveDbOp")
@@ -547,20 +555,26 @@ impl QualifiedGroveDbOp {
     }
 
     /// A commitment tree append op using a known owned path and known key
-    pub fn commitment_tree_append_op(
+    pub fn commitment_tree_append_op(path: Vec<Vec<u8>>, key: Vec<u8>, leaf: [u8; 32]) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: GroveOp::CommitmentTreeAppend { leaf },
+        }
+    }
+
+    /// A commitment tree checkpoint op using a known owned path and known key
+    pub fn commitment_tree_checkpoint_op(
         path: Vec<Vec<u8>>,
         key: Vec<u8>,
-        leaf: [u8; 32],
         checkpoint_id: u64,
     ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
-            op: GroveOp::CommitmentTreeAppend {
-                leaf,
-                checkpoint_id,
-            },
+            op: GroveOp::CommitmentTreeCheckpoint { checkpoint_id },
         }
     }
 
@@ -1101,7 +1115,8 @@ where
             match op {
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
-                | GroveOp::CommitmentTreeAppend { .. } => Err(Error::InvalidBatchOperation(
+                | GroveOp::CommitmentTreeAppend { .. }
+                | GroveOp::CommitmentTreeCheckpoint { .. } => Err(Error::InvalidBatchOperation(
                     "references can not point to trees being updated",
                 ))
                 .wrap_with_cost(cost),
@@ -1656,6 +1671,13 @@ where
                     ))
                     .wrap_with_cost(cost);
                 }
+                GroveOp::CommitmentTreeCheckpoint { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "CommitmentTreeCheckpoint should have been preprocessed before batch \
+                         execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
             }
         }
 
@@ -2034,9 +2056,10 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
-                                                GroveOp::CommitmentTreeAppend { .. } => {
+                                                GroveOp::CommitmentTreeAppend { .. }
+                                                | GroveOp::CommitmentTreeCheckpoint { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
-                                                        "CommitmentTreeAppend should have been \
+                                                        "CommitmentTree ops should have been \
                                                          preprocessed",
                                                     ))
                                                     .wrap_with_cost(cost);
@@ -2228,10 +2251,7 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::CommitmentTreeAppend {
-                    leaf,
-                    checkpoint_id,
-                } => {
+                GroveOp::CommitmentTreeAppend { leaf } => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
@@ -2240,6 +2260,19 @@ impl GroveDb {
                             path_slices.as_slice(),
                             op.key.as_slice(),
                             leaf,
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::CommitmentTreeCheckpoint { checkpoint_id } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.commitment_tree_checkpoint(
+                            path_slices.as_slice(),
+                            op.key.as_slice(),
                             checkpoint_id,
                             transaction,
                             grove_version,

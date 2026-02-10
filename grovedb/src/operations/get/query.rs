@@ -515,12 +515,12 @@ where {
                         Element::ProvableCountSumTree(_, count_value, sum_value, _) => Ok(
                             QueryItemOrSumReturnType::CountSumValue(count_value, sum_value),
                         ),
-                        Element::Tree(..) | Element::CommitmentTree(..) => Err(
-                            Error::InvalidQuery(
+                        Element::Tree(..) | Element::CommitmentTree(..) => {
+                            Err(Error::InvalidQuery(
                                 "path_queries can only refer to items, sum items, references and \
                                  sum trees",
-                            ),
-                        ),
+                            ))
+                        }
                     }
                 }
                 _ => Err(Error::CorruptedCodeExecution(

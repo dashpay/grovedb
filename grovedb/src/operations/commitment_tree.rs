@@ -14,8 +14,9 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
-use grovedb_storage::{Storage, StorageBatch, StorageContext};
+use grovedb_storage::{
+    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -28,7 +29,7 @@ use crate::{
 const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
 
 /// Maximum number of historical checkpoints to retain in commitment trees.
-const DEFAULT_MAX_CHECKPOINTS: usize = 100;
+const DEFAULT_MAX_CHECKPOINTS: usize = 1000;
 
 type CtShardStore = KvShardStore<MemKvStore, MerkleHashOrchard>;
 type Ct = CommitmentTree<CtShardStore>;
@@ -39,9 +40,7 @@ fn load_mem_store_from_aux<'db, C: StorageContext<'db>>(
     ctx: &C,
     cost: &mut OperationCost,
 ) -> Result<MemKvStore, Error> {
-    let aux_data = ctx
-        .get_aux(COMMITMENT_TREE_DATA_KEY)
-        .unwrap_add_cost(cost);
+    let aux_data = ctx.get_aux(COMMITMENT_TREE_DATA_KEY).unwrap_add_cost(cost);
     match aux_data {
         Ok(Some(bytes)) => MemKvStore::deserialize(&bytes).map_err(|e| {
             Error::CorruptedData(format!("failed to deserialize commitment tree: {}", e))
@@ -62,7 +61,6 @@ impl GroveDb {
     ///
     /// The `path` must point to the parent of the commitment tree key,
     /// and `key` must identify a CommitmentTree element.
-    /// `checkpoint_id` is a monotonically increasing identifier for this append.
     ///
     /// Returns `(root_hash, position)`: the new Sinsemilla root hash and the
     /// position of the appended leaf in the commitment tree.
@@ -71,7 +69,6 @@ impl GroveDb {
         path: P,
         key: &[u8],
         leaf: [u8; 32],
-        checkpoint_id: u64,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<([u8; 32], u64), Error>
@@ -104,10 +101,8 @@ impl GroveDb {
             .get_immediate_storage_context(ct_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let mem_store = cost_return_on_error_no_add!(
-            cost,
-            load_mem_store_from_aux(&storage_ctx, &mut cost)
-        );
+        let mem_store =
+            cost_return_on_error_no_add!(cost, load_mem_store_from_aux(&storage_ctx, &mut cost));
 
         let mut tree = tree_from_mem_store(mem_store);
 
@@ -119,17 +114,11 @@ impl GroveDb {
             ))
         );
 
-        // Append and checkpoint
+        // Append leaf (no checkpoint -- checkpointing is done separately per block)
         cost_return_on_error_no_add!(
             cost,
             tree.append_raw(leaf_hash, Retention::Marked)
                 .map_err(|e| Error::CommitmentTreeError(format!("append failed: {}", e)))
-        );
-
-        cost_return_on_error_no_add!(
-            cost,
-            tree.checkpoint(checkpoint_id)
-                .map_err(|e| Error::CommitmentTreeError(format!("checkpoint failed: {}", e)))
         );
 
         // Get the new root hash and position
@@ -174,7 +163,8 @@ impl GroveDb {
             )
         );
 
-        // Extract existing root_key to preserve it (Sinsemilla ops don't change Merk root key)
+        // Extract existing root_key to preserve it (Sinsemilla ops don't change Merk
+        // root key)
         let existing_root_key = match &element {
             Element::CommitmentTree(rk, _) => rk.clone(),
             _ => unreachable!(),
@@ -194,10 +184,8 @@ impl GroveDb {
         );
 
         // Propagate the change up to GroveDB root
-        let mut merk_cache: HashMap<
-            SubtreePath<B>,
-            Merk<PrefixedRocksDbTransactionContext>,
-        > = HashMap::new();
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
+            HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
         cost_return_on_error!(
@@ -222,6 +210,70 @@ impl GroveDb {
         tx.commit_local()
             .map(|()| (root_hash, u64::from(position)))
             .wrap_with_cost(cost)
+    }
+
+    /// Create a checkpoint in a CommitmentTree subtree.
+    ///
+    /// Checkpoints record tree state boundaries (typically one per block) so
+    /// that witness generation can produce inclusion proofs relative to a
+    /// known root. Checkpointing does **not** change the Sinsemilla root
+    /// hash, so no Merk propagation is performed.
+    ///
+    /// `checkpoint_id` must be monotonically increasing across calls for the
+    /// same commitment tree.
+    pub fn commitment_tree_checkpoint<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        checkpoint_id: u64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+
+        // Build the subtree path for the commitment tree
+        let ct_path_vec = self.build_ct_path(&path, key);
+        let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
+        let ct_path = SubtreePath::from(ct_path_refs.as_slice());
+
+        // Load commitment tree data from aux storage
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(ct_path, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let mem_store =
+            cost_return_on_error_no_add!(cost, load_mem_store_from_aux(&storage_ctx, &mut cost));
+
+        let mut tree = tree_from_mem_store(mem_store);
+
+        // Create checkpoint
+        cost_return_on_error_no_add!(
+            cost,
+            tree.checkpoint(checkpoint_id)
+                .map_err(|e| Error::CommitmentTreeError(format!("checkpoint failed: {}", e)))
+        );
+
+        // Save commitment tree data back to aux storage
+        let mem_store = tree.into_store().into_inner();
+        let serialized = mem_store.serialize();
+
+        cost_return_on_error!(
+            &mut cost,
+            storage_ctx
+                .put_aux(COMMITMENT_TREE_DATA_KEY, &serialized, None)
+                .map_err(|e| e.into())
+        );
+
+        drop(storage_ctx);
+
+        tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Get the current Sinsemilla root hash of a CommitmentTree subtree.
@@ -426,7 +478,8 @@ impl GroveDb {
         Ok(witness).wrap_with_cost(cost)
     }
 
-    /// Prepare everything needed for a spend in one call: `(Anchor, MerklePath)`.
+    /// Prepare everything needed for a spend in one call: `(Anchor,
+    /// MerklePath)`.
     ///
     /// Loads the commitment tree once and returns both the anchor and the
     /// Merkle path for the given position, avoiding a double load when
@@ -496,15 +549,18 @@ impl GroveDb {
         Ok(tree_from_mem_store(mem_store))
     }
 
-    /// Preprocess `CommitmentTreeAppend` ops in a batch.
+    /// Preprocess `CommitmentTreeAppend` and `CommitmentTreeCheckpoint` ops in
+    /// a batch.
     ///
-    /// For each group of appends targeting the same (path, key):
+    /// For each group of append/checkpoint ops targeting the same (path, key):
     /// 1. Loads the Sinsemilla tree from aux storage
-    /// 2. Appends all leaves in order
-    /// 3. Saves back to aux storage
-    /// 4. Replaces the ops with a single `ReplaceTreeRootKey`
+    /// 2. Appends all leaves in order (no per-leaf checkpoint)
+    /// 3. Applies any checkpoint ops in order
+    /// 4. Saves back to aux storage
+    /// 5. Replaces the append ops with a single `ReplaceTreeRootKey`
     ///
-    /// The returned ops list contains no `CommitmentTreeAppend` variants.
+    /// The returned ops list contains no `CommitmentTreeAppend` or
+    /// `CommitmentTreeCheckpoint` variants.
     pub(crate) fn preprocess_commitment_tree_ops(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -513,40 +569,57 @@ impl GroveDb {
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
 
-        // Quick check: if no CommitmentTreeAppend ops, return as-is
-        let has_ct_ops = ops
-            .iter()
-            .any(|op| matches!(op.op, GroveOp::CommitmentTreeAppend { .. }));
+        // Quick check: if no commitment tree ops, return as-is
+        let has_ct_ops = ops.iter().any(|op| {
+            matches!(
+                op.op,
+                GroveOp::CommitmentTreeAppend { .. } | GroveOp::CommitmentTreeCheckpoint { .. }
+            )
+        });
         if !has_ct_ops {
             return Ok(ops).wrap_with_cost(cost);
         }
 
-        // Group CommitmentTreeAppend ops by (path, key), preserving order.
-        // Key: (path_bytes, key_bytes) -> Vec of (leaf, checkpoint_id) in order
-        let mut ct_groups: HashMap<(Vec<Vec<u8>>, Vec<u8>), Vec<([u8; 32], u64)>> = HashMap::new();
-        // Track which indices are CommitmentTreeAppend ops
-        let mut ct_indices: HashMap<(Vec<Vec<u8>>, Vec<u8>), Vec<usize>> = HashMap::new();
+        /// Internal enum to preserve ordering of appends and checkpoints.
+        enum CtAction {
+            Append([u8; 32]),
+            Checkpoint(u64),
+        }
 
-        for (i, op) in ops.iter().enumerate() {
-            if let GroveOp::CommitmentTreeAppend {
-                leaf,
-                checkpoint_id,
-            } = &op.op
-            {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
-                ct_groups
-                    .entry(path_key.clone())
-                    .or_default()
-                    .push((*leaf, *checkpoint_id));
-                ct_indices.entry(path_key).or_default().push(i);
+        // Group commitment tree ops by (path, key), preserving order.
+        let mut ct_groups: HashMap<(Vec<Vec<u8>>, Vec<u8>), Vec<CtAction>> = HashMap::new();
+
+        for op in ops.iter() {
+            match &op.op {
+                GroveOp::CommitmentTreeAppend { leaf } => {
+                    let path_key = (op.path.to_path(), op.key.get_key_clone());
+                    ct_groups
+                        .entry(path_key)
+                        .or_default()
+                        .push(CtAction::Append(*leaf));
+                }
+                GroveOp::CommitmentTreeCheckpoint { checkpoint_id } => {
+                    let path_key = (op.path.to_path(), op.key.get_key_clone());
+                    ct_groups
+                        .entry(path_key)
+                        .or_default()
+                        .push(CtAction::Checkpoint(*checkpoint_id));
+                }
+                _ => {}
             }
         }
 
-        // Process each group: execute Sinsemilla operations and produce ReplaceTreeRootKey
+        // Process each group: execute Sinsemilla operations and produce
+        // ReplaceTreeRootKey
         let mut replacements: HashMap<(Vec<Vec<u8>>, Vec<u8>), QualifiedGroveDbOp> = HashMap::new();
+        // Track groups that only had checkpoint ops (no appends) -- those don't need
+        // a ReplaceTreeRootKey since the root hash doesn't change.
+        let mut checkpoint_only_groups: HashMap<(Vec<Vec<u8>>, Vec<u8>), bool> = HashMap::new();
 
-        for (path_key, leaves) in ct_groups.iter() {
+        for (path_key, actions) in ct_groups.iter() {
             let (path_vec, key_bytes) = path_key;
+
+            let has_appends = actions.iter().any(|a| matches!(a, CtAction::Append(_)));
 
             // Read existing element to verify it's a CommitmentTree
             let path_slices: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
@@ -590,40 +663,52 @@ impl GroveDb {
 
             let mut tree = tree_from_mem_store(mem_store);
 
-            // Append all leaves in order
-            for (leaf, checkpoint_id) in leaves {
-                let leaf_hash = cost_return_on_error_no_add!(
-                    cost,
-                    merkle_hash_from_bytes(leaf).ok_or(Error::InvalidInput(
-                        "invalid commitment leaf: not a valid Pallas field element"
-                    ))
-                );
+            // Execute all actions in order
+            for action in actions {
+                match action {
+                    CtAction::Append(leaf) => {
+                        let leaf_hash = cost_return_on_error_no_add!(
+                            cost,
+                            merkle_hash_from_bytes(leaf).ok_or(Error::InvalidInput(
+                                "invalid commitment leaf: not a valid Pallas field element"
+                            ))
+                        );
 
-                cost_return_on_error_no_add!(
-                    cost,
-                    tree.append_raw(leaf_hash, Retention::Marked)
-                        .map_err(|e| Error::CommitmentTreeError(format!(
-                            "append failed: {}",
-                            e
-                        )))
-                );
-
-                cost_return_on_error_no_add!(
-                    cost,
-                    tree.checkpoint(*checkpoint_id)
-                        .map_err(|e| Error::CommitmentTreeError(format!(
-                            "checkpoint failed: {}",
-                            e
-                        )))
-                );
+                        cost_return_on_error_no_add!(
+                            cost,
+                            tree.append_raw(leaf_hash, Retention::Marked).map_err(|e| {
+                                Error::CommitmentTreeError(format!("append failed: {}", e))
+                            })
+                        );
+                    }
+                    CtAction::Checkpoint(checkpoint_id) => {
+                        cost_return_on_error_no_add!(
+                            cost,
+                            tree.checkpoint(*checkpoint_id).map_err(
+                                |e| Error::CommitmentTreeError(format!("checkpoint failed: {}", e))
+                            )
+                        );
+                    }
+                }
             }
 
-            // Get final root hash and save
-            let root_hash = cost_return_on_error_no_add!(
-                cost,
-                tree.root_hash()
-                    .map_err(|e| Error::CommitmentTreeError(format!("root hash failed: {}", e)))
-            );
+            // Save the modified tree back to aux storage
+            let root_hash = if has_appends {
+                // Root hash changed -- we need a ReplaceTreeRootKey
+                let rh = cost_return_on_error_no_add!(
+                    cost,
+                    tree.root_hash()
+                        .map_err(|e| Error::CommitmentTreeError(format!(
+                            "root hash failed: {}",
+                            e
+                        )))
+                );
+                Some(rh)
+            } else {
+                // Checkpoint-only: no root hash change
+                checkpoint_only_groups.insert(path_key.clone(), true);
+                None
+            };
 
             let mem_store = tree.into_store().into_inner();
             let serialized = mem_store.serialize();
@@ -637,37 +722,48 @@ impl GroveDb {
 
             drop(storage_ctx);
 
-            // Create replacement op
-            let replacement = QualifiedGroveDbOp {
-                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
-                key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
-                op: GroveOp::ReplaceTreeRootKey {
-                    hash: root_hash,
-                    root_key: existing_root_key,
-                    aggregate_data: AggregateData::NoAggregateData,
-                },
-            };
-            replacements.insert(path_key.clone(), replacement);
+            // Create replacement op only if there were appends
+            if let Some(root_hash) = root_hash {
+                let replacement = QualifiedGroveDbOp {
+                    path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
+                    key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
+                    op: GroveOp::ReplaceTreeRootKey {
+                        hash: root_hash,
+                        root_key: existing_root_key,
+                        aggregate_data: AggregateData::NoAggregateData,
+                    },
+                };
+                replacements.insert(path_key.clone(), replacement);
+            }
         }
 
-        // Build the new ops list: keep non-CT ops, replace first CT op per group
-        // with ReplaceTreeRootKey, skip the rest
+        // Build the new ops list: keep non-CT ops, replace first CT append op per
+        // group with ReplaceTreeRootKey, skip the rest of CT ops
         let mut first_seen: HashMap<(Vec<Vec<u8>>, Vec<u8>), bool> = HashMap::new();
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops.into_iter() {
-            if let GroveOp::CommitmentTreeAppend { .. } = &op.op {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
-                if !first_seen.contains_key(&path_key) {
-                    first_seen.insert(path_key.clone(), true);
-                    // Replace first occurrence with the ReplaceTreeRootKey
-                    if let Some(replacement) = replacements.remove(&path_key) {
-                        result.push(replacement);
+            match &op.op {
+                GroveOp::CommitmentTreeAppend { .. } => {
+                    let path_key = (op.path.to_path(), op.key.get_key_clone());
+                    if !first_seen.contains_key(&path_key) {
+                        first_seen.insert(path_key.clone(), true);
+                        // Replace first occurrence with the ReplaceTreeRootKey
+                        if let Some(replacement) = replacements.remove(&path_key) {
+                            result.push(replacement);
+                        }
                     }
+                    // Skip subsequent CT ops for the same key
                 }
-                // Skip subsequent CT ops for the same key
-            } else {
-                result.push(op);
+                GroveOp::CommitmentTreeCheckpoint { .. } => {
+                    // Checkpoint ops are fully handled in preprocessing; skip
+                    // them. If there were no appends for
+                    // this group, just skip (aux was already
+                    // updated above).
+                }
+                _ => {
+                    result.push(op);
+                }
             }
         }
 

@@ -8,6 +8,7 @@ mod sum_tree_tests;
 
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
+mod commitment_tree_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
 mod provable_count_sum_tree_tests;
@@ -16,7 +17,6 @@ mod provable_count_tree_structure_test;
 mod provable_count_tree_test;
 mod test_compaction_sizes;
 mod test_provable_count_fresh;
-mod commitment_tree_tests;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
 

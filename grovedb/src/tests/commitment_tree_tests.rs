@@ -2,11 +2,8 @@
 //!
 //! Tests for CommitmentTree as a GroveDB subtree type.
 
+use grovedb_commitment_tree::{Anchor, ExtractedNoteCommitment, Hashable, MerkleHashOrchard};
 use grovedb_version::version::GroveVersion;
-
-use grovedb_commitment_tree::{
-    Anchor, ExtractedNoteCommitment, Hashable, MerkleHashOrchard,
-};
 
 use crate::{
     batch::QualifiedGroveDbOp,
@@ -326,7 +323,12 @@ fn test_commitment_tree_multiple_items() {
     for i in 0u32..10 {
         let key = format!("note_{}", i);
         let element = db
-            .get([b"commitments"].as_ref(), key.as_bytes(), None, grove_version)
+            .get(
+                [b"commitments"].as_ref(),
+                key.as_bytes(),
+                None,
+                grove_version,
+            )
             .unwrap()
             .expect("should get item");
         assert_eq!(element.as_item_bytes().unwrap(), &i.to_be_bytes());
@@ -421,7 +423,12 @@ fn test_commitment_tree_with_transaction() {
 
     // Should be visible within transaction
     let element = db
-        .get(EMPTY_PATH, b"commitments", Some(&transaction), grove_version)
+        .get(
+            EMPTY_PATH,
+            b"commitments",
+            Some(&transaction),
+            grove_version,
+        )
         .unwrap()
         .expect("should get in transaction");
     assert!(element.is_commitment_tree());
@@ -453,11 +460,7 @@ fn test_commitment_tree_with_transaction() {
 fn test_leaf_bytes(index: u64) -> [u8; 32] {
     use grovedb_commitment_tree::Level;
     let empty = MerkleHashOrchard::empty_leaf();
-    let leaf = MerkleHashOrchard::combine(
-        Level::from((index % 31) as u8 + 1),
-        &empty,
-        &empty,
-    );
+    let leaf = MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty);
     leaf.to_bytes()
 }
 
@@ -487,7 +490,7 @@ fn test_commitment_tree_append_and_root() {
     // Append a leaf
     let leaf = test_leaf_bytes(0);
     let (root_after_append, _pos) = db
-        .commitment_tree_append(EMPTY_PATH, b"commitments", leaf, 0, None, grove_version)
+        .commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
         .unwrap()
         .expect("should append leaf");
 
@@ -524,7 +527,7 @@ fn test_commitment_tree_multiple_appends() {
     for i in 0..5u64 {
         let leaf = test_leaf_bytes(i);
         let (root, _pos) = db
-            .commitment_tree_append(EMPTY_PATH, b"commitments", leaf, i, None, grove_version)
+            .commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("should append");
         roots.push(root);
@@ -533,7 +536,8 @@ fn test_commitment_tree_multiple_appends() {
     // Each append should produce a different root
     for i in 1..roots.len() {
         assert_ne!(
-            roots[i - 1], roots[i],
+            roots[i - 1],
+            roots[i],
             "consecutive roots should differ (append {})",
             i
         );
@@ -569,10 +573,10 @@ fn test_commitment_tree_deterministic() {
     // Append same leaves to both
     for i in 0..3u64 {
         let leaf = test_leaf_bytes(i);
-        db1.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, i, None, grove_version)
+        db1.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("append to db1");
-        db2.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, i, None, grove_version)
+        db2.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("append to db2");
     }
@@ -586,7 +590,10 @@ fn test_commitment_tree_deterministic() {
         .unwrap()
         .expect("root2");
 
-    assert_eq!(root1, root2, "identical appends should produce identical roots");
+    assert_eq!(
+        root1, root2,
+        "identical appends should produce identical roots"
+    );
 }
 
 #[test]
@@ -608,10 +615,15 @@ fn test_commitment_tree_witness_generation() {
     // Append several leaves
     for i in 0..5u64 {
         let leaf = test_leaf_bytes(i);
-        db.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, i, None, grove_version)
+        db.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("append");
     }
+
+    // Checkpoint after all appends (witnesses require a checkpoint)
+    db.commitment_tree_checkpoint(EMPTY_PATH, b"commitments", 0, None, grove_version)
+        .unwrap()
+        .expect("checkpoint");
 
     // Generate witness for position 0
     let witness = db
@@ -619,7 +631,10 @@ fn test_commitment_tree_witness_generation() {
         .unwrap()
         .expect("should generate witness");
 
-    assert!(witness.is_some(), "witness should exist for marked position");
+    assert!(
+        witness.is_some(),
+        "witness should exist for marked position"
+    );
 
     // The witness path should have 32 siblings (tree depth = 32)
     let path = witness.unwrap();
@@ -645,7 +660,7 @@ fn test_commitment_tree_persist_across_operations() {
     // Append leaf 0
     let leaf0 = test_leaf_bytes(0);
     let (root_after_0, _pos) = db
-        .commitment_tree_append(EMPTY_PATH, b"commitments", leaf0, 0, None, grove_version)
+        .commitment_tree_append(EMPTY_PATH, b"commitments", leaf0, None, grove_version)
         .unwrap()
         .expect("append 0");
 
@@ -659,7 +674,7 @@ fn test_commitment_tree_persist_across_operations() {
     // Append leaf 1 (builds on the persisted state)
     let leaf1 = test_leaf_bytes(1);
     let (root_after_1, _pos) = db
-        .commitment_tree_append(EMPTY_PATH, b"commitments", leaf1, 1, None, grove_version)
+        .commitment_tree_append(EMPTY_PATH, b"commitments", leaf1, None, grove_version)
         .unwrap()
         .expect("append 1");
 
@@ -717,10 +732,15 @@ fn test_commitment_tree_nested_with_sinsemilla() {
     let path: &[&[u8]] = &[b"shielded_pools", b"credits"];
     for i in 0..3u64 {
         let leaf = test_leaf_bytes(i);
-        db.commitment_tree_append(path, b"commitments", leaf, i, None, grove_version)
+        db.commitment_tree_append(path, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("append to nested commitment tree");
     }
+
+    // Checkpoint after all appends (witnesses require a checkpoint)
+    db.commitment_tree_checkpoint(path, b"commitments", 0, None, grove_version)
+        .unwrap()
+        .expect("checkpoint");
 
     // Verify root hash
     let root = db
@@ -764,7 +784,6 @@ fn test_commitment_tree_append_with_transaction() {
             EMPTY_PATH,
             b"commitments",
             leaf,
-            0,
             Some(&transaction),
             grove_version,
         )
@@ -793,9 +812,7 @@ fn test_commitment_tree_append_with_transaction() {
     assert_ne!(root_in_tx, root_no_tx);
 
     // Commit
-    db.commit_transaction(transaction)
-        .unwrap()
-        .expect("commit");
+    db.commit_transaction(transaction).unwrap().expect("commit");
 
     // Now root should match
     let root_after_commit = db
@@ -828,7 +845,7 @@ fn test_commitment_tree_append_propagates_to_grovedb_root() {
     let root_hash_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
     let leaf = test_leaf_bytes(0);
-    db.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, 0, None, grove_version)
+    db.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
         .unwrap()
         .expect("append");
 
@@ -860,7 +877,7 @@ fn test_commitment_tree_multiple_appends_propagate() {
 
     for i in 0..5u64 {
         let leaf = test_leaf_bytes(i);
-        db.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, i, None, grove_version)
+        db.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("append");
         grovedb_root_hashes.push(db.root_hash(None, grove_version).unwrap().unwrap());
@@ -898,10 +915,10 @@ fn test_commitment_tree_propagation_deterministic() {
 
     for i in 0..3u64 {
         let leaf = test_leaf_bytes(i);
-        db1.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, i, None, grove_version)
+        db1.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("append to db1");
-        db2.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, i, None, grove_version)
+        db2.commitment_tree_append(EMPTY_PATH, b"commitments", leaf, None, grove_version)
             .unwrap()
             .expect("append to db2");
     }
@@ -958,7 +975,7 @@ fn test_commitment_tree_nested_append_propagates() {
     let root_hash_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
     let leaf = test_leaf_bytes(0);
-    db.commitment_tree_append(ct_path, b"commitments", leaf, 0, None, grove_version)
+    db.commitment_tree_append(ct_path, b"commitments", leaf, None, grove_version)
         .unwrap()
         .expect("append to nested commitment tree");
 
@@ -997,7 +1014,6 @@ fn test_batch_commitment_tree_append() {
         vec![],
         b"commitments".to_vec(),
         leaf,
-        0,
     )];
 
     db.apply_batch(ops, None, None, grove_version)
@@ -1045,7 +1061,6 @@ fn test_batch_commitment_tree_multiple_appends_same_key() {
                 vec![],
                 b"commitments".to_vec(),
                 test_leaf_bytes(i),
-                i,
             )
         })
         .collect();
@@ -1072,7 +1087,6 @@ fn test_batch_commitment_tree_multiple_appends_same_key() {
             EMPTY_PATH,
             b"commitments",
             test_leaf_bytes(i),
-            i,
             None,
             grove_version,
         )
@@ -1143,12 +1157,7 @@ fn test_batch_commitment_tree_append_with_other_ops() {
             b"key1".to_vec(),
             Element::new_item(b"value1".to_vec()),
         ),
-        QualifiedGroveDbOp::commitment_tree_append_op(
-            vec![],
-            b"commitments".to_vec(),
-            leaf,
-            0,
-        ),
+        QualifiedGroveDbOp::commitment_tree_append_op(vec![], b"commitments".to_vec(), leaf),
     ];
 
     db.apply_batch(ops, None, None, grove_version)
@@ -1183,7 +1192,6 @@ fn test_batch_commitment_tree_append_nonexistent_tree_fails() {
         vec![],
         b"nonexistent".to_vec(),
         leaf,
-        0,
     )];
 
     let result = db.apply_batch(ops, None, None, grove_version).unwrap();
@@ -1215,7 +1223,6 @@ fn test_batch_commitment_tree_append_on_non_commitment_tree_fails() {
         vec![],
         b"normal_tree".to_vec(),
         leaf,
-        0,
     )];
 
     let result = db.apply_batch(ops, None, None, grove_version).unwrap();
@@ -1225,7 +1232,8 @@ fn test_batch_commitment_tree_append_on_non_commitment_tree_fails() {
     );
 }
 
-// ==================== Phase 2: Lifecycle Integration Tests ====================
+// ==================== Phase 2: Lifecycle Integration Tests
+// ====================
 
 #[test]
 fn test_commitment_tree_position_tracking() {
@@ -1252,21 +1260,21 @@ fn test_commitment_tree_position_tracking() {
 
     // Append first leaf -> position 0
     let (_, pos0) = db
-        .commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(0), 0, None, grove_version)
+        .commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(0), None, grove_version)
         .unwrap()
         .expect("append 0");
     assert_eq!(pos0, 0, "first leaf should be at position 0");
 
     // Append second leaf -> position 1
     let (_, pos1) = db
-        .commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(1), 1, None, grove_version)
+        .commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(1), None, grove_version)
         .unwrap()
         .expect("append 1");
     assert_eq!(pos1, 1, "second leaf should be at position 1");
 
     // Append third leaf -> position 2
     let (_, pos2) = db
-        .commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(2), 2, None, grove_version)
+        .commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(2), None, grove_version)
         .unwrap()
         .expect("append 2");
     assert_eq!(pos2, 2, "third leaf should be at position 2");
@@ -1276,7 +1284,11 @@ fn test_commitment_tree_position_tracking() {
         .commitment_tree_current_end_position(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
         .expect("query position");
-    assert_eq!(queried_pos, Some(2), "end position should be 2 after 3 appends");
+    assert_eq!(
+        queried_pos,
+        Some(2),
+        "end position should be 2 after 3 appends"
+    );
 }
 
 #[test]
@@ -1299,7 +1311,10 @@ fn test_commitment_tree_empty_position() {
         .commitment_tree_current_end_position(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
         .expect("query position on empty tree");
-    assert_eq!(pos, None, "empty commitment tree should return None for position");
+    assert_eq!(
+        pos, None,
+        "empty commitment tree should return None for position"
+    );
 }
 
 #[test]
@@ -1339,32 +1354,33 @@ fn test_commitment_tree_nullifier_pattern() {
     // Step 1: Append a note commitment (simulating a deposit/receive)
     let note_commitment = test_leaf_bytes(42);
     let (root_hash, position) = db
-        .commitment_tree_append(
-            EMPTY_PATH,
-            b"pool",
-            note_commitment,
-            0,
-            None,
-            grove_version,
-        )
+        .commitment_tree_append(EMPTY_PATH, b"pool", note_commitment, None, grove_version)
         .unwrap()
         .expect("append note commitment");
 
     assert_eq!(position, 0, "first note should be at position 0");
     assert_ne!(root_hash, [0u8; 32], "root hash should be non-zero");
 
+    // Checkpoint after append (witnesses require a checkpoint)
+    db.commitment_tree_checkpoint(EMPTY_PATH, b"pool", 0, None, grove_version)
+        .unwrap()
+        .expect("checkpoint");
+
     // Step 2: Generate witness for the note (needed for spending)
     let witness = db
         .commitment_tree_witness(EMPTY_PATH, b"pool", position, None, grove_version)
         .unwrap()
         .expect("witness generation should succeed");
-    assert!(witness.is_some(), "witness should exist for marked position");
+    assert!(
+        witness.is_some(),
+        "witness should exist for marked position"
+    );
     let witness_path = witness.unwrap();
     assert_eq!(witness_path.len(), 32, "witness path should have 32 levels");
 
     // Step 3: "Spend" the note by publishing its nullifier
-    // In the real system, the nullifier is derived from the note's nullifier key + commitment
-    // Here we simulate it with a deterministic value
+    // In the real system, the nullifier is derived from the note's nullifier key +
+    // commitment Here we simulate it with a deterministic value
     let nullifier_bytes = b"nullifier_for_note_42";
 
     // Check nullifier doesn't exist yet (not already spent)
@@ -1377,10 +1393,7 @@ fn test_commitment_tree_nullifier_pattern() {
         )
         .unwrap()
         .expect("should query nullifier existence");
-    assert!(
-        !already_spent,
-        "nullifier should not exist before spending"
-    );
+    assert!(!already_spent, "nullifier should not exist before spending");
 
     // Insert nullifier (marks the note as spent)
     db.insert(
@@ -1476,7 +1489,6 @@ fn test_commitment_tree_multi_pool_pattern() {
             pools_path,
             b"credit_pool",
             test_leaf_bytes(100),
-            0,
             None,
             grove_version,
         )
@@ -1488,7 +1500,6 @@ fn test_commitment_tree_multi_pool_pattern() {
             pools_path,
             b"shared_token_pool",
             test_leaf_bytes(200),
-            0,
             None,
             grove_version,
         )
@@ -1500,7 +1511,6 @@ fn test_commitment_tree_multi_pool_pattern() {
             pools_path,
             b"token_abc",
             test_leaf_bytes(300),
-            0,
             None,
             grove_version,
         )
@@ -1523,19 +1533,16 @@ fn test_commitment_tree_multi_pool_pattern() {
             vec![b"pools".to_vec()],
             b"credit_pool".to_vec(),
             test_leaf_bytes(101),
-            1,
         ),
         QualifiedGroveDbOp::commitment_tree_append_op(
             vec![b"pools".to_vec()],
             b"shared_token_pool".to_vec(),
             test_leaf_bytes(201),
-            1,
         ),
         QualifiedGroveDbOp::commitment_tree_append_op(
             vec![b"pools".to_vec()],
             b"token_abc".to_vec(),
             test_leaf_bytes(301),
-            1,
         ),
     ];
 
@@ -1551,12 +1558,7 @@ fn test_commitment_tree_multi_pool_pattern() {
     assert_eq!(credit_end, Some(1), "credit pool should have 2 leaves");
 
     let shared_end = db
-        .commitment_tree_current_end_position(
-            pools_path,
-            b"shared_token_pool",
-            None,
-            grove_version,
-        )
+        .commitment_tree_current_end_position(pools_path, b"shared_token_pool", None, grove_version)
         .unwrap()
         .expect("query shared position");
     assert_eq!(shared_end, Some(1), "shared pool should have 2 leaves");
@@ -1572,7 +1574,10 @@ fn test_commitment_tree_multi_pool_pattern() {
         .commitment_tree_root_hash(pools_path, b"credit_pool", None, grove_version)
         .unwrap()
         .expect("query credit root");
-    assert_ne!(credit_root, new_credit_root, "credit root should change after batch");
+    assert_ne!(
+        credit_root, new_credit_root,
+        "credit root should change after batch"
+    );
 }
 
 // ==================== Phase 3: Convenience API Tests ====================
@@ -1598,27 +1603,28 @@ fn test_commitment_tree_anchor_operation() {
         .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
         .expect("should get anchor of empty tree");
-    assert_eq!(anchor, Anchor::empty_tree(), "empty tree anchor should match");
+    assert_eq!(
+        anchor,
+        Anchor::empty_tree(),
+        "empty tree anchor should match"
+    );
 
     // Append leaves and verify anchor changes
     for i in 0..3u64 {
-        db.commitment_tree_append(
-            EMPTY_PATH,
-            b"pool",
-            test_leaf_bytes(i),
-            i,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("append");
+        db.commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(i), None, grove_version)
+            .unwrap()
+            .expect("append");
     }
 
     let anchor_after = db
         .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
         .expect("should get anchor after appends");
-    assert_ne!(anchor_after, Anchor::empty_tree(), "anchor should change after appends");
+    assert_ne!(
+        anchor_after,
+        Anchor::empty_tree(),
+        "anchor should change after appends"
+    );
 
     // Anchor should be consistent with root_hash
     let root_hash = db
@@ -1627,10 +1633,13 @@ fn test_commitment_tree_anchor_operation() {
         .expect("root hash");
 
     // Anchor wraps the root hash — verify consistency by converting root_hash back
-    let root_node = grovedb_commitment_tree::merkle_hash_from_bytes(&root_hash)
-        .expect("valid Pallas element");
+    let root_node =
+        grovedb_commitment_tree::merkle_hash_from_bytes(&root_hash).expect("valid Pallas element");
     let expected_anchor = Anchor::from(root_node);
-    assert_eq!(anchor_after, expected_anchor, "anchor should match root hash");
+    assert_eq!(
+        anchor_after, expected_anchor,
+        "anchor should match root hash"
+    );
 }
 
 #[test]
@@ -1654,10 +1663,15 @@ fn test_commitment_tree_orchard_witness_operation() {
     for i in 0..5u64 {
         let leaf_bytes = test_leaf_bytes(i);
         leaves.push(leaf_bytes);
-        db.commitment_tree_append(EMPTY_PATH, b"pool", leaf_bytes, i, None, grove_version)
+        db.commitment_tree_append(EMPTY_PATH, b"pool", leaf_bytes, None, grove_version)
             .unwrap()
             .expect("append");
     }
+
+    // Checkpoint after all appends (witnesses require a checkpoint)
+    db.commitment_tree_checkpoint(EMPTY_PATH, b"pool", 0, None, grove_version)
+        .unwrap()
+        .expect("checkpoint");
 
     // Get anchor for verification
     let anchor = db
@@ -1665,20 +1679,19 @@ fn test_commitment_tree_orchard_witness_operation() {
         .unwrap()
         .expect("anchor");
 
-    // Generate orchard witness for each position and verify path.root(cmx) == anchor
+    // Generate orchard witness for each position and verify path.root(cmx) ==
+    // anchor
     for (i, leaf_bytes) in leaves.iter().enumerate() {
         let merkle_path = db
-            .commitment_tree_orchard_witness(
-                EMPTY_PATH,
-                b"pool",
-                i as u64,
-                None,
-                grove_version,
-            )
+            .commitment_tree_orchard_witness(EMPTY_PATH, b"pool", i as u64, None, grove_version)
             .unwrap()
             .expect("should generate orchard witness");
 
-        assert!(merkle_path.is_some(), "witness should exist for position {}", i);
+        assert!(
+            merkle_path.is_some(),
+            "witness should exist for position {}",
+            i
+        );
         let path = merkle_path.unwrap();
 
         // Verify inclusion: path.root(cmx) should equal the anchor
@@ -1712,10 +1725,15 @@ fn test_commitment_tree_prepare_spend() {
     // Append a note commitment and record its position
     let note_bytes = test_leaf_bytes(42);
     let (_root, position) = db
-        .commitment_tree_append(EMPTY_PATH, b"pool", note_bytes, 0, None, grove_version)
+        .commitment_tree_append(EMPTY_PATH, b"pool", note_bytes, None, grove_version)
         .unwrap()
         .expect("append note");
     assert_eq!(position, 0);
+
+    // Checkpoint after append (witnesses require a checkpoint)
+    db.commitment_tree_checkpoint(EMPTY_PATH, b"pool", 0, None, grove_version)
+        .unwrap()
+        .expect("checkpoint");
 
     // Prepare spend: get (Anchor, MerklePath) in one call
     let spend_data = db
@@ -1723,7 +1741,10 @@ fn test_commitment_tree_prepare_spend() {
         .unwrap()
         .expect("prepare spend should succeed");
 
-    assert!(spend_data.is_some(), "spend data should exist for marked position");
+    assert!(
+        spend_data.is_some(),
+        "spend data should exist for marked position"
+    );
     let (anchor, merkle_path) = spend_data.unwrap();
 
     // Verify the anchor matches what we'd get separately
@@ -1731,11 +1752,13 @@ fn test_commitment_tree_prepare_spend() {
         .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
         .expect("separate anchor");
-    assert_eq!(anchor, separate_anchor, "anchor from prepare_spend should match");
+    assert_eq!(
+        anchor, separate_anchor,
+        "anchor from prepare_spend should match"
+    );
 
     // Verify inclusion proof
-    let cmx = ExtractedNoteCommitment::from_bytes(&note_bytes)
-        .expect("valid commitment");
+    let cmx = ExtractedNoteCommitment::from_bytes(&note_bytes).expect("valid commitment");
     let computed_anchor = merkle_path.root(cmx);
     assert_eq!(
         computed_anchor, anchor,
@@ -1765,11 +1788,16 @@ fn test_commitment_tree_prepare_spend_multi_note() {
     for i in 0..10u64 {
         let leaf = test_leaf_bytes(i);
         let (_root, pos) = db
-            .commitment_tree_append(EMPTY_PATH, b"pool", leaf, i, None, grove_version)
+            .commitment_tree_append(EMPTY_PATH, b"pool", leaf, None, grove_version)
             .unwrap()
             .expect("append");
         notes.push((leaf, pos));
     }
+
+    // Checkpoint after all appends (witnesses require a checkpoint)
+    db.commitment_tree_checkpoint(EMPTY_PATH, b"pool", 0, None, grove_version)
+        .unwrap()
+        .expect("checkpoint");
 
     // Prepare spend for several positions — all should return the same anchor
     let mut anchors = Vec::new();
@@ -1781,8 +1809,7 @@ fn test_commitment_tree_prepare_spend_multi_note() {
             .expect("spend data should exist");
 
         // Verify inclusion
-        let cmx = ExtractedNoteCommitment::from_bytes(&leaf_bytes)
-            .expect("valid commitment");
+        let cmx = ExtractedNoteCommitment::from_bytes(&leaf_bytes).expect("valid commitment");
         assert_eq!(
             path.root(cmx),
             anchor,
@@ -1804,19 +1831,41 @@ fn test_commitment_tree_reexports_compile() {
     // Compile-time check: verify key orchard types are accessible through
     // the grovedb-commitment-tree re-exports.
     use grovedb_commitment_tree::{
-        // Proof types
-        Proof, ProvingKey, VerifyingKey,
-        // Builder types
-        Builder, BundleType,
+        redpallas,
         // Bundle/Action types
-        Action, Authorized, Bundle, Flags, Note,
-        // Key types
-        FullViewingKey, IncomingViewingKey, OutgoingViewingKey, Scope,
-        SpendAuthorizingKey, SpendValidatingKey, SpendingKey,
-        // Note types
-        NoteValue, PaymentAddress, Rho,
+        Action,
         // Already-imported types (verify they still work)
-        Anchor, ExtractedNoteCommitment, MerklePath, MerkleHashOrchard,
+        Anchor,
+        Authorized,
+        BatchValidator,
+        // Builder types
+        Builder,
+        Bundle,
+        BundleType,
+        ExtractedNoteCommitment,
+        Flags,
+        // Key types
+        FullViewingKey,
+        IncomingViewingKey,
+        MerkleHashOrchard,
+        MerklePath,
+        Note,
+        // Note types
+        NoteValue,
+        OutgoingViewingKey,
+        PaymentAddress,
+        // Proof types
+        Proof,
+        ProvingKey,
+        Rho,
+        Scope,
+        SpendAuthorizingKey,
+        SpendValidatingKey,
+        SpendingKey,
+        // Bundle reconstruction types
+        TransmittedNoteCiphertext,
+        ValueCommitment,
+        VerifyingKey,
     };
 
     // Type assertions to ensure the re-exports resolve correctly
@@ -1844,5 +1893,12 @@ fn test_commitment_tree_reexports_compile() {
         let _: Option<&ExtractedNoteCommitment> = None;
         let _: Option<&MerklePath> = None;
         let _: Option<&MerkleHashOrchard> = None;
+        // New re-exports for bundle verification
+        let _: Option<&BatchValidator> = None;
+        let _: Option<&TransmittedNoteCiphertext> = None;
+        let _: Option<&ValueCommitment> = None;
+        let _: Option<&redpallas::Signature<redpallas::SpendAuth>> = None;
+        let _: Option<&redpallas::Signature<redpallas::Binding>> = None;
+        let _: Option<&redpallas::VerificationKey<redpallas::SpendAuth>> = None;
     }
 }

@@ -139,6 +139,18 @@ impl GroveOp {
                     grove_version,
                 )
             }
+            GroveOp::CommitmentTreeCheckpoint { .. } => {
+                // CommitmentTreeCheckpoint is preprocessed before batch execution.
+                // Treat like ReplaceTreeRootKey for cost estimation (aux storage I/O).
+                GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    grovedb_merk::tree_type::TreeType::NormalTree,
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                )
+            }
         }
     }
 }

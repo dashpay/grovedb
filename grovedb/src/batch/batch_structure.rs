@@ -138,11 +138,19 @@ where
                     // preprocessing CommitmentTreeAppend ops
                     Ok(())
                 }
-                GroveOp::CommitmentTreeAppend { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
-                    Err(Error::InvalidBatchOperation(
-                        "commitment tree append and insert tree hash are internal operations only",
-                    ))
+                GroveOp::CommitmentTreeAppend { .. } => {
+                    // CommitmentTreeAppend is preprocessed into ReplaceTreeRootKey
+                    // before batch execution; cost estimation also handles it directly.
+                    Ok(())
                 }
+                GroveOp::CommitmentTreeCheckpoint { .. } => {
+                    // CommitmentTreeCheckpoint is preprocessed (aux storage update)
+                    // before batch execution; cost estimation also handles it directly.
+                    Ok(())
+                }
+                GroveOp::InsertTreeWithRootHash { .. } => Err(Error::InvalidBatchOperation(
+                    "insert tree hash is an internal operation only",
+                )),
             };
             if op_result.is_err() {
                 return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);

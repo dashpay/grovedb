@@ -1,27 +1,33 @@
 //! A `ShardStore` implementation backed by a generic key-value store.
 //!
-//! This module provides [`KvShardStore`], which adapts any [`KvStore`] implementation
-//! into a `ShardStore` suitable for use with `ShardTree`. Data is persisted through
-//! simple key-value operations with a prefix-based key scheme.
+//! This module provides [`KvShardStore`], which adapts any [`KvStore`]
+//! implementation into a `ShardStore` suitable for use with `ShardTree`. Data
+//! is persisted through simple key-value operations with a prefix-based key
+//! scheme.
 //!
 //! # Key Scheme
 //!
-//! All keys use single-byte prefixes to avoid collisions between different data types:
+//! All keys use single-byte prefixes to avoid collisions between different data
+//! types:
 //! - `S` + 8-byte BE shard_index -> serialized `LocatedPrunableTree`
 //! - `C` -> serialized `PrunableTree` (cap)
 //! - `K` + 8-byte BE checkpoint_id -> serialized `Checkpoint`
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use incrementalmerkletree::{Address, Level};
-use shardtree::store::{Checkpoint, ShardStore};
-use shardtree::{LocatedPrunableTree, PrunableTree, Tree};
-
-use crate::serialization::{
-    self, HashSer,
+use shardtree::{
+    store::{Checkpoint, ShardStore},
+    LocatedPrunableTree, PrunableTree, Tree,
 };
-use crate::SHARD_HEIGHT;
+
+use crate::{
+    serialization::{self, HashSer},
+    SHARD_HEIGHT,
+};
 
 /// A simple in-memory implementation of [`KvStore`] backed by a `BTreeMap`.
 ///
@@ -60,7 +66,8 @@ impl MemKvStore {
 
     /// Serialize the store contents to bytes.
     ///
-    /// Format: `[num_entries: u32][key_len: u32][key][value_len: u32][value]...`
+    /// Format: `[num_entries: u32][key_len: u32][key][value_len:
+    /// u32][value]...`
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         let count = self.data.len() as u32;
@@ -87,7 +94,10 @@ impl MemKvStore {
         let mut data = BTreeMap::new();
         for _ in 0..count {
             if pos + 4 > bytes.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key len"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated key len",
+                ));
             }
             let key_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
@@ -97,12 +107,18 @@ impl MemKvStore {
             let key = bytes[pos..pos + key_len].to_vec();
             pos += key_len;
             if pos + 4 > bytes.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated value len"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated value len",
+                ));
             }
             let val_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             if pos + val_len > bytes.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated value"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated value",
+                ));
             }
             let value = bytes[pos..pos + val_len].to_vec();
             pos += val_len;
@@ -139,11 +155,7 @@ impl KvStore for MemKvStore {
         Ok(result)
     }
 
-    fn delete_range_from(
-        &mut self,
-        prefix: &[u8],
-        start_key: &[u8],
-    ) -> Result<(), Self::Error> {
+    fn delete_range_from(&mut self, prefix: &[u8], start_key: &[u8]) -> Result<(), Self::Error> {
         let keys_to_delete: Vec<Vec<u8>> = self
             .data
             .range::<Vec<u8>, _>(start_key.to_vec()..)
@@ -181,11 +193,13 @@ pub trait KvStore {
     /// Delete the value at the given key. No-op if key does not exist.
     fn delete(&mut self, key: &[u8]) -> Result<(), Self::Error>;
 
-    /// Get all key-value pairs with keys starting with the given prefix, ordered by key.
+    /// Get all key-value pairs with keys starting with the given prefix,
+    /// ordered by key.
     #[allow(clippy::type_complexity)]
     fn prefix_iter(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Self::Error>;
 
-    /// Delete all keys that start with the given prefix and are >= start_key in sort order.
+    /// Delete all keys that start with the given prefix and are >= start_key in
+    /// sort order.
     fn delete_range_from(&mut self, prefix: &[u8], start_key: &[u8]) -> Result<(), Self::Error>;
 }
 
@@ -229,8 +243,9 @@ fn decode_checkpoint_id(key: &[u8]) -> Option<u64> {
 
 /// A `ShardStore` implementation backed by a generic key-value store.
 ///
-/// The hash type `H` must implement `HashSer` for serialization and the standard
-/// `Clone` and `PartialEq` traits required by `PrunableTree` operations.
+/// The hash type `H` must implement `HashSer` for serialization and the
+/// standard `Clone` and `PartialEq` traits required by `PrunableTree`
+/// operations.
 ///
 /// The checkpoint ID type is fixed to `u64` for simplicity and efficient
 /// binary encoding.
@@ -301,9 +316,9 @@ impl<S: KvStore, H: HashSer + Clone> KvShardStore<S, H> {
 }
 
 impl<S: KvStore, H: HashSer + Clone + PartialEq> ShardStore for KvShardStore<S, H> {
-    type H = H;
     type CheckpointId = u64;
     type Error = S::Error;
+    type H = H;
 
     fn get_shard(
         &self,
@@ -404,7 +419,8 @@ impl<S: KvStore, H: HashSer + Clone + PartialEq> ShardStore for KvShardStore<S, 
         checkpoint_depth: usize,
     ) -> Result<Option<(Self::CheckpointId, Checkpoint)>, Self::Error> {
         let entries = self.store.prefix_iter(&[PREFIX_CHECKPOINT])?;
-        // Depth 0 is the most recent (last in sorted order), depth 1 is one before, etc.
+        // Depth 0 is the most recent (last in sorted order), depth 1 is one before,
+        // etc.
         let target_idx = entries.len().checked_sub(checkpoint_depth + 1);
         match target_idx {
             Some(idx) => {
@@ -517,20 +533,19 @@ impl<S: KvStore, H: HashSer + Clone + PartialEq> ShardStore for KvShardStore<S, 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use incrementalmerkletree::{Hashable, Position, Retention};
     use orchard::tree::MerkleHashOrchard;
-    use shardtree::store::{Checkpoint, TreeState};
-    use shardtree::{LocatedTree, RetentionFlags};
+    use shardtree::{
+        store::{Checkpoint, TreeState},
+        LocatedTree, RetentionFlags,
+    };
+
+    use super::*;
 
     /// Create a deterministic test leaf from an index.
     fn test_leaf(index: u64) -> MerkleHashOrchard {
         let empty = MerkleHashOrchard::empty_leaf();
-        MerkleHashOrchard::combine(
-            Level::from((index % 31) as u8 + 1),
-            &empty,
-            &empty,
-        )
+        MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty)
     }
 
     /// Helper to create a KvShardStore with the in-memory backend.
@@ -562,11 +577,7 @@ mod tests {
         let mut store = new_kv_store();
         let h1 = test_leaf(1);
         let addr = Address::from_parts(Level::from(SHARD_HEIGHT), 3);
-        let tree = LocatedTree::from_parts(
-            addr,
-            Tree::leaf((h1, RetentionFlags::MARKED)),
-        )
-        .unwrap();
+        let tree = LocatedTree::from_parts(addr, Tree::leaf((h1, RetentionFlags::MARKED))).unwrap();
 
         store.put_shard(tree.clone()).unwrap();
 
@@ -581,18 +592,12 @@ mod tests {
         let h2 = test_leaf(2);
 
         let addr0 = Address::from_parts(Level::from(SHARD_HEIGHT), 0);
-        let tree0 = LocatedTree::from_parts(
-            addr0,
-            Tree::leaf((h1, RetentionFlags::EPHEMERAL)),
-        )
-        .unwrap();
+        let tree0 =
+            LocatedTree::from_parts(addr0, Tree::leaf((h1, RetentionFlags::EPHEMERAL))).unwrap();
 
         let addr5 = Address::from_parts(Level::from(SHARD_HEIGHT), 5);
-        let tree5 = LocatedTree::from_parts(
-            addr5,
-            Tree::leaf((h2, RetentionFlags::MARKED)),
-        )
-        .unwrap();
+        let tree5 =
+            LocatedTree::from_parts(addr5, Tree::leaf((h2, RetentionFlags::MARKED))).unwrap();
 
         store.put_shard(tree0).unwrap();
         store.put_shard(tree5.clone()).unwrap();
@@ -608,11 +613,8 @@ mod tests {
 
         for idx in [0u64, 2, 7] {
             let addr = Address::from_parts(Level::from(SHARD_HEIGHT), idx);
-            let tree = LocatedTree::from_parts(
-                addr,
-                Tree::leaf((h, RetentionFlags::EPHEMERAL)),
-            )
-            .unwrap();
+            let tree =
+                LocatedTree::from_parts(addr, Tree::leaf((h, RetentionFlags::EPHEMERAL))).unwrap();
             store.put_shard(tree).unwrap();
         }
 
@@ -630,11 +632,8 @@ mod tests {
 
         for idx in 0..5u64 {
             let addr = Address::from_parts(Level::from(SHARD_HEIGHT), idx);
-            let tree = LocatedTree::from_parts(
-                addr,
-                Tree::leaf((h, RetentionFlags::EPHEMERAL)),
-            )
-            .unwrap();
+            let tree =
+                LocatedTree::from_parts(addr, Tree::leaf((h, RetentionFlags::EPHEMERAL))).unwrap();
             store.put_shard(tree).unwrap();
         }
 
@@ -705,9 +704,7 @@ mod tests {
     fn test_remove_checkpoint() {
         let mut store = new_kv_store();
 
-        store
-            .add_checkpoint(1, Checkpoint::tree_empty())
-            .unwrap();
+        store.add_checkpoint(1, Checkpoint::tree_empty()).unwrap();
         store
             .add_checkpoint(2, Checkpoint::at_position(Position::from(5u64)))
             .unwrap();
@@ -729,15 +726,11 @@ mod tests {
             .unwrap();
 
         // Update should return true for existing checkpoint
-        let result = store
-            .update_checkpoint_with(&1, |_cp| Ok(()))
-            .unwrap();
+        let result = store.update_checkpoint_with(&1, |_cp| Ok(())).unwrap();
         assert!(result);
 
         // Update should return false for non-existing checkpoint
-        let result = store
-            .update_checkpoint_with(&99, |_cp| Ok(()))
-            .unwrap();
+        let result = store.update_checkpoint_with(&99, |_cp| Ok(())).unwrap();
         assert!(!result);
     }
 
@@ -748,16 +741,11 @@ mod tests {
         let mut marks = BTreeSet::new();
         marks.insert(Position::from(42u64));
 
-        store
-            .add_checkpoint(1, Checkpoint::tree_empty())
-            .unwrap();
+        store.add_checkpoint(1, Checkpoint::tree_empty()).unwrap();
         store
             .add_checkpoint(
                 5,
-                Checkpoint::from_parts(
-                    TreeState::AtPosition(Position::from(10u64)),
-                    marks,
-                ),
+                Checkpoint::from_parts(TreeState::AtPosition(Position::from(10u64)), marks),
             )
             .unwrap();
         store
@@ -786,9 +774,7 @@ mod tests {
     fn test_for_each_checkpoint() {
         let mut store = new_kv_store();
 
-        store
-            .add_checkpoint(1, Checkpoint::tree_empty())
-            .unwrap();
+        store.add_checkpoint(1, Checkpoint::tree_empty()).unwrap();
         store
             .add_checkpoint(5, Checkpoint::at_position(Position::from(10u64)))
             .unwrap();
@@ -811,9 +797,7 @@ mod tests {
     fn test_with_checkpoints() {
         let mut store = new_kv_store();
 
-        store
-            .add_checkpoint(1, Checkpoint::tree_empty())
-            .unwrap();
+        store.add_checkpoint(1, Checkpoint::tree_empty()).unwrap();
         store
             .add_checkpoint(5, Checkpoint::at_position(Position::from(10u64)))
             .unwrap();
@@ -829,8 +813,9 @@ mod tests {
         assert_eq!(seen, vec![1, 5]);
     }
 
-    /// Integration test: use KvShardStore as the backing store for a full ShardTree
-    /// and verify that the tree operates correctly with append, checkpoint, and witness.
+    /// Integration test: use KvShardStore as the backing store for a full
+    /// ShardTree and verify that the tree operates correctly with append,
+    /// checkpoint, and witness.
     #[test]
     fn test_kv_store_with_shard_tree() {
         use crate::CommitmentTree;
@@ -896,18 +881,15 @@ mod tests {
 
         let kv_root = kv_tree.root_hash().unwrap();
         let mem_root = mem_tree.root_hash().unwrap();
-        assert_eq!(kv_root, mem_root, "KV and memory stores should produce the same root");
+        assert_eq!(
+            kv_root, mem_root,
+            "KV and memory stores should produce the same root"
+        );
 
         // Verify witnesses match
         for i in 0..20u64 {
-            let kv_witness = kv_tree
-                .witness(Position::from(i))
-                .unwrap()
-                .unwrap();
-            let mem_witness = mem_tree
-                .witness(Position::from(i))
-                .unwrap()
-                .unwrap();
+            let kv_witness = kv_tree.witness(Position::from(i)).unwrap().unwrap();
+            let mem_witness = mem_tree.witness(Position::from(i)).unwrap().unwrap();
             assert_eq!(
                 kv_witness, mem_witness,
                 "witnesses should match at position {}",

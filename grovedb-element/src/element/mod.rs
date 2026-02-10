@@ -74,8 +74,9 @@ pub enum Element {
     /// Same as Element::CountSumTree but includes counts in cryptographic state
     /// (sum is tracked but NOT included in hash, only count is)
     ProvableCountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
-    /// Orchard-style commitment tree (append-only, fixed-depth Sinsemilla Merkle)
-    /// Used for zero-knowledge shielded pools. Not a Merk tree internally.
+    /// Orchard-style commitment tree (append-only, fixed-depth Sinsemilla
+    /// Merkle) Used for zero-knowledge shielded pools. Not a Merk tree
+    /// internally.
     CommitmentTree(Option<Vec<u8>>, Option<ElementFlags>),
 }
 

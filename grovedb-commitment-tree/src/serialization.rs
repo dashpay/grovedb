@@ -15,21 +15,27 @@
 //! - level(1 byte) + index(8 bytes BE) + prunable_tree
 //!
 //! ## Checkpoint
-//! - tree_state tag (0x00 = Empty, 0x01 = AtPosition) + optional position(8 bytes BE)
+//! - tree_state tag (0x00 = Empty, 0x01 = AtPosition) + optional position(8
+//!   bytes BE)
 //! - marks_removed count(4 bytes BE) + \[position(8 bytes BE)\]...
 
-use std::io::{self, Read, Write};
-use std::ops::Deref;
-use std::sync::Arc;
+use std::{
+    io::{self, Read, Write},
+    ops::Deref,
+    sync::Arc,
+};
 
 use incrementalmerkletree::{Address, Level, Position};
-use shardtree::store::{Checkpoint, TreeState};
-use shardtree::{LocatedPrunableTree, LocatedTree, Node, PrunableTree, RetentionFlags, Tree};
+use shardtree::{
+    store::{Checkpoint, TreeState},
+    LocatedPrunableTree, LocatedTree, Node, PrunableTree, RetentionFlags, Tree,
+};
 
-/// Trait for types that can be serialized to and from a fixed 32-byte representation.
+/// Trait for types that can be serialized to and from a fixed 32-byte
+/// representation.
 ///
-/// This is used to abstract hash serialization so that the serialization functions
-/// are generic over the hash type.
+/// This is used to abstract hash serialization so that the serialization
+/// functions are generic over the hash type.
 pub trait HashSer: Sized {
     /// Read a hash from 32 bytes.
     fn hash_read<R: Read>(reader: &mut R) -> io::Result<Self>;
@@ -195,7 +201,8 @@ pub fn read_located_prunable_tree<H: HashSer + Clone, R: Read>(
 /// Serialize a `Checkpoint` to a writer.
 ///
 /// Format:
-/// - tree_state tag (0x00 = Empty, 0x01 = AtPosition) + optional position(8 bytes BE)
+/// - tree_state tag (0x00 = Empty, 0x01 = AtPosition) + optional position(8
+///   bytes BE)
 /// - marks_removed count(4 bytes BE) + \[position(8 bytes BE)\]...
 pub fn write_checkpoint<W: Write>(checkpoint: &Checkpoint, writer: &mut W) -> io::Result<()> {
     match checkpoint.tree_state() {
@@ -257,9 +264,10 @@ pub fn read_checkpoint<R: Read>(reader: &mut R) -> io::Result<Checkpoint> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use incrementalmerkletree::Hashable;
     use orchard::tree::MerkleHashOrchard;
+
+    use super::*;
 
     /// Helper: create a deterministic MerkleHashOrchard value from an index.
     fn test_hash(index: u64) -> MerkleHashOrchard {
@@ -469,8 +477,7 @@ mod tests {
             let mut buf = Vec::new();
             write_prunable_tree(&tree, &mut buf).unwrap();
 
-            let decoded =
-                read_prunable_tree::<MerkleHashOrchard, _>(&mut buf.as_slice()).unwrap();
+            let decoded = read_prunable_tree::<MerkleHashOrchard, _>(&mut buf.as_slice()).unwrap();
             assert_eq!(tree, decoded, "roundtrip failed for flags {:?}", flags);
         }
     }
