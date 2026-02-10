@@ -146,7 +146,8 @@ impl GroveDb {
                 .map_err(|e| e.into())
         );
 
-        // Drop storage context to release borrow on self.db before Merk operations
+        // End borrow on self.db before Merk operations
+        #[allow(clippy::drop_non_drop)]
         drop(storage_ctx);
 
         // Propagate Sinsemilla root hash through the GroveDB Merk hierarchy
@@ -227,7 +228,7 @@ impl GroveDb {
         key: &[u8],
         checkpoint_id: u64,
         transaction: TransactionArg,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -271,6 +272,8 @@ impl GroveDb {
                 .map_err(|e| e.into())
         );
 
+        // End borrow on self.db before committing transaction
+        #[allow(clippy::drop_non_drop)]
         drop(storage_ctx);
 
         tx.commit_local().wrap_with_cost(cost)
@@ -285,7 +288,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         transaction: TransactionArg,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<[u8; 32], Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -325,7 +328,7 @@ impl GroveDb {
         key: &[u8],
         position: u64,
         transaction: TransactionArg,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<[u8; 32]>>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -372,7 +375,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         transaction: TransactionArg,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<Option<u64>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -398,7 +401,7 @@ impl GroveDb {
                 .map_err(|e| Error::CommitmentTreeError(format!("position query failed: {}", e)))
         );
 
-        Ok(position.map(|p| u64::from(p))).wrap_with_cost(cost)
+        Ok(position.map(u64::from)).wrap_with_cost(cost)
     }
 
     /// Get the Orchard `Anchor` for a CommitmentTree subtree.
@@ -411,7 +414,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         transaction: TransactionArg,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<Anchor, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -450,7 +453,7 @@ impl GroveDb {
         key: &[u8],
         position: u64,
         transaction: TransactionArg,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<Option<MerklePath>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -492,7 +495,7 @@ impl GroveDb {
         key: &[u8],
         position: u64,
         transaction: TransactionArg,
-        grove_version: &GroveVersion,
+        _grove_version: &GroveVersion,
     ) -> CostResult<Option<(Anchor, MerklePath)>, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -586,8 +589,11 @@ impl GroveDb {
             Checkpoint(u64),
         }
 
+        /// Path + key pair identifying a commitment tree in a batch.
+        type PathKey = (Vec<Vec<u8>>, Vec<u8>);
+
         // Group commitment tree ops by (path, key), preserving order.
-        let mut ct_groups: HashMap<(Vec<Vec<u8>>, Vec<u8>), Vec<CtAction>> = HashMap::new();
+        let mut ct_groups: HashMap<PathKey, Vec<CtAction>> = HashMap::new();
 
         for op in ops.iter() {
             match &op.op {
@@ -611,10 +617,10 @@ impl GroveDb {
 
         // Process each group: execute Sinsemilla operations and produce
         // ReplaceTreeRootKey
-        let mut replacements: HashMap<(Vec<Vec<u8>>, Vec<u8>), QualifiedGroveDbOp> = HashMap::new();
+        let mut replacements: HashMap<PathKey, QualifiedGroveDbOp> = HashMap::new();
         // Track groups that only had checkpoint ops (no appends) -- those don't need
         // a ReplaceTreeRootKey since the root hash doesn't change.
-        let mut checkpoint_only_groups: HashMap<(Vec<Vec<u8>>, Vec<u8>), bool> = HashMap::new();
+        let mut checkpoint_only_groups: HashMap<PathKey, bool> = HashMap::new();
 
         for (path_key, actions) in ct_groups.iter() {
             let (path_vec, key_bytes) = path_key;
@@ -720,6 +726,7 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
 
+            #[allow(clippy::drop_non_drop)]
             drop(storage_ctx);
 
             // Create replacement op only if there were appends
@@ -739,7 +746,7 @@ impl GroveDb {
 
         // Build the new ops list: keep non-CT ops, replace first CT append op per
         // group with ReplaceTreeRootKey, skip the rest of CT ops
-        let mut first_seen: HashMap<(Vec<Vec<u8>>, Vec<u8>), bool> = HashMap::new();
+        let mut first_seen: HashMap<PathKey, bool> = HashMap::new();
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops.into_iter() {
