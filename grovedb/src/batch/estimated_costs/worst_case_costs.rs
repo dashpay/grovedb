@@ -126,18 +126,33 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::CommitmentTreeInsert { .. } => {
-                // CommitmentTreeInsert is preprocessed into ReplaceTreeRootKey before
-                // reaching apply_body, but cost estimation may see it directly.
-                // Treat like ReplaceTreeRootKey with CommitmentTree.
-                GroveDb::worst_case_merk_replace_tree(
+            GroveOp::CommitmentTreeInsert { cmx, payload } => {
+                let mut value = Vec::with_capacity(32 + payload.len());
+                value.extend_from_slice(cmx);
+                value.extend_from_slice(payload);
+                // Cost of inserting the item (cmx || payload) into the subtree
+                let item_cost = GroveDb::worst_case_merk_insert_element(
                     key,
-                    grovedb_merk::tree_type::TreeType::CommitmentTree,
+                    &Element::new_item(value),
                     in_parent_tree_type,
-                    worst_case_layer_element_estimates,
-                    propagate,
+                    propagate_if_input(),
                     grove_version,
-                )
+                );
+                // Add cost of frontier aux I/O (load + save).
+                // Worst-case frontier size with 32 ommers (max depth):
+                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 (ommers) = 1066
+                const MAX_FRONTIER_SIZE: u32 = 1066;
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                item_cost.add_cost(OperationCost {
+                    seek_count: 2, // get_aux + put_aux
+                    storage_cost: StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: MAX_FRONTIER_SIZE,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
+                    hash_node_calls: 0,
+                })
             }
         }
     }
