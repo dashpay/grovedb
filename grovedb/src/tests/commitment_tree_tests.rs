@@ -1884,6 +1884,57 @@ fn test_commitment_tree_prepare_spend_multi_note() {
 }
 
 #[test]
+fn test_commitment_tree_prepare_spend_anchor_matches_witness_after_post_checkpoint_append() {
+    // Regression: prepare_spend should return an anchor that matches the
+    // witness root, even if new leaves were appended after the last checkpoint.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    let note0 = test_leaf_bytes(0);
+    let (_root0, pos0) = db
+        .commitment_tree_append(EMPTY_PATH, b"pool", note0, None, grove_version)
+        .unwrap()
+        .expect("append note0");
+    assert_eq!(pos0, 0);
+
+    // Snapshot the state containing note0.
+    db.commitment_tree_checkpoint(EMPTY_PATH, b"pool", 0, None, grove_version)
+        .unwrap()
+        .expect("checkpoint at note0");
+
+    // Advance current tree state without creating a new checkpoint.
+    db.commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(1), None, grove_version)
+        .unwrap()
+        .expect("append note1 after checkpoint");
+
+    let (anchor, path) = db
+        .commitment_tree_prepare_spend(EMPTY_PATH, b"pool", pos0, None, grove_version)
+        .unwrap()
+        .expect("prepare_spend")
+        .expect("spend data should exist");
+
+    let cmx0 = ExtractedNoteCommitment::from_bytes(&note0).expect("valid note0 commitment");
+    let computed_anchor = path.root(cmx0);
+
+    // Expected invariant: prepare_spend returns a self-consistent pair.
+    assert_eq!(
+        computed_anchor, anchor,
+        "prepare_spend returned mismatched anchor and witness after post-checkpoint append"
+    );
+}
+
+#[test]
 fn test_commitment_tree_reexports_compile() {
     // Compile-time check: verify key orchard types are accessible through
     // the grovedb-commitment-tree re-exports.

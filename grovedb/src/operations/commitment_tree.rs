@@ -608,19 +608,28 @@ impl GroveDb {
             self.load_commitment_tree_inner(ct_path, tx.as_ref(), &mut cost)
         );
 
-        let anchor = cost_return_on_error_no_add!(
-            cost,
-            tree.anchor()
-                .map_err(|e| Error::CommitmentTreeError(format!("anchor failed: {}", e)))
-        );
-
         let witness = cost_return_on_error_no_add!(
             cost,
             tree.orchard_witness(Position::from(position))
                 .map_err(|e| Error::CommitmentTreeError(format!("witness failed: {}", e)))
         );
 
-        Ok(witness.map(|path| (anchor, path))).wrap_with_cost(cost)
+        let spend_data = match witness {
+            Some(path) => {
+                // Witnesses are generated against checkpoint depth 0, so compute the
+                // anchor from that same checkpointed state to keep the pair consistent.
+                let checkpoint_root = cost_return_on_error_no_add!(
+                    cost,
+                    tree.root_at_checkpoint_depth(Some(0)).map_err(|e| {
+                        Error::CommitmentTreeError(format!("checkpoint root query failed: {}", e))
+                    })
+                );
+                Some((Anchor::from(checkpoint_root), path))
+            }
+            None => None,
+        };
+
+        Ok(spend_data).wrap_with_cost(cost)
     }
 
     /// Build the subtree path for a commitment tree at path/key.
