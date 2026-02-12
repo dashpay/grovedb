@@ -719,6 +719,12 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             }
         }
+        crate::Element::CommitmentTree(root_key, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key,
+                element_flags,
+            }
+        }
     }
 }
 
