@@ -639,6 +639,63 @@ fn test_commitment_tree_witness_generation() {
     // The witness path should have 32 siblings (tree depth = 32)
     let path = witness.unwrap();
     assert_eq!(path.len(), 32, "Sinsemilla tree depth is 32");
+
+    // Proof round-trip: verify each witness reconstructs the correct root/anchor
+    let anchor = db
+        .commitment_tree_anchor(EMPTY_PATH, b"commitments", None, grove_version)
+        .unwrap()
+        .expect("anchor");
+    let root_hash = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"commitments", None, grove_version)
+        .unwrap()
+        .expect("root_hash");
+
+    for i in 0..5u64 {
+        let leaf_bytes = test_leaf_bytes(i);
+        let cmx = ExtractedNoteCommitment::from_bytes(&leaf_bytes)
+            .expect("leaf should be a valid ExtractedNoteCommitment");
+
+        // Via orchard_witness -> MerklePath::root(cmx) == anchor
+        let merkle_path = db
+            .commitment_tree_orchard_witness(EMPTY_PATH, b"commitments", i, None, grove_version)
+            .unwrap()
+            .expect("orchard_witness")
+            .expect("path should exist");
+
+        assert_eq!(
+            merkle_path.root(cmx),
+            anchor,
+            "orchard witness for position {} should reconstruct anchor",
+            i
+        );
+
+        // Via prepare_spend -> (Anchor, MerklePath)
+        let (spend_anchor, spend_path) = db
+            .commitment_tree_prepare_spend(EMPTY_PATH, b"commitments", i, None, grove_version)
+            .unwrap()
+            .expect("prepare_spend")
+            .expect("spend data should exist");
+
+        assert_eq!(
+            spend_anchor, anchor,
+            "prepare_spend anchor should match commitment_tree_anchor"
+        );
+        assert_eq!(
+            spend_path.root(cmx),
+            spend_anchor,
+            "prepare_spend path should reconstruct its own anchor"
+        );
+
+        // Anchor should be consistent with root_hash
+        let root_node = grovedb_commitment_tree::merkle_hash_from_bytes(&root_hash)
+            .expect("root_hash should be valid Pallas element");
+        assert_eq!(
+            anchor,
+            Anchor::from(root_node),
+            "anchor should match root_hash for position {}",
+            i
+        );
+    }
 }
 
 #[test]
@@ -2341,6 +2398,54 @@ fn test_batch_commitment_tree_checkpoint() {
         .unwrap()
         .expect("root hash");
     assert_ne!(sinsemilla_root, [0u8; 32], "root should not be empty");
+
+    // Proof round-trip: reconstruct root from witness for each batch-appended leaf
+    let anchor = db
+        .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor");
+
+    for i in 0..5u64 {
+        let leaf_bytes = test_leaf_bytes(i);
+        let cmx = ExtractedNoteCommitment::from_bytes(&leaf_bytes)
+            .expect("leaf should be valid ExtractedNoteCommitment");
+
+        let merkle_path = db
+            .commitment_tree_orchard_witness(EMPTY_PATH, b"pool", i, None, grove_version)
+            .unwrap()
+            .expect("orchard_witness")
+            .expect("path should exist");
+
+        assert_eq!(
+            merkle_path.root(cmx),
+            anchor,
+            "batch witness for position {} should reconstruct anchor",
+            i
+        );
+    }
+
+    // Also verify via prepare_spend for one position
+    let (spend_anchor, spend_path) = db
+        .commitment_tree_prepare_spend(EMPTY_PATH, b"pool", 3, None, grove_version)
+        .unwrap()
+        .expect("prepare_spend")
+        .expect("spend data");
+    let cmx3 = ExtractedNoteCommitment::from_bytes(&test_leaf_bytes(3)).expect("valid commitment");
+    assert_eq!(spend_anchor, anchor, "prepare_spend anchor should match");
+    assert_eq!(
+        spend_path.root(cmx3),
+        anchor,
+        "prepare_spend path should reconstruct anchor"
+    );
+
+    // Anchor must be consistent with root_hash
+    let root_node = grovedb_commitment_tree::merkle_hash_from_bytes(&sinsemilla_root)
+        .expect("root_hash should be valid Pallas element");
+    assert_eq!(
+        anchor,
+        Anchor::from(root_node),
+        "anchor should match root_hash"
+    );
 
     // Compare with sequential equivalent
     let db2 = make_empty_grovedb();
