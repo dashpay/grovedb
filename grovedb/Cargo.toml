@@ -72,6 +72,7 @@ full = ["grovedb-merk/full", "minimal"]
 minimal = [
     "grovedb-merk/minimal",
     "grovedb-commitment-tree",
+    "grovedb-commitment-tree/server",
     "thiserror",
     "tempfile",
     "grovedb-storage/rocksdb_storage",
@@ -89,6 +90,7 @@ verify = [
     "integer-encoding",
 ]
 estimated_costs = ["full"]
+zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client"]
 grovedbg = [
     "grovedbg-types",
     "tokio",

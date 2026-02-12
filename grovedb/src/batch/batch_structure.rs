@@ -133,14 +133,11 @@ where
                 GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     Ok(())
                 }
-                GroveOp::ReplaceTreeRootKey { .. } => {
-                    // ReplaceTreeRootKey is used internally and also produced by
-                    // preprocessing CommitmentTreeInsert ops
-                    Ok(())
-                }
-                GroveOp::CommitmentTreeInsert { .. } => {
-                    // CommitmentTreeInsert is preprocessed into ReplaceTreeRootKey
-                    // before batch execution; cost estimation also handles it directly.
+                GroveOp::CommitmentTreeInsert { .. } | GroveOp::ReplaceTreeRootKey { .. } => {
+                    // CommitmentTreeInsert is preprocessed into item inserts
+                    // + ReplaceTreeRootKey before batch execution.
+                    // ReplaceTreeRootKey is internal only (produced by
+                    // preprocessing), not submitted by users directly.
                     Ok(())
                 }
                 GroveOp::InsertTreeWithRootHash { .. } => Err(Error::InvalidBatchOperation(

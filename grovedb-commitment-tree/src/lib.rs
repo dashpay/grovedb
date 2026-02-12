@@ -14,8 +14,13 @@
 //! - The frontier is serialized to aux storage alongside the CountTree
 //! - Historical anchors are managed by Platform in a separate tree (not here)
 
+#[cfg(feature = "client")]
+mod client;
+#[cfg(feature = "client")]
+pub use client::ClientCommitmentTree;
+#[cfg(feature = "server")]
 use incrementalmerkletree::frontier::Frontier;
-pub use incrementalmerkletree::{Hashable, Level, Position};
+pub use incrementalmerkletree::{Hashable, Level, Position, Retention};
 // Builder for constructing shielded transactions
 pub use orchard::builder::{Builder, BundleType};
 /// Re-export of `orchard::bundle::BatchValidator` for verifying Orchard
@@ -71,9 +76,10 @@ use thiserror::Error;
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
 /// parameter.
+#[cfg(feature = "server")]
 const FRONTIER_DEPTH: u8 = NOTE_COMMITMENT_TREE_DEPTH as u8;
 
-/// Errors that can occur during commitment frontier operations.
+/// Errors that can occur during commitment tree operations.
 #[derive(Debug, Error)]
 pub enum CommitmentTreeError {
     #[error("tree is full (max {max} leaves)", max = 1u64 << NOTE_COMMITMENT_TREE_DEPTH)]
@@ -93,11 +99,15 @@ pub enum CommitmentTreeError {
 /// items in a GroveDB CountTree. This struct only tracks the Sinsemilla
 /// hash state. Historical anchors for spend authorization are managed
 /// by Platform in a separate provable tree.
+///
+/// Requires the `server` feature.
+#[cfg(feature = "server")]
 #[derive(Debug, Clone)]
 pub struct CommitmentFrontier {
     frontier: Frontier<MerkleHashOrchard, FRONTIER_DEPTH>,
 }
 
+#[cfg(feature = "server")]
 impl CommitmentFrontier {
     /// Create a new empty commitment frontier.
     pub fn new() -> Self {
@@ -247,6 +257,7 @@ impl CommitmentFrontier {
     }
 }
 
+#[cfg(feature = "server")]
 impl Default for CommitmentFrontier {
     fn default() -> Self {
         Self::new()
@@ -259,7 +270,7 @@ pub fn merkle_hash_from_bytes(bytes: &[u8; 32]) -> Option<MerkleHashOrchard> {
     Option::from(MerkleHashOrchard::from_bytes(bytes))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use super::*;
 
