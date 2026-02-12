@@ -49,7 +49,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(root_key, _) => Some((root_key, TreeType::CommitmentTree)),
+            Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
             _ => None,
         }
     }
@@ -69,7 +69,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(root_key, _) => Some((root_key, TreeType::CommitmentTree)),
+            Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
             _ => None,
         }
     }
@@ -86,7 +86,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(_, flags) => Some((flags, TreeType::CommitmentTree)),
+            Element::CommitmentTree(_, _, _, flags) => Some((flags, TreeType::CommitmentTree)),
             _ => None,
         }
     }
@@ -121,7 +121,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(_, count, sum, _) => {
                 Some(TreeFeatureType::ProvableCountedSummedMerkNode(*count, *sum))
             }
-            Element::CommitmentTree(..) => Some(BasicMerkNode),
+            Element::CommitmentTree(_, _, count, _) => Some(CountedMerkNode(*count)),
             _ => None,
         }
     }
@@ -144,7 +144,8 @@ impl ElementTreeTypeExtensions for Element {
     /// Get the tree feature type
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
-            TreeType::NormalTree | TreeType::CommitmentTree => Ok(BasicMerkNode),
+            TreeType::NormalTree => Ok(BasicMerkNode),
+            TreeType::CommitmentTree => Ok(CountedMerkNode(self.count_value_or_default())),
             TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
             TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
             TreeType::CountTree => Ok(CountedMerkNode(self.count_value_or_default())),

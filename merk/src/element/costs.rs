@@ -10,8 +10,8 @@ use crate::{
         KV,
     },
     tree_type::{
-        BIG_SUM_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, SUM_ITEM_COST_SIZE,
-        SUM_TREE_COST_SIZE, TREE_COST_SIZE,
+        BIG_SUM_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE,
+        COUNT_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
     },
     Error,
 };
@@ -55,7 +55,8 @@ impl ElementCostPrivateExtensions for Element {
             grove_version.grovedb_versions.element.get_specialized_cost
         );
         match self {
-            Element::Tree(..) | Element::CommitmentTree(..) => Ok(TREE_COST_SIZE),
+            Element::Tree(..) => Ok(TREE_COST_SIZE),
+            Element::CommitmentTree(..) => Ok(COMMITMENT_TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
             Element::SumItem(..) | Element::ItemWithSumItem(..) => Ok(SUM_ITEM_COST_SIZE),
@@ -88,7 +89,7 @@ impl ElementCostExtensions for Element {
         // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value, grove_version)?;
         let cost = match element {
-            Element::Tree(_, flags) | Element::CommitmentTree(_, flags) => {
+            Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -160,6 +161,17 @@ impl ElementCostExtensions for Element {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = COUNT_SUM_TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
+            Element::CommitmentTree(_, _, _, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COMMITMENT_TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,

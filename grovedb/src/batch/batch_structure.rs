@@ -135,16 +135,11 @@ where
                 }
                 GroveOp::ReplaceTreeRootKey { .. } => {
                     // ReplaceTreeRootKey is used internally and also produced by
-                    // preprocessing CommitmentTreeAppend ops
+                    // preprocessing CommitmentTreeInsert ops
                     Ok(())
                 }
-                GroveOp::CommitmentTreeAppend { .. } => {
-                    // CommitmentTreeAppend is preprocessed into ReplaceTreeRootKey
-                    // before batch execution; cost estimation also handles it directly.
-                    Ok(())
-                }
-                GroveOp::CommitmentTreeCheckpoint { .. } => {
-                    // CommitmentTreeCheckpoint is preprocessed (aux storage update)
+                GroveOp::CommitmentTreeInsert { .. } => {
+                    // CommitmentTreeInsert is preprocessed into ReplaceTreeRootKey
                     // before batch execution; cost estimation also handles it directly.
                     Ok(())
                 }

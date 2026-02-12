@@ -97,6 +97,9 @@ pub enum GroveOp {
         root_key: Option<Vec<u8>>,
         /// Aggregate data
         aggregate_data: AggregateData,
+        /// Sinsemilla root for CommitmentTree updates (None for other tree
+        /// types)
+        sinsemilla_root: Option<[u8; 32]>,
     },
     /// Inserts an element that is known to not yet exist
     InsertOnly {
@@ -130,6 +133,8 @@ pub enum GroveOp {
         flags: Option<ElementFlags>,
         /// Aggregate Data such as sum
         aggregate_data: AggregateData,
+        /// Sinsemilla root for CommitmentTree (None for other tree types)
+        sinsemilla_root: Option<[u8; 32]>,
     },
     /// Refresh the reference with information provided
     /// Providing this information is necessary to be able to calculate
@@ -147,16 +152,12 @@ pub enum GroveOp {
     Delete,
     /// Delete tree
     DeleteTree(TreeType),
-    /// Append a leaf to a CommitmentTree's Sinsemilla tree
-    CommitmentTreeAppend {
-        /// 32-byte leaf hash (must be a valid Pallas field element)
-        leaf: [u8; 32],
-    },
-    /// Create a checkpoint in a CommitmentTree's Sinsemilla tree
-    CommitmentTreeCheckpoint {
-        /// Monotonically increasing checkpoint identifier (typically block
-        /// height)
-        checkpoint_id: u64,
+    /// Insert a note commitment + payload into a CommitmentTree
+    CommitmentTreeInsert {
+        /// 32-byte note commitment (must be a valid Pallas field element)
+        cmx: [u8; 32],
+        /// Payload data (typically encrypted note)
+        payload: Vec<u8>,
     },
 }
 
@@ -173,8 +174,7 @@ impl GroveOp {
             GroveOp::Patch { .. } => 7,
             GroveOp::InsertOrReplace { .. } => 8,
             GroveOp::InsertOnly { .. } => 9,
-            GroveOp::CommitmentTreeAppend { .. } => 10,
-            GroveOp::CommitmentTreeCheckpoint { .. } => 11,
+            GroveOp::CommitmentTreeInsert { .. } => 10,
         }
     }
 }
@@ -396,10 +396,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::DeleteTree(tree_type) => format!("Delete Tree {}", tree_type),
             GroveOp::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
             GroveOp::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
-            GroveOp::CommitmentTreeAppend { .. } => "Commitment Tree Append".to_string(),
-            GroveOp::CommitmentTreeCheckpoint { checkpoint_id } => {
-                format!("Commitment Tree Checkpoint({})", checkpoint_id)
-            }
+            GroveOp::CommitmentTreeInsert { .. } => "Commitment Tree Insert".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
@@ -554,27 +551,18 @@ impl QualifiedGroveDbOp {
         }
     }
 
-    /// A commitment tree append op using a known owned path and known key
-    pub fn commitment_tree_append_op(path: Vec<Vec<u8>>, key: Vec<u8>, leaf: [u8; 32]) -> Self {
-        let path = KeyInfoPath::from_known_owned_path(path);
-        Self {
-            path,
-            key: KnownKey(key),
-            op: GroveOp::CommitmentTreeAppend { leaf },
-        }
-    }
-
-    /// A commitment tree checkpoint op using a known owned path and known key
-    pub fn commitment_tree_checkpoint_op(
+    /// A commitment tree insert op using a known owned path and known key
+    pub fn commitment_tree_insert_op(
         path: Vec<Vec<u8>>,
         key: Vec<u8>,
-        checkpoint_id: u64,
+        cmx: [u8; 32],
+        payload: Vec<u8>,
     ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
-            op: GroveOp::CommitmentTreeCheckpoint { checkpoint_id },
+            op: GroveOp::CommitmentTreeInsert { cmx, payload },
         }
     }
 
@@ -1115,8 +1103,7 @@ where
             match op {
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
-                | GroveOp::CommitmentTreeAppend { .. }
-                | GroveOp::CommitmentTreeCheckpoint { .. } => Err(Error::InvalidBatchOperation(
+                | GroveOp::CommitmentTreeInsert { .. } => Err(Error::InvalidBatchOperation(
                     "references can not point to trees being updated",
                 ))
                 .wrap_with_cost(cost),
@@ -1582,6 +1569,7 @@ where
                     hash,
                     root_key,
                     aggregate_data,
+                    sinsemilla_root,
                 } => {
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     cost_return_on_error!(
@@ -1592,6 +1580,7 @@ where
                             root_key,
                             hash,
                             aggregate_data,
+                            sinsemilla_root,
                             &mut batch_operations,
                             grove_version
                         )
@@ -1602,8 +1591,18 @@ where
                     root_key,
                     flags,
                     aggregate_data,
+                    sinsemilla_root,
                 } => {
-                    let element = match aggregate_data {
+                    let element = if let Some(sr) = sinsemilla_root {
+                        // CommitmentTree: reconstruct with sinsemilla_root
+                        Element::new_commitment_tree_with_all(
+                            root_key,
+                            sr,
+                            aggregate_data.as_count_u64(),
+                            flags,
+                        )
+                    } else {
+                        match aggregate_data {
                         AggregateData::NoAggregateData => {
                             Element::new_tree_with_flags(root_key, flags)
                         }
@@ -1647,6 +1646,7 @@ where
                                 flags,
                             )
                         }
+                    }
                     };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
@@ -1665,16 +1665,9 @@ where
                         )
                     );
                 }
-                GroveOp::CommitmentTreeAppend { .. } => {
+                GroveOp::CommitmentTreeInsert { .. } => {
                     return Err(Error::InvalidBatchOperation(
-                        "CommitmentTreeAppend should have been preprocessed before batch execution",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-                GroveOp::CommitmentTreeCheckpoint { .. } => {
-                    return Err(Error::InvalidBatchOperation(
-                        "CommitmentTreeCheckpoint should have been preprocessed before batch \
-                         execution",
+                        "CommitmentTreeInsert should have been preprocessed before batch execution",
                     ))
                     .wrap_with_cost(cost);
                 }
@@ -1924,15 +1917,18 @@ impl GroveDb {
                                                 hash: root_hash,
                                                 root_key: calculated_root_key,
                                                 aggregate_data,
+                                                sinsemilla_root: None,
                                             });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
                                             match mutable_occupied_entry {
+                                                // `..` preserves sinsemilla_root
                                                 GroveOp::ReplaceTreeRootKey {
                                                     hash,
                                                     root_key,
                                                     aggregate_data: aggregate_data_entry,
+                                                    ..
                                                 } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
@@ -1956,6 +1952,7 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data:
                                                                     AggregateData::NoAggregateData,
+                                                                sinsemilla_root: None,
                                                             }
                                                     } else if let Element::SumTree(.., flags) =
                                                         element
@@ -1966,6 +1963,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
                                                             }
                                                     } else if let Element::BigSumTree(.., flags) =
                                                         element
@@ -1976,6 +1974,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
                                                             }
                                                     } else if let Element::CountTree(.., flags) =
                                                         element
@@ -1986,6 +1985,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
                                                             }
                                                     } else if let Element::CountSumTree(.., flags) =
                                                         element
@@ -1996,6 +1996,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
                                                             }
                                                     } else if let Element::ProvableCountTree(
                                                         ..,
@@ -2008,6 +2009,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
                                                             }
                                                     } else if let Element::ProvableCountSumTree(
                                                         ..,
@@ -2020,8 +2022,11 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
                                                             }
                                                     } else if let Element::CommitmentTree(
+                                                        _,
+                                                        sr,
                                                         _,
                                                         flags,
                                                     ) = element
@@ -2032,6 +2037,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: Some(*sr),
                                                             }
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
@@ -2056,8 +2062,7 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
-                                                GroveOp::CommitmentTreeAppend { .. }
-                                                | GroveOp::CommitmentTreeCheckpoint { .. } => {
+                                                GroveOp::CommitmentTreeInsert { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "CommitmentTree ops should have been \
                                                          preprocessed",
@@ -2076,6 +2081,7 @@ impl GroveDb {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
                                             aggregate_data,
+                                            sinsemilla_root: None,
                                         },
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
@@ -2088,6 +2094,7 @@ impl GroveDb {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
                                         aggregate_data,
+                                        sinsemilla_root: None,
                                     },
                                 );
                                 let mut ops_on_level: BTreeMap<
@@ -2251,29 +2258,16 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::CommitmentTreeAppend { leaf } => {
+                GroveOp::CommitmentTreeInsert { cmx, payload } => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
-                        self.commitment_tree_append(
+                        self.commitment_tree_insert(
                             path_slices.as_slice(),
                             op.key.as_slice(),
-                            leaf,
-                            transaction,
-                            grove_version,
-                        )
-                    );
-                }
-                GroveOp::CommitmentTreeCheckpoint { checkpoint_id } => {
-                    let path_slices: Vec<&[u8]> =
-                        op.path.iterator().map(|p| p.as_slice()).collect();
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.commitment_tree_checkpoint(
-                            path_slices.as_slice(),
-                            op.key.as_slice(),
-                            checkpoint_id,
+                            cmx,
+                            payload.clone(),
                             transaction,
                             grove_version,
                         )
@@ -2474,7 +2468,7 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        // Preprocess CommitmentTreeAppend ops: execute Sinsemilla operations in aux
+        // Preprocess CommitmentTreeInsert ops: execute Sinsemilla operations in aux
         // storage, then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
@@ -2601,7 +2595,7 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        // Preprocess CommitmentTreeAppend ops
+        // Preprocess CommitmentTreeInsert ops
         let ops = cost_return_on_error!(
             &mut cost,
             self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)

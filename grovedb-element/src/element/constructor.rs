@@ -291,17 +291,12 @@ impl Element {
 
     /// Set element to an empty commitment tree
     pub fn empty_commitment_tree() -> Self {
-        Element::CommitmentTree(None, None)
+        Element::CommitmentTree(None, [0u8; 32], 0, None)
     }
 
     /// Set element to an empty commitment tree with flags
     pub fn empty_commitment_tree_with_flags(flags: Option<ElementFlags>) -> Self {
-        Element::CommitmentTree(None, flags)
-    }
-
-    /// Set element to a commitment tree
-    pub fn new_commitment_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
-        Element::CommitmentTree(maybe_root_key, None)
+        Element::CommitmentTree(None, [0u8; 32], 0, flags)
     }
 
     /// Set element to a commitment tree with flags
@@ -309,6 +304,16 @@ impl Element {
         maybe_root_key: Option<Vec<u8>>,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::CommitmentTree(maybe_root_key, flags)
+        Element::CommitmentTree(maybe_root_key, [0u8; 32], 0, flags)
+    }
+
+    /// Set element to a commitment tree with all fields
+    pub fn new_commitment_tree_with_all(
+        maybe_root_key: Option<Vec<u8>>,
+        sinsemilla_root: [u8; 32],
+        count: CountValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CommitmentTree(maybe_root_key, sinsemilla_root, count, flags)
     }
 }

@@ -74,10 +74,11 @@ pub enum Element {
     /// Same as Element::CountSumTree but includes counts in cryptographic state
     /// (sum is tracked but NOT included in hash, only count is)
     ProvableCountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
-    /// Orchard-style commitment tree (append-only, fixed-depth Sinsemilla
-    /// Merkle) Used for zero-knowledge shielded pools. Not a Merk tree
-    /// internally.
-    CommitmentTree(Option<Vec<u8>>, Option<ElementFlags>),
+    /// Orchard-style commitment tree: acts as both a CountTree (items
+    /// queryable through GroveDB proofs) and a Sinsemilla Frontier (anchor
+    /// computation). The sinsemilla_root ([u8; 32]) is stored in the element
+    /// and authenticated through the Merk hash chain.
+    CommitmentTree(Option<Vec<u8>>, [u8; 32], CountValue, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -220,11 +221,13 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::CommitmentTree(root_key, flags) => {
+            Element::CommitmentTree(root_key, sinsemilla_root, count, flags) => {
                 write!(
                     f,
-                    "CommitmentTree({}{})",
+                    "CommitmentTree({}, sinsemilla: {}, count: {}{})",
                     root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    hex::encode(sinsemilla_root),
+                    count,
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))

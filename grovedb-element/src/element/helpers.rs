@@ -31,7 +31,8 @@ impl Element {
             Element::CountTree(_, count_value, _)
             | Element::CountSumTree(_, count_value, ..)
             | Element::ProvableCountTree(_, count_value, _)
-            | Element::ProvableCountSumTree(_, count_value, ..) => *count_value,
+            | Element::ProvableCountSumTree(_, count_value, ..)
+            | Element::CommitmentTree(_, _, count_value, _) => *count_value,
             _ => 1,
         }
     }
@@ -49,6 +50,7 @@ impl Element {
                 (*count_value, *sum_value)
             }
             Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
+            Element::CommitmentTree(_, _, count_value, _) => (*count_value, 0),
             _ => (1, 0),
         }
     }

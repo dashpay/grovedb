@@ -86,7 +86,7 @@ impl TreeType {
             TreeType::CountSumTree => NodeType::CountSumNode,
             TreeType::ProvableCountTree => NodeType::ProvableCountNode,
             TreeType::ProvableCountSumTree => NodeType::ProvableCountSumNode,
-            TreeType::CommitmentTree => NodeType::NormalNode,
+            TreeType::CommitmentTree => NodeType::CountNode,
         }
     }
 
@@ -99,7 +99,7 @@ impl TreeType {
             TreeType::CountSumTree => TreeFeatureType::CountedSummedMerkNode(0, 0),
             TreeType::ProvableCountTree => TreeFeatureType::ProvableCountedMerkNode(0),
             TreeType::ProvableCountSumTree => TreeFeatureType::ProvableCountedSummedMerkNode(0, 0),
-            TreeType::CommitmentTree => TreeFeatureType::BasicMerkNode,
+            TreeType::CommitmentTree => TreeFeatureType::CountedMerkNode(0),
         }
     }
 

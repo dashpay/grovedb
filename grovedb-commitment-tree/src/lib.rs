@@ -1,27 +1,21 @@
 //! Orchard-style commitment tree integration for GroveDB.
 //!
-//! This crate wraps the Zcash `orchard` crate's Sinsemilla Merkle tree and
-//! adapts it for use as a GroveDB subtree type. The tree is a fixed-depth 32,
-//! append-only binary Merkle tree using Sinsemilla hashing over the Pallas
-//! curve.
+//! This crate provides a lightweight frontier-based Sinsemilla Merkle tree
+//! for tracking note commitment anchors. It wraps the `incrementalmerkletree`
+//! `Frontier` type with `orchard::tree::MerkleHashOrchard` hashing.
 //!
 //! # Architecture
 //!
-//! - Uses `shardtree::ShardTree` for efficient tree management with pruning
-//! - Uses `orchard::tree::MerkleHashOrchard` for Sinsemilla-based node hashing
-//! - Stores tree data via the `ShardStore` trait (must be implemented for the
-//!   backing storage)
-//! - Produces 32-byte root hashes compatible with GroveDB's `Hash` type
+//! - Uses `Frontier<MerkleHashOrchard, 32>` for O(1) append and root
+//!   computation
+//! - Stores only the rightmost path (~1KB constant size) rather than the full
+//!   tree
+//! - Items (cmx || encrypted_note) are stored as GroveDB CountTree items
+//! - The frontier is serialized to aux storage alongside the CountTree
+//! - Historical anchors are managed by Platform in a separate tree (not here)
 
-pub mod kv_store;
-pub mod serialization;
-mod storage;
-
-// Incremental Merkle tree primitives
-use std::fmt::Debug;
-
-pub use incrementalmerkletree::{Address, Hashable, Level, Position, Retention};
-pub use kv_store::{KvShardStore, MemKvStore};
+use incrementalmerkletree::frontier::Frontier;
+pub use incrementalmerkletree::{Hashable, Level, Position};
 // Builder for constructing shielded transactions
 pub use orchard::builder::{Builder, BundleType};
 /// Re-export of `orchard::bundle::BatchValidator` for verifying Orchard
@@ -73,176 +67,189 @@ pub use orchard::{
     value::{NoteValue, ValueCommitment},
     Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
 };
-pub use shardtree::store::ShardStore;
-use shardtree::ShardTree;
-pub use storage::{new_memory_store, MemoryCommitmentStore};
 use thiserror::Error;
 
-/// Height of each shard in the commitment tree.
-///
-/// With depth 32 and shard height 16, the tree is split into 2^16 = 65536
-/// shards at the top level, each containing a subtree of depth 16.
-pub const SHARD_HEIGHT: u8 = 16;
+/// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
+/// parameter.
+const FRONTIER_DEPTH: u8 = NOTE_COMMITMENT_TREE_DEPTH as u8;
 
-/// A GroveDB-integrated Orchard commitment tree.
-///
-/// Wraps `ShardTree` parameterized for Orchard's depth-32 Sinsemilla Merkle
-/// tree. The type parameter `S` is the backing store (must implement
-/// `ShardStore`).
-pub struct CommitmentTree<S: ShardStore<H = MerkleHashOrchard>> {
-    inner: ShardTree<S, { NOTE_COMMITMENT_TREE_DEPTH as u8 }, SHARD_HEIGHT>,
-}
-
+/// Errors that can occur during commitment frontier operations.
 #[derive(Debug, Error)]
-pub enum CommitmentTreeError<E: std::error::Error> {
-    #[error("shard tree error: {0}")]
-    ShardTree(#[from] shardtree::error::ShardTreeError<E>),
+pub enum CommitmentTreeError {
     #[error("tree is full (max {max} leaves)", max = 1u64 << NOTE_COMMITMENT_TREE_DEPTH)]
     TreeFull,
-    #[error("checkpoint at depth {0} not found")]
-    CheckpointNotFound(usize),
+    #[error("invalid frontier data: {0}")]
+    InvalidData(String),
+    #[error("invalid Pallas field element")]
+    InvalidFieldElement,
 }
 
-impl<S> CommitmentTree<S>
-where
-    S: ShardStore<H = MerkleHashOrchard>,
-    S::CheckpointId: Debug + Ord + Clone,
-{
-    /// Create a new commitment tree backed by the given store.
-    ///
-    /// `max_checkpoints` controls how many historical roots are retained
-    /// for witness generation.
-    pub fn new(store: S, max_checkpoints: usize) -> Self {
+/// A lightweight frontier-based Sinsemilla commitment tree.
+///
+/// Stores only the rightmost path of the depth-32 Merkle tree (~1KB),
+/// supporting O(1) append and root hash computation.
+///
+/// The full note data (cmx || encrypted_note) is stored separately as
+/// items in a GroveDB CountTree. This struct only tracks the Sinsemilla
+/// hash state. Historical anchors for spend authorization are managed
+/// by Platform in a separate provable tree.
+#[derive(Debug, Clone)]
+pub struct CommitmentFrontier {
+    frontier: Frontier<MerkleHashOrchard, FRONTIER_DEPTH>,
+}
+
+impl CommitmentFrontier {
+    /// Create a new empty commitment frontier.
+    pub fn new() -> Self {
         Self {
-            inner: ShardTree::new(store, max_checkpoints),
+            frontier: Frontier::empty(),
         }
     }
 
-    /// Append a note commitment to the tree.
+    /// Append a commitment (cmx) to the frontier.
     ///
-    /// The commitment is converted to a `MerkleHashOrchard` leaf and appended
-    /// at the next available position.
-    pub fn append(
-        &mut self,
-        cmx: ExtractedNoteCommitment,
-        retention: Retention<S::CheckpointId>,
-    ) -> Result<(), CommitmentTreeError<S::Error>> {
-        let leaf = MerkleHashOrchard::from_cmx(&cmx);
-        self.inner.append(leaf, retention)?;
-        Ok(())
-    }
-
-    /// Append a raw 32-byte commitment to the tree.
-    ///
-    /// This is useful when the caller has already computed the tree leaf hash.
-    pub fn append_raw(
-        &mut self,
-        leaf: MerkleHashOrchard,
-        retention: Retention<S::CheckpointId>,
-    ) -> Result<(), CommitmentTreeError<S::Error>> {
-        self.inner.append(leaf, retention)?;
-        Ok(())
-    }
-
-    /// Get the current root hash of the tree.
-    ///
-    /// Returns the root at the current tree state (no checkpoint depth).
-    /// The returned `MerkleHashOrchard` can be converted to `[u8; 32]` for
-    /// use as a GroveDB hash.
-    pub fn root(&self) -> Result<MerkleHashOrchard, CommitmentTreeError<S::Error>> {
-        // None means "current state" (no checkpoint depth)
-        self.root_at_checkpoint_depth(None)
-    }
-
-    /// Get the root hash as a 32-byte array suitable for GroveDB.
-    pub fn root_hash(&self) -> Result<[u8; 32], CommitmentTreeError<S::Error>> {
-        Ok(self.root()?.to_bytes())
-    }
-
-    /// Get the root at a specific checkpoint depth.
-    ///
-    /// `None` means the current state, `Some(0)` is the most recent
-    /// checkpoint, `Some(1)` is one checkpoint back, etc.
-    pub fn root_at_checkpoint_depth(
-        &self,
-        depth: Option<usize>,
-    ) -> Result<MerkleHashOrchard, CommitmentTreeError<S::Error>> {
-        let maybe_root = self.inner.root_at_checkpoint_depth(depth)?;
-        match (maybe_root, depth) {
-            (Some(root), _) => Ok(root),
-            // Current state (no checkpoint) — empty tree is valid.
-            (None, None) => {
-                use incrementalmerkletree::Hashable;
-                Ok(MerkleHashOrchard::empty_root(Level::from(
-                    NOTE_COMMITMENT_TREE_DEPTH as u8,
-                )))
-            }
-            // Specific checkpoint requested but doesn't exist.
-            (None, Some(d)) => Err(CommitmentTreeError::CheckpointNotFound(d)),
+    /// Returns the new Sinsemilla root hash after the append.
+    pub fn append(&mut self, cmx: [u8; 32]) -> Result<[u8; 32], CommitmentTreeError> {
+        let leaf = merkle_hash_from_bytes(&cmx).ok_or(CommitmentTreeError::InvalidFieldElement)?;
+        if !self.frontier.append(leaf) {
+            return Err(CommitmentTreeError::TreeFull);
         }
+        Ok(self.root_hash())
     }
 
-    /// Generate a Merkle inclusion proof (witness) for the leaf at `position`.
+    /// Get the current Sinsemilla root hash as 32 bytes.
     ///
-    /// The proof is generated against the most recent checkpoint state.
-    /// Returns `None` if no witness can be generated for the given position
-    /// (e.g., the position has been pruned).
-    pub fn witness(
-        &self,
-        position: Position,
-    ) -> Result<
-        Option<incrementalmerkletree::MerklePath<MerkleHashOrchard, 32>>,
-        CommitmentTreeError<S::Error>,
-    > {
-        Ok(self.inner.witness_at_checkpoint_depth(position, 0)?)
+    /// Returns the empty tree root if no leaves have been appended.
+    pub fn root_hash(&self) -> [u8; 32] {
+        self.frontier.root().to_bytes()
     }
 
-    /// Generate an Orchard-specific Merkle path for use in ZK proofs.
-    ///
-    /// Converts the generic `incrementalmerkletree::MerklePath` into
-    /// `orchard::tree::MerklePath` suitable for the Orchard circuit.
-    pub fn orchard_witness(
-        &self,
-        position: Position,
-    ) -> Result<Option<MerklePath>, CommitmentTreeError<S::Error>> {
-        Ok(self.witness(position)?.map(|p| p.into()))
-    }
-
-    /// Create a checkpoint at the current tree state.
-    ///
-    /// Checkpoints allow computing roots and witnesses at historical states.
-    pub fn checkpoint(&mut self, id: S::CheckpointId) -> Result<(), CommitmentTreeError<S::Error>> {
-        self.inner.checkpoint(id)?;
-        Ok(())
-    }
-
-    /// Get the anchor (root) for a specific checkpoint.
-    pub fn anchor(&self) -> Result<Anchor, CommitmentTreeError<S::Error>> {
-        Ok(Anchor::from(self.root()?))
+    /// Get the current root as an Orchard `Anchor`.
+    pub fn anchor(&self) -> Anchor {
+        Anchor::from(self.frontier.root())
     }
 
     /// Get the position of the most recently appended leaf.
     ///
-    /// Returns `None` if the tree is empty.
-    pub fn max_leaf_position(&self) -> Result<Option<Position>, CommitmentTreeError<S::Error>> {
-        Ok(self.inner.max_leaf_position(None)?)
+    /// Returns `None` if the frontier is empty. The position is 0-indexed,
+    /// so it equals `count - 1`.
+    pub fn position(&self) -> Option<u64> {
+        self.frontier.value().map(|f| u64::from(f.position()))
     }
 
-    /// Access the underlying `ShardTree` for advanced operations.
-    pub fn inner(&self) -> &ShardTree<S, { NOTE_COMMITMENT_TREE_DEPTH as u8 }, SHARD_HEIGHT> {
-        &self.inner
+    /// Get the number of leaves that have been appended.
+    pub fn tree_size(&self) -> u64 {
+        self.frontier.tree_size()
     }
 
-    /// Access the underlying `ShardTree` mutably.
-    pub fn inner_mut(
-        &mut self,
-    ) -> &mut ShardTree<S, { NOTE_COMMITMENT_TREE_DEPTH as u8 }, SHARD_HEIGHT> {
-        &mut self.inner
+    /// Serialize the frontier to bytes.
+    ///
+    /// Format:
+    /// ```text
+    /// has_frontier: u8 (0x00 = empty, 0x01 = non-empty)
+    /// If non-empty:
+    ///   position: u64 BE (8 bytes)
+    ///   leaf: [u8; 32]
+    ///   ommer_count: u8
+    ///   ommers: [ommer_count × 32 bytes]
+    /// ```
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        match self.frontier.value() {
+            None => {
+                buf.push(0x00);
+            }
+            Some(f) => {
+                buf.push(0x01);
+                buf.extend_from_slice(&u64::from(f.position()).to_be_bytes());
+                buf.extend_from_slice(&f.leaf().to_bytes());
+                let ommers = f.ommers();
+                buf.push(ommers.len() as u8);
+                for ommer in ommers {
+                    buf.extend_from_slice(&ommer.to_bytes());
+                }
+            }
+        }
+
+        buf
     }
 
-    /// Consume the tree and return the underlying store.
-    pub fn into_store(self) -> S {
-        self.inner.into_store()
+    /// Deserialize a frontier from bytes.
+    pub fn deserialize(data: &[u8]) -> Result<Self, CommitmentTreeError> {
+        if data.is_empty() {
+            return Err(CommitmentTreeError::InvalidData("empty input".to_string()));
+        }
+
+        let mut pos = 0;
+
+        let has_frontier = data[pos];
+        pos += 1;
+
+        let frontier = if has_frontier == 0x00 {
+            Frontier::empty()
+        } else if has_frontier == 0x01 {
+            if data.len() < pos + 8 + 32 + 1 {
+                return Err(CommitmentTreeError::InvalidData(
+                    "truncated frontier header".to_string(),
+                ));
+            }
+
+            let position_u64 = u64::from_be_bytes(
+                data[pos..pos + 8]
+                    .try_into()
+                    .map_err(|_| CommitmentTreeError::InvalidData("bad position".to_string()))?,
+            );
+            pos += 8;
+
+            let leaf_bytes: [u8; 32] = data[pos..pos + 32]
+                .try_into()
+                .map_err(|_| CommitmentTreeError::InvalidData("bad leaf".to_string()))?;
+            let leaf = merkle_hash_from_bytes(&leaf_bytes)
+                .ok_or(CommitmentTreeError::InvalidFieldElement)?;
+            pos += 32;
+
+            let ommer_count = data[pos] as usize;
+            pos += 1;
+
+            if data.len() < pos + ommer_count * 32 {
+                return Err(CommitmentTreeError::InvalidData(
+                    "truncated ommers".to_string(),
+                ));
+            }
+
+            let mut ommers = Vec::with_capacity(ommer_count);
+            for _ in 0..ommer_count {
+                let ommer_bytes: [u8; 32] = data[pos..pos + 32]
+                    .try_into()
+                    .map_err(|_| CommitmentTreeError::InvalidData("bad ommer".to_string()))?;
+                let ommer = merkle_hash_from_bytes(&ommer_bytes)
+                    .ok_or(CommitmentTreeError::InvalidFieldElement)?;
+                ommers.push(ommer);
+                pos += 32;
+            }
+
+            // Allow trailing bytes for forward compatibility (old serialization
+            // included historical anchors after the frontier data).
+            let _ = pos;
+
+            Frontier::from_parts(Position::from(position_u64), leaf, ommers).map_err(|e| {
+                CommitmentTreeError::InvalidData(format!("frontier reconstruction: {:?}", e))
+            })?
+        } else {
+            return Err(CommitmentTreeError::InvalidData(format!(
+                "invalid frontier flag: 0x{:02x}",
+                has_frontier
+            )));
+        };
+
+        Ok(Self { frontier })
+    }
+}
+
+impl Default for CommitmentFrontier {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -252,183 +259,156 @@ pub fn merkle_hash_from_bytes(bytes: &[u8; 32]) -> Option<MerkleHashOrchard> {
     Option::from(MerkleHashOrchard::from_bytes(bytes))
 }
 
-/// Verify that a Merkle path is valid for a given commitment and anchor.
-///
-/// This is a standalone verification function that does not require access
-/// to the full tree.
-pub fn verify_inclusion(
-    cmx: ExtractedNoteCommitment,
-    path: &MerklePath,
-    expected_anchor: &Anchor,
-) -> bool {
-    path.root(cmx) == *expected_anchor
-}
-
 #[cfg(test)]
 mod tests {
-    use incrementalmerkletree::Hashable;
-
     use super::*;
 
     /// Create a deterministic test leaf from an index.
-    fn test_leaf(index: u64) -> MerkleHashOrchard {
-        let mut bytes = [0u8; 32];
-        bytes[..8].copy_from_slice(&index.to_le_bytes());
-        // Use Sinsemilla combine to produce a valid tree node from raw bytes.
-        // We combine at level 0 to get a valid MerkleHashOrchard value.
+    fn test_leaf(index: u64) -> [u8; 32] {
         let empty = MerkleHashOrchard::empty_leaf();
-        MerkleHashOrchard::combine(Level::from(0), &empty, &{
-            // Create a slightly different leaf for each index by combining
-            // the empty leaf with itself at different levels.
-            MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty)
-        })
+        let varied =
+            MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty);
+        MerkleHashOrchard::combine(Level::from(0), &empty, &varied).to_bytes()
     }
 
     #[test]
-    fn test_empty_tree_root() {
-        let store = new_memory_store();
-        let tree = CommitmentTree::new(store, 100);
-        let root = tree.root().expect("should get root of empty tree");
+    fn test_empty_frontier() {
+        let f = CommitmentFrontier::new();
+        assert_eq!(f.position(), None);
+        assert_eq!(f.tree_size(), 0);
+
         let empty_anchor = Anchor::empty_tree();
-        assert_eq!(Anchor::from(root), empty_anchor);
+        assert_eq!(f.anchor(), empty_anchor);
     }
 
     #[test]
     fn test_append_changes_root() {
-        let store = new_memory_store();
-        let mut tree = CommitmentTree::new(store, 100);
+        let mut f = CommitmentFrontier::new();
+        let empty_root = f.root_hash();
 
-        let empty_root = tree.root_hash().unwrap();
-
-        let leaf = test_leaf(0);
-        tree.append_raw(leaf, Retention::Marked).unwrap();
-
-        let new_root = tree.root_hash().unwrap();
-        assert_ne!(empty_root, new_root, "root should change after append");
+        let new_root = f.append(test_leaf(0)).unwrap();
+        assert_ne!(empty_root, new_root);
+        assert_eq!(f.root_hash(), new_root);
     }
 
     #[test]
-    fn test_append_multiple_and_witness() {
-        let store = new_memory_store();
-        let mut tree = CommitmentTree::new(store, 100);
+    fn test_append_tracks_position() {
+        let mut f = CommitmentFrontier::new();
+        assert_eq!(f.position(), None);
+        assert_eq!(f.tree_size(), 0);
 
-        let mut leaves = Vec::new();
+        f.append(test_leaf(0)).unwrap();
+        assert_eq!(f.position(), Some(0));
+        assert_eq!(f.tree_size(), 1);
 
-        // Append 10 leaves
-        for i in 0..10u64 {
-            let leaf = test_leaf(i);
-            leaves.push(leaf);
-            tree.append_raw(leaf, Retention::Marked).unwrap();
+        f.append(test_leaf(1)).unwrap();
+        assert_eq!(f.position(), Some(1));
+        assert_eq!(f.tree_size(), 2);
+
+        for i in 2..100u64 {
+            f.append(test_leaf(i)).unwrap();
         }
-
-        tree.checkpoint(0u32).unwrap();
-
-        // Verify we can get a witness for each position
-        for i in 0..10u64 {
-            let witness = tree
-                .witness(Position::from(i))
-                .expect("witness generation should not error")
-                .expect("witness should exist for marked position");
-
-            // Verify the witness: compute root from leaf and path
-            let computed_root = witness.root(leaves[i as usize]);
-            let expected_root = tree.root().unwrap();
-            assert_eq!(
-                computed_root, expected_root,
-                "witness for position {} should produce correct root",
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn test_verify_inclusion_via_orchard_path() {
-        let store = new_memory_store();
-        let mut tree = CommitmentTree::new(store, 100);
-
-        let leaf = test_leaf(42);
-        // We need an ExtractedNoteCommitment for verify_inclusion.
-        // Since MerkleHashOrchard wraps the same bytes, we can convert.
-        let leaf_bytes = leaf.to_bytes();
-        let cmx = ExtractedNoteCommitment::from_bytes(&leaf_bytes).unwrap();
-
-        tree.append_raw(leaf, Retention::Marked).unwrap();
-        tree.checkpoint(0u32).unwrap();
-
-        let path = tree.orchard_witness(Position::from(0u64)).unwrap().unwrap();
-        let anchor = tree.anchor().unwrap();
-
-        assert!(
-            verify_inclusion(cmx, &path, &anchor),
-            "valid inclusion proof should verify"
-        );
-
-        // Wrong commitment should fail
-        let wrong_leaf_bytes = test_leaf(99).to_bytes();
-        let wrong_cmx = ExtractedNoteCommitment::from_bytes(&wrong_leaf_bytes).unwrap();
-        assert!(
-            !verify_inclusion(wrong_cmx, &path, &anchor),
-            "wrong commitment should not verify"
-        );
-    }
-
-    #[test]
-    fn test_root_hash_is_32_bytes() {
-        let store = new_memory_store();
-        let tree = CommitmentTree::new(store, 100);
-        let hash = tree.root_hash().unwrap();
-        assert_eq!(hash.len(), 32);
+        assert_eq!(f.position(), Some(99));
+        assert_eq!(f.tree_size(), 100);
     }
 
     #[test]
     fn test_deterministic_roots() {
-        let mut tree1 = CommitmentTree::new(new_memory_store(), 100);
-        let mut tree2 = CommitmentTree::new(new_memory_store(), 100);
+        let mut f1 = CommitmentFrontier::new();
+        let mut f2 = CommitmentFrontier::new();
 
-        for i in 0..5u64 {
-            let leaf = test_leaf(i);
-            tree1.append_raw(leaf, Retention::Marked).unwrap();
-            tree2.append_raw(leaf, Retention::Marked).unwrap();
+        for i in 0..10u64 {
+            f1.append(test_leaf(i)).unwrap();
+            f2.append(test_leaf(i)).unwrap();
         }
 
-        assert_eq!(
-            tree1.root_hash().unwrap(),
-            tree2.root_hash().unwrap(),
-            "identical appends should produce identical roots"
-        );
+        assert_eq!(f1.root_hash(), f2.root_hash());
     }
 
     #[test]
     fn test_different_leaves_different_roots() {
-        let mut tree1 = CommitmentTree::new(new_memory_store(), 100);
-        let mut tree2 = CommitmentTree::new(new_memory_store(), 100);
+        let mut f1 = CommitmentFrontier::new();
+        let mut f2 = CommitmentFrontier::new();
 
-        tree1.append_raw(test_leaf(0), Retention::Marked).unwrap();
-        tree2.append_raw(test_leaf(1), Retention::Marked).unwrap();
+        f1.append(test_leaf(0)).unwrap();
+        f2.append(test_leaf(1)).unwrap();
 
-        assert_ne!(
-            tree1.root_hash().unwrap(),
-            tree2.root_hash().unwrap(),
-            "different leaves should produce different roots"
-        );
+        assert_ne!(f1.root_hash(), f2.root_hash());
     }
 
     #[test]
-    fn test_checkpoint_preserves_historical_root() {
-        let mut tree = CommitmentTree::new(new_memory_store(), 100);
+    fn test_serialize_empty() {
+        let f = CommitmentFrontier::new();
+        let data = f.serialize();
+        let f2 = CommitmentFrontier::deserialize(&data).unwrap();
 
-        tree.append_raw(test_leaf(0), Retention::Marked).unwrap();
-        tree.checkpoint(0u32).unwrap();
-        let root_after_one = tree.root_hash().unwrap();
+        assert_eq!(f.root_hash(), f2.root_hash());
+        assert_eq!(f.position(), f2.position());
+    }
 
-        tree.append_raw(test_leaf(1), Retention::Marked).unwrap();
-        tree.checkpoint(1u32).unwrap();
-        let root_after_two = tree.root_hash().unwrap();
+    #[test]
+    fn test_serialize_roundtrip() {
+        let mut f = CommitmentFrontier::new();
+        for i in 0..100u64 {
+            f.append(test_leaf(i)).unwrap();
+        }
 
-        assert_ne!(root_after_one, root_after_two);
+        let data = f.serialize();
+        let f2 = CommitmentFrontier::deserialize(&data).unwrap();
 
-        // Historical root at depth 1 should match root_after_one
-        let historical = tree.root_at_checkpoint_depth(Some(1)).unwrap().to_bytes();
-        assert_eq!(historical, root_after_one);
+        assert_eq!(f.root_hash(), f2.root_hash());
+        assert_eq!(f.position(), f2.position());
+        assert_eq!(f.tree_size(), f2.tree_size());
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_with_many_leaves() {
+        let mut f = CommitmentFrontier::new();
+        for i in 0..1000u64 {
+            f.append(test_leaf(i)).unwrap();
+        }
+
+        let data = f.serialize();
+        // Frontier should be small regardless of leaf count
+        // 1 (flag) + 8 (position) + 32 (leaf) + 1 (ommer_count) + N*32 (ommers)
+        // Max ommers for depth 32 = 32, so max ~1.1KB
+        assert!(
+            data.len() < 1200,
+            "frontier serialized to {} bytes",
+            data.len()
+        );
+
+        let f2 = CommitmentFrontier::deserialize(&data).unwrap();
+        assert_eq!(f.root_hash(), f2.root_hash());
+        assert_eq!(f.tree_size(), f2.tree_size());
+    }
+
+    #[test]
+    fn test_invalid_field_element() {
+        // All 0xFF bytes is not a valid Pallas field element
+        let result = CommitmentFrontier::new().append([0xff; 32]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_invalid_data() {
+        assert!(CommitmentFrontier::deserialize(&[]).is_err());
+        assert!(CommitmentFrontier::deserialize(&[0x02]).is_err());
+        assert!(CommitmentFrontier::deserialize(&[0x01]).is_err());
+    }
+
+    #[test]
+    fn test_root_hash_is_32_bytes() {
+        let f = CommitmentFrontier::new();
+        assert_eq!(f.root_hash().len(), 32);
+    }
+
+    #[test]
+    fn test_empty_tree_root_matches_orchard() {
+        let f = CommitmentFrontier::new();
+        let root = f.root_hash();
+        let expected =
+            MerkleHashOrchard::empty_root(Level::from(NOTE_COMMITMENT_TREE_DEPTH as u8)).to_bytes();
+        assert_eq!(root, expected);
     }
 }

@@ -13,6 +13,4 @@ documentation = "https://docs.rs/grovedb"
 [dependencies]
 orchard = { version = "0.12", features = ["circuit"] }
 incrementalmerkletree = "0.8"
-shardtree = "0.6"
-pasta_curves = "0.5"
 thiserror = "2.0"

@@ -727,8 +727,13 @@ impl GroveDb {
                     grove_version,
                 )
                 .map_err(|e| e.into())
-            } else if let Element::CommitmentTree(_, flag) = element {
-                let tree = Element::new_commitment_tree_with_flags(maybe_root_key, flag);
+            } else if let Element::CommitmentTree(_, sinsemilla_root, _, flag) = element {
+                let tree = Element::new_commitment_tree_with_all(
+                    maybe_root_key,
+                    sinsemilla_root,
+                    aggregate_data.as_count_u64(),
+                    flag,
+                );
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| {
                         Error::CorruptedData(format!(
@@ -758,6 +763,7 @@ impl GroveDb {
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
         aggregate_data: AggregateData,
+        sinsemilla_root_override: Option<[u8; 32]>,
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -903,8 +909,15 @@ impl GroveDb {
                         grove_version,
                     )
                     .map_err(|e| e.into())
-                } else if let Element::CommitmentTree(_, flag) = element {
-                    let tree = Element::new_commitment_tree_with_flags(maybe_root_key, flag);
+                } else if let Element::CommitmentTree(_, existing_sr, _, flag) = element {
+                    // Use override if provided (from preprocessing), else preserve
+                    let sr = sinsemilla_root_override.unwrap_or(existing_sr);
+                    let tree = Element::new_commitment_tree_with_all(
+                        maybe_root_key,
+                        sr,
+                        aggregate_data.as_count_u64(),
+                        flag,
+                    );
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)

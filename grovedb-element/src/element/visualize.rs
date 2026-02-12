@@ -132,9 +132,16 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::CommitmentTree(root_key, flags) => {
+            Element::CommitmentTree(root_key, sinsemilla_root, count, flags) => {
                 drawer.write(b"commitment_tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(
+                    format!(
+                        " sinsemilla: {} count: {count}",
+                        hex::encode(sinsemilla_root)
+                    )
+                    .as_bytes(),
+                )?;
 
                 if let Some(f) = flags {
                     if !f.is_empty() {

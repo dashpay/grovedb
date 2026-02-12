@@ -59,20 +59,22 @@ impl ElementDeleteFromStorageExtensions for Element {
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!("delete", grove_version.grovedb_versions.element.delete);
         let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree | TreeType::CommitmentTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree | TreeType::CommitmentTree, false) => Op::Delete,
+            (TreeType::NormalTree, true) => Op::DeleteLayered,
+            (TreeType::NormalTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
             | (TreeType::CountSumTree, true)
             | (TreeType::ProvableCountTree, true)
-            | (TreeType::ProvableCountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::ProvableCountSumTree, true)
+            | (TreeType::CommitmentTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
             | (TreeType::CountSumTree, false)
             | (TreeType::ProvableCountTree, false)
-            | (TreeType::ProvableCountSumTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::ProvableCountSumTree, false)
+            | (TreeType::CommitmentTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -119,20 +121,22 @@ impl ElementDeleteFromStorageExtensions for Element {
                 .delete_with_sectioned_removal_bytes
         );
         let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree | TreeType::CommitmentTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree | TreeType::CommitmentTree, false) => Op::Delete,
+            (TreeType::NormalTree, true) => Op::DeleteLayered,
+            (TreeType::NormalTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
             | (TreeType::CountSumTree, true)
             | (TreeType::ProvableCountTree, true)
-            | (TreeType::ProvableCountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::ProvableCountSumTree, true)
+            | (TreeType::CommitmentTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
             | (TreeType::CountSumTree, false)
             | (TreeType::ProvableCountTree, false)
-            | (TreeType::ProvableCountSumTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::ProvableCountSumTree, false)
+            | (TreeType::CommitmentTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -175,20 +179,22 @@ impl ElementDeleteFromStorageExtensions for Element {
                 .delete_into_batch_operations
         );
         let op = match (in_tree_type, is_layered) {
-            (TreeType::NormalTree | TreeType::CommitmentTree, true) => Op::DeleteLayered,
-            (TreeType::NormalTree | TreeType::CommitmentTree, false) => Op::Delete,
+            (TreeType::NormalTree, true) => Op::DeleteLayered,
+            (TreeType::NormalTree, false) => Op::Delete,
             (TreeType::SumTree, true)
             | (TreeType::BigSumTree, true)
             | (TreeType::CountTree, true)
             | (TreeType::CountSumTree, true)
             | (TreeType::ProvableCountTree, true)
-            | (TreeType::ProvableCountSumTree, true) => Op::DeleteLayeredMaybeSpecialized,
+            | (TreeType::ProvableCountSumTree, true)
+            | (TreeType::CommitmentTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
             | (TreeType::CountSumTree, false)
             | (TreeType::ProvableCountTree, false)
-            | (TreeType::ProvableCountSumTree, false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::ProvableCountSumTree, false)
+            | (TreeType::CommitmentTree, false) => Op::DeleteMaybeSpecialized,
         };
         let entry = (key, op);
         batch_operations.push(entry);

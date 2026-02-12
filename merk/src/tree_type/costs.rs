@@ -28,6 +28,10 @@ pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 /// The cost of a count sum tree
 pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
 
+/// The cost of a commitment tree (CountTree cost + 32 bytes for sinsemilla
+/// root)
+pub const COMMITMENT_TREE_COST_SIZE: u32 = COUNT_TREE_COST_SIZE + 32; // 44
+
 pub trait CostSize {
     fn cost_size(&self) -> u32;
 }
@@ -42,7 +46,7 @@ impl CostSize for TreeType {
             TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
             TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
             TreeType::ProvableCountSumTree => COUNT_SUM_TREE_COST_SIZE,
-            TreeType::CommitmentTree => TREE_COST_SIZE,
+            TreeType::CommitmentTree => COMMITMENT_TREE_COST_SIZE,
         }
     }
 }

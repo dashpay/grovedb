@@ -129,25 +129,14 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::CommitmentTreeAppend { .. } => {
-                // CommitmentTreeAppend is preprocessed into ReplaceTreeRootKey before
+            GroveOp::CommitmentTreeInsert { .. } => {
+                // CommitmentTreeInsert is preprocessed into ReplaceTreeRootKey before
                 // reaching apply_body, but cost estimation may see it directly.
-                // Treat like ReplaceTreeRootKey with NormalTree.
+                // Treat like ReplaceTreeRootKey with CommitmentTree.
                 GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
-                    grovedb_merk::tree_type::TreeType::NormalTree,
-                    propagate,
-                    grove_version,
-                )
-            }
-            GroveOp::CommitmentTreeCheckpoint { .. } => {
-                // CommitmentTreeCheckpoint is preprocessed before batch execution.
-                // Treat like ReplaceTreeRootKey for cost estimation (aux storage I/O).
-                GroveDb::average_case_merk_replace_tree(
-                    key,
-                    layer_element_estimates,
-                    grovedb_merk::tree_type::TreeType::NormalTree,
+                    grovedb_merk::tree_type::TreeType::CommitmentTree,
                     propagate,
                     grove_version,
                 )
