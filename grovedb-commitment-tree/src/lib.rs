@@ -99,6 +99,8 @@ pub enum CommitmentTreeError<E: std::error::Error> {
     ShardTree(#[from] shardtree::error::ShardTreeError<E>),
     #[error("tree is full (max {max} leaves)", max = 1u64 << NOTE_COMMITMENT_TREE_DEPTH)]
     TreeFull,
+    #[error("checkpoint at depth {0} not found")]
+    CheckpointNotFound(usize),
 }
 
 impl<S> CommitmentTree<S>
@@ -166,10 +168,18 @@ where
         depth: Option<usize>,
     ) -> Result<MerkleHashOrchard, CommitmentTreeError<S::Error>> {
         let maybe_root = self.inner.root_at_checkpoint_depth(depth)?;
-        Ok(maybe_root.unwrap_or_else(|| {
-            use incrementalmerkletree::Hashable;
-            MerkleHashOrchard::empty_root(Level::from(NOTE_COMMITMENT_TREE_DEPTH as u8))
-        }))
+        match (maybe_root, depth) {
+            (Some(root), _) => Ok(root),
+            // Current state (no checkpoint) — empty tree is valid.
+            (None, None) => {
+                use incrementalmerkletree::Hashable;
+                Ok(MerkleHashOrchard::empty_root(Level::from(
+                    NOTE_COMMITMENT_TREE_DEPTH as u8,
+                )))
+            }
+            // Specific checkpoint requested but doesn't exist.
+            (None, Some(d)) => Err(CommitmentTreeError::CheckpointNotFound(d)),
+        }
     }
 
     /// Generate a Merkle inclusion proof (witness) for the leaf at `position`.

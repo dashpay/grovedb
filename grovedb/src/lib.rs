@@ -730,7 +730,13 @@ impl GroveDb {
             } else if let Element::CommitmentTree(_, flag) = element {
                 let tree = Element::new_commitment_tree_with_flags(maybe_root_key, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
-                    .map_err(|e| e.into())
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "failed to propagate commitment tree subtree for key {}: {}",
+                            hex::encode(key_ref),
+                            e
+                        ))
+                    })
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -904,6 +910,7 @@ impl GroveDb {
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
                     );
+                    let key_hex = hex::encode(key.as_ref());
                     tree.insert_subtree_into_batch_operations(
                         key,
                         root_tree_hash,
@@ -912,7 +919,12 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
-                    .map_err(|e| e.into())
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "failed to batch-propagate commitment tree subtree for key {}: {}",
+                            key_hex, e
+                        ))
+                    })
                 } else {
                     Err(Error::InvalidPath(
                         "can only propagate on tree items".to_owned(),

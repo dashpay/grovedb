@@ -189,7 +189,8 @@ impl Error {
             | Self::SplitRemovalBytesClientError(s)
             | Self::ClientReturnedNonClientError(s)
             | Self::PathNotFoundInCacheForEstimatedCosts(s)
-            | Self::NotSupported(s) => {
+            | Self::NotSupported(s)
+            | Self::CommitmentTreeError(s) => {
                 s.push_str(", ");
                 s.push_str(append.as_ref());
             }

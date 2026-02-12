@@ -547,7 +547,12 @@ mod tests {
                 ElementType::ItemWithSumItem,
                 "ItemWithSumItem",
             ),
-            // discriminant 10 (ProvableCountSumTree was missing from test, add it)
+            // discriminant 10
+            (
+                Element::ProvableCountSumTree(None, 0, 0, None),
+                ElementType::ProvableCountSumTree,
+                "ProvableCountSumTree",
+            ),
             // discriminant 11
             (
                 Element::CommitmentTree(None, None),
@@ -559,8 +564,8 @@ mod tests {
         // Verify we're testing all 12 discriminants (0-11)
         assert_eq!(
             test_cases.len(),
-            11,
-            "Expected 11 Element variants in test, got {}",
+            12,
+            "Expected 12 Element variants in test, got {}",
             test_cases.len()
         );
 
