@@ -24,8 +24,36 @@ pub use incrementalmerkletree::{Address, Hashable, Level, Position, Retention};
 pub use kv_store::{KvShardStore, MemKvStore};
 // Builder for constructing shielded transactions
 pub use orchard::builder::{Builder, BundleType};
+/// Re-export of `orchard::bundle::BatchValidator` for verifying Orchard
+/// bundles.
+///
+/// # Sighash Requirement
+///
+/// [`BatchValidator::add_bundle`] requires a `sighash: [u8; 32]` parameter —
+/// the transaction hash that the Orchard bundle commits to. This hash covers
+/// the transaction data excluding the Orchard bundle itself and is used to
+/// verify both spend authorization signatures and the binding signature.
+///
+/// Platform **must** compute the sighash according to the Dash-adapted
+/// equivalent of ZIP-244's transaction digest algorithm and pass it when adding
+/// each bundle. Without the correct sighash, signature verification will fail
+/// even if the ZK proofs are valid.
+///
+/// # Usage
+///
+/// ```ignore
+/// use grovedb_commitment_tree::{BatchValidator, VerifyingKey};
+/// use rand::rngs::OsRng;
+///
+/// let mut validator = BatchValidator::new();
+/// // sighash must be the transaction digest for this bundle
+/// validator.add_bundle(&bundle, sighash);
+/// // Validate all accumulated bundles (ZK proofs + signatures)
+/// let valid = validator.validate(&verifying_key, OsRng);
+/// ```
+pub use orchard::bundle::BatchValidator;
 // Bundle/Action types
-pub use orchard::bundle::{Authorized, BatchValidator, Flags};
+pub use orchard::bundle::{Authorized, Flags};
 // Proof creation/verification (requires orchard "circuit" feature)
 pub use orchard::circuit::{ProvingKey, VerifyingKey};
 // Key management
@@ -211,12 +239,7 @@ where
 /// Convert raw 32 bytes to a `MerkleHashOrchard`, returning `None` if the
 /// bytes do not represent a valid Pallas field element.
 pub fn merkle_hash_from_bytes(bytes: &[u8; 32]) -> Option<MerkleHashOrchard> {
-    let ct = MerkleHashOrchard::from_bytes(bytes);
-    if ct.is_some().into() {
-        Some(ct.unwrap())
-    } else {
-        None
-    }
+    Option::from(MerkleHashOrchard::from_bytes(bytes))
 }
 
 /// Verify that a Merkle path is valid for a given commitment and anchor.

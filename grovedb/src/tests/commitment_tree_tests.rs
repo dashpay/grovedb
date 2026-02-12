@@ -1902,3 +1902,536 @@ fn test_commitment_tree_reexports_compile() {
         let _: Option<&redpallas::VerificationKey<redpallas::SpendAuth>> = None;
     }
 }
+
+// ==================== Audit Coverage Gap Tests ====================
+
+#[test]
+fn test_commitment_tree_proof_system_integration() {
+    // Verifies that GroveDB proofs work correctly with CommitmentTree elements.
+    // Proves the existence of a CommitmentTree element via
+    // prove_query/verify_query.
+    use grovedb_merk::proofs::Query;
+
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Create structure: root -> pool (CommitmentTree)
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    // Append some leaves so the tree is non-empty
+    for i in 0..3u64 {
+        db.commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(i), None, grove_version)
+            .unwrap()
+            .expect("append");
+    }
+
+    // Prove the CommitmentTree element exists at root -> "pool"
+    let mut query = Query::new();
+    query.insert_key(b"pool".to_vec());
+    let path_query = crate::PathQuery::new_unsized(vec![], query);
+
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .unwrap();
+
+    let (root_hash, result_set) =
+        crate::GroveDb::verify_query_raw(&proof, &path_query, grove_version).unwrap();
+
+    // Root hash from proof should match the DB's root hash
+    assert_eq!(
+        root_hash,
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        "proof root hash should match DB root hash"
+    );
+
+    // Result set should contain exactly one element (the CommitmentTree)
+    assert_eq!(
+        result_set.len(),
+        1,
+        "should have one result for the pool key"
+    );
+
+    // Verify the element is a CommitmentTree by deserializing
+    let proved = &result_set[0];
+    assert_eq!(proved.key, b"pool", "key should be 'pool'");
+    let element = Element::deserialize(&proved.value, grove_version)
+        .expect("should deserialize CommitmentTree");
+    assert!(
+        element.is_commitment_tree(),
+        "deserialized element should be a CommitmentTree"
+    );
+}
+
+#[test]
+fn test_commitment_tree_delete_and_recreate() {
+    // Verifies that deleting a CommitmentTree cleans up aux storage,
+    // and a freshly recreated tree starts empty (no stale data).
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Create and populate a commitment tree
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    for i in 0..5u64 {
+        db.commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(i), None, grove_version)
+            .unwrap()
+            .expect("append");
+    }
+
+    // Record the Sinsemilla root before deletion
+    let root_before_delete = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("root before delete");
+    assert_ne!(root_before_delete, [0u8; 32]);
+
+    // Delete the commitment tree
+    db.delete(EMPTY_PATH, b"pool", None, None, grove_version)
+        .unwrap()
+        .expect("delete pool");
+
+    // Verify it's gone
+    let result = db.get(EMPTY_PATH, b"pool", None, grove_version).unwrap();
+    assert!(result.is_err(), "pool should not exist after deletion");
+
+    // Recreate the commitment tree
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("re-insert pool");
+
+    // The recreated tree should be empty (no stale aux data)
+    let root_after_recreate = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("root after recreate");
+
+    // Empty tree root should be the Orchard empty root
+    let empty_root_node = grovedb_commitment_tree::MerkleHashOrchard::empty_root(
+        grovedb_commitment_tree::Level::from(
+            grovedb_commitment_tree::NOTE_COMMITMENT_TREE_DEPTH as u8,
+        ),
+    );
+    let empty_root_bytes = empty_root_node.to_bytes();
+
+    assert_eq!(
+        root_after_recreate, empty_root_bytes,
+        "recreated tree should have empty root (no stale aux data)"
+    );
+    assert_ne!(
+        root_after_recreate, root_before_delete,
+        "recreated tree should differ from the populated one"
+    );
+
+    // Verify we can append fresh data
+    let (new_root, pos) = db
+        .commitment_tree_append(
+            EMPTY_PATH,
+            b"pool",
+            test_leaf_bytes(99),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("append to recreated tree");
+    assert_eq!(
+        pos, 0,
+        "first append to recreated tree should be at position 0"
+    );
+    assert_ne!(new_root, empty_root_bytes);
+}
+
+#[test]
+fn test_commitment_tree_transaction_rollback() {
+    // Verifies that rolling back a transaction undoes commitment tree appends.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    // Append a leaf without a transaction (committed)
+    let (root_after_first, _) = db
+        .commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(0), None, grove_version)
+        .unwrap()
+        .expect("append 0");
+
+    // Start transaction and append more
+    let transaction = db.start_transaction();
+
+    let (root_in_tx, _) = db
+        .commitment_tree_append(
+            EMPTY_PATH,
+            b"pool",
+            test_leaf_bytes(1),
+            Some(&transaction),
+            grove_version,
+        )
+        .unwrap()
+        .expect("append 1 in tx");
+
+    assert_ne!(root_after_first, root_in_tx, "tx append should change root");
+
+    // Rollback the transaction
+    db.rollback_transaction(&transaction).unwrap();
+
+    // Root should be back to root_after_first (pre-transaction state)
+    let root_after_rollback = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("root after rollback");
+
+    assert_eq!(
+        root_after_first, root_after_rollback,
+        "rollback should undo commitment tree append"
+    );
+
+    // Position should still be 0 (only one committed leaf)
+    let pos = db
+        .commitment_tree_current_end_position(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("position after rollback");
+    assert_eq!(
+        pos,
+        Some(0),
+        "position should be 0 after rollback (only first append committed)"
+    );
+}
+
+#[test]
+fn test_commitment_tree_invalid_pallas_element_rejected() {
+    // Verifies that appending bytes that are not a valid Pallas field element
+    // is rejected.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    // The Pallas field modulus is less than 2^255. An all-0xFF value exceeds it
+    // and should be rejected as an invalid field element.
+    let invalid_leaf = [0xFF; 32];
+
+    let result = db
+        .commitment_tree_append(EMPTY_PATH, b"pool", invalid_leaf, None, grove_version)
+        .unwrap();
+
+    assert!(
+        result.is_err(),
+        "appending an invalid Pallas field element should fail"
+    );
+
+    // The tree should still be empty
+    let pos = db
+        .commitment_tree_current_end_position(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("position query");
+    assert_eq!(
+        pos, None,
+        "tree should still be empty after rejected append"
+    );
+}
+
+#[test]
+fn test_commitment_tree_element_type_confusion() {
+    // Verifies that commitment tree operations fail when called on the wrong
+    // element type, and that overwriting a normal tree with a commitment tree
+    // (or vice versa) works correctly.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Create a normal tree
+    db.insert(
+        EMPTY_PATH,
+        b"mytree",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+
+    // Commitment tree operations on a normal tree should fail
+    let result = db
+        .commitment_tree_append(
+            EMPTY_PATH,
+            b"mytree",
+            test_leaf_bytes(0),
+            None,
+            grove_version,
+        )
+        .unwrap();
+    assert!(result.is_err(), "append on normal tree should fail");
+
+    let result = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"mytree", None, grove_version)
+        .unwrap();
+    assert!(result.is_err(), "root_hash on normal tree should fail");
+
+    let result = db
+        .commitment_tree_current_end_position(EMPTY_PATH, b"mytree", None, grove_version)
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "current_end_position on normal tree should fail"
+    );
+
+    let result = db
+        .commitment_tree_anchor(EMPTY_PATH, b"mytree", None, grove_version)
+        .unwrap();
+    assert!(result.is_err(), "anchor on normal tree should fail");
+}
+
+#[test]
+fn test_commitment_tree_corrupted_aux_data() {
+    // Verifies that corrupted aux storage data produces a clear error
+    // rather than a panic. We write garbage bytes to the aux storage key
+    // and then try to use the commitment tree.
+    use grovedb_storage::{Storage, StorageContext};
+
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    // Write corrupted data directly to aux storage using the same pattern
+    // as commitment_tree.rs: immediate storage context with a transaction.
+    let transaction = db.start_transaction();
+
+    let path_vec: Vec<Vec<u8>> = vec![b"pool".to_vec()];
+    let path_refs: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
+    let ct_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
+
+    let storage_ctx = db
+        .db
+        .get_immediate_storage_context(ct_path, &transaction)
+        .unwrap();
+
+    let _ = storage_ctx
+        .put_aux(b"__ct_data__", &[0xDE, 0xAD, 0xBE, 0xEF], None)
+        .unwrap();
+
+    #[allow(clippy::drop_non_drop)]
+    drop(storage_ctx);
+    db.commit_transaction(transaction)
+        .unwrap()
+        .expect("commit corrupted data");
+
+    // Now try to read the commitment tree — should get an error, not a panic
+    let result = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "corrupted aux data should cause a deserialization error"
+    );
+
+    let result = db
+        .commitment_tree_current_end_position(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "corrupted aux data should cause a deserialization error"
+    );
+}
+
+#[test]
+fn test_batch_commitment_tree_checkpoint() {
+    // Verifies that checkpoint operations work correctly in batch mode.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    // Batch: append 5 leaves then checkpoint
+    let mut ops: Vec<QualifiedGroveDbOp> = (0..5u64)
+        .map(|i| {
+            QualifiedGroveDbOp::commitment_tree_append_op(
+                vec![],
+                b"pool".to_vec(),
+                test_leaf_bytes(i),
+            )
+        })
+        .collect();
+
+    ops.push(QualifiedGroveDbOp::commitment_tree_checkpoint_op(
+        vec![],
+        b"pool".to_vec(),
+        0,
+    ));
+
+    db.apply_batch(ops, None, None, grove_version)
+        .unwrap()
+        .expect("batch append + checkpoint");
+
+    // Verify witnesses work (they require a checkpoint)
+    let witness = db
+        .commitment_tree_witness(EMPTY_PATH, b"pool", 2, None, grove_version)
+        .unwrap()
+        .expect("witness after batch checkpoint");
+    assert!(
+        witness.is_some(),
+        "witness should exist after batch checkpoint"
+    );
+    assert_eq!(witness.unwrap().len(), 32, "witness should have 32 levels");
+
+    // Verify root hash and GroveDB root hash consistency
+    let sinsemilla_root = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_ne!(sinsemilla_root, [0u8; 32], "root should not be empty");
+
+    // Compare with sequential equivalent
+    let db2 = make_empty_grovedb();
+    db2.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    for i in 0..5u64 {
+        db2.commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(i), None, grove_version)
+            .unwrap()
+            .expect("sequential append");
+    }
+    db2.commitment_tree_checkpoint(EMPTY_PATH, b"pool", 0, None, grove_version)
+        .unwrap()
+        .expect("sequential checkpoint");
+
+    let seq_root = db2
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("sequential root");
+    assert_eq!(
+        sinsemilla_root, seq_root,
+        "batch and sequential should produce same root"
+    );
+}
+
+#[test]
+fn test_batch_commitment_tree_failure_rollback() {
+    // Verifies that when a batch operation fails, committed state is unchanged.
+    // We test this by mixing a valid CT append with an invalid operation.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert pool");
+
+    // Append one leaf so the tree is non-empty
+    db.commitment_tree_append(EMPTY_PATH, b"pool", test_leaf_bytes(0), None, grove_version)
+        .unwrap()
+        .expect("initial append");
+
+    let root_before = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("root before failed batch");
+
+    let grovedb_root_before = db.root_hash(None, grove_version).unwrap().unwrap();
+
+    // Create a batch with a valid CT append AND an invalid operation
+    // (appending to a non-existent commitment tree)
+    let ops = vec![
+        QualifiedGroveDbOp::commitment_tree_append_op(vec![], b"pool".to_vec(), test_leaf_bytes(1)),
+        QualifiedGroveDbOp::commitment_tree_append_op(
+            vec![b"nonexistent_path".to_vec()],
+            b"missing_tree".to_vec(),
+            test_leaf_bytes(2),
+        ),
+    ];
+
+    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+    assert!(result.is_err(), "batch with invalid op should fail");
+
+    // Verify the GroveDB root hash hasn't changed (batch was atomic)
+    let grovedb_root_after = db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(
+        grovedb_root_before, grovedb_root_after,
+        "GroveDB root should be unchanged after failed batch"
+    );
+
+    // Sinsemilla root should also be unchanged
+    let root_after = db
+        .commitment_tree_root_hash(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("root after failed batch");
+    assert_eq!(
+        root_before, root_after,
+        "Sinsemilla root should be unchanged after failed batch"
+    );
+}

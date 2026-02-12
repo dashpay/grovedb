@@ -47,6 +47,15 @@ pub enum MemKvError {
 }
 
 impl MemKvStore {
+    /// Maximum number of entries allowed during deserialization.
+    ///
+    /// The store contains shards (up to 2^16), one cap, and checkpoints
+    /// (typically 1000). 100,000 is a generous upper bound.
+    const MAX_DESERIALIZE_ENTRIES: usize = 100_000;
+    /// Maximum allowed size for a single key or value during deserialization
+    /// (16 MB).
+    const MAX_DESERIALIZE_ITEM_SIZE: usize = 16 * 1024 * 1024;
+
     /// Create a new empty store.
     pub fn new() -> Self {
         Self::default()
@@ -68,15 +77,20 @@ impl MemKvStore {
     ///
     /// Format: `[num_entries: u32][key_len: u32][key][value_len:
     /// u32][value]...`
+    ///
+    /// # Panics
+    ///
+    /// Panics if entry count, key length, or value length exceeds `u32::MAX`.
+    /// This should never happen in practice for commitment tree data.
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        let count = self.data.len() as u32;
+        let count: u32 = self.data.len().try_into().expect("entry count overflow");
         buf.extend_from_slice(&count.to_le_bytes());
         for (k, v) in &self.data {
-            let key_len = k.len() as u32;
+            let key_len: u32 = k.len().try_into().expect("key length overflow");
             buf.extend_from_slice(&key_len.to_le_bytes());
             buf.extend_from_slice(k);
-            let val_len = v.len() as u32;
+            let val_len: u32 = v.len().try_into().expect("value length overflow");
             buf.extend_from_slice(&val_len.to_le_bytes());
             buf.extend_from_slice(v);
         }
@@ -91,6 +105,16 @@ impl MemKvStore {
         }
         let count = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
+        if count > Self::MAX_DESERIALIZE_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "entry count {} exceeds maximum of {}",
+                    count,
+                    Self::MAX_DESERIALIZE_ENTRIES,
+                ),
+            ));
+        }
         let mut data = BTreeMap::new();
         for _ in 0..count {
             if pos + 4 > bytes.len() {
@@ -101,6 +125,12 @@ impl MemKvStore {
             }
             let key_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
+            if key_len > Self::MAX_DESERIALIZE_ITEM_SIZE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("key size {} exceeds maximum", key_len),
+                ));
+            }
             if pos + key_len > bytes.len() {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated key"));
             }
@@ -114,6 +144,12 @@ impl MemKvStore {
             }
             let val_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
+            if val_len > Self::MAX_DESERIALIZE_ITEM_SIZE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("value size {} exceeds maximum", val_len),
+                ));
+            }
             if pos + val_len > bytes.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -123,6 +159,16 @@ impl MemKvStore {
             let value = bytes[pos..pos + val_len].to_vec();
             pos += val_len;
             data.insert(key, value);
+        }
+        if pos != bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} trailing bytes after deserializing {} entries",
+                    bytes.len() - pos,
+                    count,
+                ),
+            ));
         }
         Ok(Self { data })
     }

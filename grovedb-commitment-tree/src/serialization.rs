@@ -112,10 +112,36 @@ pub fn write_prunable_tree<H: HashSer, W: Write>(
     Ok(())
 }
 
+/// Maximum recursion depth for deserializing a `PrunableTree`.
+///
+/// The commitment tree has depth 32 with shard height 16, so the deepest
+/// subtree (either cap or shard) has at most 16 levels. We use 64 as a
+/// generous limit to accommodate any reasonable tree structure while
+/// preventing stack overflow from malicious input.
+const MAX_TREE_DESERIALIZE_DEPTH: usize = 64;
+
 /// Deserialize a `PrunableTree<H>` from a reader.
 pub fn read_prunable_tree<H: HashSer + Clone, R: Read>(
     reader: &mut R,
 ) -> io::Result<PrunableTree<H>> {
+    read_prunable_tree_inner(reader, 0)
+}
+
+/// Inner recursive deserializer with depth tracking.
+fn read_prunable_tree_inner<H: HashSer + Clone, R: Read>(
+    reader: &mut R,
+    depth: usize,
+) -> io::Result<PrunableTree<H>> {
+    if depth > MAX_TREE_DESERIALIZE_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "tree exceeds maximum depth of {}",
+                MAX_TREE_DESERIALIZE_DEPTH
+            ),
+        ));
+    }
+
     let mut tag = [0u8; 1];
     reader.read_exact(&mut tag)?;
 
@@ -145,8 +171,8 @@ pub fn read_prunable_tree<H: HashSer + Clone, R: Read>(
                     ));
                 }
             };
-            let left = read_prunable_tree(reader)?;
-            let right = read_prunable_tree(reader)?;
+            let left = read_prunable_tree_inner(reader, depth + 1)?;
+            let right = read_prunable_tree_inner(reader, depth + 1)?;
             Ok(Tree::parent(ann, left, right))
         }
         other => Err(io::Error::new(
@@ -177,11 +203,38 @@ pub fn read_located_prunable_tree<H: HashSer + Clone, R: Read>(
 ) -> io::Result<LocatedPrunableTree<H>> {
     let mut level_byte = [0u8; 1];
     reader.read_exact(&mut level_byte)?;
+
+    // Validate level is within the commitment tree depth
+    let tree_depth = orchard::NOTE_COMMITMENT_TREE_DEPTH as u8;
+    if level_byte[0] > tree_depth {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "level {} exceeds maximum tree depth {}",
+                level_byte[0], tree_depth
+            ),
+        ));
+    }
+
     let level = Level::from(level_byte[0]);
 
     let mut index_bytes = [0u8; 8];
     reader.read_exact(&mut index_bytes)?;
     let index = u64::from_be_bytes(index_bytes);
+
+    // Validate index is within range for this level.
+    // At level L in a depth-D tree, valid indices are 0..2^(D-L)-1.
+    let shift = tree_depth - level_byte[0];
+    let max_index = (1u64 << shift) - 1;
+    if index > max_index {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "index {} exceeds maximum {} for level {}",
+                index, max_index, level_byte[0]
+            ),
+        ));
+    }
 
     let addr = Address::from_parts(level, index);
     let tree = read_prunable_tree(reader)?;
@@ -217,7 +270,12 @@ pub fn write_checkpoint<W: Write>(checkpoint: &Checkpoint, writer: &mut W) -> io
     }
 
     let marks = checkpoint.marks_removed();
-    let count = marks.len() as u32;
+    let count: u32 = marks.len().try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("marks_removed count {} exceeds u32::MAX", marks.len()),
+        )
+    })?;
     writer.write_all(&count.to_be_bytes())?;
     for pos in marks {
         let pos_u64: u64 = (*pos).into();
@@ -226,6 +284,12 @@ pub fn write_checkpoint<W: Write>(checkpoint: &Checkpoint, writer: &mut W) -> io
 
     Ok(())
 }
+
+/// Maximum number of marks_removed entries in a checkpoint.
+///
+/// Each mark corresponds to a pruned leaf position. In practice this
+/// should be much smaller, but we cap at 1M to prevent OOM.
+const MAX_CHECKPOINT_MARKS: usize = 1_000_000;
 
 /// Deserialize a `Checkpoint` from a reader.
 pub fn read_checkpoint<R: Read>(reader: &mut R) -> io::Result<Checkpoint> {
@@ -251,6 +315,16 @@ pub fn read_checkpoint<R: Read>(reader: &mut R) -> io::Result<Checkpoint> {
     let mut count_bytes = [0u8; 4];
     reader.read_exact(&mut count_bytes)?;
     let count = u32::from_be_bytes(count_bytes) as usize;
+
+    if count > MAX_CHECKPOINT_MARKS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "marks_removed count {} exceeds maximum of {}",
+                count, MAX_CHECKPOINT_MARKS,
+            ),
+        ));
+    }
 
     let mut marks_removed = std::collections::BTreeSet::new();
     for _ in 0..count {

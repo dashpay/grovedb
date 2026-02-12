@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// Key used to store the serialized commitment tree data in aux storage.
-const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
+pub(crate) const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
 
 /// Maximum number of historical checkpoints to retain in commitment trees.
 const DEFAULT_MAX_CHECKPOINTS: usize = 1000;
@@ -132,8 +132,13 @@ impl GroveDb {
             cost,
             tree.max_leaf_position()
                 .map_err(|e| Error::CommitmentTreeError(format!("position query failed: {}", e)))
-        )
-        .expect("tree cannot be empty after successful append");
+        );
+        let position = cost_return_on_error_no_add!(
+            cost,
+            position.ok_or(Error::CorruptedData(
+                "commitment tree reports empty after successful append".to_string()
+            ))
+        );
 
         // Save commitment tree data back to aux storage
         let mem_store = tree.into_store().into_inner();
@@ -168,7 +173,12 @@ impl GroveDb {
         // root key)
         let existing_root_key = match &element {
             Element::CommitmentTree(rk, _) => rk.clone(),
-            _ => unreachable!(),
+            _ => {
+                return Err(Error::CorruptedData(
+                    "element changed type between check and use".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
         };
 
         // Update the CommitmentTree element with the new Sinsemilla root hash
@@ -238,6 +248,18 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
+        // Validate element type
+        cost_return_on_error_no_add!(
+            cost,
+            self.validate_is_commitment_tree(
+                path.clone(),
+                key,
+                transaction,
+                _grove_version,
+                &mut cost
+            )
+        );
+
         // Build the subtree path for the commitment tree
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -298,6 +320,18 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
+        // Validate element type
+        cost_return_on_error_no_add!(
+            cost,
+            self.validate_is_commitment_tree(
+                path.clone(),
+                key,
+                transaction,
+                _grove_version,
+                &mut cost
+            )
+        );
+
         // Build the subtree path for the commitment tree
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -337,6 +371,18 @@ impl GroveDb {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
+
+        // Validate element type
+        cost_return_on_error_no_add!(
+            cost,
+            self.validate_is_commitment_tree(
+                path.clone(),
+                key,
+                transaction,
+                _grove_version,
+                &mut cost
+            )
+        );
 
         // Build the subtree path for the commitment tree
         let ct_path_vec = self.build_ct_path(&path, key);
@@ -385,6 +431,18 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
+        // Validate element type
+        cost_return_on_error_no_add!(
+            cost,
+            self.validate_is_commitment_tree(
+                path.clone(),
+                key,
+                transaction,
+                _grove_version,
+                &mut cost
+            )
+        );
+
         // Build the subtree path for the commitment tree
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -424,6 +482,18 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
+        // Validate element type
+        cost_return_on_error_no_add!(
+            cost,
+            self.validate_is_commitment_tree(
+                path.clone(),
+                key,
+                transaction,
+                _grove_version,
+                &mut cost
+            )
+        );
+
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
@@ -462,6 +532,18 @@ impl GroveDb {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
+
+        // Validate element type
+        cost_return_on_error_no_add!(
+            cost,
+            self.validate_is_commitment_tree(
+                path.clone(),
+                key,
+                transaction,
+                _grove_version,
+                &mut cost
+            )
+        );
 
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -504,6 +586,18 @@ impl GroveDb {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
+
+        // Validate element type
+        cost_return_on_error_no_add!(
+            cost,
+            self.validate_is_commitment_tree(
+                path.clone(),
+                key,
+                transaction,
+                _grove_version,
+                &mut cost
+            )
+        );
 
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -550,6 +644,24 @@ impl GroveDb {
 
         let mem_store = load_mem_store_from_aux(&storage_ctx, cost)?;
         Ok(tree_from_mem_store(mem_store))
+    }
+
+    /// Verify that the element at `path/key` is a CommitmentTree.
+    fn validate_is_commitment_tree<'b, B: AsRef<[u8]>>(
+        &self,
+        path: SubtreePath<'b, B>,
+        key: &[u8],
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        cost: &mut OperationCost,
+    ) -> Result<(), Error> {
+        let element = self
+            .get_raw_caching_optional(path, key, true, transaction, grove_version)
+            .unwrap_add_cost(cost)?;
+        if !element.is_commitment_tree() {
+            return Err(Error::InvalidInput("element is not a commitment tree"));
+        }
+        Ok(())
     }
 
     /// Preprocess `CommitmentTreeAppend` and `CommitmentTreeCheckpoint` ops in
@@ -648,7 +760,12 @@ impl GroveDb {
 
             let existing_root_key = match &element {
                 Element::CommitmentTree(rk, _) => rk.clone(),
-                _ => unreachable!(),
+                _ => {
+                    return Err(Error::CorruptedData(
+                        "element changed type between check and use".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
             };
 
             // Build ct_path and load Sinsemilla tree from aux

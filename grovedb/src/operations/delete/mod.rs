@@ -640,6 +640,30 @@ impl GroveDb {
         );
         let uses_sum_tree = subtree_to_delete_from.tree_type;
         if let Some(tree_type) = element.tree_type() {
+            // Clean up commitment tree aux storage if applicable.
+            // CommitmentTree stores all Sinsemilla data in aux storage which is
+            // not cleared by the normal Merk subtree cleanup.
+            if element.is_commitment_tree() {
+                let ct_subtree_path = path.derive_owned_with_child(key);
+                let ct_subtree_ref = SubtreePath::from(&ct_subtree_path);
+                let ct_storage = self
+                    .db
+                    .get_transactional_storage_context(ct_subtree_ref, Some(batch), transaction)
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    ct_storage
+                        .delete_aux(
+                            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
+                            None,
+                        )
+                        .map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "unable to clean up commitment tree aux storage: {e}",
+                            ))
+                        })
+                );
+            }
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_merk_path_ref = SubtreePath::from(&subtree_merk_path);
 
