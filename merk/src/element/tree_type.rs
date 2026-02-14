@@ -50,6 +50,8 @@ impl ElementTreeTypeExtensions for Element {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
             Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
+            Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
+            Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
             _ => None,
         }
     }
@@ -70,6 +72,8 @@ impl ElementTreeTypeExtensions for Element {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
             Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
+            Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
+            Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
             _ => None,
         }
     }
@@ -87,6 +91,8 @@ impl ElementTreeTypeExtensions for Element {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
             Element::CommitmentTree(_, _, _, flags) => Some((flags, TreeType::CommitmentTree)),
+            Element::MmrTree(_, _, _, flags) => Some((flags, TreeType::MmrTree)),
+            Element::BulkAppendTree(_, _, _, _, flags) => Some((flags, TreeType::BulkAppendTree)),
             _ => None,
         }
     }
@@ -102,6 +108,8 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
             Element::CommitmentTree(..) => Some(TreeType::CommitmentTree),
+            Element::MmrTree(..) => Some(TreeType::MmrTree),
+            Element::BulkAppendTree(..) => Some(TreeType::BulkAppendTree),
             _ => None,
         }
     }
@@ -122,6 +130,8 @@ impl ElementTreeTypeExtensions for Element {
                 Some(TreeFeatureType::ProvableCountedSummedMerkNode(*count, *sum))
             }
             Element::CommitmentTree(_, _, count, _) => Some(CountedMerkNode(*count)),
+            Element::MmrTree(..) => Some(BasicMerkNode),
+            Element::BulkAppendTree(..) => Some(BasicMerkNode),
             _ => None,
         }
     }
@@ -137,6 +147,8 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
             Element::CommitmentTree(..) => MaybeTree::Tree(TreeType::CommitmentTree),
+            Element::MmrTree(..) => MaybeTree::Tree(TreeType::MmrTree),
+            Element::BulkAppendTree(..) => MaybeTree::Tree(TreeType::BulkAppendTree),
             _ => MaybeTree::NotTree,
         }
     }
@@ -160,6 +172,8 @@ impl ElementTreeTypeExtensions for Element {
                 let v = self.count_sum_value_or_default();
                 Ok(TreeFeatureType::ProvableCountedSummedMerkNode(v.0, v.1))
             }
+            TreeType::MmrTree => Ok(BasicMerkNode),
+            TreeType::BulkAppendTree => Ok(BasicMerkNode),
         }
     }
 }

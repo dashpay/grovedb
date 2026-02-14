@@ -110,6 +110,10 @@ pub enum ElementType {
     ProvableCountSumTree = 10,
     /// Orchard-style commitment tree - discriminant 11
     CommitmentTree = 11,
+    /// MMR (Merkle Mountain Range) tree - discriminant 12
+    MmrTree = 12,
+    /// Bulk-append tree - discriminant 13
+    BulkAppendTree = 13,
 }
 
 impl ElementType {
@@ -219,6 +223,8 @@ impl ElementType {
                 | ElementType::ProvableCountTree
                 | ElementType::ProvableCountSumTree
                 | ElementType::CommitmentTree
+                | ElementType::MmrTree
+                | ElementType::BulkAppendTree
         )
     }
 
@@ -253,6 +259,8 @@ impl ElementType {
             ElementType::ItemWithSumItem => "item with sum item",
             ElementType::ProvableCountSumTree => "provable count sum tree",
             ElementType::CommitmentTree => "commitment tree",
+            ElementType::MmrTree => "mmr tree",
+            ElementType::BulkAppendTree => "bulk_append_tree",
         }
     }
 }
@@ -274,6 +282,8 @@ impl TryFrom<u8> for ElementType {
             9 => Ok(ElementType::ItemWithSumItem),
             10 => Ok(ElementType::ProvableCountSumTree),
             11 => Ok(ElementType::CommitmentTree),
+            12 => Ok(ElementType::MmrTree),
+            13 => Ok(ElementType::BulkAppendTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -318,7 +328,12 @@ mod tests {
             ElementType::try_from(11).unwrap(),
             ElementType::CommitmentTree
         );
-        assert!(ElementType::try_from(12).is_err());
+        assert_eq!(ElementType::try_from(12).unwrap(), ElementType::MmrTree);
+        assert_eq!(
+            ElementType::try_from(13).unwrap(),
+            ElementType::BulkAppendTree
+        );
+        assert!(ElementType::try_from(14).is_err());
     }
 
     #[test]
@@ -473,6 +488,8 @@ mod tests {
         assert!(ElementType::ProvableCountTree.is_tree());
         assert!(!ElementType::ItemWithSumItem.is_tree());
         assert!(ElementType::CommitmentTree.is_tree());
+        assert!(ElementType::MmrTree.is_tree());
+        assert!(ElementType::BulkAppendTree.is_tree());
     }
 
     /// Verifies that serialized Element discriminants match ElementType
@@ -559,13 +576,25 @@ mod tests {
                 ElementType::CommitmentTree,
                 "CommitmentTree",
             ),
+            // discriminant 12
+            (
+                Element::MmrTree(None, [0u8; 32], 0, None),
+                ElementType::MmrTree,
+                "MmrTree",
+            ),
+            // discriminant 13
+            (
+                Element::BulkAppendTree(None, [0u8; 32], 0, 0, None),
+                ElementType::BulkAppendTree,
+                "BulkAppendTree",
+            ),
         ];
 
-        // Verify we're testing all 12 discriminants (0-11)
+        // Verify we're testing all 14 discriminants (0-13)
         assert_eq!(
             test_cases.len(),
-            12,
-            "Expected 12 Element variants in test, got {}",
+            14,
+            "Expected 14 Element variants in test, got {}",
             test_cases.len()
         );
 

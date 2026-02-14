@@ -406,7 +406,9 @@ impl GroveDb {
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
-                            | Element::CommitmentTree(Some(_), ..) => {
+                            | Element::CommitmentTree(Some(_), ..)
+                            | Element::MmrTree(Some(_), ..)
+                            | Element::BulkAppendTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -526,6 +528,8 @@ impl GroveDb {
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::CommitmentTree(None, ..)
+                            | Element::MmrTree(None, ..)
+                            | Element::BulkAppendTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)

@@ -10,8 +10,9 @@ use crate::{
         KV,
     },
     tree_type::{
-        BIG_SUM_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE,
-        COUNT_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
+        BIG_SUM_TREE_COST_SIZE, BULK_APPEND_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE,
+        COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, MMR_TREE_COST_SIZE, SUM_ITEM_COST_SIZE,
+        SUM_TREE_COST_SIZE, TREE_COST_SIZE,
     },
     Error,
 };
@@ -57,6 +58,8 @@ impl ElementCostPrivateExtensions for Element {
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
             Element::CommitmentTree(..) => Ok(COMMITMENT_TREE_COST_SIZE),
+            Element::MmrTree(..) => Ok(MMR_TREE_COST_SIZE),
+            Element::BulkAppendTree(..) => Ok(BULK_APPEND_TREE_COST_SIZE),
             Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
             Element::BigSumTree(..) => Ok(BIG_SUM_TREE_COST_SIZE),
             Element::SumItem(..) | Element::ItemWithSumItem(..) => Ok(SUM_ITEM_COST_SIZE),
@@ -177,6 +180,28 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
+            Element::MmrTree(_, _, _, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = MMR_TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
+            Element::BulkAppendTree(_, _, _, _, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = BULK_APPEND_TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -241,7 +266,9 @@ impl ElementCostExtensions for Element {
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
-            | Element::CommitmentTree(..) => Some(cost),
+            | Element::CommitmentTree(..)
+            | Element::MmrTree(..)
+            | Element::BulkAppendTree(..) => Some(cost),
             _ => None,
         }
     }
@@ -256,7 +283,10 @@ impl ElementCostExtensions for Element {
                 flags_len + flags_len.required_space() as u32
             });
         match self {
-            Element::Tree(..) | Element::CommitmentTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::Tree(..)
+            | Element::CommitmentTree(..)
+            | Element::MmrTree(..)
+            | Element::BulkAppendTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::BigSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::CountTree(..) => Some(LayeredValueDefinedCost(cost)),

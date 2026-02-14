@@ -133,7 +133,10 @@ where
                 GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     Ok(())
                 }
-                GroveOp::CommitmentTreeInsert { .. } | GroveOp::ReplaceTreeRootKey { .. } => {
+                GroveOp::CommitmentTreeInsert { .. }
+                | GroveOp::MmrTreeAppend { .. }
+                | GroveOp::BulkAppend { .. }
+                | GroveOp::ReplaceTreeRootKey { .. } => {
                     // CommitmentTreeInsert is preprocessed into item inserts
                     // + ReplaceTreeRootKey before batch execution.
                     // ReplaceTreeRootKey is internal only (produced by

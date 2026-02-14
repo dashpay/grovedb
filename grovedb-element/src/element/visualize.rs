@@ -149,6 +149,36 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::MmrTree(root_key, mmr_root, mmr_size, flags) => {
+                drawer.write(b"mmr_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(
+                    format!(" mmr_root: {} mmr_size: {mmr_size}", hex::encode(mmr_root)).as_bytes(),
+                )?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
+            Element::BulkAppendTree(root_key, state_root, total_count, epoch_size, flags) => {
+                drawer.write(b"bulk_append_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(
+                    format!(
+                        " state_root: {} total_count: {total_count} epoch_size: {epoch_size}",
+                        hex::encode(state_root)
+                    )
+                    .as_bytes(),
+                )?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

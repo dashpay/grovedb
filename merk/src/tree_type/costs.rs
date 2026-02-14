@@ -32,6 +32,14 @@ pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
 /// root)
 pub const COMMITMENT_TREE_COST_SIZE: u32 = COUNT_TREE_COST_SIZE + 32; // 44
 
+/// The cost of an MMR tree (32 bytes for mmr_root + 9 bytes for mmr_size + 2
+/// bytes overhead)
+pub const MMR_TREE_COST_SIZE: u32 = 32 + 9 + 2; // 43
+
+/// The cost of a bulk-append tree (32 bytes state_root + 8 bytes total_count
+/// (u64) + 4 bytes epoch_size (u32) + 2 bytes overhead)
+pub const BULK_APPEND_TREE_COST_SIZE: u32 = 32 + 8 + 4 + 2; // 46
+
 pub trait CostSize {
     fn cost_size(&self) -> u32;
 }
@@ -47,6 +55,8 @@ impl CostSize for TreeType {
             TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
             TreeType::ProvableCountSumTree => COUNT_SUM_TREE_COST_SIZE,
             TreeType::CommitmentTree => COMMITMENT_TREE_COST_SIZE,
+            TreeType::MmrTree => MMR_TREE_COST_SIZE,
+            TreeType::BulkAppendTree => BULK_APPEND_TREE_COST_SIZE,
         }
     }
 }

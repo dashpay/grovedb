@@ -742,6 +742,16 @@ impl GroveDb {
                             e
                         ))
                     })
+            } else if let Element::MmrTree(_, mmr_root, mmr_size, flag) = element {
+                let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
+                tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                    .map_err(|e| e.into())
+            } else if let Element::BulkAppendTree(_, state_root, total_count, epoch_size, flag) =
+                element
+            {
+                let tree = Element::new_bulk_append_tree(state_root, total_count, epoch_size, flag);
+                tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                    .map_err(|e| e.into())
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -764,6 +774,7 @@ impl GroveDb {
         root_tree_hash: Hash,
         aggregate_data: AggregateData,
         sinsemilla_root_override: Option<[u8; 32]>,
+        mmr_size_override: Option<u64>,
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -938,6 +949,56 @@ impl GroveDb {
                             key_hex, e
                         ))
                     })
+                } else if let Element::MmrTree(_, existing_mmr_root, existing_mmr_size, flag) =
+                    element
+                {
+                    let mmr_root = sinsemilla_root_override.unwrap_or(existing_mmr_root);
+                    let mmr_size = mmr_size_override.unwrap_or(existing_mmr_size);
+                    let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                    .map_err(|e| e.into())
+                } else if let Element::BulkAppendTree(
+                    _,
+                    existing_state_root,
+                    existing_total_count,
+                    existing_epoch_size,
+                    flag,
+                ) = element
+                {
+                    let state_root = sinsemilla_root_override.unwrap_or(existing_state_root);
+                    let total_count = mmr_size_override.unwrap_or(existing_total_count);
+                    let tree = Element::new_bulk_append_tree(
+                        state_root,
+                        total_count,
+                        existing_epoch_size,
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                    .map_err(|e| e.into())
                 } else {
                     Err(Error::InvalidPath(
                         "can only propagate on tree items".to_owned(),
@@ -1156,7 +1217,9 @@ impl GroveDb {
                 | Element::CountSumTree(..)
                 | Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::CommitmentTree(..) => {
+                | Element::CommitmentTree(..)
+                | Element::MmrTree(..)
+                | Element::BulkAppendTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

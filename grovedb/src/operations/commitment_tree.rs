@@ -110,6 +110,12 @@ impl GroveDb {
 
         let position = frontier.tree_size(); // next sequential position
 
+        // Track exact Sinsemilla hash count:
+        // root computation always traverses all 32 levels, plus
+        // ommer updates cascade through trailing 1-bits of old position.
+        let ommer_hashes = frontier.position().map(|p| p.trailing_ones()).unwrap_or(0);
+        cost.sinsemilla_hash_calls += 32 + ommer_hashes;
+
         let new_sinsemilla_root = cost_return_on_error_no_add!(
             cost,
             frontier
@@ -391,6 +397,12 @@ impl GroveDb {
             for (cmx, payload) in inserts {
                 let position = frontier.tree_size();
 
+                // Track exact Sinsemilla hash count:
+                // root computation always traverses all 32 levels, plus
+                // ommer updates cascade through trailing 1-bits of old position.
+                let ommer_hashes = frontier.position().map(|p| p.trailing_ones()).unwrap_or(0);
+                cost.sinsemilla_hash_calls += 32 + ommer_hashes;
+
                 // Append to frontier
                 cost_return_on_error_no_add!(
                     cost,
@@ -447,6 +459,8 @@ impl GroveDb {
                     root_key,
                     aggregate_data,
                     sinsemilla_root: Some(new_sinsemilla_root),
+                    mmr_size: None,
+                    bulk_state: None,
                 },
             };
             replacements.insert(path_key.clone(), replacement);

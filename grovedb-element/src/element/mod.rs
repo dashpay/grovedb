@@ -79,6 +79,17 @@ pub enum Element {
     /// computation). The sinsemilla_root ([u8; 32]) is stored in the element
     /// and authenticated through the Merk hash chain.
     CommitmentTree(Option<Vec<u8>>, [u8; 32], CountValue, Option<ElementFlags>),
+    /// MMR (Merkle Mountain Range) tree: append-only authenticated data
+    /// structure with zero rotations, O(N) total hashes, sequential I/O.
+    /// The mmr_root ([u8; 32]) is the bagged peaks root hash.
+    /// The mmr_size (u64) is the total number of MMR nodes (internal +
+    /// leaves). First Element type with no Merk subtree underneath.
+    MmrTree(Option<Vec<u8>>, [u8; 32], u64, Option<ElementFlags>),
+    /// Bulk-append tree: like MmrTree but with an additional epoch_size (u32)
+    /// parameter that must be a power of 2. The state_root ([u8; 32]) is the
+    /// authenticated root, total_count (u64) is the number of appended items,
+    /// and epoch_size (u32) controls the epoch granularity.
+    BulkAppendTree(Option<Vec<u8>>, [u8; 32], u64, u32, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -233,6 +244,31 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::MmrTree(root_key, mmr_root, mmr_size, flags) => {
+                write!(
+                    f,
+                    "MmrTree({}, mmr_root: {}, mmr_size: {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    hex::encode(mmr_root),
+                    mmr_size,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::BulkAppendTree(root_key, state_root, total_count, epoch_size, flags) => {
+                write!(
+                    f,
+                    "BulkAppendTree({}, state_root: {}, total_count: {}, epoch_size: {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    hex::encode(state_root),
+                    total_count,
+                    epoch_size,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -253,6 +289,8 @@ impl Element {
             Element::ProvableCountSumTree(..) => ElementType::ProvableCountSumTree,
             Element::ItemWithSumItem(..) => ElementType::ItemWithSumItem,
             Element::CommitmentTree(..) => ElementType::CommitmentTree,
+            Element::MmrTree(..) => ElementType::MmrTree,
+            Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
         }
     }
 

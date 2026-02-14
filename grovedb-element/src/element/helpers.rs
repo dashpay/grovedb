@@ -156,12 +156,24 @@ impl Element {
                 | Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
                 | Element::CommitmentTree(..)
+                | Element::MmrTree(..)
+                | Element::BulkAppendTree(..)
         )
     }
 
     /// Check if the element is a commitment tree
     pub fn is_commitment_tree(&self) -> bool {
         matches!(self, Element::CommitmentTree(..))
+    }
+
+    /// Check if the element is an MMR tree
+    pub fn is_mmr_tree(&self) -> bool {
+        matches!(self, Element::MmrTree(..))
+    }
+
+    /// Check if the element is a bulk append tree
+    pub fn is_bulk_append_tree(&self) -> bool {
+        matches!(self, Element::BulkAppendTree(..))
     }
 
     /// Check if the element is a reference
@@ -211,7 +223,9 @@ impl Element {
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
-            | Element::CommitmentTree(.., flags) => flags,
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags) => flags,
         }
     }
 
@@ -229,7 +243,9 @@ impl Element {
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
-            | Element::CommitmentTree(.., flags) => flags,
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags) => flags,
         }
     }
 
@@ -247,7 +263,9 @@ impl Element {
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
-            | Element::CommitmentTree(.., flags) => flags,
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags) => flags,
         }
     }
 
@@ -265,7 +283,9 @@ impl Element {
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
             | Element::ItemWithSumItem(.., flags)
-            | Element::CommitmentTree(.., flags) => *flags = new_flags,
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags) => *flags = new_flags,
         }
     }
 

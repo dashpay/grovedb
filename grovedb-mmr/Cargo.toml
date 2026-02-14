@@ -1,0 +1,16 @@
+[package]
+name = "grovedb-mmr"
+version = "4.0.0"
+authors = ["Samuel Westrich <sam@dash.org>"]
+edition = "2021"
+license = "MIT"
+description = "MMR (Merkle Mountain Range) integration for GroveDB"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+readme = "../README.md"
+documentation = "https://docs.rs/grovedb"
+
+[dependencies]
+ckb-merkle-mountain-range = { version = "0.6", default-features = false }
+blake3 = "1"
+thiserror = "2.0"

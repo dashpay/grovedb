@@ -446,7 +446,9 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::CountSumTree(.., flags))
             | Some(Element::ProvableCountTree(_, _, flags))
             | Some(Element::ProvableCountSumTree(.., flags))
-            | Some(Element::CommitmentTree(_, _, _, flags)) => {
+            | Some(Element::CommitmentTree(_, _, _, flags))
+            | Some(Element::MmrTree(_, _, _, flags))
+            | Some(Element::BulkAppendTree(.., flags)) => {
                 let tree_cost_size = element.as_ref().unwrap().tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -543,7 +545,9 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(_, _, flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::CommitmentTree(_, _, _, flags) => {
+            | Element::CommitmentTree(_, _, _, flags)
+            | Element::MmrTree(_, _, _, flags)
+            | Element::BulkAppendTree(.., flags) => {
                 let tree_cost_size = element.tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -642,6 +646,7 @@ mod tests {
                 storage_cost: Default::default(),
                 storage_loaded_bytes: 0,
                 hash_node_calls: 0,
+                sinsemilla_hash_calls: 0,
             }
         );
 
@@ -652,6 +657,7 @@ mod tests {
                 storage_cost: Default::default(),
                 storage_loaded_bytes: 75,
                 hash_node_calls: 0,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

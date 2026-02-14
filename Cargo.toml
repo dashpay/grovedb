@@ -14,4 +14,6 @@ members = [
     "grovedb-epoch-based-storage-flags",
     "grovedb-element",
     "grovedb-commitment-tree",
+    "grovedb-mmr",
+    "grovedb-bulk-append-tree",
 ]

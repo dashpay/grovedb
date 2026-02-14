@@ -26,6 +26,8 @@ pub enum TreeType {
     ProvableCountTree = 5,
     ProvableCountSumTree = 6,
     CommitmentTree = 7,
+    MmrTree = 8,
+    BulkAppendTree = 9,
 }
 
 impl TryFrom<u8> for TreeType {
@@ -41,7 +43,9 @@ impl TryFrom<u8> for TreeType {
             5 => Ok(TreeType::ProvableCountTree),
             6 => Ok(TreeType::ProvableCountSumTree),
             7 => Ok(TreeType::CommitmentTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 7", n))),
+            8 => Ok(TreeType::MmrTree),
+            9 => Ok(TreeType::BulkAppendTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 9", n))),
         }
     }
 }
@@ -57,6 +61,8 @@ impl fmt::Display for TreeType {
             TreeType::ProvableCountTree => "Provable Count Tree",
             TreeType::ProvableCountSumTree => "Provable Count Sum Tree",
             TreeType::CommitmentTree => "Commitment Tree",
+            TreeType::MmrTree => "MMR Tree",
+            TreeType::BulkAppendTree => "BulkAppendTree",
         };
         write!(f, "{}", s)
     }
@@ -73,6 +79,8 @@ impl TreeType {
             TreeType::ProvableCountTree => false,
             TreeType::ProvableCountSumTree => true, // allows sum items
             TreeType::CommitmentTree => false,
+            TreeType::MmrTree => false,
+            TreeType::BulkAppendTree => false,
         }
     }
 
@@ -87,6 +95,8 @@ impl TreeType {
             TreeType::ProvableCountTree => NodeType::ProvableCountNode,
             TreeType::ProvableCountSumTree => NodeType::ProvableCountSumNode,
             TreeType::CommitmentTree => NodeType::CountNode,
+            TreeType::MmrTree => NodeType::NormalNode,
+            TreeType::BulkAppendTree => NodeType::NormalNode,
         }
     }
 
@@ -100,6 +110,8 @@ impl TreeType {
             TreeType::ProvableCountTree => TreeFeatureType::ProvableCountedMerkNode(0),
             TreeType::ProvableCountSumTree => TreeFeatureType::ProvableCountedSummedMerkNode(0, 0),
             TreeType::CommitmentTree => TreeFeatureType::CountedMerkNode(0),
+            TreeType::MmrTree => TreeFeatureType::BasicMerkNode,
+            TreeType::BulkAppendTree => TreeFeatureType::BasicMerkNode,
         }
     }
 
@@ -119,6 +131,8 @@ impl TreeType {
             TreeType::ProvableCountTree => Some(ElementType::ProvableCountTree),
             TreeType::ProvableCountSumTree => Some(ElementType::ProvableCountSumTree),
             TreeType::CommitmentTree => Some(ElementType::CommitmentTree),
+            TreeType::MmrTree => Some(ElementType::MmrTree),
+            TreeType::BulkAppendTree => Some(ElementType::BulkAppendTree),
         }
     }
 }

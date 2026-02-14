@@ -6,11 +6,13 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
 mod commitment_tree_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
+mod mmr_tree_tests;
 mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;
