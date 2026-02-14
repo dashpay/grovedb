@@ -146,6 +146,8 @@ impl GroveOp {
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 (ommers) = 554
                 const AVG_FRONTIER_SIZE: u32 = 554;
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Average Sinsemilla hashes per append: ~2 (log2 of typical position)
+                const AVG_SINSEMILLA_HASHES: u32 = 2;
                 item_cost.add_cost(OperationCost {
                     seek_count: 2, // get_aux + put_aux
                     storage_cost: StorageCost {
@@ -155,6 +157,7 @@ impl GroveOp {
                     },
                     storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
                     hash_node_calls: 0,
+                    sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
                 })
             }
         }
@@ -411,6 +414,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -478,6 +482,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -540,6 +545,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 4,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -626,6 +632,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 109,
                 hash_node_calls: 8,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -719,6 +726,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 173,
                 hash_node_calls: 12,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -787,6 +795,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 7669,
                 hash_node_calls: 79,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

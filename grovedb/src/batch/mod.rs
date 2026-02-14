@@ -590,7 +590,9 @@ impl QualifiedGroveDbOp {
 
         let mut same_path_key_ops = vec![];
 
-        // No double insert or delete of same key in same path
+        // No double insert or delete of same key in same path.
+        // Multiple CommitmentTreeInsert ops on the same path/key are allowed
+        // (appending multiple notes to the same commitment tree in one batch).
         for (i, op) in ops.iter().enumerate() {
             if i == ops_len {
                 continue;
@@ -601,7 +603,14 @@ impl QualifiedGroveDbOp {
                 .iter()
                 .filter_map(|current_op| {
                     if current_op.path == op.path && current_op.key == op.key {
-                        Some(current_op.op.clone())
+                        // Allow multiple CommitmentTreeInsert ops on same tree
+                        if matches!(op.op, GroveOp::CommitmentTreeInsert { .. })
+                            && matches!(current_op.op, GroveOp::CommitmentTreeInsert { .. })
+                        {
+                            None
+                        } else {
+                            Some(current_op.op.clone())
+                        }
                     } else {
                         None
                     }
@@ -2468,16 +2477,9 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        // Preprocess CommitmentTreeInsert ops: execute Sinsemilla operations in aux
-        // storage, then convert to ReplaceTreeRootKey ops
-        let ops = cost_return_on_error!(
-            &mut cost,
-            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
-        );
-
-        // Determines whether to check batch operation consistency
-        // return false if the disable option is set to true, returns true for any other
-        // case
+        // Check batch operation consistency BEFORE preprocessing so that
+        // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
+        // path/key) are caught before any work is done.
         let check_batch_operation_consistency = batch_apply_options
             .as_ref()
             .map(|batch_options| !batch_options.disable_operation_consistency_check)
@@ -2493,9 +2495,16 @@ impl GroveDb {
             }
         }
 
-        // `StorageBatch` allows us to collect operations on different subtrees before
-        // execution
+        // `StorageBatch` collects all operations (preprocessing + apply_body)
+        // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
+
+        // Preprocess CommitmentTreeInsert ops: execute Sinsemilla operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -2595,23 +2604,13 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        // Preprocess CommitmentTreeInsert ops
-        let ops = cost_return_on_error!(
-            &mut cost,
-            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
-        );
-
-        let mut batch_apply_options = batch_apply_options.unwrap_or_default();
-        if batch_apply_options.batch_pause_height.is_none() {
-            // we default to pausing at the root tree, which is the most common case
-            batch_apply_options.batch_pause_height = Some(1);
-        }
-
-        // Determines whether to check batch operation consistency
-        // return false if the disable option is set to true, returns true for any other
-        // case
-        let check_batch_operation_consistency =
-            !batch_apply_options.disable_operation_consistency_check;
+        // Check batch operation consistency BEFORE preprocessing so that
+        // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
+        // path/key) are caught before any work is done.
+        let check_batch_operation_consistency = batch_apply_options
+            .as_ref()
+            .map(|batch_options| !batch_options.disable_operation_consistency_check)
+            .unwrap_or(true);
 
         if check_batch_operation_consistency {
             let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
@@ -2623,9 +2622,21 @@ impl GroveDb {
             }
         }
 
-        // `StorageBatch` allows us to collect operations on different subtrees before
-        // execution
+        // `StorageBatch` collects all operations (preprocessing + apply_body)
+        // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
+
+        // Preprocess CommitmentTreeInsert ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        let mut batch_apply_options = batch_apply_options.unwrap_or_default();
+        if batch_apply_options.batch_pause_height.is_none() {
+            // we default to pausing at the root tree, which is the most common case
+            batch_apply_options.batch_pause_height = Some(1);
+        }
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with

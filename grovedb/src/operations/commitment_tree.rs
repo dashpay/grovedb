@@ -35,7 +35,7 @@ pub(crate) const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
 
 /// Load a `CommitmentFrontier` from aux storage, returning a new empty frontier
 /// if no data exists.
-fn load_frontier_from_aux<'db, C: StorageContext<'db>>(
+pub(crate) fn load_frontier_from_aux<'db, C: StorageContext<'db>>(
     ctx: &C,
     cost: &mut OperationCost,
 ) -> Result<CommitmentFrontier, Error> {
@@ -306,6 +306,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
+        batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -333,9 +334,6 @@ impl GroveDb {
                     .push((*cmx, payload.clone()));
             }
         }
-
-        // Create a batch for preprocessing Merk writes
-        let preprocessing_batch = StorageBatch::new();
 
         // Process each group
         let mut replacements: HashMap<PathKey, QualifiedGroveDbOp> = HashMap::new();
@@ -368,22 +366,23 @@ impl GroveDb {
             let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
             let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
-            // Load frontier from aux
+            // Load frontier from aux using a transactional context that reads
+            // from the transaction (where previously committed data lives)
             let storage_ctx = self
                 .db
-                .get_immediate_storage_context(ct_path.clone(), transaction)
+                .get_transactional_storage_context(ct_path.clone(), Some(batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             let mut frontier =
                 cost_return_on_error_no_add!(cost, load_frontier_from_aux(&storage_ctx, &mut cost));
 
-            // Open the subtree Merk for item inserts
+            // Open the subtree Merk for item inserts using the shared batch
             let mut subtree_merk = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(
                     ct_path.clone(),
                     transaction,
-                    Some(&preprocessing_batch),
+                    Some(batch),
                     grove_version,
                 )
             );
@@ -452,14 +451,6 @@ impl GroveDb {
             };
             replacements.insert(path_key.clone(), replacement);
         }
-
-        // Commit the preprocessing batch (subtree Merk writes)
-        cost_return_on_error!(
-            &mut cost,
-            self.db
-                .commit_multi_context_batch(preprocessing_batch, Some(transaction))
-                .map_err(Into::into)
-        );
 
         // Build the new ops list: keep non-CT ops, replace first CT insert op
         // per group with ReplaceTreeRootKey, skip the rest

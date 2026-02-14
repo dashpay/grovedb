@@ -1059,3 +1059,103 @@ fn test_multiple_commitment_trees_independent() {
     assert_eq!(elem_a.count_value_or_default(), 1);
     assert_eq!(elem_b.count_value_or_default(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// verify_grovedb tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_grovedb_commitment_tree_valid() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a commitment tree and add some notes
+    db.insert(
+        EMPTY_PATH,
+        b"ct",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert ct");
+
+    db.commitment_tree_insert(EMPTY_PATH, b"ct", test_cmx(1), vec![], None, grove_version)
+        .unwrap()
+        .expect("insert 1");
+
+    db.commitment_tree_insert(EMPTY_PATH, b"ct", test_cmx(2), vec![], None, grove_version)
+        .unwrap()
+        .expect("insert 2");
+
+    // verify_grovedb should report no issues
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify");
+    assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
+}
+
+#[test]
+fn test_verify_grovedb_commitment_tree_detects_corrupted_frontier() {
+    use grovedb_storage::{Storage, StorageContext};
+
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a commitment tree with one note
+    db.insert(
+        EMPTY_PATH,
+        b"ct",
+        Element::empty_commitment_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert ct");
+
+    db.commitment_tree_insert(EMPTY_PATH, b"ct", test_cmx(1), vec![], None, grove_version)
+        .unwrap()
+        .expect("insert 1");
+
+    // Build frontiers with different numbers of notes and confirm roots differ.
+    // NOTE: test_cmx(2) == MerkleHashOrchard::empty_leaf() (pallas::Base(2)),
+    // so we use test_cmx(3) to avoid the degenerate case where appending the
+    // empty leaf doesn't change the root.
+    let mut f1 = CommitmentFrontier::new();
+    let root_after_1 = f1.append(test_cmx(1)).unwrap();
+
+    let mut f2 = CommitmentFrontier::new();
+    f2.append(test_cmx(1)).unwrap();
+    let root_after_2 = f2.append(test_cmx(3)).unwrap();
+    // Sanity: roots must differ for test to be meaningful
+    assert_ne!(root_after_1, root_after_2);
+
+    // Corrupt the frontier in aux storage by writing the 2-note frontier
+    let tx = db.start_transaction();
+    let ct_path: &[&[u8]] = &[b"ct"];
+    let storage_ctx = db
+        .db
+        .get_immediate_storage_context(ct_path.into(), &tx)
+        .unwrap();
+    storage_ctx
+        .put_aux(
+            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
+            &f2.serialize(),
+            None,
+        )
+        .unwrap()
+        .expect("put_aux");
+    drop(storage_ctx);
+    tx.commit().expect("tx commit");
+
+    // verify_grovedb should detect the corruption
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify");
+    assert!(
+        !issues.is_empty(),
+        "expected issues from corrupted frontier"
+    );
+}

@@ -64,7 +64,7 @@ impl ClientCommitmentTree {
     ) -> Result<(), CommitmentTreeError> {
         let leaf = merkle_hash_from_bytes(&cmx).ok_or(CommitmentTreeError::InvalidFieldElement)?;
         self.inner
-            .batch_insert(self.next_position(), std::iter::once((leaf, retention)))
+            .batch_insert(self.next_position()?, std::iter::once((leaf, retention)))
             .map_err(|e| CommitmentTreeError::InvalidData(format!("append failed: {e}")))?;
         Ok(())
     }
@@ -121,11 +121,15 @@ impl ClientCommitmentTree {
     }
 
     /// Get the next insertion position (0 for empty tree).
-    fn next_position(&self) -> Position {
-        match self.inner.max_leaf_position(None) {
-            Ok(Some(pos)) => pos + 1,
-            _ => Position::from(0),
-        }
+    fn next_position(&self) -> Result<Position, CommitmentTreeError> {
+        let pos = self
+            .inner
+            .max_leaf_position(None)
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("max_leaf_position: {e}")))?;
+        Ok(match pos {
+            Some(p) => p + 1,
+            None => Position::from(0),
+        })
     }
 }
 

@@ -1485,6 +1485,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 154, // todo: verify this
                 hash_node_calls: 0,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1571,6 +1572,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 418, // todo: verify this
                 hash_node_calls: 5,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1658,6 +1660,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 418, // todo: verify this
                 hash_node_calls: 5,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

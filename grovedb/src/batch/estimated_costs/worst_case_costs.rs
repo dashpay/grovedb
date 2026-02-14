@@ -143,6 +143,8 @@ impl GroveOp {
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 (ommers) = 1066
                 const MAX_FRONTIER_SIZE: u32 = 1066;
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Worst-case Sinsemilla hashes: full tree depth (32)
+                const MAX_SINSEMILLA_HASHES: u32 = 32;
                 item_cost.add_cost(OperationCost {
                     seek_count: 2, // get_aux + put_aux
                     storage_cost: StorageCost {
@@ -152,6 +154,7 @@ impl GroveOp {
                     },
                     storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
                     hash_node_calls: 0,
+                    sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
                 })
             }
         }
@@ -360,6 +363,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 65791,
                 hash_node_calls: 8, // todo: verify why
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -415,6 +419,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -470,6 +475,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 4,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -536,6 +542,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 2236894,
                 hash_node_calls: 74,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -600,6 +607,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 65964,
                 hash_node_calls: 266,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
