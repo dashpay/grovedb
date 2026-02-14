@@ -101,29 +101,38 @@ mod tests {
         let mmr = GroveMmr::new();
         assert_eq!(mmr.mmr_size(), 0);
         assert_eq!(mmr.leaf_count(), 0);
-        assert!(mmr.get_leaf(0).unwrap().is_none());
+        assert!(mmr.get_leaf(0).expect("get leaf from empty mmr").is_none());
     }
 
     #[test]
     fn test_push_single() {
         let mut mmr = GroveMmr::new();
-        let idx = mmr.push(b"hello".to_vec()).unwrap();
+        let idx = mmr.push(b"hello".to_vec()).expect("push hello");
         assert_eq!(idx, 0);
         assert_eq!(mmr.leaf_count(), 1);
-        assert_eq!(mmr.get_leaf(0).unwrap().unwrap(), b"hello".to_vec());
+        assert_eq!(
+            mmr.get_leaf(0)
+                .expect("get leaf 0")
+                .expect("leaf should exist"),
+            b"hello".to_vec()
+        );
     }
 
     #[test]
     fn test_push_multiple() {
         let mut mmr = GroveMmr::new();
         for i in 0..10u64 {
-            let idx = mmr.push(format!("item_{}", i).into_bytes()).unwrap();
+            let idx = mmr
+                .push(format!("item_{}", i).into_bytes())
+                .expect("push item");
             assert_eq!(idx, i);
         }
         assert_eq!(mmr.leaf_count(), 10);
         for i in 0..10u64 {
             assert_eq!(
-                mmr.get_leaf(i).unwrap().unwrap(),
+                mmr.get_leaf(i)
+                    .expect("get leaf")
+                    .expect("leaf should exist"),
                 format!("item_{}", i).into_bytes()
             );
         }
@@ -134,28 +143,36 @@ mod tests {
         let mut mmr1 = GroveMmr::new();
         let mut mmr2 = GroveMmr::new();
         for i in 0..10u64 {
-            mmr1.push(format!("val_{}", i).into_bytes()).unwrap();
-            mmr2.push(format!("val_{}", i).into_bytes()).unwrap();
+            mmr1.push(format!("val_{}", i).into_bytes())
+                .expect("push to mmr1");
+            mmr2.push(format!("val_{}", i).into_bytes())
+                .expect("push to mmr2");
         }
-        assert_eq!(mmr1.root_hash().unwrap(), mmr2.root_hash().unwrap());
+        assert_eq!(
+            mmr1.root_hash().expect("root hash 1"),
+            mmr2.root_hash().expect("root hash 2")
+        );
     }
 
     #[test]
     fn test_different_values_different_roots() {
         let mut mmr1 = GroveMmr::new();
         let mut mmr2 = GroveMmr::new();
-        mmr1.push(b"aaa".to_vec()).unwrap();
-        mmr2.push(b"bbb".to_vec()).unwrap();
-        assert_ne!(mmr1.root_hash().unwrap(), mmr2.root_hash().unwrap());
+        mmr1.push(b"aaa".to_vec()).expect("push aaa");
+        mmr2.push(b"bbb".to_vec()).expect("push bbb");
+        assert_ne!(
+            mmr1.root_hash().expect("root hash 1"),
+            mmr2.root_hash().expect("root hash 2")
+        );
     }
 
     #[test]
     fn test_root_changes_on_push() {
         let mut mmr = GroveMmr::new();
-        mmr.push(b"first".to_vec()).unwrap();
-        let root1 = mmr.root_hash().unwrap();
-        mmr.push(b"second".to_vec()).unwrap();
-        let root2 = mmr.root_hash().unwrap();
+        mmr.push(b"first".to_vec()).expect("push first");
+        let root1 = mmr.root_hash().expect("root hash after first");
+        mmr.push(b"second".to_vec()).expect("push second");
+        let root2 = mmr.root_hash().expect("root hash after second");
         assert_ne!(root1, root2);
     }
 
@@ -163,21 +180,22 @@ mod tests {
     fn test_proof_generation_and_verification() {
         let mut mmr = GroveMmr::new();
         for i in 0..5u64 {
-            mmr.push(format!("leaf_{}", i).into_bytes()).unwrap();
+            mmr.push(format!("leaf_{}", i).into_bytes())
+                .expect("push leaf");
         }
-        let root = mmr.root_hash().unwrap();
+        let root = mmr.root_hash().expect("root hash");
         let root_node = MmrNode::internal(root);
 
         // Prove leaf at index 2
         let pos = leaf_index_to_pos(2);
-        let proof = mmr.gen_proof(vec![pos]).unwrap();
+        let proof = mmr.gen_proof(vec![pos]).expect("generate proof");
 
         // Get the leaf node to verify against
         let inner_mmr = MMR::<MmrNode, MergeBlake3, _>::new(mmr.mmr_size(), mmr.store());
         let leaf_node = inner_mmr
             .store()
             .get_elem(pos)
-            .unwrap()
+            .expect("get element at proof pos")
             .expect("leaf should exist");
 
         let result = proof.verify(root_node, vec![(pos, leaf_node)]);

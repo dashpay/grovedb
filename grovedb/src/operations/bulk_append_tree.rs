@@ -248,7 +248,10 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         let store = AuxBulkStore::new(&storage_ctx);
-        let tree = BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]);
+        let tree = cost_return_on_error_no_add!(
+            cost,
+            BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]).map_err(map_bulk_err)
+        );
         let result = cost_return_on_error_no_add!(
             cost,
             tree.get_value(&store, global_position)
@@ -302,7 +305,10 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         let store = AuxBulkStore::new(&storage_ctx);
-        let tree = BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]);
+        let tree = cost_return_on_error_no_add!(
+            cost,
+            BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]).map_err(map_bulk_err)
+        );
         let result = cost_return_on_error_no_add!(
             cost,
             tree.get_epoch(&store, epoch_index).map_err(map_bulk_err)
@@ -353,7 +359,10 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         let store = AuxBulkStore::new(&storage_ctx);
-        let tree = BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]);
+        let tree = cost_return_on_error_no_add!(
+            cost,
+            BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]).map_err(map_bulk_err)
+        );
         let result =
             cost_return_on_error_no_add!(cost, tree.get_buffer(&store).map_err(map_bulk_err));
         cost += store.take_cost();

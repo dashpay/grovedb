@@ -2,8 +2,7 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
-use ckb_merkle_mountain_range::{MMRStoreReadOps, MMRStoreWriteOps};
-use grovedb_mmr::MmrNode;
+use grovedb_mmr::{MMRStoreReadOps, MMRStoreWriteOps, MmrNode};
 
 use super::keys::mmr_node_key;
 use crate::BulkStore;
@@ -18,7 +17,7 @@ pub(crate) struct MmrAdapter<'a, S: BulkStore> {
 }
 
 impl<S: BulkStore> MMRStoreReadOps<MmrNode> for &MmrAdapter<'_, S> {
-    fn get_elem(&self, pos: u64) -> ckb_merkle_mountain_range::Result<Option<MmrNode>> {
+    fn get_elem(&self, pos: u64) -> grovedb_mmr::CkbResult<Option<MmrNode>> {
         // Check cache first
         if let Some(node) = self.cache.borrow().get(&pos) {
             return Ok(Some(node.clone()));
@@ -27,31 +26,29 @@ impl<S: BulkStore> MMRStoreReadOps<MmrNode> for &MmrAdapter<'_, S> {
         let key = mmr_node_key(pos);
         match self.store.get(&key) {
             Ok(Some(bytes)) => {
-                if bytes.len() != 32 {
-                    return Err(ckb_merkle_mountain_range::Error::StoreError(format!(
-                        "MMR node at {} has invalid size {}",
-                        pos,
-                        bytes.len()
-                    )));
-                }
-                let mut hash = [0u8; 32];
-                hash.copy_from_slice(&bytes);
-                Ok(Some(MmrNode::internal(hash)))
+                let node = MmrNode::deserialize(&bytes).map_err(|e| {
+                    grovedb_mmr::CkbError::StoreError(format!(
+                        "deserialize MMR node at {}: {}",
+                        pos, e
+                    ))
+                })?;
+                Ok(Some(node))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(ckb_merkle_mountain_range::Error::StoreError(e)),
+            Err(e) => Err(grovedb_mmr::CkbError::StoreError(e)),
         }
     }
 }
 
 impl<S: BulkStore> MMRStoreWriteOps<MmrNode> for &MmrAdapter<'_, S> {
-    fn append(&mut self, pos: u64, elems: Vec<MmrNode>) -> ckb_merkle_mountain_range::Result<()> {
+    fn append(&mut self, pos: u64, elems: Vec<MmrNode>) -> grovedb_mmr::CkbResult<()> {
         for (i, node) in elems.into_iter().enumerate() {
             let p = pos + i as u64;
             let key = mmr_node_key(p);
+            let serialized = node.serialize();
             self.store
-                .put(&key, &node.hash)
-                .map_err(ckb_merkle_mountain_range::Error::StoreError)?;
+                .put(&key, &serialized)
+                .map_err(grovedb_mmr::CkbError::StoreError)?;
             self.cache.borrow_mut().insert(p, node);
         }
         Ok(())

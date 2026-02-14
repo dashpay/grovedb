@@ -36,7 +36,7 @@ impl BulkStore for MemStore {
 
 #[test]
 fn new_tree() {
-    let tree = BulkAppendTree::new(4);
+    let tree = BulkAppendTree::new(4).expect("create tree with epoch_size=4");
     assert_eq!(tree.total_count(), 0);
     assert_eq!(tree.epoch_count(), 0);
     assert_eq!(tree.buffer_count(), 0);
@@ -47,7 +47,7 @@ fn new_tree() {
 
 #[test]
 fn from_state() {
-    let tree = BulkAppendTree::from_state(10, 4, 3, [1u8; 32]);
+    let tree = BulkAppendTree::from_state(10, 4, 3, [1u8; 32]).expect("restore from state");
     assert_eq!(tree.total_count(), 10);
     assert_eq!(tree.epoch_size(), 4);
     assert_eq!(tree.mmr_size(), 3);
@@ -57,17 +57,16 @@ fn from_state() {
 }
 
 #[test]
-#[should_panic]
 fn new_tree_non_power_of_two() {
-    BulkAppendTree::new(3);
+    assert!(BulkAppendTree::new(3).is_err());
 }
 
 #[test]
 fn single_append() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(4);
+    let mut tree = BulkAppendTree::new(4).expect("create tree");
 
-    let result = tree.append(&store, b"hello").unwrap();
+    let result = tree.append(&store, b"hello").expect("append hello");
     assert_eq!(result.global_position, 0);
     assert!(!result.compacted);
     assert_eq!(tree.total_count(), 1);
@@ -75,17 +74,17 @@ fn single_append() {
     assert_eq!(tree.epoch_count(), 0);
 
     // Value should be retrievable
-    let val = tree.get_value(&store, 0).unwrap();
+    let val = tree.get_value(&store, 0).expect("get value at 0");
     assert_eq!(val, Some(b"hello".to_vec()));
 }
 
 #[test]
 fn multiple_appends_no_compaction() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(4);
+    let mut tree = BulkAppendTree::new(4).expect("create tree");
 
     for i in 0..3 {
-        let result = tree.append(&store, &[i]).unwrap();
+        let result = tree.append(&store, &[i]).expect("append entry");
         assert_eq!(result.global_position, i as u64);
         assert!(!result.compacted);
     }
@@ -97,14 +96,16 @@ fn multiple_appends_no_compaction() {
 #[test]
 fn compaction_trigger() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(4);
+    let mut tree = BulkAppendTree::new(4).expect("create tree");
 
     // Fill buffer (4 entries triggers compaction)
     for i in 0..3u8 {
-        let r = tree.append(&store, &[i]).unwrap();
+        let r = tree
+            .append(&store, &[i])
+            .expect("append pre-compaction entry");
         assert!(!r.compacted);
     }
-    let result = tree.append(&store, &[3]).unwrap();
+    let result = tree.append(&store, &[3]).expect("append compacting entry");
     assert!(result.compacted);
     assert_eq!(result.global_position, 3);
     assert_eq!(tree.total_count(), 4);
@@ -116,11 +117,11 @@ fn compaction_trigger() {
 #[test]
 fn multi_epoch() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(2); // epoch_size=2 for quick testing
+    let mut tree = BulkAppendTree::new(2).expect("create tree"); // epoch_size=2 for quick testing
 
     // 5 appends = 2 full epochs + 1 buffer entry
     for i in 0..5u8 {
-        tree.append(&store, &[i]).unwrap();
+        tree.append(&store, &[i]).expect("append entry");
     }
     assert_eq!(tree.total_count(), 5);
     assert_eq!(tree.epoch_count(), 2);
@@ -130,62 +131,73 @@ fn multi_epoch() {
 #[test]
 fn get_value_from_epoch() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(2);
+    let mut tree = BulkAppendTree::new(2).expect("create tree");
 
-    tree.append(&store, b"a").unwrap();
-    tree.append(&store, b"b").unwrap(); // compacts
-    tree.append(&store, b"c").unwrap();
+    tree.append(&store, b"a").expect("append a");
+    tree.append(&store, b"b").expect("append b"); // compacts
+    tree.append(&store, b"c").expect("append c");
 
     // From epoch
-    assert_eq!(tree.get_value(&store, 0).unwrap(), Some(b"a".to_vec()));
-    assert_eq!(tree.get_value(&store, 1).unwrap(), Some(b"b".to_vec()));
+    assert_eq!(
+        tree.get_value(&store, 0).expect("get 0"),
+        Some(b"a".to_vec())
+    );
+    assert_eq!(
+        tree.get_value(&store, 1).expect("get 1"),
+        Some(b"b".to_vec())
+    );
     // From buffer
-    assert_eq!(tree.get_value(&store, 2).unwrap(), Some(b"c".to_vec()));
+    assert_eq!(
+        tree.get_value(&store, 2).expect("get 2"),
+        Some(b"c".to_vec())
+    );
     // Out of range
-    assert_eq!(tree.get_value(&store, 3).unwrap(), None);
+    assert_eq!(tree.get_value(&store, 3).expect("get 3"), None);
 }
 
 #[test]
 fn get_epoch_blob() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(2);
+    let mut tree = BulkAppendTree::new(2).expect("create tree");
 
-    tree.append(&store, b"x").unwrap();
-    tree.append(&store, b"y").unwrap(); // compacts
+    tree.append(&store, b"x").expect("append x");
+    tree.append(&store, b"y").expect("append y"); // compacts
 
-    let blob = tree.get_epoch(&store, 0).unwrap();
+    let blob = tree.get_epoch(&store, 0).expect("get epoch 0");
     assert!(blob.is_some());
-    let entries = deserialize_epoch_blob(&blob.unwrap()).unwrap();
+    let entries = deserialize_epoch_blob(&blob.expect("epoch blob should exist"))
+        .expect("deserialize epoch blob");
     assert_eq!(entries, vec![b"x".to_vec(), b"y".to_vec()]);
 
     // Non-existent epoch
-    assert!(tree.get_epoch(&store, 1).unwrap().is_none());
+    assert!(tree.get_epoch(&store, 1).expect("get epoch 1").is_none());
 }
 
 #[test]
 fn get_buffer_entries() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(4);
+    let mut tree = BulkAppendTree::new(4).expect("create tree");
 
-    tree.append(&store, b"a").unwrap();
-    tree.append(&store, b"b").unwrap();
+    tree.append(&store, b"a").expect("append a");
+    tree.append(&store, b"b").expect("append b");
 
-    let buf = tree.get_buffer(&store).unwrap();
+    let buf = tree.get_buffer(&store).expect("get buffer");
     assert_eq!(buf, vec![b"a".to_vec(), b"b".to_vec()]);
 }
 
 #[test]
 fn metadata_serialize_roundtrip() {
-    let tree = BulkAppendTree::from_state(100, 8, 42, [0xAB; 32]);
+    let tree = BulkAppendTree::from_state(100, 8, 42, [0xAB; 32]).expect("restore from state");
     let meta = tree.serialize_meta();
-    let (mmr_size, buffer_hash) = BulkAppendTree::deserialize_meta(&meta).unwrap();
+    let (mmr_size, buffer_hash) =
+        BulkAppendTree::deserialize_meta(&meta).expect("deserialize meta");
     assert_eq!(mmr_size, 42);
     assert_eq!(buffer_hash, [0xAB; 32]);
 }
 
 #[test]
 fn metadata_deserialize_wrong_size() {
-    let err = BulkAppendTree::deserialize_meta(&[0; 10]).unwrap_err();
+    let err = BulkAppendTree::deserialize_meta(&[0; 10]).expect_err("should fail for wrong size");
     assert!(matches!(err, BulkAppendError::CorruptedData(_)));
 }
 
@@ -194,33 +206,37 @@ fn state_root_determinism() {
     // Two trees with same data should have same state root
     let store1 = MemStore::new();
     let store2 = MemStore::new();
-    let mut tree1 = BulkAppendTree::new(2);
-    let mut tree2 = BulkAppendTree::new(2);
+    let mut tree1 = BulkAppendTree::new(2).expect("create tree1");
+    let mut tree2 = BulkAppendTree::new(2).expect("create tree2");
 
     for i in 0..5u8 {
-        tree1.append(&store1, &[i]).unwrap();
-        tree2.append(&store2, &[i]).unwrap();
+        tree1.append(&store1, &[i]).expect("append to tree1");
+        tree2.append(&store2, &[i]).expect("append to tree2");
     }
 
-    let root1 = tree1.compute_current_state_root(&store1).unwrap();
-    let root2 = tree2.compute_current_state_root(&store2).unwrap();
+    let root1 = tree1
+        .compute_current_state_root(&store1)
+        .expect("state root 1");
+    let root2 = tree2
+        .compute_current_state_root(&store2)
+        .expect("state root 2");
     assert_eq!(root1, root2);
 }
 
 #[test]
 fn hash_count_accuracy() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(4);
+    let mut tree = BulkAppendTree::new(4).expect("create tree");
 
     // Non-compacting append: 2 (chain hash) + 1 (state root) = 3
-    let r = tree.append(&store, b"a").unwrap();
+    let r = tree.append(&store, b"a").expect("append a");
     assert_eq!(r.hash_count, 3);
 
-    tree.append(&store, b"b").unwrap();
-    tree.append(&store, b"c").unwrap();
+    tree.append(&store, b"b").expect("append b");
+    tree.append(&store, b"c").expect("append c");
 
     // Compacting append: 2 (chain) + dense_merkle + mmr_push + 1 (state root)
-    let r = tree.append(&store, b"d").unwrap();
+    let r = tree.append(&store, b"d").expect("append d (compaction)");
     assert!(r.compacted);
     assert!(r.hash_count > 3); // Should include dense merkle + mmr hashes
 }
@@ -229,15 +245,15 @@ fn hash_count_accuracy() {
 fn append_with_mem_buffer_matches_append() {
     let store1 = MemStore::new();
     let store2 = MemStore::new();
-    let mut tree1 = BulkAppendTree::new(2);
-    let mut tree2 = BulkAppendTree::new(2);
+    let mut tree1 = BulkAppendTree::new(2).expect("create tree1");
+    let mut tree2 = BulkAppendTree::new(2).expect("create tree2");
     let mut mem_buf = Vec::new();
 
     for i in 0..5u8 {
-        let r1 = tree1.append(&store1, &[i]).unwrap();
+        let r1 = tree1.append(&store1, &[i]).expect("append to tree1");
         let r2 = tree2
             .append_with_mem_buffer(&store2, &[i], &mut mem_buf)
-            .unwrap();
+            .expect("append to tree2 with mem buffer");
         assert_eq!(r1.state_root, r2.state_root);
         assert_eq!(r1.global_position, r2.global_position);
         assert_eq!(r1.compacted, r2.compacted);
@@ -247,18 +263,18 @@ fn append_with_mem_buffer_matches_append() {
 #[test]
 fn load_from_store_roundtrip() {
     let store = MemStore::new();
-    let mut tree = BulkAppendTree::new(4);
+    let mut tree = BulkAppendTree::new(4).expect("create tree");
 
-    tree.append(&store, b"hello").unwrap();
-    tree.append(&store, b"world").unwrap();
+    tree.append(&store, b"hello").expect("append hello");
+    tree.append(&store, b"world").expect("append world");
 
     // Load from store using element fields
-    let loaded = BulkAppendTree::load_from_store(&store, 2, 4).unwrap();
+    let loaded = BulkAppendTree::load_from_store(&store, 2, 4).expect("load from store");
     assert_eq!(loaded.total_count(), 2);
     assert_eq!(loaded.mmr_size(), tree.mmr_size());
     assert_eq!(loaded.buffer_hash(), tree.buffer_hash());
 
     // Should be able to read values
-    let val = loaded.get_value(&store, 0).unwrap();
+    let val = loaded.get_value(&store, 0).expect("get value at 0");
     assert_eq!(val, Some(b"hello".to_vec()));
 }

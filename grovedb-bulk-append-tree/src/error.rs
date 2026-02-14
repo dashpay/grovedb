@@ -11,4 +11,6 @@ pub enum BulkAppendError {
     StorageError(String),
     #[error("MMR error: {0}")]
     MmrError(String),
+    #[error("invalid proof: {0}")]
+    InvalidProof(String),
 }

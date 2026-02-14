@@ -10,11 +10,17 @@
 
 pub mod epoch;
 mod error;
+pub mod proof;
 mod store;
 mod tree;
 
 // Re-export main types
 pub use epoch::{deserialize_epoch_blob, serialize_epoch_blob};
 pub use error::BulkAppendError;
+pub use proof::{BulkAppendTreeProof, BulkAppendTreeProofResult};
 pub use store::BulkStore;
-pub use tree::{AppendResult, BulkAppendTree};
+pub use tree::{
+    hash::{chain_buffer_hash, compute_state_root},
+    keys::{buffer_key, epoch_key, META_KEY},
+    AppendResult, BulkAppendTree,
+};

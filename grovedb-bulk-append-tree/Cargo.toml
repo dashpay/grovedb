@@ -12,6 +12,7 @@ documentation = "https://docs.rs/grovedb"
 
 [dependencies]
 grovedb-mmr = { version = "4.0.0", path = "../grovedb-mmr" }
-ckb-merkle-mountain-range = { version = "0.6", default-features = false }
 blake3 = "1"
+bincode = { version = "2.0.0-rc.3", features = ["derive"] }
+hex = "0.4"
 thiserror = "2.0"

@@ -15,7 +15,9 @@ use grovedb_costs::{
     CostsExt, OperationCost,
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
-use grovedb_mmr::{hash_count_for_push, mmr_size_to_leaf_count, MergeBlake3, MmrNode};
+use grovedb_mmr::{
+    hash_count_for_push, mmr_node_key, mmr_size_to_leaf_count, MergeBlake3, MmrNode,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
@@ -27,17 +29,6 @@ use crate::{
     util::TxRef,
     Element, Error, GroveDb, Merk, Transaction, TransactionArg,
 };
-
-/// Prefix for MMR node keys in aux storage.
-const MMR_NODE_PREFIX: u8 = b'm';
-
-/// Build the aux storage key for an MMR node at a given position.
-fn mmr_node_key(pos: u64) -> [u8; 9] {
-    let mut key = [0u8; 9];
-    key[0] = MMR_NODE_PREFIX;
-    key[1..9].copy_from_slice(&pos.to_be_bytes());
-    key
-}
 
 /// Storage adapter wrapping a GroveDB `StorageContext` for ckb MMR operations.
 ///
@@ -112,11 +103,9 @@ impl<'db, C: StorageContext<'db>> MMRStoreWriteOps<MmrNode> for &AuxMmrStore<'_,
                     node_pos, e
                 ))
             })?;
-            // Cache the node for subsequent reads
+            // Cache the original node directly for subsequent reads
             drop(cost);
-            self.cache
-                .borrow_mut()
-                .insert(node_pos, MmrNode::deserialize(&serialized).unwrap());
+            self.cache.borrow_mut().insert(node_pos, elem);
         }
         Ok(())
     }

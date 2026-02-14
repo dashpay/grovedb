@@ -15,18 +15,25 @@
 mod dense_merkle;
 mod grove_mmr;
 mod node;
-pub mod util;
+pub mod proof;
+mod util;
 
 // Re-export useful ckb helpers
 pub use ckb_merkle_mountain_range::helper::{
     leaf_index_to_mmr_size as leaf_to_mmr_size, leaf_index_to_pos as leaf_to_pos,
 };
+// Re-export ckb types needed by downstream crates (e.g., grovedb-bulk-append-tree)
+pub use ckb_merkle_mountain_range::{
+    util::MemStore as CkbMemStore, Error as CkbError, MMRStoreReadOps, MMRStoreWriteOps,
+    MerkleProof, Result as CkbResult, MMR,
+};
 // Re-export all public types
 pub use dense_merkle::{compute_dense_merkle_root, compute_dense_merkle_root_from_values};
 pub use grove_mmr::GroveMmr;
-pub use node::{MergeBlake3, MmrNode};
+pub use node::{blake3_merge, MergeBlake3, MmrNode};
+pub use proof::MmrTreeProof;
 use thiserror::Error;
-pub use util::{hash_count_for_push, mmr_size_to_leaf_count};
+pub use util::{hash_count_for_push, mmr_node_key, mmr_size_to_leaf_count};
 
 /// Errors from MMR operations.
 #[derive(Debug, Error)]
@@ -37,4 +44,8 @@ pub enum MmrError {
     InvalidData(String),
     #[error("position {0} out of range")]
     PositionOutOfRange(u64),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    #[error("invalid proof: {0}")]
+    InvalidProof(String),
 }

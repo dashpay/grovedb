@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
 
 use crate::{
-    operations::proof::{GroveDBProof, LayerProof, ProveOptions},
+    operations::proof::{GroveDBProof, MerkOnlyLayerProof, ProveOptions},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     GroveDb,
@@ -372,7 +372,7 @@ fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, crate
 }
 
 fn proof_layer_to_grovedbg(
-    proof_layer: LayerProof,
+    proof_layer: MerkOnlyLayerProof,
 ) -> Result<grovedbg_types::ProofLayer, crate::Error> {
     Ok(grovedbg_types::ProofLayer {
         merk_proof: merk_proof_to_grovedbg(&proof_layer.merk_proof)?,

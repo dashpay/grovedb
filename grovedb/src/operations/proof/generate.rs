@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use grovedb_bulk_append_tree::BulkAppendTreeProof;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
     cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -11,14 +12,16 @@ use grovedb_merk::{
     tree::value_hash,
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
-use grovedb_storage::StorageContext;
+use grovedb_mmr::MmrTreeProof;
+use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 #[cfg(feature = "proof_debug")]
 use crate::query_result_type::QueryResultType;
 use crate::{
     operations::proof::{
-        util::hex_to_ascii, GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions,
+        util::hex_to_ascii, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
+        MerkOnlyLayerProof, ProofBytes, ProveOptions,
     },
     query::PathTrunkChunkQuery,
     reference_path::path_from_reference_path_type,
@@ -81,6 +84,30 @@ impl GroveDb {
             cost,
             bincode::encode_to_vec(proof, config)
                 .map_err(|e| Error::CorruptedData(format!("unable to encode proof {}", e)))
+        );
+        Ok(encoded_proof).wrap_with_cost(cost)
+    }
+
+    /// Generates a V1 proof (supports MmrTree/BulkAppendTree subqueries) and
+    /// returns serialized bytes.
+    pub fn prove_query_v1(
+        &self,
+        path_query: &PathQuery,
+        prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error> {
+        let mut cost = OperationCost::default();
+        let proof = cost_return_on_error!(
+            &mut cost,
+            self.prove_query_v1_non_serialized(path_query, prove_options, grove_version)
+        );
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let encoded_proof = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(proof, config)
+                .map_err(|e| Error::CorruptedData(format!("unable to encode V1 proof {}", e)))
         );
         Ok(encoded_proof).wrap_with_cost(cost)
     }
@@ -178,7 +205,7 @@ impl GroveDb {
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
         grove_version: &GroveVersion,
-    ) -> CostResult<LayerProof, Error> {
+    ) -> CostResult<MerkOnlyLayerProof, Error> {
         let mut cost = OperationCost::default();
 
         let tx = self.start_transaction();
@@ -452,7 +479,7 @@ impl GroveDb {
         let mut serialized_merk_proof = Vec::with_capacity(1024);
         encode_into(merk_proof.proof.iter(), &mut serialized_merk_proof);
 
-        Ok(LayerProof {
+        Ok(MerkOnlyLayerProof {
             merk_proof: serialized_merk_proof,
             lower_layers,
         })
@@ -565,7 +592,7 @@ impl GroveDb {
         encode_into(trunk_result.proof.iter(), &mut trunk_proof_encoded);
 
         // Start with the innermost LayerProof (the trunk proof at target tree)
-        let mut current_layer = LayerProof {
+        let mut current_layer = MerkOnlyLayerProof {
             merk_proof: trunk_proof_encoded,
             lower_layers: BTreeMap::new(),
         };
@@ -601,7 +628,7 @@ impl GroveDb {
             let mut lower_layers = BTreeMap::new();
             lower_layers.insert(key, current_layer);
 
-            current_layer = LayerProof {
+            current_layer = MerkOnlyLayerProof {
                 merk_proof: encoded_proof,
                 lower_layers,
             };
@@ -675,5 +702,696 @@ impl GroveDb {
         );
 
         Ok(branch_result).wrap_with_cost(cost)
+    }
+
+    // ── V1 Proof Generation (MmrTree / BulkAppendTree support) ──────────
+
+    /// Generate a V1 proof for a query that may touch MmrTree or
+    /// BulkAppendTree elements.
+    pub fn prove_query_v1_non_serialized(
+        &self,
+        path_query: &PathQuery,
+        prove_options: Option<ProveOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<GroveDBProof, Error> {
+        let mut cost = OperationCost::default();
+        let prove_options = prove_options.unwrap_or_default();
+
+        if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
+            return Err(Error::InvalidQuery(
+                "proved path queries can not have offsets",
+            ))
+            .wrap_with_cost(cost);
+        }
+        if path_query.query.limit == Some(0) {
+            return Err(Error::InvalidQuery(
+                "proved path queries can not be for limit 0",
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let mut limit = path_query.query.limit;
+
+        let root_layer = cost_return_on_error!(
+            &mut cost,
+            self.prove_subqueries_v1(
+                vec![],
+                path_query,
+                &mut limit,
+                &prove_options,
+                grove_version
+            )
+        );
+
+        Ok(GroveDBProof::V1(GroveDBProofV1 {
+            root_layer,
+            prove_options,
+        }))
+        .wrap_with_cost(cost)
+    }
+
+    /// V1 version of prove_subqueries that returns `LayerProof` and handles
+    /// MmrTree/BulkAppendTree elements with type-specific proofs.
+    fn prove_subqueries_v1(
+        &self,
+        path: Vec<&[u8]>,
+        path_query: &PathQuery,
+        overall_limit: &mut Option<u16>,
+        prove_options: &ProveOptions,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error> {
+        let mut cost = OperationCost::default();
+
+        let tx = self.start_transaction();
+
+        let query = cost_return_on_error_no_add!(
+            cost,
+            path_query
+                .query_items_at_path(path.as_slice(), grove_version)
+                .and_then(|query_items| {
+                    query_items.ok_or(Error::CorruptedPath(format!(
+                        "prove subqueries v1: path {} should be part of path_query {}",
+                        path.iter()
+                            .map(|a| hex_to_ascii(a))
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                        path_query
+                    )))
+                })
+        );
+
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(path.as_slice().into(), &tx, None, grove_version)
+        );
+
+        let limit = if path.len() < path_query.path.len() {
+            None
+        } else {
+            *overall_limit
+        };
+
+        let mut merk_proof = cost_return_on_error!(
+            &mut cost,
+            self.generate_merk_proof(
+                &subtree,
+                &query.items,
+                query.left_to_right,
+                limit,
+                grove_version
+            )
+        );
+
+        let mut lower_layers = BTreeMap::new();
+        let mut has_a_result_at_level = false;
+        let mut done_with_results = false;
+
+        for op in merk_proof.proof.iter_mut() {
+            done_with_results |= overall_limit == &Some(0);
+            let should_preserve_node_type = matches!(
+                op,
+                Op::Push(Node::KVValueHashFeatureType(..))
+                    | Op::PushInverted(Node::KVValueHashFeatureType(..))
+                    | Op::Push(Node::KVCount(..))
+                    | Op::PushInverted(Node::KVCount(..))
+            );
+            let count_for_ref = match op {
+                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
+                    TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            match op {
+                Op::Push(node) | Op::PushInverted(node) => match node {
+                    Node::KV(key, value)
+                    | Node::KVValueHash(key, value, ..)
+                    | Node::KVCount(key, value, _)
+                    | Node::KVValueHashFeatureType(key, value, ..)
+                        if !done_with_results =>
+                    {
+                        let elem = Element::deserialize(value, grove_version);
+                        match elem {
+                            Ok(Element::Reference(reference_path, ..)) => {
+                                let absolute_path = cost_return_on_error_into!(
+                                    &mut cost,
+                                    path_from_reference_path_type(
+                                        reference_path,
+                                        &path.to_vec(),
+                                        Some(key.as_slice())
+                                    )
+                                    .wrap_with_cost(OperationCost::default())
+                                );
+
+                                let referenced_elem = cost_return_on_error_into!(
+                                    &mut cost,
+                                    self.follow_reference(
+                                        absolute_path.as_slice().into(),
+                                        true,
+                                        None,
+                                        grove_version
+                                    )
+                                );
+
+                                let serialized_referenced_elem =
+                                    referenced_elem.serialize(grove_version);
+                                if serialized_referenced_elem.is_err() {
+                                    return Err(Error::CorruptedData(String::from(
+                                        "unable to serialize element",
+                                    )))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                *node = if let Some(count) = count_for_ref {
+                                    Node::KVRefValueHashCount(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        count,
+                                    )
+                                } else {
+                                    Node::KVRefValueHash(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                    )
+                                };
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+                            Ok(Element::Item(..)) if !done_with_results => {
+                                if !should_preserve_node_type {
+                                    *node = Node::KV(key.to_owned(), value.to_owned());
+                                }
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+
+                            // MmrTree with subquery → generate MMR proof
+                            // root_key is always None for MmrTree (no child Merk data)
+                            Ok(Element::MmrTree(_, mmr_root, mmr_size, _))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_mmr_layer_proof(
+                                        &lower_path,
+                                        path_query,
+                                        mmr_root,
+                                        mmr_size,
+                                        overall_limit,
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
+
+                                has_a_result_at_level |= true;
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+
+                            // BulkAppendTree with subquery → generate BulkAppend proof
+                            // root_key is always None for BulkAppendTree (no child Merk data)
+                            Ok(Element::BulkAppendTree(
+                                _,
+                                state_root,
+                                total_count,
+                                epoch_size,
+                                _,
+                            )) if !done_with_results
+                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_bulk_append_layer_proof(
+                                        &lower_path,
+                                        path_query,
+                                        state_root,
+                                        total_count,
+                                        epoch_size,
+                                        overall_limit,
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
+
+                                has_a_result_at_level |= true;
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+
+                            // Other tree types with subqueries → recurse into Merk
+                            Ok(Element::Tree(Some(_), _))
+                            | Ok(Element::SumTree(Some(_), ..))
+                            | Ok(Element::BigSumTree(Some(_), ..))
+                            | Ok(Element::CountTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountTree(Some(_), ..))
+                            | Ok(Element::ProvableCountSumTree(Some(_), ..))
+                            | Ok(Element::CommitmentTree(Some(_), ..))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        grove_version,
+                                    )
+                                );
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+
+                            // MmrTree/BulkAppendTree without subquery (query targets the tree
+                            // itself)
+                            Ok(Element::MmrTree(..)) | Ok(Element::BulkAppendTree(..))
+                                if !done_with_results =>
+                            {
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+
+                            Ok(Element::Tree(..))
+                            | Ok(Element::SumTree(..))
+                            | Ok(Element::BigSumTree(..))
+                            | Ok(Element::CountTree(..))
+                            | Ok(Element::ProvableCountTree(..))
+                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::ProvableCountSumTree(..))
+                            | Ok(Element::CommitmentTree(..))
+                                if !done_with_results =>
+                            {
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+
+                            _ => continue,
+                        }
+                    }
+                    _ => continue,
+                },
+                _ => continue,
+            }
+        }
+
+        if !has_a_result_at_level
+            && !done_with_results
+            && prove_options.decrease_limit_on_empty_sub_query_result
+        {
+            if let Some(limit) = overall_limit.as_mut() {
+                *limit -= 1;
+            }
+        }
+
+        let mut serialized_merk_proof = Vec::with_capacity(1024);
+        encode_into(merk_proof.proof.iter(), &mut serialized_merk_proof);
+
+        Ok(LayerProof {
+            merk_proof: ProofBytes::Merk(serialized_merk_proof),
+            lower_layers,
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Generate an MMR tree layer proof for a subquery.
+    fn generate_mmr_layer_proof(
+        &self,
+        subtree_path: &[&[u8]],
+        path_query: &PathQuery,
+        mmr_root: [u8; 32],
+        mmr_size: u64,
+        overall_limit: &mut Option<u16>,
+        tx: &crate::Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error> {
+        let mut cost = OperationCost::default();
+
+        // Get the subquery items for this path to determine which leaf indices to prove
+        let sub_query = cost_return_on_error_no_add!(
+            cost,
+            path_query
+                .query_items_at_path(subtree_path, grove_version)
+                .and_then(|q| {
+                    q.ok_or(Error::CorruptedPath(
+                        "MMR subtree path not in path_query".into(),
+                    ))
+                })
+        );
+
+        // Convert query items to leaf indices (keys are BE u64 bytes)
+        let leaf_indices = cost_return_on_error_no_add!(
+            cost,
+            Self::query_items_to_leaf_indices(&sub_query.items, mmr_size)
+        );
+
+        // Open aux storage at the subtree path
+        let path_vec: Vec<Vec<u8>> = subtree_path.iter().map(|s| s.to_vec()).collect();
+        let path_refs: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
+        let storage_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(storage_path, tx)
+            .unwrap_add_cost(&mut cost);
+
+        // Generate the MMR proof
+        let mmr_proof = cost_return_on_error_no_add!(
+            cost,
+            MmrTreeProof::generate(mmr_size, &leaf_indices, |pos| {
+                let key = grovedb_mmr::mmr_node_key(pos);
+                let result = storage_ctx.get_aux(&key);
+                match result.value {
+                    Ok(Some(bytes)) => {
+                        let node = grovedb_mmr::MmrNode::deserialize(&bytes)?;
+                        Ok(Some(node))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(grovedb_mmr::MmrError::OperationFailed(format!(
+                        "storage error: {}",
+                        e
+                    ))),
+                }
+            })
+            .map_err(|e| Error::CorruptedData(format!("{}", e)))
+        );
+
+        // Update limit
+        if let Some(limit) = overall_limit.as_mut() {
+            let count = mmr_proof.leaves.len() as u16;
+            *limit = limit.saturating_sub(count);
+        }
+
+        let proof_bytes = cost_return_on_error_no_add!(
+            cost,
+            mmr_proof
+                .encode_to_vec()
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))
+        );
+
+        Ok(LayerProof {
+            merk_proof: ProofBytes::MMR(proof_bytes),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Generate a BulkAppendTree layer proof for a subquery.
+    fn generate_bulk_append_layer_proof(
+        &self,
+        subtree_path: &[&[u8]],
+        path_query: &PathQuery,
+        _state_root: [u8; 32],
+        total_count: u64,
+        epoch_size: u32,
+        overall_limit: &mut Option<u16>,
+        tx: &crate::Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error> {
+        let mut cost = OperationCost::default();
+
+        // Get the subquery items for this path
+        let sub_query = cost_return_on_error_no_add!(
+            cost,
+            path_query
+                .query_items_at_path(subtree_path, grove_version)
+                .and_then(|q| {
+                    q.ok_or(Error::CorruptedPath(
+                        "BulkAppendTree subtree path not in path_query".into(),
+                    ))
+                })
+        );
+
+        // Convert query items to a position range
+        let (start, end) = cost_return_on_error_no_add!(
+            cost,
+            Self::query_items_to_range(&sub_query.items, total_count)
+        );
+
+        // Open aux storage
+        let path_vec: Vec<Vec<u8>> = subtree_path.iter().map(|s| s.to_vec()).collect();
+        let path_refs: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
+        let storage_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(storage_path, tx)
+            .unwrap_add_cost(&mut cost);
+
+        // Load metadata to get mmr_size and buffer_hash
+        let meta_key = grovedb_bulk_append_tree::META_KEY;
+        let meta_result = storage_ctx.get_aux(meta_key).unwrap_add_cost(&mut cost);
+
+        let (mmr_size, buffer_hash) = match meta_result {
+            Ok(Some(bytes)) => {
+                cost_return_on_error_no_add!(
+                    cost,
+                    grovedb_bulk_append_tree::BulkAppendTree::deserialize_meta(&bytes).map_err(
+                        |e| Error::CorruptedData(format!("failed to deserialize bulk meta: {}", e))
+                    )
+                )
+            }
+            Ok(None) => (0u64, [0u8; 32]),
+            Err(e) => return Err(Error::StorageError(e)).wrap_with_cost(cost),
+        };
+
+        // Generate the BulkAppendTree proof
+        let bulk_proof = cost_return_on_error_no_add!(
+            cost,
+            BulkAppendTreeProof::generate(
+                total_count,
+                epoch_size,
+                mmr_size,
+                buffer_hash,
+                start,
+                end,
+                |key| {
+                    let result = storage_ctx.get_aux(key);
+                    match result.value {
+                        Ok(v) => Ok(v),
+                        Err(e) => Err(grovedb_bulk_append_tree::BulkAppendError::StorageError(
+                            format!("{}", e),
+                        )),
+                    }
+                }
+            )
+            .map_err(|e| Error::CorruptedData(format!("{}", e)))
+        );
+
+        // Update limit based on number of results
+        if let Some(limit) = overall_limit.as_mut() {
+            let completed_epochs = total_count / epoch_size as u64;
+            let epoch_count = bulk_proof.epoch_blobs.len() as u16;
+            let buffer_in_range = bulk_proof
+                .buffer_entries
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| {
+                    let global_pos = completed_epochs * epoch_size as u64 + *i as u64;
+                    global_pos >= start && global_pos < end
+                })
+                .count() as u16;
+            *limit = limit.saturating_sub(epoch_count + buffer_in_range);
+        }
+
+        let proof_bytes = cost_return_on_error_no_add!(
+            cost,
+            bulk_proof
+                .encode_to_vec()
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))
+        );
+
+        Ok(LayerProof {
+            merk_proof: ProofBytes::BulkAppendTree(proof_bytes),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Convert query items to leaf indices for MMR proofs.
+    ///
+    /// Query keys are interpreted as BE u64 bytes representing leaf indices.
+    fn query_items_to_leaf_indices(items: &[QueryItem], mmr_size: u64) -> Result<Vec<u64>, Error> {
+        let leaf_count = grovedb_mmr::mmr_size_to_leaf_count(mmr_size);
+        let mut indices = Vec::new();
+
+        for item in items {
+            match item {
+                QueryItem::Key(key) => {
+                    let idx = Self::decode_be_u64(key)?;
+                    if idx < leaf_count {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeInclusive(range) => {
+                    let start = Self::decode_be_u64(range.start())?;
+                    let end = Self::decode_be_u64(range.end())?;
+                    for idx in start..=end.min(leaf_count - 1) {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::Range(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in start..end.min(leaf_count) {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeFrom(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    for idx in start..leaf_count {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeTo(range) => {
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in 0..end.min(leaf_count) {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeToInclusive(range) => {
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in 0..=end.min(leaf_count - 1) {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeFull(..) => {
+                    for idx in 0..leaf_count {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeAfter(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    for idx in (start + 1)..leaf_count {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeAfterTo(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in (start + 1)..end.min(leaf_count) {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeAfterToInclusive(range) => {
+                    let start = Self::decode_be_u64(range.start())?;
+                    let end = Self::decode_be_u64(range.end())?;
+                    for idx in (start + 1)..=end.min(leaf_count - 1) {
+                        indices.push(idx);
+                    }
+                }
+            }
+        }
+
+        indices.sort_unstable();
+        indices.dedup();
+        Ok(indices)
+    }
+
+    /// Convert query items to a position range [start, end) for BulkAppendTree.
+    fn query_items_to_range(items: &[QueryItem], total_count: u64) -> Result<(u64, u64), Error> {
+        let mut min_start = total_count;
+        let mut max_end = 0u64;
+
+        for item in items {
+            match item {
+                QueryItem::Key(key) => {
+                    let pos = Self::decode_be_u64(key)?;
+                    min_start = min_start.min(pos);
+                    max_end = max_end.max(pos + 1);
+                }
+                QueryItem::RangeInclusive(range) => {
+                    let s = Self::decode_be_u64(range.start())?;
+                    let e = Self::decode_be_u64(range.end())?;
+                    min_start = min_start.min(s);
+                    max_end = max_end.max(e + 1);
+                }
+                QueryItem::Range(range) => {
+                    let s = Self::decode_be_u64(&range.start)?;
+                    let e = Self::decode_be_u64(&range.end)?;
+                    min_start = min_start.min(s);
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeFrom(range) => {
+                    let s = Self::decode_be_u64(&range.start)?;
+                    min_start = min_start.min(s);
+                    max_end = total_count;
+                }
+                QueryItem::RangeTo(range) => {
+                    min_start = 0;
+                    let e = Self::decode_be_u64(&range.end)?;
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeToInclusive(range) => {
+                    min_start = 0;
+                    let e = Self::decode_be_u64(&range.end)?;
+                    max_end = max_end.max(e + 1);
+                }
+                QueryItem::RangeFull(..) => {
+                    min_start = 0;
+                    max_end = total_count;
+                }
+                QueryItem::RangeAfter(range) => {
+                    let s = Self::decode_be_u64(&range.start)?;
+                    min_start = min_start.min(s + 1);
+                    max_end = total_count;
+                }
+                QueryItem::RangeAfterTo(range) => {
+                    let s = Self::decode_be_u64(&range.start)?;
+                    let e = Self::decode_be_u64(&range.end)?;
+                    min_start = min_start.min(s + 1);
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeAfterToInclusive(range) => {
+                    let s = Self::decode_be_u64(range.start())?;
+                    let e = Self::decode_be_u64(range.end())?;
+                    min_start = min_start.min(s + 1);
+                    max_end = max_end.max(e + 1);
+                }
+            }
+        }
+
+        // Clamp to total_count
+        max_end = max_end.min(total_count);
+        Ok((min_start, max_end))
+    }
+
+    /// Decode a big-endian u64 from key bytes.
+    fn decode_be_u64(key: &[u8]) -> Result<u64, Error> {
+        if key.len() != 8 {
+            return Err(Error::InvalidInput(
+                "position key must be exactly 8 bytes (BE u64)",
+            ));
+        }
+        let arr: [u8; 8] = key
+            .try_into()
+            .map_err(|_| Error::InvalidInput("invalid u64 key bytes"))?;
+        Ok(u64::from_be_bytes(arr))
     }
 }

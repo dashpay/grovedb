@@ -21,6 +21,7 @@ mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
+mod v1_proof_tests;
 
 use std::{
     ops::{Deref, DerefMut},

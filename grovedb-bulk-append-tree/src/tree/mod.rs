@@ -9,8 +9,8 @@
 //! State root = blake3(mmr_root || buffer_hash) — changes on every append.
 
 mod append;
-mod hash;
-pub(crate) mod keys;
+pub mod hash;
+pub mod keys;
 mod mmr_adapter;
 mod query;
 
@@ -57,36 +57,45 @@ pub struct BulkAppendTree {
 impl BulkAppendTree {
     /// Create a new empty tree.
     ///
-    /// # Panics
-    /// Panics if `epoch_size` is not a power of 2 or is 0.
-    pub fn new(epoch_size: u32) -> Self {
-        assert!(
-            epoch_size > 0 && epoch_size.is_power_of_two(),
-            "epoch_size must be a power of 2"
-        );
-        Self {
+    /// Returns an error if `epoch_size` is not a power of 2 or is 0.
+    pub fn new(epoch_size: u32) -> Result<Self, BulkAppendError> {
+        Self::validate_epoch_size(epoch_size)?;
+        Ok(Self {
             total_count: 0,
             epoch_size,
             mmr_size: 0,
             buffer_hash: [0u8; 32],
             mmr_node_cache: RefCell::new(HashMap::new()),
-        }
+        })
     }
 
     /// Restore from persisted state.
+    ///
+    /// Returns an error if `epoch_size` is not a power of 2 or is 0.
     pub fn from_state(
         total_count: u64,
         epoch_size: u32,
         mmr_size: u64,
         buffer_hash: [u8; 32],
-    ) -> Self {
-        Self {
+    ) -> Result<Self, BulkAppendError> {
+        Self::validate_epoch_size(epoch_size)?;
+        Ok(Self {
             total_count,
             epoch_size,
             mmr_size,
             buffer_hash,
             mmr_node_cache: RefCell::new(HashMap::new()),
+        })
+    }
+
+    fn validate_epoch_size(epoch_size: u32) -> Result<(), BulkAppendError> {
+        if epoch_size == 0 || !epoch_size.is_power_of_two() {
+            return Err(BulkAppendError::CorruptedData(format!(
+                "epoch_size must be a non-zero power of 2, got {}",
+                epoch_size
+            )));
         }
+        Ok(())
     }
 
     // ── State accessors ─────────────────────────────────────────────────
@@ -133,7 +142,11 @@ impl BulkAppendTree {
                 bytes.len()
             )));
         }
-        let mmr_size = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
+        let mmr_size = u64::from_be_bytes(
+            bytes[0..8]
+                .try_into()
+                .map_err(|_| BulkAppendError::CorruptedData("bad mmr_size bytes".into()))?,
+        );
         let mut buffer_hash = [0u8; 32];
         buffer_hash.copy_from_slice(&bytes[8..40]);
         Ok((mmr_size, buffer_hash))
@@ -152,14 +165,17 @@ impl BulkAppendTree {
         match meta_result {
             Some(bytes) => {
                 let (mmr_size, buffer_hash) = Self::deserialize_meta(&bytes)?;
-                Ok(Self::from_state(
-                    total_count,
-                    epoch_size,
-                    mmr_size,
-                    buffer_hash,
-                ))
+                Self::from_state(total_count, epoch_size, mmr_size, buffer_hash)
             }
-            None => Ok(Self::new(epoch_size)),
+            None => {
+                if total_count > 0 {
+                    return Err(BulkAppendError::CorruptedData(format!(
+                        "total_count is {} but metadata is missing",
+                        total_count
+                    )));
+                }
+                Self::new(epoch_size)
+            }
         }
     }
 }

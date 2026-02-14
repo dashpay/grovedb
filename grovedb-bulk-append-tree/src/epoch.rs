@@ -83,8 +83,16 @@ fn deserialize_fixed(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
             "fixed epoch blob truncated at header".to_string(),
         ));
     }
-    let count = u32::from_be_bytes(data[0..4].try_into().unwrap()) as usize;
-    let entry_size = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
+    let count = u32::from_be_bytes(
+        data[0..4]
+            .try_into()
+            .map_err(|_| BulkAppendError::CorruptedData("bad count bytes".into()))?,
+    ) as usize;
+    let entry_size = u32::from_be_bytes(
+        data[4..8]
+            .try_into()
+            .map_err(|_| BulkAppendError::CorruptedData("bad entry_size bytes".into()))?,
+    ) as usize;
     let payload = &data[8..];
 
     let expected = count * entry_size;
@@ -129,7 +137,11 @@ fn deserialize_variable(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
                 "epoch blob truncated at length prefix".to_string(),
             ));
         }
-        let len = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        let len = u32::from_be_bytes(
+            data[offset..offset + 4]
+                .try_into()
+                .map_err(|_| BulkAppendError::CorruptedData("bad length prefix bytes".into()))?,
+        ) as usize;
         offset += 4;
         if offset + len > data.len() {
             return Err(BulkAppendError::CorruptedData(
@@ -153,7 +165,7 @@ mod tests {
         assert_eq!(blob[0], FORMAT_FIXED);
         // 1 (flag) + 4 (count) + 4 (entry_size) + 3*5 = 24
         assert_eq!(blob.len(), 24);
-        let decoded = deserialize_epoch_blob(&blob).unwrap();
+        let decoded = deserialize_epoch_blob(&blob).expect("decode fixed blob");
         assert_eq!(entries, decoded);
     }
 
@@ -162,7 +174,7 @@ mod tests {
         let entries = vec![b"hi".to_vec(), b"world".to_vec(), b"!".to_vec()];
         let blob = serialize_epoch_blob(&entries);
         assert_eq!(blob[0], FORMAT_VARIABLE);
-        let decoded = deserialize_epoch_blob(&blob).unwrap();
+        let decoded = deserialize_epoch_blob(&blob).expect("decode variable blob");
         assert_eq!(entries, decoded);
     }
 
@@ -171,7 +183,7 @@ mod tests {
         let entries: Vec<Vec<u8>> = vec![];
         let blob = serialize_epoch_blob(&entries);
         assert!(blob.is_empty());
-        let decoded = deserialize_epoch_blob(&blob).unwrap();
+        let decoded = deserialize_epoch_blob(&blob).expect("decode empty blob");
         assert!(decoded.is_empty());
     }
 
@@ -180,7 +192,7 @@ mod tests {
         let entries = vec![b"only".to_vec()];
         let blob = serialize_epoch_blob(&entries);
         assert_eq!(blob[0], FORMAT_FIXED);
-        let decoded = deserialize_epoch_blob(&blob).unwrap();
+        let decoded = deserialize_epoch_blob(&blob).expect("decode single-entry blob");
         assert_eq!(entries, decoded);
     }
 
@@ -194,7 +206,7 @@ mod tests {
         ];
         let blob = serialize_epoch_blob(&entries);
         assert_eq!(blob[0], FORMAT_VARIABLE);
-        let decoded = deserialize_epoch_blob(&blob).unwrap();
+        let decoded = deserialize_epoch_blob(&blob).expect("decode variable-length entries");
         assert_eq!(entries, decoded);
     }
 
@@ -207,7 +219,7 @@ mod tests {
         // Fixed: 1 + 4 + 4 + 8*32 = 265
         // Variable would be: 1 + 8*(4+32) = 289
         assert_eq!(blob.len(), 265);
-        let decoded = deserialize_epoch_blob(&blob).unwrap();
+        let decoded = deserialize_epoch_blob(&blob).expect("decode fixed-size savings blob");
         assert_eq!(entries, decoded);
     }
 
@@ -219,14 +231,14 @@ mod tests {
         assert_eq!(blob[0], FORMAT_FIXED);
         // 1 (flag) + 4 (count=3) + 4 (entry_size=0) + 0 = 9
         assert_eq!(blob.len(), 9);
-        let decoded = deserialize_epoch_blob(&blob).unwrap();
+        let decoded = deserialize_epoch_blob(&blob).expect("decode zero-length entries blob");
         assert_eq!(entries, decoded);
     }
 
     #[test]
     fn truncated_variable_at_length() {
         let blob = vec![FORMAT_VARIABLE, 0, 0];
-        let err = deserialize_epoch_blob(&blob).unwrap_err();
+        let err = deserialize_epoch_blob(&blob).expect_err("should fail for truncated length");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
 
@@ -235,7 +247,7 @@ mod tests {
         let mut blob = vec![FORMAT_VARIABLE];
         blob.extend_from_slice(&10u32.to_be_bytes());
         blob.extend_from_slice(&[1, 2, 3]);
-        let err = deserialize_epoch_blob(&blob).unwrap_err();
+        let err = deserialize_epoch_blob(&blob).expect_err("should fail for truncated data");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
 
@@ -243,7 +255,7 @@ mod tests {
     fn truncated_fixed_at_header() {
         // Fixed format but only 5 bytes for the header (needs 8)
         let blob = vec![FORMAT_FIXED, 0, 0, 0, 1, 0];
-        let err = deserialize_epoch_blob(&blob).unwrap_err();
+        let err = deserialize_epoch_blob(&blob).expect_err("should fail for truncated header");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
 
@@ -254,14 +266,14 @@ mod tests {
         blob.extend_from_slice(&2u32.to_be_bytes());
         blob.extend_from_slice(&3u32.to_be_bytes());
         blob.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7]);
-        let err = deserialize_epoch_blob(&blob).unwrap_err();
+        let err = deserialize_epoch_blob(&blob).expect_err("should fail for payload mismatch");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
 
     #[test]
     fn unknown_format_flag() {
         let blob = vec![0xFF, 1, 2, 3];
-        let err = deserialize_epoch_blob(&blob).unwrap_err();
+        let err = deserialize_epoch_blob(&blob).expect_err("should fail for unknown format");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
 }
