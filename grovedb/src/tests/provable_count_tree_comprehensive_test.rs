@@ -140,6 +140,7 @@ mod tests {
             crate::operations::proof::GroveDBProof::V0(proof_v0) => {
                 !proof_v0.root_layer.lower_layers.is_empty()
             }
+            _ => panic!("expected V0 proof"),
         };
 
         assert!(
@@ -156,6 +157,7 @@ mod tests {
                 .expect("should have counts layer")
                 .merk_proof
                 .as_slice(),
+            _ => panic!("expected V0 proof"),
         };
 
         // Decode proof and check for count nodes

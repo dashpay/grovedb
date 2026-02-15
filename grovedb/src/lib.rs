@@ -727,6 +727,31 @@ impl GroveDb {
                     grove_version,
                 )
                 .map_err(|e| e.into())
+            } else if let Element::CommitmentTree(_, sinsemilla_root, _, flag) = element {
+                let tree = Element::new_commitment_tree_with_all(
+                    maybe_root_key,
+                    sinsemilla_root,
+                    aggregate_data.as_count_u64(),
+                    flag,
+                );
+                tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "failed to propagate commitment tree subtree for key {}: {}",
+                            hex::encode(key_ref),
+                            e
+                        ))
+                    })
+            } else if let Element::MmrTree(_, mmr_root, mmr_size, flag) = element {
+                let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
+                tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                    .map_err(|e| e.into())
+            } else if let Element::BulkAppendTree(_, state_root, total_count, epoch_size, flag) =
+                element
+            {
+                let tree = Element::new_bulk_append_tree(state_root, total_count, epoch_size, flag);
+                tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                    .map_err(|e| e.into())
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -748,6 +773,8 @@ impl GroveDb {
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
         aggregate_data: AggregateData,
+        sinsemilla_root_override: Option<[u8; 32]>,
+        mmr_size_override: Option<u64>,
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -879,6 +906,85 @@ impl GroveDb {
                             aggregate_data.as_sum_i64(),
                             flag,
                         );
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                    .map_err(|e| e.into())
+                } else if let Element::CommitmentTree(_, existing_sr, _, flag) = element {
+                    // Use override if provided (from preprocessing), else preserve
+                    let sr = sinsemilla_root_override.unwrap_or(existing_sr);
+                    let tree = Element::new_commitment_tree_with_all(
+                        maybe_root_key,
+                        sr,
+                        aggregate_data.as_count_u64(),
+                        flag,
+                    );
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    let key_hex = hex::encode(key.as_ref());
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "failed to batch-propagate commitment tree subtree for key {}: {}",
+                            key_hex, e
+                        ))
+                    })
+                } else if let Element::MmrTree(_, existing_mmr_root, existing_mmr_size, flag) =
+                    element
+                {
+                    let mmr_root = sinsemilla_root_override.unwrap_or(existing_mmr_root);
+                    let mmr_size = mmr_size_override.unwrap_or(existing_mmr_size);
+                    let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                    .map_err(|e| e.into())
+                } else if let Element::BulkAppendTree(
+                    _,
+                    existing_state_root,
+                    existing_total_count,
+                    existing_epoch_size,
+                    flag,
+                ) = element
+                {
+                    let state_root = sinsemilla_root_override.unwrap_or(existing_state_root);
+                    let total_count = mmr_size_override.unwrap_or(existing_total_count);
+                    let tree = Element::new_bulk_append_tree(
+                        state_root,
+                        total_count,
+                        existing_epoch_size,
+                        flag,
+                    );
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -1110,7 +1216,10 @@ impl GroveDb {
                 | Element::CountTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountTree(..)
-                | Element::ProvableCountSumTree(..) => {
+                | Element::ProvableCountSumTree(..)
+                | Element::CommitmentTree(..)
+                | Element::MmrTree(..)
+                | Element::BulkAppendTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1147,6 +1256,38 @@ impl GroveDb {
                             (root_hash, combined_value_hash, element_value_hash),
                         );
                     }
+
+                    // For CommitmentTree elements, verify the sinsemilla_root
+                    // matches the actual frontier state in aux storage
+                    if let Element::CommitmentTree(_, sinsemilla_root, ..) = &element {
+                        let frontier_ctx = self
+                            .db
+                            .get_transactional_storage_context(
+                                new_path_ref.clone(),
+                                None,
+                                transaction,
+                            )
+                            .unwrap();
+                        let mut frontier_cost = OperationCost::default();
+                        match operations::commitment_tree::load_frontier_from_aux(
+                            &frontier_ctx,
+                            &mut frontier_cost,
+                        ) {
+                            Ok(frontier) => {
+                                let actual_root = frontier.root_hash();
+                                if actual_root != *sinsemilla_root {
+                                    issues.insert(
+                                        new_path.to_vec(),
+                                        (actual_root, *sinsemilla_root, actual_root),
+                                    );
+                                }
+                            }
+                            Err(_) => {
+                                issues.insert(new_path.to_vec(), ([0u8; 32], [0u8; 32], [0u8; 32]));
+                            }
+                        }
+                    }
+
                     issues.extend(self.verify_merk_and_submerks_in_transaction(
                         inner_merk,
                         &new_path_ref,

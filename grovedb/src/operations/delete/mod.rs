@@ -666,7 +666,38 @@ impl GroveDb {
                 } else {
                     Ok(false).wrap_with_cost(cost)
                 };
-            } else if !is_empty {
+            }
+
+            // Clean up commitment tree aux storage if applicable.
+            // CommitmentTree stores all Sinsemilla data in aux storage which is
+            // not cleared by the normal Merk subtree cleanup.  This runs only
+            // after the non-empty-tree guard so aux data is not deleted when
+            // the element itself is kept.
+            if element.is_commitment_tree() {
+                let ct_storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        subtree_merk_path_ref.clone(),
+                        Some(batch),
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    ct_storage
+                        .delete_aux(
+                            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
+                            None,
+                        )
+                        .map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "unable to clean up commitment tree aux storage: {e}",
+                            ))
+                        })
+                );
+            }
+
+            if !is_empty {
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(&subtree_merk_path_ref, Some(transaction), grove_version)
@@ -1454,6 +1485,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 154, // todo: verify this
                 hash_node_calls: 0,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1540,6 +1572,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 418, // todo: verify this
                 hash_node_calls: 5,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1627,6 +1660,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 418, // todo: verify this
                 hash_node_calls: 5,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

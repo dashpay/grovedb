@@ -49,6 +49,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
+            Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
+            Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
+            Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
             _ => None,
         }
     }
@@ -68,6 +71,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
+            Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
+            Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
+            Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
             _ => None,
         }
     }
@@ -84,6 +90,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
+            Element::CommitmentTree(_, _, _, flags) => Some((flags, TreeType::CommitmentTree)),
+            Element::MmrTree(_, _, _, flags) => Some((flags, TreeType::MmrTree)),
+            Element::BulkAppendTree(_, _, _, _, flags) => Some((flags, TreeType::BulkAppendTree)),
             _ => None,
         }
     }
@@ -98,6 +107,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
+            Element::CommitmentTree(..) => Some(TreeType::CommitmentTree),
+            Element::MmrTree(..) => Some(TreeType::MmrTree),
+            Element::BulkAppendTree(..) => Some(TreeType::BulkAppendTree),
             _ => None,
         }
     }
@@ -117,6 +129,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(_, count, sum, _) => {
                 Some(TreeFeatureType::ProvableCountedSummedMerkNode(*count, *sum))
             }
+            Element::CommitmentTree(_, _, count, _) => Some(CountedMerkNode(*count)),
+            Element::MmrTree(..) => Some(BasicMerkNode),
+            Element::BulkAppendTree(..) => Some(BasicMerkNode),
             _ => None,
         }
     }
@@ -131,6 +146,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => MaybeTree::Tree(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
+            Element::CommitmentTree(..) => MaybeTree::Tree(TreeType::CommitmentTree),
+            Element::MmrTree(..) => MaybeTree::Tree(TreeType::MmrTree),
+            Element::BulkAppendTree(..) => MaybeTree::Tree(TreeType::BulkAppendTree),
             _ => MaybeTree::NotTree,
         }
     }
@@ -139,6 +157,7 @@ impl ElementTreeTypeExtensions for Element {
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
             TreeType::NormalTree => Ok(BasicMerkNode),
+            TreeType::CommitmentTree => Ok(CountedMerkNode(self.count_value_or_default())),
             TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
             TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
             TreeType::CountTree => Ok(CountedMerkNode(self.count_value_or_default())),
@@ -153,6 +172,8 @@ impl ElementTreeTypeExtensions for Element {
                 let v = self.count_sum_value_or_default();
                 Ok(TreeFeatureType::ProvableCountedSummedMerkNode(v.0, v.1))
             }
+            TreeType::MmrTree => Ok(BasicMerkNode),
+            TreeType::BulkAppendTree => Ok(BasicMerkNode),
         }
     }
 }

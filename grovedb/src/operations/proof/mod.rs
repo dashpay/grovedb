@@ -58,14 +58,28 @@ impl Default for ProveOptions {
 }
 
 #[derive(Encode, Decode)]
-pub struct LayerProof {
+pub struct MerkOnlyLayerProof {
     pub merk_proof: Vec<u8>,
+    pub lower_layers: BTreeMap<Key, MerkOnlyLayerProof>,
+}
+
+#[derive(Encode, Decode)]
+pub enum ProofBytes {
+    Merk(Vec<u8>),
+    MMR(Vec<u8>),
+    BulkAppendTree(Vec<u8>),
+}
+
+#[derive(Encode, Decode)]
+pub struct LayerProof {
+    pub merk_proof: ProofBytes,
     pub lower_layers: BTreeMap<Key, LayerProof>,
 }
 
 #[derive(Encode, Decode)]
 pub enum GroveDBProof {
     V0(GroveDBProofV0),
+    V1(GroveDBProofV1),
 }
 
 impl GroveDBProof {
@@ -184,11 +198,17 @@ impl GroveDBProof {
 
 #[derive(Encode, Decode)]
 pub struct GroveDBProofV0 {
+    pub root_layer: MerkOnlyLayerProof,
+    pub prove_options: ProveOptions,
+}
+
+#[derive(Encode, Decode)]
+pub struct GroveDBProofV1 {
     pub root_layer: LayerProof,
     pub prove_options: ProveOptions,
 }
 
-impl fmt::Display for LayerProof {
+impl fmt::Display for MerkOnlyLayerProof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "LayerProof {{")?;
         writeln!(f, "  merk_proof: {}", decode_merk_proof(&self.merk_proof))?;
@@ -211,6 +231,7 @@ impl fmt::Display for GroveDBProof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GroveDBProof::V0(proof) => write!(f, "{}", proof),
+            GroveDBProof::V1(_) => write!(f, "GroveDBProofV1 {{ .. }}"),
         }
     }
 }

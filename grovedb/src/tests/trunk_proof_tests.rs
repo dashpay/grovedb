@@ -151,7 +151,9 @@ mod tests {
             .expect("should decode proof")
             .0;
 
-        let GroveDBProof::V0(proof_v0) = decoded_proof;
+        let GroveDBProof::V0(proof_v0) = decoded_proof else {
+            panic!("expected V0 proof");
+        };
 
         // Get the lowest layer proof (the count_sum_tree merk proof)
         let lowest_layer = proof_v0

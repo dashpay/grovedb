@@ -7,6 +7,17 @@ use crate::{
 };
 
 impl Element {
+    /// Sinsemilla root of an empty depth-32 Orchard commitment tree.
+    ///
+    /// Equals `MerkleHashOrchard::empty_root(Level::from(32)).to_bytes()`.
+    /// Validated by `test_empty_sinsemilla_root_constant` in
+    /// `grovedb-commitment-tree`.
+    const EMPTY_SINSEMILLA_ROOT: [u8; 32] = [
+        0xae, 0x29, 0x35, 0xf1, 0xdf, 0xd8, 0xa2, 0x4a, 0xed, 0x7c, 0x70, 0xdf, 0x7d, 0xe3, 0xa6,
+        0x68, 0xeb, 0x7a, 0x49, 0xb1, 0x31, 0x98, 0x80, 0xdd, 0xe2, 0xbb, 0xd9, 0x03, 0x1a, 0xe5,
+        0xd8, 0x2f,
+    ];
+
     /// Set element to default empty tree without flags
     pub fn empty_tree() -> Self {
         Element::new_tree(Default::default())
@@ -287,5 +298,76 @@ impl Element {
         flags: Option<ElementFlags>,
     ) -> Self {
         Element::ProvableCountSumTree(maybe_root_key, count_value, sum_value, flags)
+    }
+
+    /// Set element to an empty commitment tree
+    pub fn empty_commitment_tree() -> Self {
+        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, None)
+    }
+
+    /// Set element to an empty commitment tree with flags
+    pub fn empty_commitment_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, flags)
+    }
+
+    /// Set element to a commitment tree with flags
+    pub fn new_commitment_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CommitmentTree(maybe_root_key, Self::EMPTY_SINSEMILLA_ROOT, 0, flags)
+    }
+
+    /// Set element to a commitment tree with all fields
+    pub fn new_commitment_tree_with_all(
+        maybe_root_key: Option<Vec<u8>>,
+        sinsemilla_root: [u8; 32],
+        count: CountValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CommitmentTree(maybe_root_key, sinsemilla_root, count, flags)
+    }
+
+    /// Set element to an empty MMR tree
+    pub fn empty_mmr_tree() -> Self {
+        Element::MmrTree(None, [0u8; 32], 0, None)
+    }
+
+    /// Set element to an empty MMR tree with flags
+    pub fn empty_mmr_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::MmrTree(None, [0u8; 32], 0, flags)
+    }
+
+    /// Set element to an MMR tree with all fields
+    pub fn new_mmr_tree(mmr_root: [u8; 32], mmr_size: u64, flags: Option<ElementFlags>) -> Self {
+        Element::MmrTree(None, mmr_root, mmr_size, flags)
+    }
+
+    /// Set element to an empty bulk append tree without flags
+    pub fn empty_bulk_append_tree(epoch_size: u32) -> Self {
+        assert!(
+            epoch_size.is_power_of_two(),
+            "epoch_size must be a power of 2"
+        );
+        Element::BulkAppendTree(None, [0u8; 32], 0, epoch_size, None)
+    }
+
+    /// Set element to an empty bulk append tree with flags
+    pub fn empty_bulk_append_tree_with_flags(epoch_size: u32, flags: Option<ElementFlags>) -> Self {
+        assert!(
+            epoch_size.is_power_of_two(),
+            "epoch_size must be a power of 2"
+        );
+        Element::BulkAppendTree(None, [0u8; 32], 0, epoch_size, flags)
+    }
+
+    /// Set element to a bulk append tree with all fields
+    pub fn new_bulk_append_tree(
+        state_root: [u8; 32],
+        total_count: u64,
+        epoch_size: u32,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::BulkAppendTree(None, state_root, total_count, epoch_size, flags)
     }
 }

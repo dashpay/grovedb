@@ -108,6 +108,12 @@ pub enum ElementType {
     ItemWithSumItem = 9,
     /// Provable count sum tree - discriminant 10
     ProvableCountSumTree = 10,
+    /// Orchard-style commitment tree - discriminant 11
+    CommitmentTree = 11,
+    /// MMR (Merkle Mountain Range) tree - discriminant 12
+    MmrTree = 12,
+    /// Bulk-append tree - discriminant 13
+    BulkAppendTree = 13,
 }
 
 impl ElementType {
@@ -216,6 +222,9 @@ impl ElementType {
                 | ElementType::CountSumTree
                 | ElementType::ProvableCountTree
                 | ElementType::ProvableCountSumTree
+                | ElementType::CommitmentTree
+                | ElementType::MmrTree
+                | ElementType::BulkAppendTree
         )
     }
 
@@ -249,6 +258,9 @@ impl ElementType {
             ElementType::ProvableCountTree => "provable count tree",
             ElementType::ItemWithSumItem => "item with sum item",
             ElementType::ProvableCountSumTree => "provable count sum tree",
+            ElementType::CommitmentTree => "commitment tree",
+            ElementType::MmrTree => "mmr tree",
+            ElementType::BulkAppendTree => "bulk_append_tree",
         }
     }
 }
@@ -269,6 +281,9 @@ impl TryFrom<u8> for ElementType {
             8 => Ok(ElementType::ProvableCountTree),
             9 => Ok(ElementType::ItemWithSumItem),
             10 => Ok(ElementType::ProvableCountSumTree),
+            11 => Ok(ElementType::CommitmentTree),
+            12 => Ok(ElementType::MmrTree),
+            13 => Ok(ElementType::BulkAppendTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -309,7 +324,16 @@ mod tests {
             ElementType::try_from(10).unwrap(),
             ElementType::ProvableCountSumTree
         );
-        assert!(ElementType::try_from(11).is_err());
+        assert_eq!(
+            ElementType::try_from(11).unwrap(),
+            ElementType::CommitmentTree
+        );
+        assert_eq!(ElementType::try_from(12).unwrap(), ElementType::MmrTree);
+        assert_eq!(
+            ElementType::try_from(13).unwrap(),
+            ElementType::BulkAppendTree
+        );
+        assert!(ElementType::try_from(14).is_err());
     }
 
     #[test]
@@ -463,6 +487,9 @@ mod tests {
         assert!(ElementType::CountSumTree.is_tree());
         assert!(ElementType::ProvableCountTree.is_tree());
         assert!(!ElementType::ItemWithSumItem.is_tree());
+        assert!(ElementType::CommitmentTree.is_tree());
+        assert!(ElementType::MmrTree.is_tree());
+        assert!(ElementType::BulkAppendTree.is_tree());
     }
 
     /// Verifies that serialized Element discriminants match ElementType
@@ -537,13 +564,37 @@ mod tests {
                 ElementType::ItemWithSumItem,
                 "ItemWithSumItem",
             ),
+            // discriminant 10
+            (
+                Element::ProvableCountSumTree(None, 0, 0, None),
+                ElementType::ProvableCountSumTree,
+                "ProvableCountSumTree",
+            ),
+            // discriminant 11
+            (
+                Element::CommitmentTree(None, [0u8; 32], 0, None),
+                ElementType::CommitmentTree,
+                "CommitmentTree",
+            ),
+            // discriminant 12
+            (
+                Element::MmrTree(None, [0u8; 32], 0, None),
+                ElementType::MmrTree,
+                "MmrTree",
+            ),
+            // discriminant 13
+            (
+                Element::BulkAppendTree(None, [0u8; 32], 0, 0, None),
+                ElementType::BulkAppendTree,
+                "BulkAppendTree",
+            ),
         ];
 
-        // Verify we're testing all 10 discriminants
+        // Verify we're testing all 14 discriminants (0-13)
         assert_eq!(
             test_cases.len(),
-            10,
-            "Expected 10 Element variants, got {}",
+            14,
+            "Expected 14 Element variants in test, got {}",
             test_cases.len()
         );
 

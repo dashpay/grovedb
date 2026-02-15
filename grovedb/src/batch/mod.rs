@@ -97,6 +97,14 @@ pub enum GroveOp {
         root_key: Option<Vec<u8>>,
         /// Aggregate data
         aggregate_data: AggregateData,
+        /// Sinsemilla root for CommitmentTree updates (None for other tree
+        /// types)
+        sinsemilla_root: Option<[u8; 32]>,
+        /// MMR size for MmrTree updates (None for other tree types)
+        mmr_size: Option<u64>,
+        /// BulkAppendTree state: (total_count, epoch_size) — None for other
+        /// tree types
+        bulk_state: Option<(u64, u32)>,
     },
     /// Inserts an element that is known to not yet exist
     InsertOnly {
@@ -130,6 +138,11 @@ pub enum GroveOp {
         flags: Option<ElementFlags>,
         /// Aggregate Data such as sum
         aggregate_data: AggregateData,
+        /// Sinsemilla root for CommitmentTree (None for other tree types)
+        sinsemilla_root: Option<[u8; 32]>,
+        /// BulkAppendTree state: (total_count, epoch_size) — None for other
+        /// tree types
+        bulk_state: Option<(u64, u32)>,
     },
     /// Refresh the reference with information provided
     /// Providing this information is necessary to be able to calculate
@@ -147,6 +160,23 @@ pub enum GroveOp {
     Delete,
     /// Delete tree
     DeleteTree(TreeType),
+    /// Insert a note commitment + payload into a CommitmentTree
+    CommitmentTreeInsert {
+        /// 32-byte note commitment (must be a valid Pallas field element)
+        cmx: [u8; 32],
+        /// Payload data (typically encrypted note)
+        payload: Vec<u8>,
+    },
+    /// Append a value to an MmrTree
+    MmrTreeAppend {
+        /// Value to append (will be Blake3-hashed for the leaf)
+        value: Vec<u8>,
+    },
+    /// Append a value to a BulkAppendTree
+    BulkAppend {
+        /// Value to append
+        value: Vec<u8>,
+    },
 }
 
 impl GroveOp {
@@ -162,6 +192,9 @@ impl GroveOp {
             GroveOp::Patch { .. } => 7,
             GroveOp::InsertOrReplace { .. } => 8,
             GroveOp::InsertOnly { .. } => 9,
+            GroveOp::CommitmentTreeInsert { .. } => 10,
+            GroveOp::MmrTreeAppend { .. } => 11,
+            GroveOp::BulkAppend { .. } => 12,
         }
     }
 }
@@ -383,6 +416,9 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::DeleteTree(tree_type) => format!("Delete Tree {}", tree_type),
             GroveOp::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
             GroveOp::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
+            GroveOp::CommitmentTreeInsert { .. } => "Commitment Tree Insert".to_string(),
+            GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
+            GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
@@ -537,6 +573,41 @@ impl QualifiedGroveDbOp {
         }
     }
 
+    /// A commitment tree insert op using a known owned path and known key
+    pub fn commitment_tree_insert_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        cmx: [u8; 32],
+        payload: Vec<u8>,
+    ) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: GroveOp::CommitmentTreeInsert { cmx, payload },
+        }
+    }
+
+    /// An MMR tree append op using a known owned path and known key
+    pub fn mmr_tree_append_op(path: Vec<Vec<u8>>, key: Vec<u8>, value: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: GroveOp::MmrTreeAppend { value },
+        }
+    }
+
+    /// A bulk append op using a known owned path and known key
+    pub fn bulk_append_op(path: Vec<Vec<u8>>, key: Vec<u8>, value: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: GroveOp::BulkAppend { value },
+        }
+    }
+
     /// Verify consistency of operations
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
@@ -561,7 +632,9 @@ impl QualifiedGroveDbOp {
 
         let mut same_path_key_ops = vec![];
 
-        // No double insert or delete of same key in same path
+        // No double insert or delete of same key in same path.
+        // Multiple CommitmentTreeInsert ops on the same path/key are allowed
+        // (appending multiple notes to the same commitment tree in one batch).
         for (i, op) in ops.iter().enumerate() {
             if i == ops_len {
                 continue;
@@ -572,7 +645,19 @@ impl QualifiedGroveDbOp {
                 .iter()
                 .filter_map(|current_op| {
                     if current_op.path == op.path && current_op.key == op.key {
-                        Some(current_op.op.clone())
+                        // Allow multiple CommitmentTreeInsert, MmrTreeAppend, or BulkAppend ops on
+                        // same tree
+                        if (matches!(op.op, GroveOp::CommitmentTreeInsert { .. })
+                            && matches!(current_op.op, GroveOp::CommitmentTreeInsert { .. }))
+                            || (matches!(op.op, GroveOp::MmrTreeAppend { .. })
+                                && matches!(current_op.op, GroveOp::MmrTreeAppend { .. }))
+                            || (matches!(op.op, GroveOp::BulkAppend { .. })
+                                && matches!(current_op.op, GroveOp::BulkAppend { .. }))
+                        {
+                            None
+                        } else {
+                            Some(current_op.op.clone())
+                        }
                     } else {
                         None
                     }
@@ -1025,7 +1110,10 @@ where
             | Element::CountTree(..)
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
-            | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::ProvableCountSumTree(..)
+            | Element::CommitmentTree(..)
+            | Element::MmrTree(..)
+            | Element::BulkAppendTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1071,9 +1159,13 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
-                GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => Err(
-                    Error::InvalidBatchOperation("references can not point to trees being updated"),
-                )
+                GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::CommitmentTreeInsert { .. }
+                | GroveOp::MmrTreeAppend { .. }
+                | GroveOp::BulkAppend { .. } => Err(Error::InvalidBatchOperation(
+                    "references can not point to trees being updated",
+                ))
                 .wrap_with_cost(cost),
                 GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
@@ -1149,7 +1241,10 @@ where
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
                         | Element::ProvableCountTree(..)
-                        | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
+                        | Element::ProvableCountSumTree(..)
+                        | Element::CommitmentTree(..)
+                        | Element::MmrTree(..)
+                        | Element::BulkAppendTree(..) => Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
                         .wrap_with_cost(cost),
@@ -1184,7 +1279,10 @@ where
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
-                    | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
+                    | Element::ProvableCountSumTree(..)
+                    | Element::CommitmentTree(..)
+                    | Element::MmrTree(..)
+                    | Element::BulkAppendTree(..) => Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
                     .wrap_with_cost(cost),
@@ -1362,7 +1460,10 @@ where
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
-                    | Element::ProvableCountSumTree(..) => {
+                    | Element::ProvableCountSumTree(..)
+                    | Element::CommitmentTree(..)
+                    | Element::MmrTree(..)
+                    | Element::BulkAppendTree(..) => {
                         let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
@@ -1534,6 +1635,9 @@ where
                     hash,
                     root_key,
                     aggregate_data,
+                    sinsemilla_root,
+                    mmr_size,
+                    ..
                 } => {
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     cost_return_on_error!(
@@ -1544,6 +1648,8 @@ where
                             root_key,
                             hash,
                             aggregate_data,
+                            sinsemilla_root,
+                            mmr_size,
                             &mut batch_operations,
                             grove_version
                         )
@@ -1554,8 +1660,29 @@ where
                     root_key,
                     flags,
                     aggregate_data,
+                    sinsemilla_root,
+                    ..
                 } => {
-                    let element = match aggregate_data {
+                    let element = if let Some(sr) = sinsemilla_root {
+                        match aggregate_data {
+                            AggregateData::NoAggregateData => {
+                                // MmrTree: reconstruct with mmr_root from
+                                // sinsemilla_root field; mmr_size is not carried
+                                // through aggregate_data so defaults to 0.
+                                Element::MmrTree(root_key, sr, 0, flags)
+                            }
+                            _ => {
+                                // CommitmentTree: reconstruct with sinsemilla_root
+                                Element::new_commitment_tree_with_all(
+                                    root_key,
+                                    sr,
+                                    aggregate_data.as_count_u64(),
+                                    flags,
+                                )
+                            }
+                        }
+                    } else {
+                        match aggregate_data {
                         AggregateData::NoAggregateData => {
                             Element::new_tree_with_flags(root_key, flags)
                         }
@@ -1599,6 +1726,7 @@ where
                                 flags,
                             )
                         }
+                    }
                     };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
@@ -1616,6 +1744,24 @@ where
                             grove_version
                         )
                     );
+                }
+                GroveOp::CommitmentTreeInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "CommitmentTreeInsert should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::MmrTreeAppend { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "MmrTreeAppend should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::BulkAppend { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "BulkAppend should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
                 }
             }
         }
@@ -1692,7 +1838,10 @@ where
                                     | Element::CountTree(..)
                                     | Element::CountSumTree(..)
                                     | Element::ProvableCountTree(..)
-                                    | Element::ProvableCountSumTree(..) => {
+                                    | Element::ProvableCountSumTree(..)
+                                    | Element::CommitmentTree(..)
+                                    | Element::MmrTree(..)
+                                    | Element::BulkAppendTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
                                         let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
@@ -1862,15 +2011,20 @@ impl GroveDb {
                                                 hash: root_hash,
                                                 root_key: calculated_root_key,
                                                 aggregate_data,
+                                                sinsemilla_root: None,
+                                                mmr_size: None,
+                                                bulk_state: None,
                                             });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
                                             match mutable_occupied_entry {
+                                                // `..` preserves sinsemilla_root
                                                 GroveOp::ReplaceTreeRootKey {
                                                     hash,
                                                     root_key,
                                                     aggregate_data: aggregate_data_entry,
+                                                    ..
                                                 } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
@@ -1894,6 +2048,8 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data:
                                                                     AggregateData::NoAggregateData,
+                                                                sinsemilla_root: None,
+                                                                bulk_state: None,
                                                             }
                                                     } else if let Element::SumTree(.., flags) =
                                                         element
@@ -1904,6 +2060,8 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
+                                                                bulk_state: None,
                                                             }
                                                     } else if let Element::BigSumTree(.., flags) =
                                                         element
@@ -1914,6 +2072,8 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
+                                                                bulk_state: None,
                                                             }
                                                     } else if let Element::CountTree(.., flags) =
                                                         element
@@ -1924,6 +2084,8 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
+                                                                bulk_state: None,
                                                             }
                                                     } else if let Element::CountSumTree(.., flags) =
                                                         element
@@ -1934,6 +2096,8 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
+                                                                bulk_state: None,
                                                             }
                                                     } else if let Element::ProvableCountTree(
                                                         ..,
@@ -1946,6 +2110,8 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
+                                                                bulk_state: None,
                                                             }
                                                     } else if let Element::ProvableCountSumTree(
                                                         ..,
@@ -1958,6 +2124,60 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
+                                                                sinsemilla_root: None,
+                                                                bulk_state: None,
+                                                            }
+                                                    } else if let Element::CommitmentTree(
+                                                        _,
+                                                        sr,
+                                                        _,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                sinsemilla_root: Some(*sr),
+                                                                bulk_state: None,
+                                                            }
+                                                    } else if let Element::MmrTree(
+                                                        _,
+                                                        mmr_root,
+                                                        _mmr_size,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                sinsemilla_root: Some(*mmr_root),
+                                                                bulk_state: None,
+                                                            }
+                                                    } else if let Element::BulkAppendTree(
+                                                        _,
+                                                        state_root,
+                                                        total_count,
+                                                        epoch_size,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                sinsemilla_root: Some(*state_root),
+                                                                bulk_state: Some((
+                                                                    *total_count,
+                                                                    *epoch_size,
+                                                                )),
                                                             }
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
@@ -1982,6 +2202,26 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
+                                                GroveOp::CommitmentTreeInsert { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "CommitmentTree ops should have been \
+                                                         preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
+                                                GroveOp::MmrTreeAppend { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "MmrTree ops should have been preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
+                                                GroveOp::BulkAppend { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "BulkAppend ops should have been \
+                                                         preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
                                             }
                                         }
                                     }
@@ -1994,6 +2234,9 @@ impl GroveDb {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
                                             aggregate_data,
+                                            sinsemilla_root: None,
+                                            mmr_size: None,
+                                            bulk_state: None,
                                         },
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
@@ -2006,6 +2249,9 @@ impl GroveDb {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
                                         aggregate_data,
+                                        sinsemilla_root: None,
+                                        mmr_size: None,
+                                        bulk_state: None,
                                     },
                                 );
                                 let mut ops_on_level: BTreeMap<
@@ -2166,6 +2412,21 @@ impl GroveDb {
                             options.clone().map(|o| o.as_delete_options()),
                             transaction,
                             grove_version
+                        )
+                    );
+                }
+                GroveOp::CommitmentTreeInsert { cmx, payload } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.commitment_tree_insert(
+                            path_slices.as_slice(),
+                            op.key.as_slice(),
+                            cmx,
+                            payload.clone(),
+                            transaction,
+                            grove_version,
                         )
                     );
                 }
@@ -2364,9 +2625,9 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        // Determines whether to check batch operation consistency
-        // return false if the disable option is set to true, returns true for any other
-        // case
+        // Check batch operation consistency BEFORE preprocessing so that
+        // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
+        // path/key) are caught before any work is done.
         let check_batch_operation_consistency = batch_apply_options
             .as_ref()
             .map(|batch_options| !batch_options.disable_operation_consistency_check)
@@ -2382,9 +2643,30 @@ impl GroveDb {
             }
         }
 
-        // `StorageBatch` allows us to collect operations on different subtrees before
-        // execution
+        // `StorageBatch` collects all operations (preprocessing + apply_body)
+        // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
+
+        // Preprocess CommitmentTreeInsert ops: execute Sinsemilla operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess MmrTreeAppend ops: execute MMR operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess BulkAppend ops: execute bulk append operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -2484,17 +2766,13 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        let mut batch_apply_options = batch_apply_options.unwrap_or_default();
-        if batch_apply_options.batch_pause_height.is_none() {
-            // we default to pausing at the root tree, which is the most common case
-            batch_apply_options.batch_pause_height = Some(1);
-        }
-
-        // Determines whether to check batch operation consistency
-        // return false if the disable option is set to true, returns true for any other
-        // case
-        let check_batch_operation_consistency =
-            !batch_apply_options.disable_operation_consistency_check;
+        // Check batch operation consistency BEFORE preprocessing so that
+        // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
+        // path/key) are caught before any work is done.
+        let check_batch_operation_consistency = batch_apply_options
+            .as_ref()
+            .map(|batch_options| !batch_options.disable_operation_consistency_check)
+            .unwrap_or(true);
 
         if check_batch_operation_consistency {
             let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
@@ -2506,9 +2784,33 @@ impl GroveDb {
             }
         }
 
-        // `StorageBatch` allows us to collect operations on different subtrees before
-        // execution
+        // `StorageBatch` collects all operations (preprocessing + apply_body)
+        // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
+
+        // Preprocess CommitmentTreeInsert ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess MmrTreeAppend ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess BulkAppend ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        let mut batch_apply_options = batch_apply_options.unwrap_or_default();
+        if batch_apply_options.batch_pause_height.is_none() {
+            // we default to pausing at the root tree, which is the most common case
+            batch_apply_options.batch_pause_height = Some(1);
+        }
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
