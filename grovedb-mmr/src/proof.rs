@@ -151,10 +151,13 @@ impl MmrTreeProof {
     }
 
     /// Deserialize a proof from bytes.
+    ///
+    /// The bincode size limit is set to the slice length to prevent
+    /// crafted length headers from causing huge allocations.
     pub fn decode_from_slice(bytes: &[u8]) -> Result<Self, MmrError> {
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 100 * 1024 * 1024 }>();
         let (proof, _) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| MmrError::InvalidData(format!("failed to decode MmrTreeProof: {}", e)))?;
         Ok(proof)

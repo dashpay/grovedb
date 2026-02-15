@@ -217,6 +217,47 @@ impl BulkAppendTreeProof {
         &self,
         expected_state_root: &[u8; 32],
     ) -> Result<BulkAppendTreeProofResult, BulkAppendError> {
+        // 0. Cross-validate metadata consistency
+        if self.epoch_size == 0 || !self.epoch_size.is_power_of_two() {
+            return Err(BulkAppendError::InvalidProof(format!(
+                "invalid epoch_size: {} (must be non-zero power of 2)",
+                self.epoch_size
+            )));
+        }
+
+        let epoch_size_u64 = self.epoch_size as u64;
+        let completed_epochs = self.total_count / epoch_size_u64;
+        let buffer_count = (self.total_count % epoch_size_u64) as usize;
+
+        // Verify buffer entry count matches metadata
+        if self.buffer_entries.len() != buffer_count {
+            return Err(BulkAppendError::InvalidProof(format!(
+                "buffer entry count mismatch: proof has {}, expected {} (total_count={}, \
+                 epoch_size={})",
+                self.buffer_entries.len(),
+                buffer_count,
+                self.total_count,
+                self.epoch_size
+            )));
+        }
+
+        // Verify epoch_mmr_size is consistent with completed_epochs
+        if completed_epochs > 0 {
+            let expected_leaf_count = grovedb_mmr::mmr_size_to_leaf_count(self.epoch_mmr_size);
+            if expected_leaf_count != completed_epochs {
+                return Err(BulkAppendError::InvalidProof(format!(
+                    "epoch MMR leaf count mismatch: MMR has {} leaves, expected {} completed \
+                     epochs",
+                    expected_leaf_count, completed_epochs
+                )));
+            }
+        } else if self.epoch_mmr_size != 0 {
+            return Err(BulkAppendError::InvalidProof(format!(
+                "epoch_mmr_size should be 0 with no completed epochs, got {}",
+                self.epoch_mmr_size
+            )));
+        }
+
         // 1. Verify epoch blobs: compute dense Merkle root for each and check it
         //    matches the epoch_mmr_leaves
         for (epoch_idx, blob) in &self.epoch_blobs {
@@ -305,8 +346,14 @@ impl BulkAppendTreeProof {
             )));
         }
 
-        // 4. Verify state_root = blake3("bulk_state" || mmr_root || buffer_hash)
-        let computed_state_root = compute_state_root(&self.epoch_mmr_root, &self.buffer_hash);
+        // 4. Verify state_root = blake3("bulk_state" || mmr_root || buffer_hash ||
+        //    total_count || epoch_size)
+        let computed_state_root = compute_state_root(
+            &self.epoch_mmr_root,
+            &self.buffer_hash,
+            self.total_count,
+            self.epoch_size,
+        );
 
         if &computed_state_root != expected_state_root {
             return Err(BulkAppendError::InvalidProof(format!(
@@ -335,10 +382,13 @@ impl BulkAppendTreeProof {
     }
 
     /// Deserialize a proof from bytes.
+    ///
+    /// The bincode size limit is capped at 100 MB to prevent crafted length
+    /// headers from causing huge allocations.
     pub fn decode_from_slice(bytes: &[u8]) -> Result<Self, BulkAppendError> {
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 100 * 1024 * 1024 }>();
         let (proof, _) = bincode::decode_from_slice(bytes, config).map_err(|e| {
             BulkAppendError::CorruptedData(format!("failed to decode BulkAppendTreeProof: {}", e))
         })?;
@@ -444,29 +494,27 @@ mod tests {
             tree.append(&store, value).expect("append value");
         }
 
-        let state_root = compute_state_root(
-            &{
-                if tree.mmr_size() > 0 {
-                    // Compute MMR root from stored nodes
-                    let mut mmr_nodes = BTreeMap::new();
-                    for (k, v) in store.0.borrow().iter() {
-                        if k.starts_with(b"m") {
-                            let pos = u64::from_be_bytes(k[1..9].try_into().expect("pos bytes"));
-                            let node = MmrNode::deserialize(v).expect("deserialize node");
-                            mmr_nodes.insert(pos, node);
-                        }
-                    }
-                    let mmr_store = BTreeMapStore(mmr_nodes);
-                    let mmr = grovedb_mmr::MMR::<MmrNode, MergeBlake3, _>::new(
-                        tree.mmr_size(),
-                        &mmr_store,
-                    );
-                    mmr.get_root().expect("get root").hash
-                } else {
-                    [0u8; 32]
+        let mmr_root = if tree.mmr_size() > 0 {
+            // Compute MMR root from stored nodes
+            let mut mmr_nodes = BTreeMap::new();
+            for (k, v) in store.0.borrow().iter() {
+                if k.starts_with(b"m") {
+                    let pos = u64::from_be_bytes(k[1..9].try_into().expect("pos bytes"));
+                    let node = MmrNode::deserialize(v).expect("deserialize node");
+                    mmr_nodes.insert(pos, node);
                 }
-            },
+            }
+            let mmr_store = BTreeMapStore(mmr_nodes);
+            let mmr = grovedb_mmr::MMR::<MmrNode, MergeBlake3, _>::new(tree.mmr_size(), &mmr_store);
+            mmr.get_root().expect("get root").hash
+        } else {
+            [0u8; 32]
+        };
+        let state_root = compute_state_root(
+            &mmr_root,
             &tree.buffer_hash(),
+            tree.total_count(),
+            tree.epoch_size(),
         );
 
         let aux: std::collections::HashMap<Vec<u8>, Vec<u8>> = store

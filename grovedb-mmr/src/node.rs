@@ -5,11 +5,24 @@ use ckb_merkle_mountain_range::{Merge, Result as MmrResult};
 use crate::MmrError;
 
 /// An MMR node: leaf nodes carry full values, internal nodes carry only hashes.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// `PartialEq` and `Eq` compare only the `hash` field, because the ckb MMR
+/// library's proof verifier compares nodes by equality and a leaf node
+/// (value = Some) must equal an internal reconstruction (value = None) when
+/// their hashes match.
+#[derive(Clone, Debug)]
 pub struct MmrNode {
     pub hash: [u8; 32],
     pub value: Option<Vec<u8>>,
 }
+
+impl PartialEq for MmrNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash
+    }
+}
+
+impl Eq for MmrNode {}
 
 impl MmrNode {
     /// Create a leaf node by hashing the value.

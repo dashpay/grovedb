@@ -616,9 +616,9 @@ impl GroveDb {
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
-        // Extract the MMR root from the element
-        let mmr_root = match element {
-            Element::MmrTree(_, mmr_root, ..) => *mmr_root,
+        // Extract the MMR root and size from the element
+        let (mmr_root, element_mmr_size) = match element {
+            Element::MmrTree(_, mmr_root, mmr_size, ..) => (*mmr_root, *mmr_size),
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
@@ -629,6 +629,18 @@ impl GroveDb {
 
         let mmr_proof = grovedb_mmr::MmrTreeProof::decode_from_slice(mmr_bytes)
             .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        // Cross-validate: proof's mmr_size must match the element's mmr_size
+        if mmr_proof.mmr_size != element_mmr_size {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "MMR proof mmr_size {} does not match element mmr_size {}",
+                    mmr_proof.mmr_size, element_mmr_size
+                ),
+            ));
+        }
+
         let verified_leaves = mmr_proof
             .verify(&mmr_root)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
@@ -649,7 +661,9 @@ impl GroveDb {
             };
             result.push(path_key_optional_value.try_into_versioned(grove_version)?);
 
-            limit_left.iter_mut().for_each(|limit| *limit -= 1);
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
             if limit_left == &Some(0) {
                 break;
             }
@@ -701,8 +715,9 @@ impl GroveDb {
                     "BulkAppendTree path not found in query".to_string(),
                 ))?;
 
-        // Determine the range from query items
+        // Determine the range from query items, clamped to total_count
         let (start, end) = Self::extract_range_from_query_items(&sub_query.items)?;
+        let end = end.min(proof_result.total_count);
 
         let values = proof_result
             .values_in_range(start, end)
@@ -726,7 +741,9 @@ impl GroveDb {
             };
             result.push(path_key_optional_value.try_into_versioned(grove_version)?);
 
-            limit_left.iter_mut().for_each(|limit| *limit -= 1);
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
             if limit_left == &Some(0) {
                 break;
             }
@@ -963,9 +980,7 @@ impl GroveDb {
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
-                            | Element::CommitmentTree(Some(_), ..)
-                            | Element::MmrTree(Some(_), ..)
-                            | Element::BulkAppendTree(Some(_), ..) => {
+                            | Element::CommitmentTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -1085,8 +1100,8 @@ impl GroveDb {
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::CommitmentTree(None, ..)
-                            | Element::MmrTree(None, ..)
-                            | Element::BulkAppendTree(None, ..)
+                            | Element::MmrTree(..)
+                            | Element::BulkAppendTree(..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)

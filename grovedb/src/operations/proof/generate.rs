@@ -378,8 +378,6 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
                             | Ok(Element::CommitmentTree(Some(_), ..))
-                            | Ok(Element::MmrTree(Some(_), ..))
-                            | Ok(Element::BulkAppendTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -415,6 +413,22 @@ impl GroveDb {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
+                            }
+
+                            // MmrTree and BulkAppendTree don't have Merk
+                            // subtrees, so V0 proofs cannot descend into
+                            // them. Return an error directing the caller to
+                            // use prove_query_v1 instead.
+                            Ok(Element::MmrTree(..)) | Ok(Element::BulkAppendTree(..))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                return Err(Error::NotSupported(
+                                    "V0 proofs do not support subqueries into MmrTree or \
+                                     BulkAppendTree elements; use prove_query_v1 instead"
+                                        .to_string(),
+                                ))
+                                .wrap_with_cost(cost);
                             }
 
                             Ok(Element::Tree(..))
@@ -1204,20 +1218,33 @@ impl GroveDb {
             .map_err(|e| Error::CorruptedData(format!("{}", e)))
         );
 
-        // Update limit based on number of results
+        // Update limit: count individual values, not whole epochs
         if let Some(limit) = overall_limit.as_mut() {
-            let completed_epochs = total_count / epoch_size as u64;
-            let epoch_count = bulk_proof.epoch_blobs.len() as u16;
+            let epoch_size_u64 = epoch_size as u64;
+            let completed_epochs = total_count / epoch_size_u64;
+
+            // Count individual values from epoch blobs within [start, end)
+            let mut epoch_values_in_range: u16 = 0;
+            for (epoch_idx, _) in &bulk_proof.epoch_blobs {
+                let epoch_start = epoch_idx * epoch_size_u64;
+                let epoch_end = epoch_start + epoch_size_u64;
+                let overlap_start = start.max(epoch_start);
+                let overlap_end = end.min(epoch_end);
+                if overlap_start < overlap_end {
+                    epoch_values_in_range += (overlap_end - overlap_start) as u16;
+                }
+            }
+
             let buffer_in_range = bulk_proof
                 .buffer_entries
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| {
-                    let global_pos = completed_epochs * epoch_size as u64 + *i as u64;
+                    let global_pos = completed_epochs * epoch_size_u64 + *i as u64;
                     global_pos >= start && global_pos < end
                 })
                 .count() as u16;
-            *limit = limit.saturating_sub(epoch_count + buffer_in_range);
+            *limit = limit.saturating_sub(epoch_values_in_range + buffer_in_range);
         }
 
         let proof_bytes = cost_return_on_error_no_add!(
@@ -1239,6 +1266,17 @@ impl GroveDb {
     /// Query keys are interpreted as BE u64 bytes representing leaf indices.
     fn query_items_to_leaf_indices(items: &[QueryItem], mmr_size: u64) -> Result<Vec<u64>, Error> {
         let leaf_count = grovedb_mmr::mmr_size_to_leaf_count(mmr_size);
+
+        // Nothing to prove when MMR is empty
+        if leaf_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Cap total expansion to avoid allocating billions of indices
+        // for unbounded ranges. 10 million is generous for any real query.
+        const MAX_INDICES: usize = 10_000_000;
+
+        let max_idx = leaf_count - 1; // safe: leaf_count > 0
         let mut indices = Vec::new();
 
         for item in items {
@@ -1252,8 +1290,11 @@ impl GroveDb {
                 QueryItem::RangeInclusive(range) => {
                     let start = Self::decode_be_u64(range.start())?;
                     let end = Self::decode_be_u64(range.end())?;
-                    for idx in start..=end.min(leaf_count - 1) {
+                    for idx in start..=end.min(max_idx) {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::Range(range) => {
@@ -1261,35 +1302,53 @@ impl GroveDb {
                     let end = Self::decode_be_u64(&range.end)?;
                     for idx in start..end.min(leaf_count) {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::RangeFrom(range) => {
                     let start = Self::decode_be_u64(&range.start)?;
                     for idx in start..leaf_count {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::RangeTo(range) => {
                     let end = Self::decode_be_u64(&range.end)?;
                     for idx in 0..end.min(leaf_count) {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::RangeToInclusive(range) => {
                     let end = Self::decode_be_u64(&range.end)?;
-                    for idx in 0..=end.min(leaf_count - 1) {
+                    for idx in 0..=end.min(max_idx) {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::RangeFull(..) => {
                     for idx in 0..leaf_count {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::RangeAfter(range) => {
                     let start = Self::decode_be_u64(&range.start)?;
                     for idx in (start + 1)..leaf_count {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::RangeAfterTo(range) => {
@@ -1297,13 +1356,19 @@ impl GroveDb {
                     let end = Self::decode_be_u64(&range.end)?;
                     for idx in (start + 1)..end.min(leaf_count) {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
                 QueryItem::RangeAfterToInclusive(range) => {
                     let start = Self::decode_be_u64(range.start())?;
                     let end = Self::decode_be_u64(range.end())?;
-                    for idx in (start + 1)..=end.min(leaf_count - 1) {
+                    for idx in (start + 1)..=end.min(max_idx) {
                         indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput("query range too large for MMR proof"));
+                        }
                     }
                 }
             }

@@ -101,7 +101,12 @@ impl BulkAppendTree {
 
         // 4. Compute state root (+1 hash)
         let mmr_root = self.get_mmr_root(store)?;
-        let state_root = compute_state_root(&mmr_root, &self.buffer_hash);
+        let state_root = compute_state_root(
+            &mmr_root,
+            &self.buffer_hash,
+            self.total_count,
+            self.epoch_size,
+        );
         hash_count += 1;
 
         Ok(AppendResult {
@@ -212,7 +217,12 @@ impl BulkAppendTree {
         store: &S,
     ) -> Result<[u8; 32], BulkAppendError> {
         let mmr_root = self.get_mmr_root(store)?;
-        Ok(compute_state_root(&mmr_root, &self.buffer_hash))
+        Ok(compute_state_root(
+            &mmr_root,
+            &self.buffer_hash,
+            self.total_count,
+            self.epoch_size,
+        ))
     }
 
     /// Get the MMR root hash, or `[0; 32]` if no epochs exist.
