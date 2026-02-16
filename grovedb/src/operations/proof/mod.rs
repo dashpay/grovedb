@@ -68,6 +68,7 @@ pub enum ProofBytes {
     Merk(Vec<u8>),
     MMR(Vec<u8>),
     BulkAppendTree(Vec<u8>),
+    DenseTree(Vec<u8>),
 }
 
 #[derive(Encode, Decode)]

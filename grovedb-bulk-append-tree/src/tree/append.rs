@@ -1,9 +1,7 @@
 //! Append and compaction logic for BulkAppendTree.
 
-use grovedb_mmr::{
-    compute_dense_merkle_root_from_values, hash_count_for_push, mmr_size_to_leaf_count,
-    MergeBlake3, MmrNode, MMR,
-};
+use grovedb_dense_fixed_sized_merkle_tree::compute_dense_merkle_root_from_values;
+use grovedb_mmr::{hash_count_for_push, mmr_size_to_leaf_count, MergeBlake3, MmrNode, MMR};
 
 use super::{
     hash::{chain_buffer_hash, compute_state_root},

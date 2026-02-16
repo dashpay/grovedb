@@ -90,6 +90,11 @@ pub enum Element {
     /// authenticated root, total_count (u64) is the number of appended items,
     /// and epoch_size (u32) controls the epoch granularity.
     BulkAppendTree(Option<Vec<u8>>, [u8; 32], u64, u32, Option<ElementFlags>),
+    /// Dense fixed-sized Merkle tree: a complete binary tree of height h with
+    /// 2^h - 1 positions. All nodes (internal + leaf) store data values,
+    /// filled sequentially in level-order (BFS). Root hash is computed
+    /// on-the-fly. Fields: root_key, root_hash, count, height, flags.
+    DenseAppendOnlyFixedSizeTree(Option<Vec<u8>>, [u8; 32], u64, u8, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -269,6 +274,19 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::DenseAppendOnlyFixedSizeTree(root_key, root_hash, count, height, flags) => {
+                write!(
+                    f,
+                    "DenseAppendOnlyFixedSizeTree({}, root_hash: {}, count: {}, height: {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    hex::encode(root_hash),
+                    count,
+                    height,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -291,6 +309,7 @@ impl Element {
             Element::CommitmentTree(..) => ElementType::CommitmentTree,
             Element::MmrTree(..) => ElementType::MmrTree,
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
+            Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
         }
     }
 

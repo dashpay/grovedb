@@ -212,6 +212,32 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
+            GroveOp::DenseTreeInsert { value: _value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    TreeType::DenseAppendOnlyFixedSizeTree,
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                );
+                // Worst-case: 1 value write + full tree hash recomputation (height 63)
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                const MAX_VALUE_SIZE: u32 = 256;
+                const MAX_HASH_CALLS: u32 = 63; // max height
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1,
+                    storage_cost: StorageCost {
+                        added_bytes: MAX_VALUE_SIZE,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (MAX_VALUE_SIZE * MAX_HASH_CALLS) as u64,
+                    hash_node_calls: MAX_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
         }
     }
 }

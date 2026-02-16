@@ -179,6 +179,23 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::DenseAppendOnlyFixedSizeTree(root_key, root_hash, count, height, flags) => {
+                drawer.write(b"dense_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(
+                    format!(
+                        " root_hash: {} count: {count} height: {height}",
+                        hex::encode(root_hash)
+                    )
+                    .as_bytes(),
+                )?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

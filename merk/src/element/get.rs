@@ -448,7 +448,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::ProvableCountSumTree(.., flags))
             | Some(Element::CommitmentTree(_, _, _, flags))
             | Some(Element::MmrTree(_, _, _, flags))
-            | Some(Element::BulkAppendTree(.., flags)) => {
+            | Some(Element::BulkAppendTree(.., flags))
+            | Some(Element::DenseAppendOnlyFixedSizeTree(.., flags)) => {
                 let tree_cost_size = element.as_ref().unwrap().tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -547,7 +548,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::ProvableCountSumTree(.., flags)
             | Element::CommitmentTree(_, _, _, flags)
             | Element::MmrTree(_, _, _, flags)
-            | Element::BulkAppendTree(.., flags) => {
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => {
                 let tree_cost_size = element.tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;

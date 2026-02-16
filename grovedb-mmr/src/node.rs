@@ -1,8 +1,21 @@
 //! MMR node types and Blake3 merge implementation.
+//!
+//! Hash domain separation:
+//! - Leaf nodes:     `blake3(0x00 || value)`
+//! - Internal nodes: `blake3(0x01 || left_hash || right_hash)`
+//!
+//! The 0x00/0x01 domain tags prevent second-preimage attacks where a crafted
+//! value could produce the same hash as an internal merge.
 
 use ckb_merkle_mountain_range::{Merge, Result as MmrResult};
 
 use crate::MmrError;
+
+/// Domain tag prepended to leaf hash inputs: `blake3(LEAF_TAG || value)`.
+const LEAF_TAG: u8 = 0x00;
+/// Domain tag prepended to internal merge inputs: `blake3(INTERNAL_TAG || left
+/// || right)`.
+const INTERNAL_TAG: u8 = 0x01;
 
 /// An MMR node: leaf nodes carry full values, internal nodes carry only hashes.
 ///
@@ -25,11 +38,11 @@ impl PartialEq for MmrNode {
 impl Eq for MmrNode {}
 
 impl MmrNode {
-    /// Create a leaf node by hashing the value.
+    /// Create a leaf node: `hash = blake3(0x00 || value)`.
     pub fn leaf(value: Vec<u8>) -> Self {
-        let hash = blake3::hash(&value);
+        let hash = leaf_hash(&value);
         MmrNode {
-            hash: *hash.as_bytes(),
+            hash,
             value: Some(value),
         }
     }
@@ -44,21 +57,27 @@ impl MmrNode {
     /// Format: `flag(1) + hash(32) [+ value_len(4 BE) + value_bytes]`
     /// - flag 0x00 = internal node (no value)
     /// - flag 0x01 = leaf node (has value)
-    pub fn serialize(&self) -> Vec<u8> {
+    pub fn serialize(&self) -> Result<Vec<u8>, MmrError> {
         match &self.value {
             None => {
                 let mut buf = Vec::with_capacity(33);
                 buf.push(0x00);
                 buf.extend_from_slice(&self.hash);
-                buf
+                Ok(buf)
             }
             Some(val) => {
+                if val.len() > u32::MAX as usize {
+                    return Err(MmrError::InvalidData(format!(
+                        "MmrNode value length {} exceeds u32::MAX",
+                        val.len()
+                    )));
+                }
                 let mut buf = Vec::with_capacity(37 + val.len());
                 buf.push(0x01);
                 buf.extend_from_slice(&self.hash);
                 buf.extend_from_slice(&(val.len() as u32).to_be_bytes());
                 buf.extend_from_slice(val);
-                buf
+                Ok(buf)
             }
         }
     }
@@ -98,9 +117,18 @@ impl MmrNode {
                         data.len()
                     )));
                 }
+                let value = data[37..37 + val_len].to_vec();
+                // Verify hash-value binding: stored hash must equal
+                // blake3(LEAF_TAG || value)
+                let expected_hash = leaf_hash(&value);
+                if hash != expected_hash {
+                    return Err(MmrError::InvalidData(
+                        "leaf hash does not match blake3(0x00 || value)".into(),
+                    ));
+                }
                 Ok(MmrNode {
                     hash,
-                    value: Some(data[37..37 + val_len].to_vec()),
+                    value: Some(value),
                 })
             }
             _ => Err(MmrError::InvalidData(format!(
@@ -120,11 +148,20 @@ impl Default for MmrNode {
     }
 }
 
-/// Blake3 hash of two 32-byte inputs concatenated: `blake3(left || right)`.
+/// Compute the domain-separated leaf hash: `blake3(0x00 || value)`.
+pub fn leaf_hash(value: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&[LEAF_TAG]);
+    hasher.update(value);
+    *hasher.finalize().as_bytes()
+}
+
+/// Blake3 merge with domain separation: `blake3(0x01 || left || right)`.
 pub fn blake3_merge(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut input = [0u8; 64];
-    input[..32].copy_from_slice(left);
-    input[32..].copy_from_slice(right);
+    let mut input = [0u8; 65];
+    input[0] = INTERNAL_TAG;
+    input[1..33].copy_from_slice(left);
+    input[33..65].copy_from_slice(right);
     *blake3::hash(&input).as_bytes()
 }
 
@@ -149,7 +186,7 @@ mod tests {
     #[test]
     fn test_node_serialize_roundtrip_internal() {
         let node = MmrNode::internal([42u8; 32]);
-        let bytes = node.serialize();
+        let bytes = node.serialize().expect("serialize internal node");
         let decoded = MmrNode::deserialize(&bytes).expect("deserialize internal node");
         assert_eq!(node, decoded);
         assert!(decoded.value.is_none());
@@ -158,7 +195,7 @@ mod tests {
     #[test]
     fn test_node_serialize_roundtrip_leaf() {
         let node = MmrNode::leaf(b"test data".to_vec());
-        let bytes = node.serialize();
+        let bytes = node.serialize().expect("serialize leaf node");
         let decoded = MmrNode::deserialize(&bytes).expect("deserialize leaf node");
         assert_eq!(node, decoded);
         assert_eq!(decoded.value.expect("leaf should have value"), b"test data");
@@ -193,7 +230,7 @@ mod tests {
     #[test]
     fn test_deserialize_internal_trailing_bytes() {
         let node = MmrNode::internal([1u8; 32]);
-        let mut bytes = node.serialize();
+        let mut bytes = node.serialize().expect("serialize internal node");
         bytes.push(0x00); // trailing byte
         assert!(MmrNode::deserialize(&bytes).is_err());
     }
@@ -201,7 +238,7 @@ mod tests {
     #[test]
     fn test_deserialize_leaf_trailing_bytes() {
         let node = MmrNode::leaf(b"data".to_vec());
-        let mut bytes = node.serialize();
+        let mut bytes = node.serialize().expect("serialize leaf node");
         bytes.push(0x00); // trailing byte
         assert!(MmrNode::deserialize(&bytes).is_err());
     }
@@ -209,7 +246,7 @@ mod tests {
     #[test]
     fn test_deserialize_leaf_truncated_value() {
         let node = MmrNode::leaf(b"data".to_vec());
-        let bytes = node.serialize();
+        let bytes = node.serialize().expect("serialize leaf node");
         // Truncate the value portion
         assert!(MmrNode::deserialize(&bytes[..bytes.len() - 2]).is_err());
     }
@@ -220,5 +257,84 @@ mod tests {
         let mut data = vec![0x01];
         data.extend_from_slice(&[0u8; 32]);
         assert!(MmrNode::deserialize(&data).is_err());
+    }
+
+    #[test]
+    fn test_leaf_hash_uses_domain_tag() {
+        // Verify leaf hash is blake3(0x00 || value), not plain blake3(value)
+        let value = b"test value";
+        let node = MmrNode::leaf(value.to_vec());
+
+        // Manual domain-tagged hash
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&[0x00]);
+        hasher.update(value);
+        let expected = *hasher.finalize().as_bytes();
+
+        assert_eq!(node.hash, expected, "leaf hash should use 0x00 domain tag");
+
+        // Must NOT equal plain blake3(value)
+        let plain = *blake3::hash(value).as_bytes();
+        assert_ne!(
+            node.hash, plain,
+            "leaf hash must differ from plain blake3(value)"
+        );
+    }
+
+    #[test]
+    fn test_merge_uses_domain_tag() {
+        // Verify merge is blake3(0x01 || left || right), not blake3(left || right)
+        let left = [0xAAu8; 32];
+        let right = [0xBBu8; 32];
+        let merged = blake3_merge(&left, &right);
+
+        // Manual domain-tagged hash
+        let mut input = [0u8; 65];
+        input[0] = 0x01;
+        input[1..33].copy_from_slice(&left);
+        input[33..65].copy_from_slice(&right);
+        let expected = *blake3::hash(&input).as_bytes();
+
+        assert_eq!(merged, expected, "merge hash should use 0x01 domain tag");
+
+        // Must NOT equal plain blake3(left || right)
+        let mut plain_input = [0u8; 64];
+        plain_input[..32].copy_from_slice(&left);
+        plain_input[32..].copy_from_slice(&right);
+        let plain = *blake3::hash(&plain_input).as_bytes();
+        assert_ne!(
+            merged, plain,
+            "merge hash must differ from plain blake3(left || right)"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_rejects_tampered_leaf_hash() {
+        // Create a valid leaf, then tamper with the hash in serialized bytes.
+        let node = MmrNode::leaf(b"real data".to_vec());
+        let mut bytes = node.serialize().expect("serialize leaf node");
+
+        // Flip a bit in the hash (byte at offset 1)
+        bytes[1] ^= 0x01;
+
+        let result = MmrNode::deserialize(&bytes);
+        assert!(
+            result.is_err(),
+            "deserialize should reject tampered leaf hash"
+        );
+        let err = result.expect_err("should be an error for tampered hash");
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("does not match"),
+            "error should mention hash mismatch: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_default_node() {
+        let node = MmrNode::default();
+        assert_eq!(node.hash, [0u8; 32]);
+        assert!(node.value.is_none());
     }
 }

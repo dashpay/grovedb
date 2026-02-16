@@ -40,6 +40,10 @@ pub const MMR_TREE_COST_SIZE: u32 = 32 + 9 + 2; // 43
 /// (u64) + 4 bytes epoch_size (u32) + 2 bytes overhead)
 pub const BULK_APPEND_TREE_COST_SIZE: u32 = 32 + 8 + 4 + 2; // 46
 
+/// The cost of a dense tree (32 bytes root_hash + 8 bytes count (u64) +
+/// 1 byte height (u8) + 2 bytes overhead)
+pub const DENSE_TREE_COST_SIZE: u32 = 32 + 8 + 1 + 2; // 43
+
 pub trait CostSize {
     fn cost_size(&self) -> u32;
 }
@@ -57,6 +61,7 @@ impl CostSize for TreeType {
             TreeType::CommitmentTree => COMMITMENT_TREE_COST_SIZE,
             TreeType::MmrTree => MMR_TREE_COST_SIZE,
             TreeType::BulkAppendTree => BULK_APPEND_TREE_COST_SIZE,
+            TreeType::DenseAppendOnlyFixedSizeTree => DENSE_TREE_COST_SIZE,
         }
     }
 }

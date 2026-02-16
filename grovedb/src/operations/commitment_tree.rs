@@ -10,7 +10,7 @@
 //! Historical anchors for spend authorization are managed by Platform in a
 //! separate provable tree — GroveDB only tracks the current frontier state.
 
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use grovedb_commitment_tree::{Anchor, CommitmentFrontier};
 use grovedb_costs::{
@@ -46,6 +46,79 @@ pub(crate) fn load_frontier_from_aux<'db, C: StorageContext<'db>>(
         }),
         Ok(None) => Ok(CommitmentFrontier::new()),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Write-through caching wrapper for `StorageContext` aux operations.
+///
+/// Caches `get_aux` results at the raw byte level. `put_aux` writes through
+/// to the underlying context and updates the cache, ensuring read-after-write
+/// visibility even when the context defers writes to a batch.
+struct CachedAuxContext<'a, 'db, C: StorageContext<'db>> {
+    ctx: &'a C,
+    cache: RefCell<HashMap<Vec<u8>, Option<Vec<u8>>>>,
+    cost: RefCell<OperationCost>,
+    _marker: std::marker::PhantomData<&'db ()>,
+}
+
+impl<'a, 'db, C: StorageContext<'db>> CachedAuxContext<'a, 'db, C> {
+    fn new(ctx: &'a C) -> Self {
+        Self {
+            ctx,
+            cache: RefCell::new(HashMap::new()),
+            cost: RefCell::new(OperationCost::default()),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        if let Some(cached) = self.cache.borrow().get(key) {
+            return Ok(cached.clone());
+        }
+        let result = self
+            .ctx
+            .get_aux(key)
+            .unwrap_add_cost(&mut self.cost.borrow_mut());
+        match result {
+            Ok(data) => {
+                self.cache.borrow_mut().insert(key.to_vec(), data.clone());
+                Ok(data)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn put_aux(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let result = self
+            .ctx
+            .put_aux(key, value, None)
+            .unwrap_add_cost(&mut self.cost.borrow_mut());
+        match result {
+            Ok(()) => {
+                self.cache
+                    .borrow_mut()
+                    .insert(key.to_vec(), Some(value.to_vec()));
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn take_cost(&self) -> OperationCost {
+        self.cost.take()
+    }
+}
+
+/// Load a `CommitmentFrontier` from a `CachedAuxContext`, returning a new empty
+/// frontier if no data exists.
+fn load_frontier_from_cached_aux<'db, C: StorageContext<'db>>(
+    ctx: &CachedAuxContext<'_, 'db, C>,
+) -> Result<CommitmentFrontier, Error> {
+    match ctx.get_aux(COMMITMENT_TREE_DATA_KEY)? {
+        Some(bytes) => CommitmentFrontier::deserialize(&bytes).map_err(|e| {
+            Error::CorruptedData(format!("failed to deserialize commitment frontier: {}", e))
+        }),
+        None => Ok(CommitmentFrontier::new()),
     }
 }
 
@@ -373,14 +446,16 @@ impl GroveDb {
             let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
             // Load frontier from aux using a transactional context that reads
-            // from the transaction (where previously committed data lives)
+            // from the transaction (where previously committed data lives),
+            // wrapped in a CachedAuxContext for write-through caching.
             let storage_ctx = self
                 .db
                 .get_transactional_storage_context(ct_path.clone(), Some(batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
+            let cached_aux = CachedAuxContext::new(&storage_ctx);
             let mut frontier =
-                cost_return_on_error_no_add!(cost, load_frontier_from_aux(&storage_ctx, &mut cost));
+                cost_return_on_error_no_add!(cost, load_frontier_from_cached_aux(&cached_aux));
 
             // Open the subtree Merk for item inserts using the shared batch
             let mut subtree_merk = cost_return_on_error!(
@@ -429,14 +504,14 @@ impl GroveDb {
                 );
             }
 
-            // Save frontier back to aux
+            // Save frontier back to aux via cached context
             let serialized = frontier.serialize();
-            cost_return_on_error!(
-                &mut cost,
-                storage_ctx
-                    .put_aux(COMMITMENT_TREE_DATA_KEY, &serialized, None)
-                    .map_err(|e| e.into())
+            cost_return_on_error_no_add!(
+                cost,
+                cached_aux.put_aux(COMMITMENT_TREE_DATA_KEY, &serialized)
             );
+
+            cost += cached_aux.take_cost();
 
             #[allow(clippy::drop_non_drop)]
             drop(storage_ctx);

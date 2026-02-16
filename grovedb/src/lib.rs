@@ -752,6 +752,17 @@ impl GroveDb {
                 let tree = Element::new_bulk_append_tree(state_root, total_count, epoch_size, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| e.into())
+            } else if let Element::DenseAppendOnlyFixedSizeTree(
+                _,
+                dense_root,
+                count,
+                height,
+                flag,
+            ) = element
+            {
+                let tree = Element::new_dense_tree(dense_root, count, height, flag);
+                tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
+                    .map_err(|e| e.into())
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -999,6 +1010,31 @@ impl GroveDb {
                         grove_version,
                     )
                     .map_err(|e| e.into())
+                } else if let Element::DenseAppendOnlyFixedSizeTree(
+                    _,
+                    existing_dense_root,
+                    existing_count,
+                    existing_height,
+                    flag,
+                ) = element
+                {
+                    let dense_root = sinsemilla_root_override.unwrap_or(existing_dense_root);
+                    let count = mmr_size_override.unwrap_or(existing_count);
+                    let tree = Element::new_dense_tree(dense_root, count, existing_height, flag);
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_subtree_into_batch_operations(
+                        key,
+                        root_tree_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                    .map_err(|e| e.into())
                 } else {
                     Err(Error::InvalidPath(
                         "can only propagate on tree items".to_owned(),
@@ -1219,7 +1255,8 @@ impl GroveDb {
                 | Element::ProvableCountSumTree(..)
                 | Element::CommitmentTree(..)
                 | Element::MmrTree(..)
-                | Element::BulkAppendTree(..) => {
+                | Element::BulkAppendTree(..)
+                | Element::DenseAppendOnlyFixedSizeTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,

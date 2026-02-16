@@ -1,0 +1,471 @@
+//! Dense fixed-sized Merkle tree operations for GroveDB.
+//!
+//! Provides methods to interact with DenseAppendOnlyFixedSizeTree subtrees,
+//! which store values in a complete binary tree of height h with 2^h - 1
+//! positions, filled sequentially in level-order (BFS).
+//!
+//! Node values are stored in auxiliary storage keyed by position. The root
+//! hash and count are tracked in the Element itself and propagated through
+//! the GroveDB Merk hierarchy.
+
+use std::{cell::RefCell, collections::HashMap};
+
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
+    CostsExt, OperationCost,
+};
+use grovedb_dense_fixed_sized_merkle_tree::{
+    DenseFixedSizedMerkleTree, DenseMerkleError, DenseTreeStore,
+};
+use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+use grovedb_path::SubtreePath;
+use grovedb_storage::{
+    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+};
+use grovedb_version::version::GroveVersion;
+
+use crate::{
+    batch::{GroveOp, QualifiedGroveDbOp},
+    util::TxRef,
+    Element, Error, GroveDb, Merk, Transaction, TransactionArg,
+};
+
+/// Storage adapter wrapping a GroveDB `StorageContext` for dense tree
+/// operations.
+///
+/// Reads and writes node values to auxiliary storage keyed by position
+/// (big-endian u64). Uses `RefCell` for cost accumulation and a write-through
+/// cache since DenseTreeStore takes `&self`.
+pub(crate) struct AuxDenseTreeStore<'a, C> {
+    ctx: &'a C,
+    cost: RefCell<OperationCost>,
+    cache: RefCell<HashMap<u64, Vec<u8>>>,
+}
+
+impl<'a, C> AuxDenseTreeStore<'a, C> {
+    pub fn new(ctx: &'a C) -> Self {
+        Self {
+            ctx,
+            cost: RefCell::new(OperationCost::default()),
+            cache: RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub fn take_cost(&self) -> OperationCost {
+        self.cost.take()
+    }
+}
+
+fn position_key(pos: u64) -> [u8; 8] {
+    pos.to_be_bytes()
+}
+
+impl<'db, C: StorageContext<'db>> DenseTreeStore for AuxDenseTreeStore<'_, C> {
+    fn get_value(&self, position: u64) -> Result<Option<Vec<u8>>, DenseMerkleError> {
+        // Check write-through cache first
+        if let Some(val) = self.cache.borrow().get(&position) {
+            return Ok(Some(val.clone()));
+        }
+
+        let key = position_key(position);
+        let result = self.ctx.get(&key);
+        let mut cost = self.cost.borrow_mut();
+        *cost += result.cost;
+        match result.value {
+            Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(DenseMerkleError::StoreError(format!(
+                "get at pos {}: {}",
+                position, e
+            ))),
+        }
+    }
+
+    fn put_value(&self, position: u64, value: &[u8]) -> Result<(), DenseMerkleError> {
+        let key = position_key(position);
+        let result = self.ctx.put(&key, value, None, None);
+        let mut cost = self.cost.borrow_mut();
+        *cost += result.cost;
+        result
+            .value
+            .map_err(|e| DenseMerkleError::StoreError(format!("put at pos {}: {}", position, e)))?;
+        // Cache for subsequent reads
+        drop(cost);
+        self.cache.borrow_mut().insert(position, value.to_vec());
+        Ok(())
+    }
+}
+
+impl GroveDb {
+    /// Insert a value into a DenseAppendOnlyFixedSizeTree subtree.
+    ///
+    /// Returns `(root_hash, position)`.
+    pub fn dense_tree_insert<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        value: Vec<u8>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<([u8; 32], u64), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+
+        // 1. Validate element
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
+        );
+
+        let (existing_count, height, existing_flags) = match &element {
+            Element::DenseAppendOnlyFixedSizeTree(_, _, count, h, flags) => {
+                (*count, *h, flags.clone())
+            }
+            _ => {
+                return Err(Error::InvalidInput("element is not a dense tree"))
+                    .wrap_with_cost(cost);
+            }
+        };
+
+        // 2. Build subtree path
+        let subtree_path_vec = self.build_subtree_path_for_dense_tree(&path, key);
+        let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
+        let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
+
+        // 3. Open storage, create store adapter, insert
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(subtree_path.clone(), tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let store = AuxDenseTreeStore::new(&storage_ctx);
+        let mut tree = cost_return_on_error_no_add!(
+            cost,
+            DenseFixedSizedMerkleTree::from_state(height, existing_count)
+                .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
+        );
+
+        let (new_root_hash, position, hash_calls) = cost_return_on_error_no_add!(
+            cost,
+            tree.insert(&value, &store)
+                .map_err(|e| Error::CorruptedData(format!("dense tree insert failed: {}", e)))
+        );
+
+        cost.hash_node_calls += hash_calls;
+        cost += store.take_cost();
+
+        #[allow(clippy::drop_non_drop)]
+        drop(storage_ctx);
+
+        // 4. Update element and propagate
+        let batch = StorageBatch::new();
+        let mut parent_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                tx.as_ref(),
+                Some(&batch),
+                grove_version,
+            )
+        );
+
+        let updated_element =
+            Element::new_dense_tree(new_root_hash, tree.count(), height, existing_flags);
+
+        cost_return_on_error_into!(
+            &mut cost,
+            updated_element.insert_subtree(
+                &mut parent_merk,
+                key,
+                grovedb_merk::tree::NULL_HASH,
+                None,
+                grove_version,
+            )
+        );
+
+        // 5. Propagate changes
+        let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
+            HashMap::new();
+        merk_cache.insert(path.clone(), parent_merk);
+
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                path,
+                tx.as_ref(),
+                &batch,
+                grove_version,
+            )
+        );
+
+        // 6. Commit
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, Some(tx.as_ref()))
+                .map_err(Into::into)
+        );
+
+        tx.commit_local()
+            .map(|()| (new_root_hash, position))
+            .wrap_with_cost(cost)
+    }
+
+    /// Get a value from a DenseAppendOnlyFixedSizeTree by position.
+    pub fn dense_tree_get<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        position: u64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Vec<u8>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
+        );
+
+        let count = match &element {
+            Element::DenseAppendOnlyFixedSizeTree(_, _, count, ..) => *count,
+            _ => {
+                return Err(Error::InvalidInput("element is not a dense tree"))
+                    .wrap_with_cost(cost);
+            }
+        };
+
+        if position >= count {
+            return Ok(None).wrap_with_cost(cost);
+        }
+
+        let subtree_path_vec = self.build_subtree_path_for_dense_tree(&path, key);
+        let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
+        let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(subtree_path, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let pos_key = position_key(position);
+        let result = storage_ctx.get(&pos_key).unwrap_add_cost(&mut cost);
+
+        match result {
+            Ok(Some(bytes)) => Ok(Some(bytes.to_vec())).wrap_with_cost(cost),
+            Ok(None) => Ok(None).wrap_with_cost(cost),
+            Err(e) => Err(e.into()).wrap_with_cost(cost),
+        }
+    }
+
+    /// Get the root hash of a DenseAppendOnlyFixedSizeTree.
+    pub fn dense_tree_root_hash<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<[u8; 32], Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path, key, true, transaction, grove_version)
+        );
+
+        match element {
+            Element::DenseAppendOnlyFixedSizeTree(_, root_hash, ..) => {
+                Ok(root_hash).wrap_with_cost(cost)
+            }
+            _ => Err(Error::InvalidInput("element is not a dense tree")).wrap_with_cost(cost),
+        }
+    }
+
+    /// Get the count of a DenseAppendOnlyFixedSizeTree.
+    pub fn dense_tree_count<'b, B, P>(
+        &self,
+        path: P,
+        key: &[u8],
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let path: SubtreePath<B> = path.into();
+        let mut cost = OperationCost::default();
+
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path, key, true, transaction, grove_version)
+        );
+
+        match element {
+            Element::DenseAppendOnlyFixedSizeTree(_, _, count, ..) => {
+                Ok(count).wrap_with_cost(cost)
+            }
+            _ => Err(Error::InvalidInput("element is not a dense tree")).wrap_with_cost(cost),
+        }
+    }
+
+    /// Build the subtree path for a dense tree at path/key.
+    fn build_subtree_path_for_dense_tree<B: AsRef<[u8]>>(
+        &self,
+        path: &SubtreePath<B>,
+        key: &[u8],
+    ) -> Vec<Vec<u8>> {
+        let mut v = path.to_vec();
+        v.push(key.to_vec());
+        v
+    }
+
+    /// Preprocess `DenseTreeInsert` ops in a batch.
+    ///
+    /// For each group of insert ops targeting the same (path, key):
+    /// 1. Loads existing tree state from storage
+    /// 2. Inserts all values sequentially
+    /// 3. Replaces the ops with a single `ReplaceTreeRootKey` carrying the new
+    ///    root_hash and count
+    pub(crate) fn preprocess_dense_tree_ops(
+        &self,
+        ops: Vec<QualifiedGroveDbOp>,
+        transaction: &Transaction,
+        batch: &StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
+        let mut cost = OperationCost::default();
+
+        let has_dense_ops = ops
+            .iter()
+            .any(|op| matches!(op.op, GroveOp::DenseTreeInsert { .. }));
+        if !has_dense_ops {
+            return Ok(ops).wrap_with_cost(cost);
+        }
+
+        type PathKey = (Vec<Vec<u8>>, Vec<u8>);
+
+        let mut groups: HashMap<PathKey, Vec<Vec<u8>>> = HashMap::new();
+
+        for op in ops.iter() {
+            if let GroveOp::DenseTreeInsert { value } = &op.op {
+                let path_key = (op.path.to_path(), op.key.get_key_clone());
+                groups.entry(path_key).or_default().push(value.clone());
+            }
+        }
+
+        let mut replacements: HashMap<PathKey, QualifiedGroveDbOp> = HashMap::new();
+
+        for (path_key, values) in groups.iter() {
+            let (path_vec, key_bytes) = path_key;
+
+            let path_slices: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
+            let subtree_path = SubtreePath::from(path_slices.as_slice());
+
+            let element = cost_return_on_error!(
+                &mut cost,
+                self.get_raw_caching_optional(
+                    subtree_path.clone(),
+                    key_bytes.as_slice(),
+                    true,
+                    Some(transaction),
+                    grove_version
+                )
+            );
+
+            let (existing_count, height) = match &element {
+                Element::DenseAppendOnlyFixedSizeTree(_, _, count, h, _) => (*count, *h),
+                _ => {
+                    return Err(Error::InvalidInput("element is not a dense tree"))
+                        .wrap_with_cost(cost);
+                }
+            };
+
+            // Build subtree path for storage
+            let mut st_path_vec = path_vec.clone();
+            st_path_vec.push(key_bytes.clone());
+            let st_path_refs: Vec<&[u8]> = st_path_vec.iter().map(|v| v.as_slice()).collect();
+            let st_path = SubtreePath::from(st_path_refs.as_slice());
+
+            let storage_ctx = self
+                .db
+                .get_transactional_storage_context(st_path.clone(), Some(batch), transaction)
+                .unwrap_add_cost(&mut cost);
+
+            let store = AuxDenseTreeStore::new(&storage_ctx);
+            let mut tree = cost_return_on_error_no_add!(
+                cost,
+                DenseFixedSizedMerkleTree::from_state(height, existing_count)
+                    .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
+            );
+
+            let mut new_root_hash = [0u8; 32];
+            for value in values {
+                let (hash, _pos, hash_calls) = cost_return_on_error_no_add!(
+                    cost,
+                    tree.insert(value, &store).map_err(|e| {
+                        Error::CorruptedData(format!("dense tree insert failed: {}", e))
+                    })
+                );
+                cost.hash_node_calls += hash_calls;
+                new_root_hash = hash;
+            }
+
+            cost += store.take_cost();
+
+            #[allow(clippy::drop_non_drop)]
+            drop(storage_ctx);
+
+            let replacement = QualifiedGroveDbOp {
+                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
+                key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
+                op: GroveOp::ReplaceTreeRootKey {
+                    hash: grovedb_merk::tree::NULL_HASH,
+                    root_key: None,
+                    aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
+                    sinsemilla_root: Some(new_root_hash),
+                    mmr_size: Some(tree.count()),
+                    bulk_state: None,
+                },
+            };
+            replacements.insert(path_key.clone(), replacement);
+        }
+
+        // Build new ops list
+        let mut first_seen: HashMap<PathKey, bool> = HashMap::new();
+        let mut result = Vec::with_capacity(ops.len());
+
+        for op in ops.into_iter() {
+            if matches!(op.op, GroveOp::DenseTreeInsert { .. }) {
+                let path_key = (op.path.to_path(), op.key.get_key_clone());
+                if !first_seen.contains_key(&path_key) {
+                    first_seen.insert(path_key.clone(), true);
+                    if let Some(replacement) = replacements.remove(&path_key) {
+                        result.push(replacement);
+                    }
+                }
+            } else {
+                result.push(op);
+            }
+        }
+
+        Ok(result).wrap_with_cost(cost)
+    }
+}

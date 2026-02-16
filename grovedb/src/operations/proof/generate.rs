@@ -7,6 +7,7 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
     cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
     proofs::{encode_into, query::QueryItem, Node, Op},
     tree::value_hash,
@@ -419,13 +420,16 @@ impl GroveDb {
                             // subtrees, so V0 proofs cannot descend into
                             // them. Return an error directing the caller to
                             // use prove_query_v1 instead.
-                            Ok(Element::MmrTree(..)) | Ok(Element::BulkAppendTree(..))
+                            Ok(Element::MmrTree(..))
+                            | Ok(Element::BulkAppendTree(..))
+                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 return Err(Error::NotSupported(
-                                    "V0 proofs do not support subqueries into MmrTree or \
-                                     BulkAppendTree elements; use prove_query_v1 instead"
+                                    "V0 proofs do not support subqueries into MmrTree, \
+                                     BulkAppendTree, or DenseAppendOnlyFixedSizeTree elements; \
+                                     use prove_query_v1 instead"
                                         .to_string(),
                                 ))
                                 .wrap_with_cost(cost);
@@ -441,6 +445,7 @@ impl GroveDb {
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
+                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
                                 if !done_with_results =>
                             {
                                 #[cfg(feature = "proof_debug")]
@@ -965,6 +970,37 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
+                            // DenseAppendOnlyFixedSizeTree with subquery → generate
+                            // dense tree proof
+                            Ok(Element::DenseAppendOnlyFixedSizeTree(
+                                _,
+                                _dense_root,
+                                dense_count,
+                                dense_height,
+                                _,
+                            )) if !done_with_results
+                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_dense_tree_layer_proof(
+                                        &lower_path,
+                                        path_query,
+                                        dense_count,
+                                        dense_height,
+                                        overall_limit,
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
+
+                                has_a_result_at_level |= true;
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+
                             // Other tree types with subqueries → recurse into Merk
                             Ok(Element::Tree(Some(_), _))
                             | Ok(Element::SumTree(Some(_), ..))
@@ -1001,7 +1037,9 @@ impl GroveDb {
 
                             // MmrTree/BulkAppendTree without subquery (query targets the tree
                             // itself)
-                            Ok(Element::MmrTree(..)) | Ok(Element::BulkAppendTree(..))
+                            Ok(Element::MmrTree(..))
+                            | Ok(Element::BulkAppendTree(..))
+                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
                                 if !done_with_results =>
                             {
                                 if let Some(limit) = overall_limit.as_mut() {
@@ -1100,7 +1138,7 @@ impl GroveDb {
             cost,
             MmrTreeProof::generate(mmr_size, &leaf_indices, |pos| {
                 let key = grovedb_mmr::mmr_node_key(pos);
-                let result = storage_ctx.get_aux(&key);
+                let result = storage_ctx.get(&key);
                 match result.value {
                     Ok(Some(bytes)) => {
                         let node = grovedb_mmr::MmrNode::deserialize(&bytes)?;
@@ -1180,7 +1218,7 @@ impl GroveDb {
 
         // Load metadata to get mmr_size and buffer_hash
         let meta_key = grovedb_bulk_append_tree::META_KEY;
-        let meta_result = storage_ctx.get_aux(meta_key).unwrap_add_cost(&mut cost);
+        let meta_result = storage_ctx.get(meta_key).unwrap_add_cost(&mut cost);
 
         let (mmr_size, buffer_hash) = match meta_result {
             Ok(Some(bytes)) => {
@@ -1206,7 +1244,7 @@ impl GroveDb {
                 start,
                 end,
                 |key| {
-                    let result = storage_ctx.get_aux(key);
+                    let result = storage_ctx.get(key);
                     match result.value {
                         Ok(v) => Ok(v),
                         Err(e) => Err(grovedb_bulk_append_tree::BulkAppendError::StorageError(
@@ -1259,6 +1297,209 @@ impl GroveDb {
             lower_layers: BTreeMap::new(),
         })
         .wrap_with_cost(cost)
+    }
+
+    /// Generate a DenseAppendOnlyFixedSizeTree layer proof for a subquery.
+    fn generate_dense_tree_layer_proof(
+        &self,
+        subtree_path: &[&[u8]],
+        path_query: &PathQuery,
+        dense_count: u64,
+        dense_height: u8,
+        overall_limit: &mut Option<u16>,
+        tx: &crate::Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error> {
+        let mut cost = OperationCost::default();
+
+        // Get the subquery items for this path to determine which positions to prove
+        let sub_query = cost_return_on_error_no_add!(
+            cost,
+            path_query
+                .query_items_at_path(subtree_path, grove_version)
+                .and_then(|q| {
+                    q.ok_or(Error::CorruptedPath(
+                        "DenseTree subtree path not in path_query".into(),
+                    ))
+                })
+        );
+
+        // Convert query items to positions (same as MMR but capped by dense_count)
+        let positions = cost_return_on_error_no_add!(
+            cost,
+            Self::query_items_to_positions(&sub_query.items, dense_count)
+        );
+
+        // Open storage at the subtree path
+        let path_vec: Vec<Vec<u8>> = subtree_path.iter().map(|s| s.to_vec()).collect();
+        let path_refs: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
+        let storage_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(storage_path, tx)
+            .unwrap_add_cost(&mut cost);
+
+        // Create storage adapter
+        let store = crate::operations::dense_tree::AuxDenseTreeStore::new(&storage_ctx);
+
+        // Generate the proof
+        let dense_proof = cost_return_on_error_no_add!(
+            cost,
+            DenseTreeProof::generate(dense_height, dense_count, &positions, &store)
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))
+        );
+
+        cost += store.take_cost();
+
+        // Update limit
+        if let Some(limit) = overall_limit.as_mut() {
+            let count = dense_proof.entries_len() as u16;
+            *limit = limit.saturating_sub(count);
+        }
+
+        let proof_bytes = cost_return_on_error_no_add!(
+            cost,
+            dense_proof
+                .encode_to_vec()
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))
+        );
+
+        Ok(LayerProof {
+            merk_proof: ProofBytes::DenseTree(proof_bytes),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Convert query items to position indices for dense tree proofs.
+    ///
+    /// Query keys are interpreted as BE u64 bytes representing positions.
+    fn query_items_to_positions(items: &[QueryItem], count: u64) -> Result<Vec<u64>, Error> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        const MAX_INDICES: usize = 10_000_000;
+        let max_idx = count - 1;
+        let mut indices = Vec::new();
+
+        for item in items {
+            match item {
+                QueryItem::Key(key) => {
+                    let idx = Self::decode_be_u64(key)?;
+                    if idx < count {
+                        indices.push(idx);
+                    }
+                }
+                QueryItem::RangeInclusive(range) => {
+                    let start = Self::decode_be_u64(range.start())?;
+                    let end = Self::decode_be_u64(range.end())?;
+                    for idx in start..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::Range(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in start..end.min(count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeFrom(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    for idx in start..count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeTo(range) => {
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in 0..end.min(count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeToInclusive(range) => {
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in 0..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeFull(..) => {
+                    for idx in 0..count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeAfter(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    for idx in (start + 1)..count {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeAfterTo(range) => {
+                    let start = Self::decode_be_u64(&range.start)?;
+                    let end = Self::decode_be_u64(&range.end)?;
+                    for idx in (start + 1)..end.min(count) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+                QueryItem::RangeAfterToInclusive(range) => {
+                    let start = Self::decode_be_u64(range.start())?;
+                    let end = Self::decode_be_u64(range.end())?;
+                    for idx in (start + 1)..=end.min(max_idx) {
+                        indices.push(idx);
+                        if indices.len() > MAX_INDICES {
+                            return Err(Error::InvalidInput(
+                                "query range too large for dense tree proof",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        indices.sort_unstable();
+        indices.dedup();
+        Ok(indices)
     }
 
     /// Convert query items to leaf indices for MMR proofs.

@@ -370,4 +370,24 @@ impl Element {
     ) -> Self {
         Element::BulkAppendTree(None, state_root, total_count, epoch_size, flags)
     }
+
+    /// Set element to an empty dense tree without flags
+    pub fn empty_dense_tree(height: u8) -> Self {
+        Element::DenseAppendOnlyFixedSizeTree(None, [0u8; 32], 0, height, None)
+    }
+
+    /// Set element to an empty dense tree with flags
+    pub fn empty_dense_tree_with_flags(height: u8, flags: Option<ElementFlags>) -> Self {
+        Element::DenseAppendOnlyFixedSizeTree(None, [0u8; 32], 0, height, flags)
+    }
+
+    /// Set element to a dense tree with all fields
+    pub fn new_dense_tree(
+        root_hash: [u8; 32],
+        count: u64,
+        height: u8,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::DenseAppendOnlyFixedSizeTree(None, root_hash, count, height, flags)
+    }
 }

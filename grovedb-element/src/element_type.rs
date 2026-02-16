@@ -114,6 +114,8 @@ pub enum ElementType {
     MmrTree = 12,
     /// Bulk-append tree - discriminant 13
     BulkAppendTree = 13,
+    /// Dense fixed-sized Merkle tree - discriminant 14
+    DenseAppendOnlyFixedSizeTree = 14,
 }
 
 impl ElementType {
@@ -225,6 +227,7 @@ impl ElementType {
                 | ElementType::CommitmentTree
                 | ElementType::MmrTree
                 | ElementType::BulkAppendTree
+                | ElementType::DenseAppendOnlyFixedSizeTree
         )
     }
 
@@ -261,6 +264,7 @@ impl ElementType {
             ElementType::CommitmentTree => "commitment tree",
             ElementType::MmrTree => "mmr tree",
             ElementType::BulkAppendTree => "bulk_append_tree",
+            ElementType::DenseAppendOnlyFixedSizeTree => "dense_tree",
         }
     }
 }
@@ -284,6 +288,7 @@ impl TryFrom<u8> for ElementType {
             11 => Ok(ElementType::CommitmentTree),
             12 => Ok(ElementType::MmrTree),
             13 => Ok(ElementType::BulkAppendTree),
+            14 => Ok(ElementType::DenseAppendOnlyFixedSizeTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -333,7 +338,11 @@ mod tests {
             ElementType::try_from(13).unwrap(),
             ElementType::BulkAppendTree
         );
-        assert!(ElementType::try_from(14).is_err());
+        assert_eq!(
+            ElementType::try_from(14).unwrap(),
+            ElementType::DenseAppendOnlyFixedSizeTree
+        );
+        assert!(ElementType::try_from(15).is_err());
     }
 
     #[test]
@@ -490,6 +499,7 @@ mod tests {
         assert!(ElementType::CommitmentTree.is_tree());
         assert!(ElementType::MmrTree.is_tree());
         assert!(ElementType::BulkAppendTree.is_tree());
+        assert!(ElementType::DenseAppendOnlyFixedSizeTree.is_tree());
     }
 
     /// Verifies that serialized Element discriminants match ElementType
@@ -588,13 +598,19 @@ mod tests {
                 ElementType::BulkAppendTree,
                 "BulkAppendTree",
             ),
+            // discriminant 14
+            (
+                Element::DenseAppendOnlyFixedSizeTree(None, [0u8; 32], 0, 1, None),
+                ElementType::DenseAppendOnlyFixedSizeTree,
+                "DenseAppendOnlyFixedSizeTree",
+            ),
         ];
 
-        // Verify we're testing all 14 discriminants (0-13)
+        // Verify we're testing all 15 discriminants (0-14)
         assert_eq!(
             test_cases.len(),
-            14,
-            "Expected 14 Element variants in test, got {}",
+            15,
+            "Expected 15 Element variants in test, got {}",
             test_cases.len()
         );
 

@@ -213,6 +213,31 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
+            GroveOp::DenseTreeInsert { value: _value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::DenseAppendOnlyFixedSizeTree,
+                    propagate,
+                    grove_version,
+                );
+                // Average: 1 value write + hash recomputation from root
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                const AVG_VALUE_SIZE: u32 = 64;
+                const AVG_HASH_CALLS: u32 = 16; // average height traversal
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1,
+                    storage_cost: StorageCost {
+                        added_bytes: AVG_VALUE_SIZE,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: AVG_VALUE_SIZE as u64,
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
         }
     }
 }

@@ -158,6 +158,7 @@ impl Element {
                 | Element::CommitmentTree(..)
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
+                | Element::DenseAppendOnlyFixedSizeTree(..)
         )
     }
 
@@ -174,6 +175,11 @@ impl Element {
     /// Check if the element is a bulk append tree
     pub fn is_bulk_append_tree(&self) -> bool {
         matches!(self, Element::BulkAppendTree(..))
+    }
+
+    /// Check if the element is a dense append-only fixed-size tree
+    pub fn is_dense_tree(&self) -> bool {
+        matches!(self, Element::DenseAppendOnlyFixedSizeTree(..))
     }
 
     /// Check if the element is a reference
@@ -225,7 +231,8 @@ impl Element {
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
-            | Element::BulkAppendTree(.., flags) => flags,
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
         }
     }
 
@@ -245,7 +252,8 @@ impl Element {
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
-            | Element::BulkAppendTree(.., flags) => flags,
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
         }
     }
 
@@ -265,7 +273,8 @@ impl Element {
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
-            | Element::BulkAppendTree(.., flags) => flags,
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
         }
     }
 
@@ -285,7 +294,8 @@ impl Element {
             | Element::ItemWithSumItem(.., flags)
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
-            | Element::BulkAppendTree(.., flags) => *flags = new_flags,
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => *flags = new_flags,
         }
     }
 

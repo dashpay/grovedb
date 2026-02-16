@@ -12,10 +12,9 @@
 //! - For GroveDB integration, nodes are persisted to main storage keyed by
 //!   position
 
-mod dense_merkle;
 mod grove_mmr;
 mod node;
-pub mod proof;
+mod proof;
 mod util;
 
 // Re-export useful ckb helpers
@@ -27,16 +26,15 @@ pub use ckb_merkle_mountain_range::{
     util::MemStore as CkbMemStore, Error as CkbError, MMRStoreReadOps, MMRStoreWriteOps,
     MerkleProof, Result as CkbResult, MMR,
 };
-// Re-export all public types
-pub use dense_merkle::{compute_dense_merkle_root, compute_dense_merkle_root_from_values};
 pub use grove_mmr::GroveMmr;
-pub use node::{blake3_merge, MergeBlake3, MmrNode};
+pub use node::{blake3_merge, leaf_hash, MergeBlake3, MmrNode};
 pub use proof::MmrTreeProof;
 use thiserror::Error;
 pub use util::{hash_count_for_push, mmr_node_key, mmr_size_to_leaf_count};
 
 /// Errors from MMR operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MmrError {
     #[error("MMR operation failed: {0}")]
     OperationFailed(String),

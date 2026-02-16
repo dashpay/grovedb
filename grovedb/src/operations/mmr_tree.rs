@@ -3,7 +3,7 @@
 //! Provides methods to interact with MmrTree subtrees, which store append-only
 //! authenticated data using a Merkle Mountain Range (MMR) backed by Blake3.
 //!
-//! MMR nodes are stored in aux storage keyed by position. The MMR root hash
+//! MMR nodes are stored in data storage keyed by position. The MMR root hash
 //! and size are tracked in the Element itself and propagated through the
 //! GroveDB Merk hierarchy.
 
@@ -32,18 +32,18 @@ use crate::{
 
 /// Storage adapter wrapping a GroveDB `StorageContext` for ckb MMR operations.
 ///
-/// Reads and writes MMR nodes to aux storage keyed by position.
+/// Reads and writes MMR nodes to data storage keyed by position.
 /// Uses `RefCell` for cost accumulation and a write-through cache since ckb
 /// traits take `&self`. The cache ensures nodes written by `append` are
 /// immediately readable by `get_elem`, which is necessary when the underlying
 /// storage context defers writes to a batch.
-pub(crate) struct AuxMmrStore<'a, C> {
+pub(crate) struct MmrStore<'a, C> {
     ctx: &'a C,
     cost: RefCell<OperationCost>,
     cache: RefCell<HashMap<u64, MmrNode>>,
 }
 
-impl<'a, C> AuxMmrStore<'a, C> {
+impl<'a, C> MmrStore<'a, C> {
     pub fn new(ctx: &'a C) -> Self {
         Self {
             ctx,
@@ -58,7 +58,7 @@ impl<'a, C> AuxMmrStore<'a, C> {
     }
 }
 
-impl<'db, C: StorageContext<'db>> MMRStoreReadOps<MmrNode> for &AuxMmrStore<'_, C> {
+impl<'db, C: StorageContext<'db>> MMRStoreReadOps<MmrNode> for &MmrStore<'_, C> {
     fn get_elem(&self, pos: u64) -> ckb_merkle_mountain_range::Result<Option<MmrNode>> {
         // Check the write-through cache first
         if let Some(node) = self.cache.borrow().get(&pos) {
@@ -66,7 +66,7 @@ impl<'db, C: StorageContext<'db>> MMRStoreReadOps<MmrNode> for &AuxMmrStore<'_, 
         }
 
         let key = mmr_node_key(pos);
-        let result = self.ctx.get_aux(&key);
+        let result = self.ctx.get(&key);
         let mut cost = self.cost.borrow_mut();
         *cost += result.cost;
         match result.value {
@@ -81,25 +81,30 @@ impl<'db, C: StorageContext<'db>> MMRStoreReadOps<MmrNode> for &AuxMmrStore<'_, 
             }
             Ok(None) => Ok(None),
             Err(e) => Err(ckb_merkle_mountain_range::Error::StoreError(format!(
-                "get_aux at pos {}: {}",
+                "get at pos {}: {}",
                 pos, e
             ))),
         }
     }
 }
 
-impl<'db, C: StorageContext<'db>> MMRStoreWriteOps<MmrNode> for &AuxMmrStore<'_, C> {
+impl<'db, C: StorageContext<'db>> MMRStoreWriteOps<MmrNode> for &MmrStore<'_, C> {
     fn append(&mut self, pos: u64, elems: Vec<MmrNode>) -> ckb_merkle_mountain_range::Result<()> {
         for (i, elem) in elems.into_iter().enumerate() {
             let node_pos = pos + i as u64;
             let key = mmr_node_key(node_pos);
-            let serialized = elem.serialize();
-            let result = self.ctx.put_aux(&key, &serialized, None);
+            let serialized = elem.serialize().map_err(|e| {
+                ckb_merkle_mountain_range::Error::StoreError(format!(
+                    "serialize at pos {}: {}",
+                    node_pos, e
+                ))
+            })?;
+            let result = self.ctx.put(&key, &serialized, None, None);
             let mut cost = self.cost.borrow_mut();
             *cost += result.cost;
             result.value.map_err(|e| {
                 ckb_merkle_mountain_range::Error::StoreError(format!(
-                    "put_aux at pos {}: {}",
+                    "put at pos {}: {}",
                     node_pos, e
                 ))
             })?;
@@ -115,9 +120,9 @@ impl GroveDb {
     /// Append a value to an MmrTree subtree.
     ///
     /// This is the primary write operation for MmrTree. It:
-    /// 1. Loads existing MMR nodes from aux storage
+    /// 1. Loads existing MMR nodes from data storage
     /// 2. Pushes the new value (hashed with Blake3)
-    /// 3. Commits new/modified nodes back to aux storage
+    /// 3. Commits new/modified nodes back to data storage
     /// 4. Updates the MmrTree element with the new root hash and size
     /// 5. Propagates changes through the GroveDB Merk hierarchy
     ///
@@ -156,13 +161,13 @@ impl GroveDb {
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
-        // 3. Open aux storage, create store adapter, push value
+        // 3. Open storage, create store adapter, push value
         let storage_ctx = self
             .db
             .get_immediate_storage_context(subtree_path.clone(), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = AuxMmrStore::new(&storage_ctx);
+        let store = MmrStore::new(&storage_ctx);
         let leaf_count = mmr_size_to_leaf_count(mmr_size);
 
         // Track Blake3 hash cost for this push
@@ -287,7 +292,7 @@ impl GroveDb {
 
     /// Get a leaf value from an MmrTree by its 0-based leaf index.
     ///
-    /// Reads the individual node from aux storage at the leaf's MMR position.
+    /// Reads the individual node from data storage at the leaf's MMR position.
     pub fn mmr_tree_get_value<'b, B, P>(
         &self,
         path: P,
@@ -334,7 +339,7 @@ impl GroveDb {
 
         let pos = grovedb_mmr::leaf_to_pos(leaf_index);
         let node_key = mmr_node_key(pos);
-        let result = storage_ctx.get_aux(&node_key).unwrap_add_cost(&mut cost);
+        let result = storage_ctx.get(&node_key).unwrap_add_cost(&mut cost);
 
         match result {
             Ok(Some(bytes)) => {
@@ -395,9 +400,9 @@ impl GroveDb {
     /// Preprocess `MmrTreeAppend` ops in a batch.
     ///
     /// For each group of append ops targeting the same (path, key):
-    /// 1. Loads existing MMR from aux storage
+    /// 1. Loads existing MMR from data storage
     /// 2. Pushes all values
-    /// 3. Saves updated nodes to aux storage
+    /// 3. Saves updated nodes to data storage
     /// 4. Replaces the ops with a single `ReplaceTreeRootKey` carrying the new
     ///    mmr_root and mmr_size
     ///
@@ -472,7 +477,7 @@ impl GroveDb {
                 .get_transactional_storage_context(st_path.clone(), Some(batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
-            let store = AuxMmrStore::new(&storage_ctx);
+            let store = MmrStore::new(&storage_ctx);
 
             // Push all values
             let mut current_mmr_size = mmr_size;

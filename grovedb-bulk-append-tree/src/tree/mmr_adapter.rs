@@ -45,7 +45,9 @@ impl<S: BulkStore> MMRStoreWriteOps<MmrNode> for &MmrAdapter<'_, S> {
         for (i, node) in elems.into_iter().enumerate() {
             let p = pos + i as u64;
             let key = mmr_node_key(p);
-            let serialized = node.serialize();
+            let serialized = node.serialize().map_err(|e| {
+                grovedb_mmr::CkbError::StoreError(format!("serialize MMR node at {}: {}", p, e))
+            })?;
             self.store
                 .put(&key, &serialized)
                 .map_err(grovedb_mmr::CkbError::StoreError)?;

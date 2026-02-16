@@ -177,6 +177,11 @@ pub enum GroveOp {
         /// Value to append
         value: Vec<u8>,
     },
+    /// Insert a value into a DenseAppendOnlyFixedSizeTree
+    DenseTreeInsert {
+        /// Value to insert
+        value: Vec<u8>,
+    },
 }
 
 impl GroveOp {
@@ -195,6 +200,7 @@ impl GroveOp {
             GroveOp::CommitmentTreeInsert { .. } => 10,
             GroveOp::MmrTreeAppend { .. } => 11,
             GroveOp::BulkAppend { .. } => 12,
+            GroveOp::DenseTreeInsert { .. } => 13,
         }
     }
 }
@@ -419,6 +425,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::CommitmentTreeInsert { .. } => "Commitment Tree Insert".to_string(),
             GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
             GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
+            GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
@@ -608,6 +615,16 @@ impl QualifiedGroveDbOp {
         }
     }
 
+    /// A dense tree insert op using a known owned path and known key
+    pub fn dense_tree_insert_op(path: Vec<Vec<u8>>, key: Vec<u8>, value: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: GroveOp::DenseTreeInsert { value },
+        }
+    }
+
     /// Verify consistency of operations
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
@@ -653,6 +670,8 @@ impl QualifiedGroveDbOp {
                                 && matches!(current_op.op, GroveOp::MmrTreeAppend { .. }))
                             || (matches!(op.op, GroveOp::BulkAppend { .. })
                                 && matches!(current_op.op, GroveOp::BulkAppend { .. }))
+                            || (matches!(op.op, GroveOp::DenseTreeInsert { .. })
+                                && matches!(current_op.op, GroveOp::DenseTreeInsert { .. }))
                         {
                             None
                         } else {
@@ -1113,7 +1132,8 @@ where
             | Element::ProvableCountSumTree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
-            | Element::BulkAppendTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1163,7 +1183,8 @@ where
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
-                | GroveOp::BulkAppend { .. } => Err(Error::InvalidBatchOperation(
+                | GroveOp::BulkAppend { .. }
+                | GroveOp::DenseTreeInsert { .. } => Err(Error::InvalidBatchOperation(
                     "references can not point to trees being updated",
                 ))
                 .wrap_with_cost(cost),
@@ -1244,10 +1265,13 @@ where
                         | Element::ProvableCountSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
-                        | Element::BulkAppendTree(..) => Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost),
+                        | Element::BulkAppendTree(..)
+                        | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            Err(Error::InvalidBatchOperation(
+                                "references can not point to trees being updated",
+                            ))
+                            .wrap_with_cost(cost)
+                        }
                     }
                 }
                 GroveOp::InsertOnly { element } => match element {
@@ -1282,10 +1306,13 @@ where
                     | Element::ProvableCountSumTree(..)
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
-                    | Element::BulkAppendTree(..) => Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost),
+                    | Element::BulkAppendTree(..)
+                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                        Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost)
+                    }
                 },
                 GroveOp::RefreshReference {
                     reference_path_type,
@@ -1463,7 +1490,8 @@ where
                     | Element::ProvableCountSumTree(..)
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
-                    | Element::BulkAppendTree(..) => {
+                    | Element::BulkAppendTree(..)
+                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
                         let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
@@ -1763,6 +1791,12 @@ where
                     ))
                     .wrap_with_cost(cost);
                 }
+                GroveOp::DenseTreeInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "DenseTreeInsert should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
             }
         }
 
@@ -1841,7 +1875,8 @@ where
                                     | Element::ProvableCountSumTree(..)
                                     | Element::CommitmentTree(..)
                                     | Element::MmrTree(..)
-                                    | Element::BulkAppendTree(..) => {
+                                    | Element::BulkAppendTree(..)
+                                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
                                         let tree_type = new_element.tree_type().unwrap();
                                         let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
@@ -2179,6 +2214,28 @@ impl GroveDb {
                                                                     *epoch_size,
                                                                 )),
                                                             }
+                                                    } else if let
+                                                        Element::DenseAppendOnlyFixedSizeTree(
+                                                            _,
+                                                            dense_root,
+                                                            count,
+                                                            _height,
+                                                            flags,
+                                                        ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                sinsemilla_root:
+                                                                    Some(*dense_root),
+                                                                // height is immutable
+                                                                bulk_state: Some((
+                                                                    *count, 0,
+                                                                )),
+                                                            }
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -2218,6 +2275,13 @@ impl GroveDb {
                                                 GroveOp::BulkAppend { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "BulkAppend ops should have been \
+                                                         preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
+                                                GroveOp::DenseTreeInsert { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "DenseTreeInsert ops should have been \
                                                          preprocessed",
                                                     ))
                                                     .wrap_with_cost(cost);
@@ -2668,6 +2732,13 @@ impl GroveDb {
             self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
+        // Preprocess DenseTreeInsert ops: execute dense tree operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
         //    one subtree and moved to another then add propagation operation to the
@@ -2804,6 +2875,12 @@ impl GroveDb {
         let ops = cost_return_on_error!(
             &mut cost,
             self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess DenseTreeInsert ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();

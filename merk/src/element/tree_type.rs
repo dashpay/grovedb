@@ -52,6 +52,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
             Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
             Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
+            Element::DenseAppendOnlyFixedSizeTree(root_key, ..) => {
+                Some((root_key, TreeType::DenseAppendOnlyFixedSizeTree))
+            }
             _ => None,
         }
     }
@@ -74,6 +77,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
             Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
             Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
+            Element::DenseAppendOnlyFixedSizeTree(root_key, ..) => {
+                Some((root_key, TreeType::DenseAppendOnlyFixedSizeTree))
+            }
             _ => None,
         }
     }
@@ -93,6 +99,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CommitmentTree(_, _, _, flags) => Some((flags, TreeType::CommitmentTree)),
             Element::MmrTree(_, _, _, flags) => Some((flags, TreeType::MmrTree)),
             Element::BulkAppendTree(_, _, _, _, flags) => Some((flags, TreeType::BulkAppendTree)),
+            Element::DenseAppendOnlyFixedSizeTree(_, _, _, _, flags) => {
+                Some((flags, TreeType::DenseAppendOnlyFixedSizeTree))
+            }
             _ => None,
         }
     }
@@ -110,6 +119,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CommitmentTree(..) => Some(TreeType::CommitmentTree),
             Element::MmrTree(..) => Some(TreeType::MmrTree),
             Element::BulkAppendTree(..) => Some(TreeType::BulkAppendTree),
+            Element::DenseAppendOnlyFixedSizeTree(..) => {
+                Some(TreeType::DenseAppendOnlyFixedSizeTree)
+            }
             _ => None,
         }
     }
@@ -132,6 +144,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::CommitmentTree(_, _, count, _) => Some(CountedMerkNode(*count)),
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
+            Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
             _ => None,
         }
     }
@@ -149,6 +162,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::CommitmentTree(..) => MaybeTree::Tree(TreeType::CommitmentTree),
             Element::MmrTree(..) => MaybeTree::Tree(TreeType::MmrTree),
             Element::BulkAppendTree(..) => MaybeTree::Tree(TreeType::BulkAppendTree),
+            Element::DenseAppendOnlyFixedSizeTree(..) => {
+                MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree)
+            }
             _ => MaybeTree::NotTree,
         }
     }
@@ -174,6 +190,7 @@ impl ElementTreeTypeExtensions for Element {
             }
             TreeType::MmrTree => Ok(BasicMerkNode),
             TreeType::BulkAppendTree => Ok(BasicMerkNode),
+            TreeType::DenseAppendOnlyFixedSizeTree => Ok(BasicMerkNode),
         }
     }
 }

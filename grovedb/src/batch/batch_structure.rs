@@ -136,6 +136,7 @@ where
                 GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
+                | GroveOp::DenseTreeInsert { .. }
                 | GroveOp::ReplaceTreeRootKey { .. } => {
                     // CommitmentTreeInsert is preprocessed into item inserts
                     // + ReplaceTreeRootKey before batch execution.

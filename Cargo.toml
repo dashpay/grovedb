@@ -16,4 +16,5 @@ members = [
     "grovedb-commitment-tree",
     "grovedb-mmr",
     "grovedb-bulk-append-tree",
+    "grovedb-dense-fixed-sized-merkle-tree",
 ]

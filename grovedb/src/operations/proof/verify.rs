@@ -401,10 +401,10 @@ impl GroveDb {
         // The merk proof at this layer must be Merk type
         let merk_proof_bytes = match &layer_proof.merk_proof {
             ProofBytes::Merk(bytes) => bytes,
-            ProofBytes::MMR(_) | ProofBytes::BulkAppendTree(_) => {
+            ProofBytes::MMR(_) | ProofBytes::BulkAppendTree(_) | ProofBytes::DenseTree(_) => {
                 return Err(Error::InvalidProof(
                     query.clone(),
-                    "Expected Merk proof at this layer, got MMR or BulkAppendTree".to_string(),
+                    "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
                 ));
             }
         };
@@ -466,7 +466,8 @@ impl GroveDb {
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::CommitmentTree(Some(_), ..)
                             | Element::MmrTree(..)
-                            | Element::BulkAppendTree(..) => {
+                            | Element::BulkAppendTree(..)
+                            | Element::DenseAppendOnlyFixedSizeTree(..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -528,6 +529,17 @@ impl GroveDb {
                                         ProofBytes::BulkAppendTree(bulk_bytes) => {
                                             Self::verify_bulk_append_lower_layer(
                                                 bulk_bytes,
+                                                &element,
+                                                &path,
+                                                limit_left,
+                                                result,
+                                                query,
+                                                grove_version,
+                                            )?
+                                        }
+                                        ProofBytes::DenseTree(dense_bytes) => {
+                                            Self::verify_dense_tree_lower_layer(
+                                                dense_bytes,
                                                 &element,
                                                 &path,
                                                 limit_left,
@@ -750,6 +762,95 @@ impl GroveDb {
         }
 
         // BulkAppendTree has no child Merk - return NULL_HASH
+        Ok([0u8; 32])
+    }
+
+    /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.
+    /// Returns NULL_HASH since DenseTree has no child Merk.
+    fn verify_dense_tree_lower_layer<T>(
+        dense_bytes: &[u8],
+        element: &Element,
+        path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        // Extract the root hash, count, and height from the authenticated element
+        let (dense_root, element_count, element_height) = match element {
+            Element::DenseAppendOnlyFixedSizeTree(_, root_hash, count, height, _) => {
+                (*root_hash, *count, *height)
+            }
+            _ => {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    "DenseTree proof attached to non-DenseTree element".to_string(),
+                ))
+            }
+        };
+
+        let dense_proof =
+            grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof::decode_from_slice(dense_bytes)
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        // Cross-validate the proof's height and count against the Element's
+        // authenticated values to prevent count/height manipulation attacks.
+        let (proof_height, proof_count) = dense_proof.height_and_count();
+        if proof_height != element_height {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "proof height {} doesn't match element height {}",
+                    proof_height, element_height
+                ),
+            ));
+        }
+        if proof_count != element_count {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "proof count {} doesn't match element count {}",
+                    proof_count, element_count
+                ),
+            ));
+        }
+
+        let verified_entries = dense_proof
+            .verify(&dense_root)
+            .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Add each verified entry to the result set
+        for (position, value) in verified_entries {
+            let key = position.to_be_bytes().to_vec();
+            let elem = Element::new_item(value);
+            let serialized = elem.serialize(grove_version).map_err(|e| {
+                Error::CorruptedData(format!(
+                    "failed to serialize DenseTree entry element: {}",
+                    e
+                ))
+            })?;
+
+            let path_key_optional_value = ProvedPathKeyOptionalValue {
+                path: path.iter().map(|p| p.to_vec()).collect(),
+                key,
+                value: Some(serialized),
+                proof: [0u8; 32],
+            };
+            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
+            if limit_left == &Some(0) {
+                break;
+            }
+        }
+
+        // DenseTree has no child Merk - return NULL_HASH
         Ok([0u8; 32])
     }
 
@@ -1102,6 +1203,7 @@ impl GroveDb {
                             | Element::CommitmentTree(None, ..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
+                            | Element::DenseAppendOnlyFixedSizeTree(..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)

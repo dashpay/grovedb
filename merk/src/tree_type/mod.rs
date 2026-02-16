@@ -28,6 +28,7 @@ pub enum TreeType {
     CommitmentTree = 7,
     MmrTree = 8,
     BulkAppendTree = 9,
+    DenseAppendOnlyFixedSizeTree = 10,
 }
 
 impl TryFrom<u8> for TreeType {
@@ -45,7 +46,8 @@ impl TryFrom<u8> for TreeType {
             7 => Ok(TreeType::CommitmentTree),
             8 => Ok(TreeType::MmrTree),
             9 => Ok(TreeType::BulkAppendTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 9", n))),
+            10 => Ok(TreeType::DenseAppendOnlyFixedSizeTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 10", n))),
         }
     }
 }
@@ -63,6 +65,7 @@ impl fmt::Display for TreeType {
             TreeType::CommitmentTree => "Commitment Tree",
             TreeType::MmrTree => "MMR Tree",
             TreeType::BulkAppendTree => "BulkAppendTree",
+            TreeType::DenseAppendOnlyFixedSizeTree => "Dense Tree",
         };
         write!(f, "{}", s)
     }
@@ -81,6 +84,7 @@ impl TreeType {
             TreeType::CommitmentTree => false,
             TreeType::MmrTree => false,
             TreeType::BulkAppendTree => false,
+            TreeType::DenseAppendOnlyFixedSizeTree => false,
         }
     }
 
@@ -97,6 +101,7 @@ impl TreeType {
             TreeType::CommitmentTree => NodeType::CountNode,
             TreeType::MmrTree => NodeType::NormalNode,
             TreeType::BulkAppendTree => NodeType::NormalNode,
+            TreeType::DenseAppendOnlyFixedSizeTree => NodeType::NormalNode,
         }
     }
 
@@ -112,6 +117,7 @@ impl TreeType {
             TreeType::CommitmentTree => TreeFeatureType::CountedMerkNode(0),
             TreeType::MmrTree => TreeFeatureType::BasicMerkNode,
             TreeType::BulkAppendTree => TreeFeatureType::BasicMerkNode,
+            TreeType::DenseAppendOnlyFixedSizeTree => TreeFeatureType::BasicMerkNode,
         }
     }
 
@@ -133,6 +139,9 @@ impl TreeType {
             TreeType::CommitmentTree => Some(ElementType::CommitmentTree),
             TreeType::MmrTree => Some(ElementType::MmrTree),
             TreeType::BulkAppendTree => Some(ElementType::BulkAppendTree),
+            TreeType::DenseAppendOnlyFixedSizeTree => {
+                Some(ElementType::DenseAppendOnlyFixedSizeTree)
+            }
         }
     }
 }

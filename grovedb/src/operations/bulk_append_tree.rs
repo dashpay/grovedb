@@ -6,7 +6,7 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
-use grovedb_bulk_append_tree::{BulkAppendTree, BulkStore};
+use grovedb_bulk_append_tree::{BulkAppendTree, BulkStore, CachedBulkStore};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
@@ -26,14 +26,14 @@ use crate::{
 
 /// Adapter implementing `BulkStore` for a GroveDB `StorageContext`.
 ///
-/// Wraps `get_aux`/`put_aux`/`delete_aux` calls and accumulates their
-/// `OperationCost` in a `RefCell` for later retrieval.
-struct AuxBulkStore<'a, C> {
+/// Wraps normal `get`/`put`/`delete` calls (data storage, not aux) and
+/// accumulates their `OperationCost` in a `RefCell` for later retrieval.
+struct DataBulkStore<'a, C> {
     ctx: &'a C,
     cost: RefCell<OperationCost>,
 }
 
-impl<'a, C> AuxBulkStore<'a, C> {
+impl<'a, C> DataBulkStore<'a, C> {
     fn new(ctx: &'a C) -> Self {
         Self {
             ctx,
@@ -46,9 +46,9 @@ impl<'a, C> AuxBulkStore<'a, C> {
     }
 }
 
-impl<'db, C: StorageContext<'db>> BulkStore for AuxBulkStore<'_, C> {
+impl<'db, C: StorageContext<'db>> BulkStore for DataBulkStore<'_, C> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        let result = self.ctx.get_aux(key);
+        let result = self.ctx.get(key);
         let mut c = self.cost.borrow_mut();
         match result.unwrap_add_cost(&mut c) {
             Ok(v) => Ok(v),
@@ -57,7 +57,7 @@ impl<'db, C: StorageContext<'db>> BulkStore for AuxBulkStore<'_, C> {
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        let result = self.ctx.put_aux(key, value, None);
+        let result = self.ctx.put(key, value, None, None);
         let mut c = self.cost.borrow_mut();
         match result.unwrap_add_cost(&mut c) {
             Ok(()) => Ok(()),
@@ -66,7 +66,7 @@ impl<'db, C: StorageContext<'db>> BulkStore for AuxBulkStore<'_, C> {
     }
 
     fn delete(&self, key: &[u8]) -> Result<(), String> {
-        let result = self.ctx.delete_aux(key, None);
+        let result = self.ctx.delete(key, None);
         let mut c = self.cost.borrow_mut();
         match result.unwrap_add_cost(&mut c) {
             Ok(()) => Ok(()),
@@ -129,7 +129,7 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         // 3. Load tree, append, persist
-        let store = AuxBulkStore::new(&storage_ctx);
+        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let mut tree = cost_return_on_error_no_add!(
             cost,
             BulkAppendTree::load_from_store(&store, total_count, epoch_size).map_err(map_bulk_err)
@@ -139,7 +139,7 @@ impl GroveDb {
             cost_return_on_error_no_add!(cost, tree.append(&store, &value).map_err(map_bulk_err));
 
         cost.hash_node_calls += result.hash_count;
-        cost += store.take_cost();
+        cost += store.into_inner().take_cost();
 
         let new_state_root = result.state_root;
         let new_total_count = tree.total_count();
@@ -247,7 +247,7 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = AuxBulkStore::new(&storage_ctx);
+        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
             BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]).map_err(map_bulk_err)
@@ -257,7 +257,7 @@ impl GroveDb {
             tree.get_value(&store, global_position)
                 .map_err(map_bulk_err)
         );
-        cost += store.take_cost();
+        cost += store.into_inner().take_cost();
 
         Ok(result).wrap_with_cost(cost)
     }
@@ -304,7 +304,7 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = AuxBulkStore::new(&storage_ctx);
+        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
             BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]).map_err(map_bulk_err)
@@ -313,7 +313,7 @@ impl GroveDb {
             cost,
             tree.get_epoch(&store, epoch_index).map_err(map_bulk_err)
         );
-        cost += store.take_cost();
+        cost += store.into_inner().take_cost();
 
         Ok(result).wrap_with_cost(cost)
     }
@@ -358,14 +358,14 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = AuxBulkStore::new(&storage_ctx);
+        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
             BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]).map_err(map_bulk_err)
         );
         let result =
             cost_return_on_error_no_add!(cost, tree.get_buffer(&store).map_err(map_bulk_err));
-        cost += store.take_cost();
+        cost += store.into_inner().take_cost();
 
         Ok(result).wrap_with_cost(cost)
     }
@@ -506,7 +506,7 @@ impl GroveDb {
                 .get_transactional_storage_context(st_path, Some(batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
-            let store = AuxBulkStore::new(&storage_ctx);
+            let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
 
             // Load tree from store
             let mut tree = cost_return_on_error_no_add!(
@@ -541,7 +541,7 @@ impl GroveDb {
             cost.hash_node_calls += 1;
 
             // Accumulate storage costs
-            cost += store.take_cost();
+            cost += store.into_inner().take_cost();
 
             let current_total_count = tree.total_count();
 
