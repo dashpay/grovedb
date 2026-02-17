@@ -190,6 +190,8 @@ pub use grovedb_merk::estimated_costs::{
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_merk::proofs::query::SubqueryBranch;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::VerifyOptions;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
@@ -792,8 +794,8 @@ impl GroveDb {
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
         aggregate_data: AggregateData,
-        sinsemilla_root_override: Option<[u8; 32]>,
-        mmr_size_override: Option<u64>,
+        custom_root_override: Option<[u8; 32]>,
+        custom_count_override: Option<u64>,
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -948,8 +950,8 @@ impl GroveDb {
                 ) = element
                 {
                     // Use override if provided (from preprocessing), else preserve
-                    let sr = sinsemilla_root_override.unwrap_or(existing_sr);
-                    let total_count = mmr_size_override.unwrap_or(existing_total_count);
+                    let sr = custom_root_override.unwrap_or(existing_sr);
+                    let total_count = custom_count_override.unwrap_or(existing_total_count);
                     let tree = Element::new_commitment_tree_with_all(
                         maybe_root_key,
                         sr,
@@ -980,8 +982,8 @@ impl GroveDb {
                 } else if let Element::MmrTree(_, existing_mmr_root, existing_mmr_size, flag) =
                     element
                 {
-                    let mmr_root = sinsemilla_root_override.unwrap_or(existing_mmr_root);
-                    let mmr_size = mmr_size_override.unwrap_or(existing_mmr_size);
+                    let mmr_root = custom_root_override.unwrap_or(existing_mmr_root);
+                    let mmr_size = custom_count_override.unwrap_or(existing_mmr_size);
                     let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
@@ -1005,8 +1007,8 @@ impl GroveDb {
                     flag,
                 ) = element
                 {
-                    let state_root = sinsemilla_root_override.unwrap_or(existing_state_root);
-                    let total_count = mmr_size_override.unwrap_or(existing_total_count);
+                    let state_root = custom_root_override.unwrap_or(existing_state_root);
+                    let total_count = custom_count_override.unwrap_or(existing_total_count);
                     let tree = Element::new_bulk_append_tree(
                         state_root,
                         total_count,
@@ -1035,8 +1037,8 @@ impl GroveDb {
                     flag,
                 ) = element
                 {
-                    let dense_root = sinsemilla_root_override.unwrap_or(existing_dense_root);
-                    let count = mmr_size_override.unwrap_or(existing_count);
+                    let dense_root = custom_root_override.unwrap_or(existing_dense_root);
+                    let count = custom_count_override.unwrap_or(existing_count);
                     let tree = Element::new_dense_tree(dense_root, count, existing_height, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,

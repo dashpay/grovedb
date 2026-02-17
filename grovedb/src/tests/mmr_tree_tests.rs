@@ -8,8 +8,9 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::QualifiedGroveDbOp,
+    operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element,
+    Element, Error,
 };
 
 // ---------------------------------------------------------------------------
@@ -1060,4 +1061,208 @@ fn test_mmr_tree_leaf_count_wrong_type() {
         .mmr_tree_leaf_count(EMPTY_PATH, b"tree", None, grove_version)
         .unwrap();
     assert!(result.is_err(), "should fail on non-MMR element");
+}
+
+// ===========================================================================
+// Delete tests
+// ===========================================================================
+
+#[test]
+fn test_mmr_tree_delete_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Delete with default options (empty tree, so this should succeed)
+    db.delete(EMPTY_PATH, b"mmr", None, None, grove_version)
+        .unwrap()
+        .expect("should delete empty mmr tree");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"mmr", None, grove_version).unwrap();
+    assert!(result.is_err(), "mmr tree should no longer exist");
+}
+
+#[test]
+fn test_mmr_tree_delete_non_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Append 3 values
+    for i in 0..3u8 {
+        db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // Delete with allow_deleting_non_empty_trees
+    db.delete(
+        EMPTY_PATH,
+        b"mmr",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete non-empty mmr tree");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"mmr", None, grove_version).unwrap();
+    assert!(result.is_err(), "mmr tree should no longer exist");
+}
+
+#[test]
+fn test_mmr_tree_delete_non_empty_error() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Append values to make it non-empty
+    for i in 0..3u8 {
+        db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // Delete without allowing non-empty trees (default options)
+    let result = db
+        .delete(EMPTY_PATH, b"mmr", None, None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::DeletingNonEmptyTree(_))),
+        "should return DeletingNonEmptyTree error, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_mmr_tree_delete_and_recreate() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Append 3 values
+    for i in 0..3u8 {
+        db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // Delete with allow
+    db.delete(
+        EMPTY_PATH,
+        b"mmr",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete non-empty mmr tree");
+
+    // Recreate empty MmrTree
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("recreate mmr tree");
+
+    // Append a new value
+    db.mmr_tree_append(EMPTY_PATH, b"mmr", b"fresh".to_vec(), None, grove_version)
+        .unwrap()
+        .expect("append to recreated tree");
+
+    // Leaf count should be 1 (fresh start)
+    let count = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"mmr", None, grove_version)
+        .unwrap()
+        .expect("leaf count after recreate");
+    assert_eq!(count, 1, "recreated tree should have only 1 leaf");
+}
+
+// ===========================================================================
+// verify_grovedb tests
+// ===========================================================================
+
+#[test]
+fn test_verify_grovedb_mmr_tree_valid() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Append some values
+    for i in 0..5u8 {
+        db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // verify_grovedb should report no issues
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
 }

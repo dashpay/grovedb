@@ -57,9 +57,11 @@ pub use orchard::bundle::{Authorized, Flags};
 pub use orchard::circuit::{ProvingKey, VerifyingKey};
 // Key management
 pub use orchard::keys::{
-    FullViewingKey, IncomingViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey,
-    SpendValidatingKey, SpendingKey,
+    FullViewingKey, IncomingViewingKey, OutgoingViewingKey, PreparedIncomingViewingKey, Scope,
+    SpendAuthorizingKey, SpendValidatingKey, SpendingKey,
 };
+// Compact note size constant (52 bytes, same for all memo sizes)
+pub use orchard::memo::COMPACT_NOTE_SIZE;
 // Memo size types for Dash 36-byte memos
 pub use orchard::memo::{DashMemo, MemoSize};
 // Note types (orchard::Address aliased to avoid conflict with incrementalmerkletree::Address)
@@ -68,6 +70,8 @@ pub use orchard::note::RandomSeed;
 pub use orchard::note::TransmittedNoteCiphertext;
 // Orchard tree types
 pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
+// Note encryption / trial decryption
+pub use orchard::note_encryption::{CompactAction, OrchardDomain};
 pub use orchard::{
     note::Rho,
     primitives::redpallas,
@@ -78,6 +82,10 @@ pub use orchard::{
 use thiserror::Error;
 // Byte wrapper for constructing note ciphertexts
 pub use zcash_note_encryption::note_bytes::NoteBytesData;
+// Trial decryption functions and traits
+pub use zcash_note_encryption::{
+    try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
+};
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
 /// parameter.

@@ -7,8 +7,9 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::QualifiedGroveDbOp,
+    operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element,
+    Element, Error,
 };
 
 // ===========================================================================
@@ -866,4 +867,232 @@ fn test_dense_tree_multiple_trees_independent() {
         .expect("hash dense_b");
 
     assert_ne!(a_hash, b_hash);
+}
+
+// ===========================================================================
+// Delete tests
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_delete_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Delete with default options (empty tree, should succeed)
+    db.delete(EMPTY_PATH, b"dense", None, None, grove_version)
+        .unwrap()
+        .expect("should delete empty dense tree");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"dense", None, grove_version).unwrap();
+    assert!(result.is_err(), "dense tree should no longer exist");
+}
+
+#[test]
+fn test_dense_tree_delete_non_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Insert 3 values
+    for i in 0..3u8 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("val_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert value");
+    }
+
+    // Delete with allow_deleting_non_empty_trees
+    db.delete(
+        EMPTY_PATH,
+        b"dense",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete non-empty dense tree");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"dense", None, grove_version).unwrap();
+    assert!(result.is_err(), "dense tree should no longer exist");
+}
+
+#[test]
+fn test_dense_tree_delete_non_empty_error() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Insert values to make it non-empty
+    for i in 0..3u8 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("val_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert value");
+    }
+
+    // Delete without allowing non-empty trees (default options)
+    let result = db
+        .delete(EMPTY_PATH, b"dense", None, None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::DeletingNonEmptyTree(_))),
+        "should return DeletingNonEmptyTree error, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_dense_tree_delete_and_recreate() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Insert values
+    for i in 0..3u8 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("val_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert value");
+    }
+
+    // Delete with allow
+    db.delete(
+        EMPTY_PATH,
+        b"dense",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete non-empty dense tree");
+
+    // Recreate
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("recreate dense tree");
+
+    // Insert a single value
+    db.dense_tree_insert(EMPTY_PATH, b"dense", b"fresh".to_vec(), None, grove_version)
+        .unwrap()
+        .expect("insert into recreated tree");
+
+    // Count should be 1 (fresh start)
+    let count = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count after recreate");
+    assert_eq!(count, 1, "recreated tree should have only 1 entry");
+}
+
+// ===========================================================================
+// verify_grovedb tests
+// ===========================================================================
+
+#[test]
+fn test_verify_grovedb_dense_tree_valid() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Insert some values
+    for i in 0..4u8 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("val_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert value");
+    }
+
+    // verify_grovedb should report no issues
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
 }

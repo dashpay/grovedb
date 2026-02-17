@@ -89,7 +89,13 @@ use crate::{
 /// Operations
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum GroveOp {
-    /// Replace tree root key
+    /// Replace tree root key.
+    ///
+    /// Used by preprocessing to update an existing tree's metadata. Carries
+    /// `custom_count` for the updated entry count (non-Merk trees only).
+    /// Does NOT carry `non_merk_tree_type` because the existing element is
+    /// read from the parent Merk during `update_tree_item_preserve_flag`,
+    /// so the tree type is already known.
     ReplaceTreeRootKey {
         /// Hash
         hash: [u8; 32],
@@ -97,13 +103,17 @@ pub enum GroveOp {
         root_key: Option<Vec<u8>>,
         /// Aggregate data
         aggregate_data: AggregateData,
-        /// Sinsemilla root for CommitmentTree updates (None for other tree
-        /// types)
-        sinsemilla_root: Option<[u8; 32]>,
-        /// MMR size for MmrTree updates (None for other tree types)
-        mmr_size: Option<u64>,
-        /// BulkAppendTree state: (total_count, epoch_size) — None for other
-        /// tree types
+        /// Custom root hash for non-Merk tree types (sinsemilla root for
+        /// CommitmentTree, MMR root for MmrTree, state root for
+        /// BulkAppendTree, dense root for DenseTree). None for standard
+        /// aggregate trees.
+        custom_root: Option<[u8; 32]>,
+        /// Custom count for non-Merk tree types (total_count for
+        /// MmrTree/CommitmentTree/BulkAppendTree, count for DenseTree).
+        /// None for standard aggregate trees.
+        custom_count: Option<u64>,
+        /// BulkAppendTree/CommitmentTree state: (total_count, epoch_size).
+        /// None for other tree types.
         bulk_state: Option<(u64, u32)>,
     },
     /// Inserts an element that is known to not yet exist
@@ -128,7 +138,14 @@ pub enum GroveOp {
         /// Byte change
         change_in_bytes: i32,
     },
-    /// Insert tree with root hash
+    /// Insert tree with root hash.
+    ///
+    /// Created during batch propagation from an `InsertOrReplace`/`InsertOnly`
+    /// occupied entry when a child subtree's root hash is propagated upward.
+    /// Always represents a **newly created** tree, so counts are always 0.
+    /// Does NOT carry `custom_count` because new trees start empty — append
+    /// operations go through preprocessing and produce `ReplaceTreeRootKey`
+    /// (which does carry `custom_count`).
     InsertTreeWithRootHash {
         /// Hash
         hash: [u8; 32],
@@ -138,11 +155,17 @@ pub enum GroveOp {
         flags: Option<ElementFlags>,
         /// Aggregate Data such as sum
         aggregate_data: AggregateData,
-        /// Sinsemilla root for CommitmentTree (None for other tree types)
-        sinsemilla_root: Option<[u8; 32]>,
-        /// BulkAppendTree state: (total_count, epoch_size) — None for other
-        /// tree types
+        /// Custom root hash for non-Merk tree types (sinsemilla root for
+        /// CommitmentTree, MMR root for MmrTree, state root for
+        /// BulkAppendTree, dense root for DenseTree). None for standard
+        /// aggregate trees.
+        custom_root: Option<[u8; 32]>,
+        /// BulkAppendTree/CommitmentTree state: (total_count, epoch_size).
+        /// None for other tree types.
         bulk_state: Option<(u64, u32)>,
+        /// Explicit tree type for non-Merk trees to prevent type confusion.
+        /// None means infer from aggregate_data (standard Merk trees).
+        non_merk_tree_type: Option<TreeType>,
     },
     /// Refresh the reference with information provided
     /// Providing this information is necessary to be able to calculate
@@ -1663,8 +1686,8 @@ where
                     hash,
                     root_key,
                     aggregate_data,
-                    sinsemilla_root,
-                    mmr_size,
+                    custom_root,
+                    custom_count,
                     ..
                 } => {
                     let merk = self.merks.get(path).expect("the Merk is cached");
@@ -1676,8 +1699,8 @@ where
                             root_key,
                             hash,
                             aggregate_data,
-                            sinsemilla_root,
-                            mmr_size,
+                            custom_root,
+                            custom_count,
                             &mut batch_operations,
                             grove_version
                         )
@@ -1688,72 +1711,81 @@ where
                     root_key,
                     flags,
                     aggregate_data,
-                    sinsemilla_root,
+                    custom_root,
                     bulk_state,
+                    non_merk_tree_type,
                 } => {
-                    let element = if let Some(sr) = sinsemilla_root {
-                        if let Some((total_count, epoch_size)) = bulk_state {
-                            // CommitmentTree: has sinsemilla_root + bulk_state
-                            Element::new_commitment_tree_with_all(
-                                root_key,
-                                sr,
-                                total_count,
-                                epoch_size,
-                                flags,
-                            )
-                        } else {
-                            // MmrTree: has sinsemilla_root but no bulk_state
-                            Element::MmrTree(root_key, sr, 0, flags)
+                    // Use explicit tree type when available to avoid
+                    // ambiguity between non-Merk tree types.
+                    let element = match non_merk_tree_type {
+                        Some(TreeType::CommitmentTree) => {
+                            let sr = custom_root.unwrap_or([0u8; 32]);
+                            let (tc, es) = bulk_state.unwrap_or((0, 0));
+                            Element::new_commitment_tree_with_all(root_key, sr, tc, es, flags)
                         }
-                    } else if let Some((total_count, epoch_size)) = bulk_state {
-                        // BulkAppendTree: has bulk_state but no sinsemilla_root
-                        Element::BulkAppendTree(root_key, [0u8; 32], total_count, epoch_size, flags)
-                    } else {
-                        match aggregate_data {
-                        AggregateData::NoAggregateData => {
-                            Element::new_tree_with_flags(root_key, flags)
+                        Some(TreeType::MmrTree) => {
+                            let mr = custom_root.unwrap_or([0u8; 32]);
+                            Element::MmrTree(root_key, mr, 0, flags)
                         }
-                        AggregateData::Sum(sum_value) => {
-                            Element::new_sum_tree_with_flags_and_sum_value(
-                                root_key, sum_value, flags,
-                            )
+                        Some(TreeType::BulkAppendTree) => {
+                            let sr = custom_root.unwrap_or([0u8; 32]);
+                            let (tc, es) = bulk_state.unwrap_or((0, 0));
+                            Element::BulkAppendTree(root_key, sr, tc, es, flags)
                         }
-                        AggregateData::BigSum(sum_value) => {
-                            Element::new_big_sum_tree_with_flags_and_sum_value(
-                                root_key, sum_value, flags,
-                            )
+                        Some(TreeType::DenseAppendOnlyFixedSizeTree) => {
+                            let dr = custom_root.unwrap_or([0u8; 32]);
+                            let (count, height_u32) = bulk_state.unwrap_or((0, 0));
+                            Element::new_dense_tree(dr, count, height_u32 as u8, flags)
                         }
-                        AggregateData::Count(count_value) => {
-                            Element::new_count_tree_with_flags_and_count_value(
-                                root_key,
-                                count_value,
-                                flags,
-                            )
+                        Some(_) | None => {
+                            // Standard aggregate trees — infer from
+                            // aggregate_data
+                            match aggregate_data {
+                                AggregateData::NoAggregateData => {
+                                    Element::new_tree_with_flags(root_key, flags)
+                                }
+                                AggregateData::Sum(sum_value) => {
+                                    Element::new_sum_tree_with_flags_and_sum_value(
+                                        root_key, sum_value, flags,
+                                    )
+                                }
+                                AggregateData::BigSum(sum_value) => {
+                                    Element::new_big_sum_tree_with_flags_and_sum_value(
+                                        root_key, sum_value, flags,
+                                    )
+                                }
+                                AggregateData::Count(count_value) => {
+                                    Element::new_count_tree_with_flags_and_count_value(
+                                        root_key,
+                                        count_value,
+                                        flags,
+                                    )
+                                }
+                                AggregateData::CountAndSum(count_value, sum_value) => {
+                                    Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                                        root_key,
+                                        count_value,
+                                        sum_value,
+                                        flags,
+                                    )
+                                }
+                                AggregateData::ProvableCount(count_value) => {
+                                    Element::new_provable_count_tree_with_flags_and_count_value(
+                                        root_key,
+                                        count_value,
+                                        flags,
+                                    )
+                                }
+                                AggregateData::ProvableCountAndSum(count_value, sum_value) => {
+                                    Element::ProvableCountSumTree(
+                                        root_key,
+                                        count_value,
+                                        sum_value,
+                                        flags,
+                                    )
+                                }
+                            }
                         }
-                        AggregateData::CountAndSum(count_value, sum_value) => {
-                            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::ProvableCount(count_value) => {
-                            Element::new_provable_count_tree_with_flags_and_count_value(
-                                root_key,
-                                count_value,
-                                flags,
-                            )
-                        }
-                        AggregateData::ProvableCountAndSum(count_value, sum_value) => {
-                            Element::new_provable_count_sum_tree_with_flags_and_sum_and_count_value(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
-                        }
-                    }
                     };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
@@ -2039,21 +2071,22 @@ impl GroveDb {
                                 let parent_path = KeyInfoPath(parent_path.to_vec());
                                 if let Some(ops_on_path) = ops_at_level_above.get_mut(&parent_path)
                                 {
+                                    use TreeType::DenseAppendOnlyFixedSizeTree as DenseTreeType;
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
                                             vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
                                                 hash: root_hash,
                                                 root_key: calculated_root_key,
                                                 aggregate_data,
-                                                sinsemilla_root: None,
-                                                mmr_size: None,
+                                                custom_root: None,
+                                                custom_count: None,
                                                 bulk_state: None,
                                             });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
                                             match mutable_occupied_entry {
-                                                // `..` preserves sinsemilla_root
+                                                // `..` preserves custom_root/custom_count
                                                 GroveOp::ReplaceTreeRootKey {
                                                     hash,
                                                     root_key,
@@ -2074,6 +2107,8 @@ impl GroveDb {
                                                 | GroveOp::InsertOnly { element }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::Patch { element, .. } => {
+                                                    // Extract flags and non-Merk metadata
+                                                    // from the element for InsertTreeWithRootHash.
                                                     if let Element::Tree(_, flags) = element {
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertTreeWithRootHash {
@@ -2082,8 +2117,9 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data:
                                                                     AggregateData::NoAggregateData,
-                                                                sinsemilla_root: None,
+                                                                custom_root: None,
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::SumTree(.., flags) =
                                                         element
@@ -2094,8 +2130,9 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: None,
+                                                                custom_root: None,
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::BigSumTree(.., flags) =
                                                         element
@@ -2106,8 +2143,9 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: None,
+                                                                custom_root: None,
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::CountTree(.., flags) =
                                                         element
@@ -2118,8 +2156,9 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: None,
+                                                                custom_root: None,
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::CountSumTree(.., flags) =
                                                         element
@@ -2130,8 +2169,9 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: None,
+                                                                custom_root: None,
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::ProvableCountTree(
                                                         ..,
@@ -2144,8 +2184,9 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: None,
+                                                                custom_root: None,
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::ProvableCountSumTree(
                                                         ..,
@@ -2158,8 +2199,9 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: None,
+                                                                custom_root: None,
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::CommitmentTree(
                                                         _,
@@ -2175,11 +2217,14 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: Some(*sr),
+                                                                custom_root: Some(*sr),
                                                                 bulk_state: Some((
                                                                     *total_count,
                                                                     *epoch_size,
                                                                 )),
+                                                                non_merk_tree_type: Some(
+                                                                    TreeType::CommitmentTree,
+                                                                ),
                                                             }
                                                     } else if let Element::MmrTree(
                                                         _,
@@ -2194,8 +2239,11 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: Some(*mmr_root),
+                                                                custom_root: Some(*mmr_root),
                                                                 bulk_state: None,
+                                                                non_merk_tree_type: Some(
+                                                                    TreeType::MmrTree,
+                                                                ),
                                                             }
                                                     } else if let Element::BulkAppendTree(
                                                         _,
@@ -2211,18 +2259,21 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root: Some(*state_root),
+                                                                custom_root: Some(*state_root),
                                                                 bulk_state: Some((
                                                                     *total_count,
                                                                     *epoch_size,
                                                                 )),
+                                                                non_merk_tree_type: Some(
+                                                                    TreeType::BulkAppendTree,
+                                                                ),
                                                             }
                                                     } else if let
                                                         Element::DenseAppendOnlyFixedSizeTree(
                                                             _,
                                                             dense_root,
                                                             count,
-                                                            _height,
+                                                            height,
                                                             flags,
                                                         ) = element
                                                     {
@@ -2232,12 +2283,14 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                sinsemilla_root:
-                                                                    Some(*dense_root),
-                                                                // height is immutable
+                                                                custom_root: Some(*dense_root),
                                                                 bulk_state: Some((
-                                                                    *count, 0,
+                                                                    *count,
+                                                                    *height as u32,
                                                                 )),
+                                                                non_merk_tree_type: Some(
+                                                                    DenseTreeType,
+                                                                ),
                                                             }
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
@@ -2301,8 +2354,8 @@ impl GroveDb {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
                                             aggregate_data,
-                                            sinsemilla_root: None,
-                                            mmr_size: None,
+                                            custom_root: None,
+                                            custom_count: None,
                                             bulk_state: None,
                                         },
                                     );
@@ -2316,8 +2369,8 @@ impl GroveDb {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
                                         aggregate_data,
-                                        sinsemilla_root: None,
-                                        mmr_size: None,
+                                        custom_root: None,
+                                        custom_count: None,
                                         bulk_state: None,
                                     },
                                 );
@@ -2497,7 +2550,54 @@ impl GroveDb {
                         )
                     );
                 }
-                _ => {}
+                GroveOp::MmrTreeAppend { value } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.mmr_tree_append(
+                            path_slices.as_slice(),
+                            op.key.as_slice(),
+                            value.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::BulkAppend { value } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.bulk_append(
+                            path_slices.as_slice(),
+                            op.key.as_slice(),
+                            value.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::DenseTreeInsert { value } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.dense_tree_insert(
+                            path_slices.as_slice(),
+                            op.key.as_slice(),
+                            value.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                _ => {
+                    return Err(Error::NotSupported(
+                        "operation not supported in apply_operations_without_batching".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
             }
         }
         Ok(()).wrap_with_cost(cost)
@@ -2742,6 +2842,22 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
+        // Collect non-Merk tree delete paths so we can clean up their
+        // data storage after apply_body.
+        let non_merk_delete_paths: Vec<(Vec<Vec<u8>>, TreeType)> = ops
+            .iter()
+            .filter_map(|op| {
+                if let GroveOp::DeleteTree(tree_type) = &op.op {
+                    if tree_type.uses_non_merk_data_storage() {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(op.key.as_slice().to_vec());
+                        return Some((child_path, *tree_type));
+                    }
+                }
+                None
+            })
+            .collect();
+
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
         //    one subtree and moved to another then add propagation operation to the
@@ -2771,6 +2887,52 @@ impl GroveDb {
                 grove_version
             )
         );
+
+        // Clean up data/aux storage for deleted non-Merk trees.
+        for (child_path, tree_type) in &non_merk_delete_paths {
+            let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+            // CommitmentTree stores Sinsemilla frontier in aux storage
+            if *tree_type == TreeType::CommitmentTree {
+                let ct_storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        child_subtree_path.clone(),
+                        Some(&storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    ct_storage
+                        .delete_aux(
+                            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
+                            None,
+                        )
+                        .map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "unable to clean up commitment tree aux in batch delete: {e}",
+                            ))
+                        })
+                );
+            }
+            // Clear data namespace for all non-Merk tree types
+            let mut storage = self
+                .db
+                .get_transactional_storage_context(
+                    child_subtree_path,
+                    Some(&storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up non-merk tree data in batch delete: {e}",
+                    ))
+                })
+            );
+        }
 
         // TODO: compute batch costs
         cost_return_on_error!(
@@ -2886,6 +3048,21 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
+        // Collect non-Merk tree delete paths for storage cleanup
+        let non_merk_delete_paths: Vec<(Vec<Vec<u8>>, TreeType)> = ops
+            .iter()
+            .filter_map(|op| {
+                if let GroveOp::DeleteTree(tree_type) = &op.op {
+                    if tree_type.uses_non_merk_data_storage() {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(op.key.as_slice().to_vec());
+                        return Some((child_path, *tree_type));
+                    }
+                }
+                None
+            })
+            .collect();
+
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();
         if batch_apply_options.batch_pause_height.is_none() {
             // we default to pausing at the root tree, which is the most common case
@@ -2969,6 +3146,50 @@ impl GroveDb {
                 grove_version
             )
         );
+
+        // Clean up data/aux storage for deleted non-Merk trees.
+        for (child_path, tree_type) in &non_merk_delete_paths {
+            let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+            if *tree_type == TreeType::CommitmentTree {
+                let ct_storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        child_subtree_path.clone(),
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    ct_storage
+                        .delete_aux(
+                            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
+                            None,
+                        )
+                        .map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "unable to clean up commitment tree aux in batch delete: {e}",
+                            ))
+                        })
+                );
+            }
+            let mut storage = self
+                .db
+                .get_transactional_storage_context(
+                    child_subtree_path,
+                    Some(&continue_storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up non-merk tree data in batch delete: {e}",
+                    ))
+                })
+            );
+        }
 
         // let's build the write batch
         let continued_pending_costs = cost_return_on_error!(

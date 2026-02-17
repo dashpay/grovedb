@@ -556,8 +556,8 @@ impl GroveDb {
                     hash: grovedb_merk::tree::NULL_HASH,
                     root_key: None,
                     aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
-                    sinsemilla_root: Some(new_state_root),
-                    mmr_size: Some(current_total_count),
+                    custom_root: Some(new_state_root),
+                    custom_count: Some(current_total_count),
                     bulk_state: Some((current_total_count, epoch_size)),
                 },
             };

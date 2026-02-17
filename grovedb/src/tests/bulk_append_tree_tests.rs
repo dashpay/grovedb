@@ -7,8 +7,9 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::QualifiedGroveDbOp,
+    operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element,
+    Element, Error,
 };
 
 /// Small epoch size for tests — triggers compaction after 4 appends.
@@ -1028,4 +1029,258 @@ fn test_bulk_get_value_out_of_range() {
 #[should_panic(expected = "power of 2")]
 fn test_bulk_invalid_epoch_size() {
     let _element = Element::empty_bulk_append_tree(3); // Not a power of 2
+}
+
+// ===========================================================================
+// Delete tests
+// ===========================================================================
+
+#[test]
+fn test_bulk_delete_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    // Delete with default options (empty tree, should succeed)
+    db.delete(EMPTY_PATH, b"bulk", None, None, grove_version)
+        .unwrap()
+        .expect("should delete empty bulk append tree");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"bulk", None, grove_version).unwrap();
+    assert!(result.is_err(), "bulk append tree should no longer exist");
+}
+
+#[test]
+fn test_bulk_delete_non_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    // Append 2 values (still in buffer, no compaction)
+    for i in 0..2u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // Delete with allow_deleting_non_empty_trees
+    db.delete(
+        EMPTY_PATH,
+        b"bulk",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete non-empty bulk append tree");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"bulk", None, grove_version).unwrap();
+    assert!(result.is_err(), "bulk append tree should no longer exist");
+}
+
+#[test]
+fn test_bulk_delete_non_empty_with_compaction() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    // Append 6 values (epoch_size=4 triggers 1 compaction, 2 remain in buffer)
+    for i in 0..6u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // Verify compaction happened
+    let epoch_count = db
+        .bulk_epoch_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("epoch count");
+    assert_eq!(epoch_count, 1, "should have 1 completed epoch");
+
+    // Delete with allow_deleting_non_empty_trees
+    db.delete(
+        EMPTY_PATH,
+        b"bulk",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete bulk tree with compacted epochs");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"bulk", None, grove_version).unwrap();
+    assert!(result.is_err(), "bulk append tree should no longer exist");
+}
+
+#[test]
+fn test_bulk_delete_non_empty_error() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    // Append values to make it non-empty
+    for i in 0..2u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // Delete without allowing non-empty trees (default options)
+    let result = db
+        .delete(EMPTY_PATH, b"bulk", None, None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::DeletingNonEmptyTree(_))),
+        "should return DeletingNonEmptyTree error, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_bulk_delete_and_recreate() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    // Append 5 values (1 epoch + 1 in buffer)
+    for i in 0..5u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // Delete with allow
+    db.delete(
+        EMPTY_PATH,
+        b"bulk",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete non-empty bulk append tree");
+
+    // Recreate with same epoch_size
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("recreate bulk append tree");
+
+    // Append 1 value
+    db.bulk_append(EMPTY_PATH, b"bulk", b"fresh".to_vec(), None, grove_version)
+        .unwrap()
+        .expect("append to recreated tree");
+
+    // Count should be 1 (fresh start)
+    let count = db
+        .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count after recreate");
+    assert_eq!(count, 1, "recreated tree should have only 1 entry");
+}
+
+// ===========================================================================
+// verify_grovedb tests
+// ===========================================================================
+
+#[test]
+fn test_verify_grovedb_bulk_tree_valid() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    // Append some values (including enough for at least one compaction)
+    for i in 0..6u8 {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append value");
+    }
+
+    // verify_grovedb should report no issues
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
 }

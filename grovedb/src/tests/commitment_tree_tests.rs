@@ -10,7 +10,7 @@ use crate::{
     batch::QualifiedGroveDbOp,
     operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element,
+    Element, Error,
 };
 
 /// Default epoch size for tests (large enough that compaction doesn't happen
@@ -1207,4 +1207,156 @@ fn test_verify_grovedb_commitment_tree_valid() {
         .verify_grovedb(None, true, false, grove_version)
         .expect("verify");
     assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
+}
+
+// ===========================================================================
+// Additional delete tests
+// ===========================================================================
+
+#[test]
+fn test_commitment_tree_delete_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"ct",
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Delete with default options (empty tree, should succeed since no notes
+    // appended)
+    db.delete(EMPTY_PATH, b"ct", None, None, grove_version)
+        .unwrap()
+        .expect("should delete empty commitment tree");
+
+    // Verify tree is gone
+    let result = db.get(EMPTY_PATH, b"ct", None, grove_version).unwrap();
+    assert!(result.is_err(), "commitment tree should no longer exist");
+}
+
+#[test]
+fn test_commitment_tree_delete_non_empty_error() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"ct",
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Append notes to make it non-empty
+    for i in 0..3u8 {
+        db.commitment_tree_insert(
+            EMPTY_PATH,
+            b"ct",
+            test_cmx(i + 1),
+            vec![i],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert note");
+    }
+
+    // Delete without allowing non-empty trees (default options)
+    let result = db
+        .delete(EMPTY_PATH, b"ct", None, None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::DeletingNonEmptyTree(_))),
+        "should return DeletingNonEmptyTree error, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_verify_grovedb_after_commitment_tree_delete() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a normal tree and a commitment tree as siblings
+    db.insert(
+        EMPTY_PATH,
+        b"sibling",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert sibling tree");
+
+    db.insert(
+        EMPTY_PATH,
+        b"ct",
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Append notes
+    for i in 0..3u8 {
+        db.commitment_tree_insert(
+            EMPTY_PATH,
+            b"ct",
+            test_cmx(i + 1),
+            vec![i],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert note");
+    }
+
+    // Also insert an item into the sibling tree so the DB is not trivially empty
+    db.insert(
+        [b"sibling"].as_ref(),
+        b"item",
+        Element::new_item(b"hello".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item into sibling");
+
+    // Delete the commitment tree (allow non-empty)
+    db.delete(
+        EMPTY_PATH,
+        b"ct",
+        Some(DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: true,
+            ..Default::default()
+        }),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("should delete non-empty commitment tree");
+
+    // verify_grovedb on the remaining database should be clean
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(
+        issues.is_empty(),
+        "expected no issues after delete, got: {:?}",
+        issues
+    );
 }

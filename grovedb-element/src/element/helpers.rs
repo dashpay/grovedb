@@ -185,6 +185,9 @@ impl Element {
     /// Merk (root_key = None) and never contain child subtrees. The data
     /// namespace must be cleared directly rather than iterated as Merk
     /// elements.
+    ///
+    /// Note: This must be kept in sync with
+    /// `TreeType::uses_non_merk_data_storage()` in the merk crate.
     pub fn uses_non_merk_data_storage(&self) -> bool {
         matches!(
             self,
@@ -193,6 +196,20 @@ impl Element {
                 | Element::BulkAppendTree(..)
                 | Element::DenseAppendOnlyFixedSizeTree(..)
         )
+    }
+
+    /// Returns the entry count for non-Merk data tree types, or `None` for
+    /// regular Merk trees and non-tree elements.  This is used by delete
+    /// and is_empty_tree operations to determine emptiness without
+    /// iterating the data namespace.
+    pub fn non_merk_entry_count(&self) -> Option<u64> {
+        match self {
+            Element::CommitmentTree(_, _, count, ..) => Some(*count),
+            Element::MmrTree(_, _, mmr_size, _) => Some(*mmr_size),
+            Element::BulkAppendTree(_, _, count, ..) => Some(*count),
+            Element::DenseAppendOnlyFixedSizeTree(_, _, count, ..) => Some(*count),
+            _ => None,
+        }
     }
 
     /// Check if the element is a reference
