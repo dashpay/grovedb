@@ -81,9 +81,9 @@ pub use orchard::{
 };
 use thiserror::Error;
 // Byte wrapper for constructing note ciphertexts
-pub use zcash_note_encryption::note_bytes::NoteBytesData;
+pub use orchard::zcash_note_encryption::note_bytes::NoteBytesData;
 // Trial decryption functions and traits
-pub use zcash_note_encryption::{
+pub use orchard::zcash_note_encryption::{
     try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
 };
 

@@ -16,8 +16,7 @@ server = []
 client = ["shardtree"]
 
 [dependencies]
-orchard = { git = "https://github.com/dashpay/orchard.git", rev = "b09c84a8f85aaa475134c9624eba7d6996fade7e", features = ["circuit"] }
+orchard = { git = "https://github.com/dashpay/orchard.git", rev = "41c8f7169f2683c99cf0e0c63e8d25ec12c47a79", features = ["circuit"] }
 incrementalmerkletree = "0.8"
 shardtree = { version = "0.6", optional = true }
 thiserror = "2.0"
-zcash_note_encryption = { git = "https://github.com/dashpay/zcash_note_encryption.git", rev = "9f7e93d42cef839d02b9d75918117941d453f8cb" }
