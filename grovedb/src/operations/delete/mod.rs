@@ -528,35 +528,46 @@ impl GroveDb {
             if let MaybeTree::Tree(tree_type) = tree_type {
                 let subtree_merk_path = path.derive_owned_with_child(key);
                 let subtree_merk_path_vec = subtree_merk_path.to_vec();
-                let batch_deleted_keys = current_batch_operations
-                    .iter()
-                    .filter_map(|op| match op.op {
-                        GroveOp::Delete | GroveOp::DeleteTree(_) => {
-                            // todo: to_path clones (best to figure out how to compare without
-                            // cloning)
-                            if op.path.to_path() == subtree_merk_path_vec {
-                                Some(op.key.as_slice())
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    })
-                    .collect::<BTreeSet<&[u8]>>();
-                let subtree = cost_return_on_error!(
-                    &mut cost,
-                    compat::merk_optional_tx_path_not_empty(
-                        &self.db,
-                        SubtreePath::from(&subtree_merk_path),
-                        tx.as_ref(),
-                        None,
-                        grove_version,
-                    )
-                );
 
-                let mut is_empty = subtree
-                    .is_empty_tree_except(batch_deleted_keys)
-                    .unwrap_add_cost(&mut cost);
+                // Non-Merk data trees (CommitmentTree, MmrTree,
+                // BulkAppendTree, DenseTree) never contain child subtrees
+                // in the Merk sense, so is_empty_tree_except would
+                // incorrectly see non-Merk keys.  We treat them as empty
+                // Merks for this check (the delete_tree_op will handle
+                // data namespace cleanup separately).
+                let mut is_empty = if tree_type.uses_non_merk_data_storage() {
+                    true
+                } else {
+                    let batch_deleted_keys = current_batch_operations
+                        .iter()
+                        .filter_map(|op| match op.op {
+                            GroveOp::Delete | GroveOp::DeleteTree(_) => {
+                                // todo: to_path clones (best to figure out how to compare
+                                // without cloning)
+                                if op.path.to_path() == subtree_merk_path_vec {
+                                    Some(op.key.as_slice())
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        })
+                        .collect::<BTreeSet<&[u8]>>();
+                    let subtree = cost_return_on_error!(
+                        &mut cost,
+                        compat::merk_optional_tx_path_not_empty(
+                            &self.db,
+                            SubtreePath::from(&subtree_merk_path),
+                            tx.as_ref(),
+                            None,
+                            grove_version,
+                        )
+                    );
+
+                    subtree
+                        .is_empty_tree_except(batch_deleted_keys)
+                        .unwrap_add_cost(&mut cost)
+                };
 
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
@@ -643,6 +654,13 @@ impl GroveDb {
             let subtree_merk_path = path.derive_owned_with_child(key);
             let subtree_merk_path_ref = SubtreePath::from(&subtree_merk_path);
 
+            // Tree types that store data in the data namespace as non-Merk
+            // entries (CommitmentTree, MmrTree, BulkAppendTree, DenseTree)
+            // have an always-empty Merk but may have data.  We cannot iterate
+            // their storage with find_subtrees because the entries are not
+            // valid Element serializations.
+            let non_merk_data = element.uses_non_merk_data_storage();
+
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(
@@ -652,9 +670,23 @@ impl GroveDb {
                     grove_version,
                 )
             );
-            let is_empty = subtree_of_tree_we_are_deleting
-                .is_empty_tree()
-                .unwrap_add_cost(&mut cost);
+
+            // For non-Merk data trees the raw_iter check would see non-Merk
+            // keys and wrongly report the tree as non-empty.  Use the
+            // element's own count instead.
+            let is_empty = if non_merk_data {
+                match &element {
+                    Element::CommitmentTree(_, _, count, ..) => *count == 0,
+                    Element::MmrTree(_, _, mmr_size, _) => *mmr_size == 0,
+                    Element::BulkAppendTree(_, _, count, ..) => *count == 0,
+                    Element::DenseAppendOnlyFixedSizeTree(_, _, count, ..) => *count == 0,
+                    _ => unreachable!(),
+                }
+            } else {
+                subtree_of_tree_we_are_deleting
+                    .is_empty_tree()
+                    .unwrap_add_cost(&mut cost)
+            };
 
             if !options.allow_deleting_non_empty_trees && !is_empty {
                 return if options.deleting_non_empty_trees_returns_error {
@@ -669,10 +701,8 @@ impl GroveDb {
             }
 
             // Clean up commitment tree aux storage if applicable.
-            // CommitmentTree stores all Sinsemilla data in aux storage which is
-            // not cleared by the normal Merk subtree cleanup.  This runs only
-            // after the non-empty-tree guard so aux data is not deleted when
-            // the element itself is kept.
+            // CommitmentTree stores Sinsemilla frontier data in aux storage
+            // which is not cleared by the normal Merk subtree cleanup.
             if element.is_commitment_tree() {
                 let ct_storage = self
                     .db
@@ -698,25 +728,51 @@ impl GroveDb {
             }
 
             if !is_empty {
-                let subtrees_paths = cost_return_on_error!(
-                    &mut cost,
-                    self.find_subtrees(&subtree_merk_path_ref, Some(transaction), grove_version)
-                );
-                for subtree_path in subtrees_paths {
-                    let p: SubtreePath<_> = subtree_path.as_slice().into();
+                if non_merk_data {
+                    // Non-Merk data trees: clear the subtree storage directly.
+                    // These trees never contain child subtrees so we only need
+                    // to clear the one storage context.
                     let mut storage = self
                         .db
-                        .get_transactional_storage_context(p, Some(batch), transaction)
+                        .get_transactional_storage_context(
+                            subtree_merk_path_ref.clone(),
+                            Some(batch),
+                            transaction,
+                        )
                         .unwrap_add_cost(&mut cost);
-
                     cost_return_on_error!(
                         &mut cost,
                         storage.clear().map_err(|e| {
                             Error::CorruptedData(format!(
-                                "unable to cleanup tree from storage: {e}",
+                                "unable to cleanup non-merk tree data from storage: {e}",
                             ))
                         })
                     );
+                } else {
+                    let subtrees_paths = cost_return_on_error!(
+                        &mut cost,
+                        self.find_subtrees(
+                            &subtree_merk_path_ref,
+                            Some(transaction),
+                            grove_version
+                        )
+                    );
+                    for subtree_path in subtrees_paths {
+                        let p: SubtreePath<_> = subtree_path.as_slice().into();
+                        let mut storage = self
+                            .db
+                            .get_transactional_storage_context(p, Some(batch), transaction)
+                            .unwrap_add_cost(&mut cost);
+
+                        cost_return_on_error!(
+                            &mut cost,
+                            storage.clear().map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to cleanup tree from storage: {e}",
+                                ))
+                            })
+                        );
+                    }
                 }
                 // todo: verify why we need to open the same? merk again
                 let storage = self

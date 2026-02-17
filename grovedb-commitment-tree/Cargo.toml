@@ -16,7 +16,8 @@ server = []
 client = ["shardtree"]
 
 [dependencies]
-orchard = { version = "0.12", features = ["circuit"] }
+orchard = { path = "../../orchard", features = ["circuit"] }
 incrementalmerkletree = "0.8"
 shardtree = { version = "0.6", optional = true }
 thiserror = "2.0"
+zcash_note_encryption = { path = "../../zcash_note_encryption" }

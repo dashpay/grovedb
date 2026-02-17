@@ -446,7 +446,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::CountSumTree(.., flags))
             | Some(Element::ProvableCountTree(_, _, flags))
             | Some(Element::ProvableCountSumTree(.., flags))
-            | Some(Element::CommitmentTree(_, _, _, flags))
+            | Some(Element::CommitmentTree(_, _, _, _, flags))
             | Some(Element::MmrTree(_, _, _, flags))
             | Some(Element::BulkAppendTree(.., flags))
             | Some(Element::DenseAppendOnlyFixedSizeTree(.., flags)) => {
@@ -546,7 +546,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(_, _, flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::CommitmentTree(_, _, _, flags)
+            | Element::CommitmentTree(_, _, _, _, flags)
             | Element::MmrTree(_, _, _, flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => {

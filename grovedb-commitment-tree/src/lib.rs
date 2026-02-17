@@ -60,19 +60,24 @@ pub use orchard::keys::{
     FullViewingKey, IncomingViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey,
     SpendValidatingKey, SpendingKey,
 };
+// Memo size types for Dash 36-byte memos
+pub use orchard::memo::{DashMemo, MemoSize};
 // Note types (orchard::Address aliased to avoid conflict with incrementalmerkletree::Address)
-pub use orchard::note::Rho;
+pub use orchard::note::RandomSeed;
 // Bundle reconstruction types (needed for deserializing bundles from bytes)
 pub use orchard::note::TransmittedNoteCiphertext;
 // Orchard tree types
 pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
 pub use orchard::{
+    note::Rho,
     primitives::redpallas,
     tree::{Anchor, MerkleHashOrchard, MerklePath},
     value::{NoteValue, ValueCommitment},
     Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
 };
 use thiserror::Error;
+// Byte wrapper for constructing note ciphertexts
+pub use zcash_note_encryption::note_bytes::NoteBytesData;
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
 /// parameter.

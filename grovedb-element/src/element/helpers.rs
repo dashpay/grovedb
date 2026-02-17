@@ -31,8 +31,7 @@ impl Element {
             Element::CountTree(_, count_value, _)
             | Element::CountSumTree(_, count_value, ..)
             | Element::ProvableCountTree(_, count_value, _)
-            | Element::ProvableCountSumTree(_, count_value, ..)
-            | Element::CommitmentTree(_, _, count_value, _) => *count_value,
+            | Element::ProvableCountSumTree(_, count_value, ..) => *count_value,
             _ => 1,
         }
     }
@@ -50,7 +49,6 @@ impl Element {
                 (*count_value, *sum_value)
             }
             Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
-            Element::CommitmentTree(_, _, count_value, _) => (*count_value, 0),
             _ => (1, 0),
         }
     }
@@ -180,6 +178,21 @@ impl Element {
     /// Check if the element is a dense append-only fixed-size tree
     pub fn is_dense_tree(&self) -> bool {
         matches!(self, Element::DenseAppendOnlyFixedSizeTree(..))
+    }
+
+    /// Check if the element is a tree type that stores data in the data
+    /// namespace as non-Merk entries.  These tree types have an always-empty
+    /// Merk (root_key = None) and never contain child subtrees. The data
+    /// namespace must be cleared directly rather than iterated as Merk
+    /// elements.
+    pub fn uses_non_merk_data_storage(&self) -> bool {
+        matches!(
+            self,
+            Element::CommitmentTree(..)
+                | Element::MmrTree(..)
+                | Element::BulkAppendTree(..)
+                | Element::DenseAppendOnlyFixedSizeTree(..)
+        )
     }
 
     /// Check if the element is a reference

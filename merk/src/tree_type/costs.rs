@@ -28,9 +28,9 @@ pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 /// The cost of a count sum tree
 pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
 
-/// The cost of a commitment tree (CountTree cost + 32 bytes for sinsemilla
-/// root)
-pub const COMMITMENT_TREE_COST_SIZE: u32 = COUNT_TREE_COST_SIZE + 32; // 44
+/// The cost of a commitment tree (32 bytes sinsemilla_root + 8 bytes
+/// total_count (u64) + 4 bytes epoch_size (u32) + 2 bytes overhead)
+pub const COMMITMENT_TREE_COST_SIZE: u32 = 32 + 8 + 4 + 2; // 46
 
 /// The cost of an MMR tree (32 bytes for mmr_root + 9 bytes for mmr_size + 2
 /// bytes overhead)

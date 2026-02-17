@@ -74,11 +74,13 @@ pub enum Element {
     /// Same as Element::CountSumTree but includes counts in cryptographic state
     /// (sum is tracked but NOT included in hash, only count is)
     ProvableCountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
-    /// Orchard-style commitment tree: acts as both a CountTree (items
-    /// queryable through GroveDB proofs) and a Sinsemilla Frontier (anchor
-    /// computation). The sinsemilla_root ([u8; 32]) is stored in the element
-    /// and authenticated through the Merk hash chain.
-    CommitmentTree(Option<Vec<u8>>, [u8; 32], CountValue, Option<ElementFlags>),
+    /// Orchard-style commitment tree: combines a BulkAppendTree (for efficient
+    /// append-only storage of cmx||encrypted_note payloads with epoch
+    /// compaction) and a Sinsemilla Frontier (for anchor computation).
+    /// The sinsemilla_root ([u8; 32]) is authenticated through the Merk hash
+    /// chain. Items are stored in the data namespace via BulkAppendTree;
+    /// the frontier is stored in aux storage.
+    CommitmentTree(Option<Vec<u8>>, [u8; 32], u64, u32, Option<ElementFlags>),
     /// MMR (Merkle Mountain Range) tree: append-only authenticated data
     /// structure with zero rotations, O(N) total hashes, sequential I/O.
     /// The mmr_root ([u8; 32]) is the bagged peaks root hash.
@@ -237,13 +239,14 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::CommitmentTree(root_key, sinsemilla_root, count, flags) => {
+            Element::CommitmentTree(root_key, sinsemilla_root, total_count, epoch_size, flags) => {
                 write!(
                     f,
-                    "CommitmentTree({}, sinsemilla: {}, count: {}{})",
+                    "CommitmentTree({}, sinsemilla: {}, count: {}, epoch_size: {}{})",
                     root_key.as_ref().map_or("None".to_string(), hex::encode),
                     hex::encode(sinsemilla_root),
-                    count,
+                    total_count,
+                    epoch_size,
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))

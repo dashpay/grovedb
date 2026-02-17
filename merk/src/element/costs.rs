@@ -170,7 +170,7 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::CommitmentTree(_, _, _, flags) => {
+            Element::CommitmentTree(_, _, _, _, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32

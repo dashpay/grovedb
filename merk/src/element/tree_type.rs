@@ -96,7 +96,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(_, _, _, flags) => Some((flags, TreeType::CommitmentTree)),
+            Element::CommitmentTree(_, _, _, _, flags) => Some((flags, TreeType::CommitmentTree)),
             Element::MmrTree(_, _, _, flags) => Some((flags, TreeType::MmrTree)),
             Element::BulkAppendTree(_, _, _, _, flags) => Some((flags, TreeType::BulkAppendTree)),
             Element::DenseAppendOnlyFixedSizeTree(_, _, _, _, flags) => {
@@ -141,7 +141,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(_, count, sum, _) => {
                 Some(TreeFeatureType::ProvableCountedSummedMerkNode(*count, *sum))
             }
-            Element::CommitmentTree(_, _, count, _) => Some(CountedMerkNode(*count)),
+            Element::CommitmentTree(..) => Some(BasicMerkNode),
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
             Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
@@ -173,7 +173,7 @@ impl ElementTreeTypeExtensions for Element {
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
             TreeType::NormalTree => Ok(BasicMerkNode),
-            TreeType::CommitmentTree => Ok(CountedMerkNode(self.count_value_or_default())),
+            TreeType::CommitmentTree => Ok(BasicMerkNode),
             TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
             TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
             TreeType::CountTree => Ok(CountedMerkNode(self.count_value_or_default())),

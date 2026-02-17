@@ -727,11 +727,19 @@ impl GroveDb {
                     grove_version,
                 )
                 .map_err(|e| e.into())
-            } else if let Element::CommitmentTree(_, sinsemilla_root, _, flag) = element {
+            } else if let Element::CommitmentTree(
+                _,
+                sinsemilla_root,
+                total_count,
+                epoch_size,
+                flag,
+            ) = element
+            {
                 let tree = Element::new_commitment_tree_with_all(
                     maybe_root_key,
                     sinsemilla_root,
-                    aggregate_data.as_count_u64(),
+                    total_count,
+                    epoch_size,
                     flag,
                 );
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
@@ -931,13 +939,22 @@ impl GroveDb {
                         grove_version,
                     )
                     .map_err(|e| e.into())
-                } else if let Element::CommitmentTree(_, existing_sr, _, flag) = element {
+                } else if let Element::CommitmentTree(
+                    _,
+                    existing_sr,
+                    existing_total_count,
+                    epoch_size,
+                    flag,
+                ) = element
+                {
                     // Use override if provided (from preprocessing), else preserve
                     let sr = sinsemilla_root_override.unwrap_or(existing_sr);
+                    let total_count = mmr_size_override.unwrap_or(existing_total_count);
                     let tree = Element::new_commitment_tree_with_all(
                         maybe_root_key,
                         sr,
-                        aggregate_data.as_count_u64(),
+                        total_count,
+                        epoch_size,
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error_into!(
@@ -1325,15 +1342,22 @@ impl GroveDb {
                         }
                     }
 
-                    issues.extend(self.verify_merk_and_submerks_in_transaction(
-                        inner_merk,
-                        &new_path_ref,
-                        batch,
-                        transaction,
-                        verify_references,
-                        true,
-                        grove_version,
-                    )?);
+                    // Non-Merk data trees (CommitmentTree, MmrTree,
+                    // BulkAppendTree, DenseTree) store data in the data
+                    // namespace as non-Element entries.  Recursing into
+                    // verify_merk_and_submerks would try to deserialize
+                    // those entries as Elements and fail.
+                    if !element.uses_non_merk_data_storage() {
+                        issues.extend(self.verify_merk_and_submerks_in_transaction(
+                            inner_merk,
+                            &new_path_ref,
+                            batch,
+                            transaction,
+                            verify_references,
+                            true,
+                            grove_version,
+                        )?);
+                    }
                 }
                 Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                     let (kv_value, element_value_hash) = merk

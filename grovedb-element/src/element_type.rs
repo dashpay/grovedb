@@ -582,7 +582,7 @@ mod tests {
             ),
             // discriminant 11
             (
-                Element::CommitmentTree(None, [0u8; 32], 0, None),
+                Element::CommitmentTree(None, [0u8; 32], 0, 1024, None),
                 ElementType::CommitmentTree,
                 "CommitmentTree",
             ),

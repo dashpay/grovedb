@@ -1689,26 +1689,25 @@ where
                     flags,
                     aggregate_data,
                     sinsemilla_root,
-                    ..
+                    bulk_state,
                 } => {
                     let element = if let Some(sr) = sinsemilla_root {
-                        match aggregate_data {
-                            AggregateData::NoAggregateData => {
-                                // MmrTree: reconstruct with mmr_root from
-                                // sinsemilla_root field; mmr_size is not carried
-                                // through aggregate_data so defaults to 0.
-                                Element::MmrTree(root_key, sr, 0, flags)
-                            }
-                            _ => {
-                                // CommitmentTree: reconstruct with sinsemilla_root
-                                Element::new_commitment_tree_with_all(
-                                    root_key,
-                                    sr,
-                                    aggregate_data.as_count_u64(),
-                                    flags,
-                                )
-                            }
+                        if let Some((total_count, epoch_size)) = bulk_state {
+                            // CommitmentTree: has sinsemilla_root + bulk_state
+                            Element::new_commitment_tree_with_all(
+                                root_key,
+                                sr,
+                                total_count,
+                                epoch_size,
+                                flags,
+                            )
+                        } else {
+                            // MmrTree: has sinsemilla_root but no bulk_state
+                            Element::MmrTree(root_key, sr, 0, flags)
                         }
+                    } else if let Some((total_count, epoch_size)) = bulk_state {
+                        // BulkAppendTree: has bulk_state but no sinsemilla_root
+                        Element::BulkAppendTree(root_key, [0u8; 32], total_count, epoch_size, flags)
                     } else {
                         match aggregate_data {
                         AggregateData::NoAggregateData => {
@@ -2165,7 +2164,8 @@ impl GroveDb {
                                                     } else if let Element::CommitmentTree(
                                                         _,
                                                         sr,
-                                                        _,
+                                                        total_count,
+                                                        epoch_size,
                                                         flags,
                                                     ) = element
                                                     {
@@ -2176,7 +2176,10 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                                 sinsemilla_root: Some(*sr),
-                                                                bulk_state: None,
+                                                                bulk_state: Some((
+                                                                    *total_count,
+                                                                    *epoch_size,
+                                                                )),
                                                             }
                                                     } else if let Element::MmrTree(
                                                         _,

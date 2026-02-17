@@ -301,31 +301,38 @@ impl Element {
     }
 
     /// Set element to an empty commitment tree
-    pub fn empty_commitment_tree() -> Self {
-        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, None)
+    pub fn empty_commitment_tree(epoch_size: u32) -> Self {
+        assert!(
+            epoch_size.is_power_of_two(),
+            "epoch_size must be a power of 2"
+        );
+        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, epoch_size, None)
     }
 
     /// Set element to an empty commitment tree with flags
-    pub fn empty_commitment_tree_with_flags(flags: Option<ElementFlags>) -> Self {
-        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, flags)
-    }
-
-    /// Set element to a commitment tree with flags
-    pub fn new_commitment_tree_with_flags(
-        maybe_root_key: Option<Vec<u8>>,
-        flags: Option<ElementFlags>,
-    ) -> Self {
-        Element::CommitmentTree(maybe_root_key, Self::EMPTY_SINSEMILLA_ROOT, 0, flags)
+    pub fn empty_commitment_tree_with_flags(epoch_size: u32, flags: Option<ElementFlags>) -> Self {
+        assert!(
+            epoch_size.is_power_of_two(),
+            "epoch_size must be a power of 2"
+        );
+        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, epoch_size, flags)
     }
 
     /// Set element to a commitment tree with all fields
     pub fn new_commitment_tree_with_all(
         maybe_root_key: Option<Vec<u8>>,
         sinsemilla_root: [u8; 32],
-        count: CountValue,
+        total_count: u64,
+        epoch_size: u32,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::CommitmentTree(maybe_root_key, sinsemilla_root, count, flags)
+        Element::CommitmentTree(
+            maybe_root_key,
+            sinsemilla_root,
+            total_count,
+            epoch_size,
+            flags,
+        )
     }
 
     /// Set element to an empty MMR tree

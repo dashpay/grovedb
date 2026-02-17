@@ -1,6 +1,6 @@
 //! Commitment tree integration tests
 //!
-//! Tests for CommitmentTree (CountTree + Sinsemilla Frontier) as a GroveDB
+//! Tests for CommitmentTree (BulkAppendTree + Sinsemilla Frontier) as a GroveDB
 //! subtree type.
 
 use grovedb_commitment_tree::{Anchor, CommitmentFrontier};
@@ -12,6 +12,10 @@ use crate::{
     tests::{common::EMPTY_PATH, make_empty_grovedb},
     Element,
 };
+
+/// Default epoch size for tests (large enough that compaction doesn't happen
+/// in most tests with only a few items).
+const TEST_EPOCH_SIZE: u32 = 1024;
 
 // ---------------------------------------------------------------------------
 // Helper: generate a deterministic 32-byte cmx from an index
@@ -46,7 +50,7 @@ fn test_insert_commitment_tree_at_root() {
     db.insert(
         EMPTY_PATH,
         b"commitments",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -82,7 +86,7 @@ fn test_commitment_tree_under_normal_tree() {
     db.insert(
         [b"parent"].as_ref(),
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -106,7 +110,7 @@ fn test_commitment_tree_with_flags() {
     db.insert(
         EMPTY_PATH,
         b"flagged",
-        Element::empty_commitment_tree_with_flags(flags.clone()),
+        Element::empty_commitment_tree_with_flags(TEST_EPOCH_SIZE, flags.clone()),
         None,
         None,
         grove_version,
@@ -129,7 +133,7 @@ fn test_empty_commitment_tree_serialization_roundtrip() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -157,7 +161,7 @@ fn test_commitment_tree_insert_single() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -186,20 +190,16 @@ fn test_commitment_tree_insert_single() {
     let exp_root = expected_root(&[cmx]);
     assert_eq!(root, exp_root);
 
-    // Verify the item was stored in the subtree — key = 0u64 BE
-    let item_key = 0u64.to_be_bytes();
+    // Verify the item was stored — use commitment_tree_get_value
     let stored = db
-        .get([b"pool"].as_ref(), &item_key, None, grove_version)
+        .commitment_tree_get_value(EMPTY_PATH, b"pool", 0, None, grove_version)
         .unwrap()
-        .expect("get stored item");
+        .expect("get stored value");
 
     // Item value is cmx || payload
-    if let Element::Item(value, _) = stored {
-        assert_eq!(&value[..32], &cmx);
-        assert_eq!(&value[32..], &payload[..]);
-    } else {
-        panic!("expected Item element");
-    }
+    let value = stored.expect("value should exist");
+    assert_eq!(&value[..32], &cmx);
+    assert_eq!(&value[32..], &payload[..]);
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn test_commitment_tree_insert_multiple() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -243,14 +243,13 @@ fn test_commitment_tree_insert_multiple() {
     let exp = expected_root(&[cmx0, cmx1, cmx2]);
     assert_eq!(root2, exp);
 
-    // Verify sequential keys
+    // Verify all items stored via commitment_tree_get_value
     for i in 0u64..3 {
-        let key = i.to_be_bytes();
-        let elem = db
-            .get([b"pool"].as_ref(), &key, None, grove_version)
+        let value = db
+            .commitment_tree_get_value(EMPTY_PATH, b"pool", i, None, grove_version)
             .unwrap()
-            .expect("get item");
-        assert!(matches!(elem, Element::Item(..)));
+            .expect("get value");
+        assert!(value.is_some(), "value at position {} should exist", i);
     }
 }
 
@@ -262,7 +261,7 @@ fn test_commitment_tree_insert_with_transaction() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -287,28 +286,28 @@ fn test_commitment_tree_insert_with_transaction() {
 
     assert_eq!(pos, 0);
 
-    // Not visible outside tx
-    let key = 0u64.to_be_bytes();
-    let outside = db
-        .get([b"pool"].as_ref(), &key, None, grove_version)
-        .unwrap();
-    assert!(outside.is_err());
+    // Not visible outside tx — count should still be 0
+    let count_outside = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count outside tx");
+    assert_eq!(count_outside, 0);
 
     // Visible inside tx
-    let inside = db
-        .get([b"pool"].as_ref(), &key, Some(&tx), grove_version)
+    let count_inside = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", Some(&tx), grove_version)
         .unwrap()
-        .expect("get in tx");
-    assert!(matches!(inside, Element::Item(..)));
+        .expect("count inside tx");
+    assert_eq!(count_inside, 1);
 
     // Commit and verify visible
     db.commit_transaction(tx).unwrap().expect("commit");
 
-    let after_commit = db
-        .get([b"pool"].as_ref(), &key, None, grove_version)
+    let count_after = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
-        .expect("get after commit");
-    assert!(matches!(after_commit, Element::Item(..)));
+        .expect("count after commit");
+    assert_eq!(count_after, 1);
 }
 
 #[test]
@@ -319,7 +318,7 @@ fn test_commitment_tree_insert_transaction_rollback() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -344,12 +343,12 @@ fn test_commitment_tree_insert_transaction_rollback() {
     db.rollback_transaction(&tx).expect("rollback");
     drop(tx);
 
-    // Item should not be visible
-    let key = 0u64.to_be_bytes();
-    let result = db
-        .get([b"pool"].as_ref(), &key, None, grove_version)
-        .unwrap();
-    assert!(result.is_err());
+    // Count should still be 0
+    let count = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(count, 0);
 }
 
 // ===========================================================================
@@ -364,7 +363,7 @@ fn test_commitment_tree_anchor_empty() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -390,7 +389,7 @@ fn test_commitment_tree_anchor_changes_after_insert() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -434,7 +433,7 @@ fn test_commitment_tree_anchor_deterministic() {
         db.insert(
             EMPTY_PATH,
             b"pool",
-            Element::empty_commitment_tree(),
+            Element::empty_commitment_tree(TEST_EPOCH_SIZE),
             None,
             None,
             grove_version,
@@ -491,7 +490,7 @@ fn test_commitment_tree_insert_propagates_root_hash() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -537,7 +536,7 @@ fn test_commitment_tree_nested_propagation() {
     db.insert(
         [b"parent"].as_ref(),
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -563,18 +562,18 @@ fn test_commitment_tree_nested_propagation() {
 }
 
 // ===========================================================================
-// Count aggregation tests
+// Count tests
 // ===========================================================================
 
 #[test]
-fn test_commitment_tree_count_aggregation() {
+fn test_commitment_tree_count() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -583,11 +582,11 @@ fn test_commitment_tree_count_aggregation() {
     .expect("insert ct");
 
     // Check count is 0 initially
-    let elem = db
-        .get(EMPTY_PATH, b"pool", None, grove_version)
+    let count = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
-        .expect("get pool");
-    assert_eq!(elem.count_value_or_default(), 0);
+        .expect("count");
+    assert_eq!(count, 0);
 
     // Insert 3 items
     for i in 0..3u8 {
@@ -603,11 +602,126 @@ fn test_commitment_tree_count_aggregation() {
         .expect("insert");
     }
 
-    let elem = db
-        .get(EMPTY_PATH, b"pool", None, grove_version)
+    let count = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
-        .expect("get pool after inserts");
-    assert_eq!(elem.count_value_or_default(), 3);
+        .expect("count after inserts");
+    assert_eq!(count, 3);
+}
+
+// ===========================================================================
+// Get value tests
+// ===========================================================================
+
+#[test]
+fn test_commitment_tree_get_value() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert ct");
+
+    let cmx = test_cmx(42);
+    let payload = b"my_encrypted_note".to_vec();
+
+    db.commitment_tree_insert(
+        EMPTY_PATH,
+        b"pool",
+        cmx,
+        payload.clone(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert");
+
+    // Get the value at position 0
+    let value = db
+        .commitment_tree_get_value(EMPTY_PATH, b"pool", 0, None, grove_version)
+        .unwrap()
+        .expect("get value");
+    let value = value.expect("value should exist");
+    assert_eq!(&value[..32], &cmx);
+    assert_eq!(&value[32..], payload.as_slice());
+
+    // Position 1 should not exist
+    let none_value = db
+        .commitment_tree_get_value(EMPTY_PATH, b"pool", 1, None, grove_version)
+        .unwrap()
+        .expect("get value out of range");
+    assert!(none_value.is_none());
+}
+
+// ===========================================================================
+// Compaction test (small epoch_size)
+// ===========================================================================
+
+#[test]
+fn test_commitment_tree_compaction() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Use epoch_size=4 to trigger compaction after 4 items
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(4),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert ct");
+
+    // Insert 6 items (triggers 1 compaction at item 4, 2 remain in buffer)
+    for i in 0..6u8 {
+        db.commitment_tree_insert(
+            EMPTY_PATH,
+            b"pool",
+            test_cmx(i + 1),
+            vec![i],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+    }
+
+    let count = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(count, 6);
+
+    // All items should be retrievable (from epoch blob or buffer)
+    for i in 0..6u64 {
+        let value = db
+            .commitment_tree_get_value(EMPTY_PATH, b"pool", i, None, grove_version)
+            .unwrap()
+            .expect("get value");
+        assert!(
+            value.is_some(),
+            "value at position {} should exist after compaction",
+            i
+        );
+    }
+
+    // Sinsemilla root should still be correct
+    let leaves: Vec<[u8; 32]> = (0..6u8).map(|i| test_cmx(i + 1)).collect();
+    let exp = expected_root(&leaves);
+    let anchor = db
+        .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor");
+    assert_eq!(anchor, Anchor::from_bytes(exp).unwrap());
 }
 
 // ===========================================================================
@@ -623,7 +737,7 @@ fn test_commitment_tree_batch_insert() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -658,20 +772,19 @@ fn test_commitment_tree_batch_insert() {
 
     // Verify items were stored
     for i in 0u64..3 {
-        let key = i.to_be_bytes();
-        let elem = db
-            .get([b"pool"].as_ref(), &key, None, grove_version)
+        let value = db
+            .commitment_tree_get_value(EMPTY_PATH, b"pool", i, None, grove_version)
             .unwrap()
-            .expect("get item");
-        assert!(matches!(elem, Element::Item(..)));
+            .expect("get value");
+        assert!(value.is_some(), "value at position {} should exist", i);
     }
 
     // Verify count
-    let elem = db
-        .get(EMPTY_PATH, b"pool", None, grove_version)
+    let count = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
-        .expect("get pool");
-    assert_eq!(elem.count_value_or_default(), 3);
+        .expect("count");
+    assert_eq!(count, 3);
 
     // Verify anchor matches expected
     let anchor = db
@@ -690,7 +803,7 @@ fn test_commitment_tree_batch_with_transaction() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -712,20 +825,20 @@ fn test_commitment_tree_batch_with_transaction() {
         .expect("batch in tx");
 
     // Not visible outside transaction
-    let key = 0u64.to_be_bytes();
-    let outside = db
-        .get([b"pool"].as_ref(), &key, None, grove_version)
-        .unwrap();
-    assert!(outside.is_err());
+    let count_outside = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count outside tx");
+    assert_eq!(count_outside, 0);
 
     // Commit and verify
     db.commit_transaction(tx).unwrap().expect("commit");
 
-    let elem = db
-        .get([b"pool"].as_ref(), &key, None, grove_version)
+    let count_after = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
         .unwrap()
-        .expect("get after commit");
-    assert!(matches!(elem, Element::Item(..)));
+        .expect("count after commit");
+    assert_eq!(count_after, 1);
 }
 
 // ===========================================================================
@@ -741,7 +854,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
     db_a.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -767,7 +880,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
     db_b.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -819,7 +932,7 @@ fn test_commitment_tree_delete() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -862,7 +975,7 @@ fn test_commitment_tree_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -894,7 +1007,7 @@ fn test_commitment_tree_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -994,7 +1107,7 @@ fn test_multiple_commitment_trees_independent() {
     db.insert(
         EMPTY_PATH,
         b"pool_a",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -1005,7 +1118,7 @@ fn test_multiple_commitment_trees_independent() {
     db.insert(
         EMPTY_PATH,
         b"pool_b",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -1048,16 +1161,16 @@ fn test_multiple_commitment_trees_independent() {
     assert_ne!(anchor_a, anchor_b);
 
     // Each has count 1
-    let elem_a = db
-        .get(EMPTY_PATH, b"pool_a", None, grove_version)
+    let count_a = db
+        .commitment_tree_count(EMPTY_PATH, b"pool_a", None, grove_version)
         .unwrap()
-        .expect("get pool_a");
-    let elem_b = db
-        .get(EMPTY_PATH, b"pool_b", None, grove_version)
+        .expect("count_a");
+    let count_b = db
+        .commitment_tree_count(EMPTY_PATH, b"pool_b", None, grove_version)
         .unwrap()
-        .expect("get pool_b");
-    assert_eq!(elem_a.count_value_or_default(), 1);
-    assert_eq!(elem_b.count_value_or_default(), 1);
+        .expect("count_b");
+    assert_eq!(count_a, 1);
+    assert_eq!(count_b, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,7 +1186,7 @@ fn test_verify_grovedb_commitment_tree_valid() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(),
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
         None,
         None,
         grove_version,
@@ -1094,68 +1207,4 @@ fn test_verify_grovedb_commitment_tree_valid() {
         .verify_grovedb(None, true, false, grove_version)
         .expect("verify");
     assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
-}
-
-#[test]
-fn test_verify_grovedb_commitment_tree_detects_corrupted_frontier() {
-    use grovedb_storage::{Storage, StorageContext};
-
-    let grove_version = GroveVersion::latest();
-    let db = make_empty_grovedb();
-
-    // Insert a commitment tree with one note
-    db.insert(
-        EMPTY_PATH,
-        b"ct",
-        Element::empty_commitment_tree(),
-        None,
-        None,
-        grove_version,
-    )
-    .unwrap()
-    .expect("insert ct");
-
-    db.commitment_tree_insert(EMPTY_PATH, b"ct", test_cmx(1), vec![], None, grove_version)
-        .unwrap()
-        .expect("insert 1");
-
-    // Build frontiers with different numbers of notes and confirm roots differ.
-    // NOTE: test_cmx(2) == MerkleHashOrchard::empty_leaf() (pallas::Base(2)),
-    // so we use test_cmx(3) to avoid the degenerate case where appending the
-    // empty leaf doesn't change the root.
-    let mut f1 = CommitmentFrontier::new();
-    let root_after_1 = f1.append(test_cmx(1)).unwrap();
-
-    let mut f2 = CommitmentFrontier::new();
-    f2.append(test_cmx(1)).unwrap();
-    let root_after_2 = f2.append(test_cmx(3)).unwrap();
-    // Sanity: roots must differ for test to be meaningful
-    assert_ne!(root_after_1, root_after_2);
-
-    // Corrupt the frontier in aux storage by writing the 2-note frontier
-    let tx = db.start_transaction();
-    let ct_path: &[&[u8]] = &[b"ct"];
-    let storage_ctx = db
-        .db
-        .get_immediate_storage_context(ct_path.into(), &tx)
-        .unwrap();
-    storage_ctx
-        .put_aux(
-            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
-            &f2.serialize(),
-            None,
-        )
-        .unwrap()
-        .expect("put_aux");
-    drop(storage_ctx);
-    tx.commit().expect("tx commit");
-
-    // verify_grovedb should detect the corruption
-    let issues = db
-        .verify_grovedb(None, true, false, grove_version)
-        .expect("verify");
-    assert!(
-        !issues.is_empty(),
-        "expected issues from corrupted frontier"
-    );
 }

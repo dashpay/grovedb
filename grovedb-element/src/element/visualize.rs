@@ -132,12 +132,12 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::CommitmentTree(root_key, sinsemilla_root, count, flags) => {
+            Element::CommitmentTree(root_key, sinsemilla_root, count, epoch_size, flags) => {
                 drawer.write(b"commitment_tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
                 drawer.write(
                     format!(
-                        " sinsemilla: {} count: {count}",
+                        " sinsemilla: {} count: {count} epoch_size: {epoch_size}",
                         hex::encode(sinsemilla_root)
                     )
                     .as_bytes(),
