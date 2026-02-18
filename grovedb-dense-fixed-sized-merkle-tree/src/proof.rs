@@ -47,6 +47,41 @@ impl DenseTreeProof {
         (self.height, self.count)
     }
 
+    /// Tree height.
+    pub fn height(&self) -> u8 {
+        self.height
+    }
+
+    /// Number of filled positions.
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// The proved (position, value) pairs.
+    pub fn entries(&self) -> &[(u64, Vec<u8>)] {
+        &self.entries
+    }
+
+    /// Ancestor node values on the auth path.
+    pub fn node_values(&self) -> &[(u64, Vec<u8>)] {
+        &self.node_values
+    }
+
+    /// Number of ancestor node values.
+    pub fn node_values_len(&self) -> usize {
+        self.node_values.len()
+    }
+
+    /// Precomputed subtree hashes for sibling nodes.
+    pub fn node_hashes(&self) -> &[(u64, [u8; 32])] {
+        &self.node_hashes
+    }
+
+    /// Number of precomputed subtree hashes.
+    pub fn node_hashes_len(&self) -> usize {
+        self.node_hashes.len()
+    }
+
     /// Generate a proof for the given positions.
     ///
     /// Positions must be < count. Duplicates are deduplicated.

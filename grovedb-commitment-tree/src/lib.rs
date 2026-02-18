@@ -72,6 +72,12 @@ pub use orchard::note::TransmittedNoteCiphertext;
 pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
 // Note encryption / trial decryption
 pub use orchard::note_encryption::{CompactAction, OrchardDomain};
+// Byte wrapper for constructing note ciphertexts
+pub use orchard::zcash_note_encryption::note_bytes::NoteBytesData;
+// Trial decryption functions and traits
+pub use orchard::zcash_note_encryption::{
+    try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
+};
 pub use orchard::{
     note::Rho,
     primitives::redpallas,
@@ -80,12 +86,6 @@ pub use orchard::{
     Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
 };
 use thiserror::Error;
-// Byte wrapper for constructing note ciphertexts
-pub use orchard::zcash_note_encryption::note_bytes::NoteBytesData;
-// Trial decryption functions and traits
-pub use orchard::zcash_note_encryption::{
-    try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
-};
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
 /// parameter.

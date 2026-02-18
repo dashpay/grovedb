@@ -8,6 +8,8 @@ mod verify;
 use std::{collections::BTreeMap, fmt};
 
 use bincode::{Decode, Encode};
+use grovedb_bulk_append_tree::BulkAppendTreeProof;
+use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
     proofs::{
         query::{Key, VerifyOptions},
@@ -15,6 +17,7 @@ use grovedb_merk::{
     },
     CryptoHash,
 };
+use grovedb_mmr::MmrTreeProof;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -232,7 +235,7 @@ impl fmt::Display for GroveDBProof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GroveDBProof::V0(proof) => write!(f, "{}", proof),
-            GroveDBProof::V1(_) => write!(f, "GroveDBProofV1 {{ .. }}"),
+            GroveDBProof::V1(proof) => write!(f, "{}", proof),
         }
     }
 }
@@ -240,6 +243,54 @@ impl fmt::Display for GroveDBProof {
 impl fmt::Display for GroveDBProofV0 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "GroveDBProofV0 {{")?;
+        for line in format!("{}", self.root_layer).lines() {
+            writeln!(f, "  {}", line)?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl fmt::Display for ProofBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProofBytes::Merk(bytes) => {
+                write!(f, "Merk({})", decode_merk_proof(bytes))
+            }
+            ProofBytes::MMR(bytes) => {
+                write!(f, "MMR({})", decode_mmr_proof(bytes))
+            }
+            ProofBytes::BulkAppendTree(bytes) => {
+                write!(f, "BulkAppendTree({})", decode_bulk_append_proof(bytes))
+            }
+            ProofBytes::DenseTree(bytes) => {
+                write!(f, "DenseTree({})", decode_dense_proof(bytes))
+            }
+        }
+    }
+}
+
+impl fmt::Display for LayerProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "LayerProof {{")?;
+        writeln!(f, "  proof: {}", self.merk_proof)?;
+        if !self.lower_layers.is_empty() {
+            writeln!(f, "  lower_layers: {{")?;
+            for (key, layer_proof) in &self.lower_layers {
+                writeln!(f, "    {} => {{", hex_to_ascii(key))?;
+                for line in format!("{}", layer_proof).lines() {
+                    writeln!(f, "      {}", line)?;
+                }
+                writeln!(f, "    }}")?;
+            }
+            writeln!(f, "  }}")?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl fmt::Display for GroveDBProofV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "GroveDBProofV1 {{")?;
         for line in format!("{}", self.root_layer).lines() {
             writeln!(f, "  {}", line)?;
         }
@@ -329,5 +380,122 @@ fn node_to_string(node: &Node) -> String {
             hex::encode(value_hash),
             count
         ),
+    }
+}
+
+fn decode_mmr_proof(bytes: &[u8]) -> String {
+    match MmrTreeProof::decode_from_slice(bytes) {
+        Ok(proof) => {
+            let mut s = format!(
+                "\n    mmr_size: {}, leaves: {}, proof_items: {}",
+                proof.mmr_size,
+                proof.leaves.len(),
+                proof.proof_items.len(),
+            );
+            for (i, (idx, value)) in proof.leaves.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    leaf[{}]: index={}, value={}",
+                    i,
+                    idx,
+                    hex_to_ascii(value),
+                ));
+            }
+            for (i, hash) in proof.proof_items.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    sibling[{}]: HASH[{}]",
+                    i,
+                    hex::encode(hash),
+                ));
+            }
+            s
+        }
+        Err(e) => format!("Error decoding MMR proof: {}", e),
+    }
+}
+
+fn decode_bulk_append_proof(bytes: &[u8]) -> String {
+    match BulkAppendTreeProof::decode_from_slice(bytes) {
+        Ok(proof) => {
+            let mut s = format!(
+                "\n    epoch_size: {}, total_count: {}, epoch_mmr_size: {}, epochs: {}, \
+                 buffer_entries: {}",
+                proof.epoch_size,
+                proof.total_count,
+                proof.epoch_mmr_size,
+                proof.epoch_blobs.len(),
+                proof.buffer_entries.len(),
+            );
+            for (i, (idx, blob)) in proof.epoch_blobs.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    epoch[{}]: index={}, blob={} bytes",
+                    i,
+                    idx,
+                    blob.len(),
+                ));
+            }
+            for (i, (idx, root)) in proof.epoch_mmr_leaves.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    mmr_leaf[{}]: index={}, root=HASH[{}]",
+                    i,
+                    idx,
+                    hex::encode(root),
+                ));
+            }
+            for (i, hash) in proof.epoch_mmr_proof_items.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    mmr_sibling[{}]: HASH[{}]",
+                    i,
+                    hex::encode(hash),
+                ));
+            }
+            for (i, entry) in proof.buffer_entries.iter().enumerate() {
+                s.push_str(&format!("\n    buffer[{}]: {}", i, hex_to_ascii(entry),));
+            }
+            s
+        }
+        Err(e) => {
+            format!("Error decoding BulkAppendTree proof: {}", e)
+        }
+    }
+}
+
+fn decode_dense_proof(bytes: &[u8]) -> String {
+    match DenseTreeProof::decode_from_slice(bytes) {
+        Ok(proof) => {
+            let mut s = format!(
+                "\n    height: {}, count: {}, entries: {}, node_values: {}, node_hashes: {}",
+                proof.height(),
+                proof.count(),
+                proof.entries_len(),
+                proof.node_values_len(),
+                proof.node_hashes_len(),
+            );
+            for (i, (pos, value)) in proof.entries().iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    entry[{}]: pos={}, value={}",
+                    i,
+                    pos,
+                    hex_to_ascii(value),
+                ));
+            }
+            for (i, (pos, value)) in proof.node_values().iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    node[{}]: pos={}, value={}",
+                    i,
+                    pos,
+                    hex_to_ascii(value),
+                ));
+            }
+            for (i, (pos, hash)) in proof.node_hashes().iter().enumerate() {
+                s.push_str(&format!(
+                    "\n    hash[{}]: pos={}, HASH[{}]",
+                    i,
+                    pos,
+                    hex::encode(hash),
+                ));
+            }
+            s
+        }
+        Err(e) => format!("Error decoding DenseTree proof: {}", e),
     }
 }
