@@ -1511,7 +1511,6 @@ where
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
                     | Element::ProvableCountSumTree(..)
-                    | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
                     | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -1526,6 +1525,27 @@ where
                             element.insert_subtree_into_batch_operations(
                                 key_info.get_key_clone(),
                                 NULL_HASH,
+                                false,
+                                &mut batch_operations,
+                                merk_feature_type,
+                                grove_version,
+                            )
+                        );
+                    }
+                    Element::CommitmentTree(..) => {
+                        let merk_feature_type = cost_return_on_error_into!(
+                            &mut cost,
+                            element
+                                .get_feature_type(in_tree_type)
+                                .wrap_with_cost(OperationCost::default())
+                        );
+                        let empty_state_root =
+                            grovedb_bulk_append_tree::compute_state_root(&NULL_HASH, &NULL_HASH);
+                        cost_return_on_error_into!(
+                            &mut cost,
+                            element.insert_subtree_into_batch_operations(
+                                key_info.get_key_clone(),
+                                empty_state_root,
                                 false,
                                 &mut batch_operations,
                                 merk_feature_type,

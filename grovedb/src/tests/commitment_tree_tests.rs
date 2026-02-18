@@ -1370,6 +1370,78 @@ fn test_verify_grovedb_after_commitment_tree_delete() {
 // ===========================================================================
 
 #[test]
+fn test_commitment_tree_prove_query_v1_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a parent tree and an empty CommitmentTree
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Query all positions [0..1) — should return nothing (tree is empty)
+    let mut inner_query = Query::new();
+    inner_query.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=0u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"pool".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof for empty commitment tree");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof for empty commitment tree");
+
+    let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root, "root hash should match");
+    assert_eq!(result_set.len(), 0, "empty tree should return no results");
+}
+
+#[test]
 fn test_commitment_tree_prove_query_v1_buffer_only() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();

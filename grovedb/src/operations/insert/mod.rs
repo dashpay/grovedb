@@ -266,7 +266,10 @@ impl GroveDb {
             Element::Tree(ref value, _)
             | Element::SumTree(ref value, ..)
             | Element::BigSumTree(ref value, ..)
-            | Element::CountTree(ref value, ..) => {
+            | Element::CountTree(ref value, ..)
+            | Element::CountSumTree(ref value, ..)
+            | Element::ProvableCountTree(ref value, ..)
+            | Element::ProvableCountSumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -284,6 +287,40 @@ impl GroveDb {
                         )
                     );
                 }
+            }
+            // CommitmentTree uses BulkAppendTree internally; the initial child
+            // hash must be the empty-tree state root so V1 proof verification
+            // works even before the first append.
+            Element::CommitmentTree(..) => {
+                let empty_state_root =
+                    grovedb_bulk_append_tree::compute_state_root(&NULL_HASH, &NULL_HASH);
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        empty_state_root,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    )
+                );
+            }
+            // MmrTree, BulkAppendTree, DenseAppendOnlyFixedSizeTree: these are
+            // tree types that use insert_subtree with NULL_HASH. Their V1 proof
+            // verifiers return NULL_HASH for the lower layer.
+            Element::MmrTree(..)
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        NULL_HASH,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    )
+                );
             }
             _ => {
                 cost_return_on_error_into!(
