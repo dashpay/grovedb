@@ -204,10 +204,10 @@ impl Element {
     /// iterating the data namespace.
     pub fn non_merk_entry_count(&self) -> Option<u64> {
         match self {
-            Element::CommitmentTree(_, _, count, ..) => Some(*count),
-            Element::MmrTree(_, _, mmr_size, _) => Some(*mmr_size),
-            Element::BulkAppendTree(_, _, count, ..) => Some(*count),
-            Element::DenseAppendOnlyFixedSizeTree(_, _, count, ..) => Some(*count),
+            Element::CommitmentTree(_, count, ..) => Some(*count),
+            Element::MmrTree(_, mmr_size, _) => Some(*mmr_size),
+            Element::BulkAppendTree(_, count, ..) => Some(*count),
+            Element::DenseAppendOnlyFixedSizeTree(_, count, ..) => Some(*count),
             _ => None,
         }
     }

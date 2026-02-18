@@ -132,12 +132,10 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::CommitmentTree(root_key, sinsemilla_root, count, epoch_size, flags) => {
-                drawer.write(b"commitment_tree: ")?;
-                drawer = root_key.as_deref().visualize(drawer)?;
+            Element::CommitmentTree(sinsemilla_root, count, chunk_power, flags) => {
                 drawer.write(
                     format!(
-                        " sinsemilla: {} count: {count} epoch_size: {epoch_size}",
+                        "commitment_tree: sinsemilla: {} count: {count} chunk_power: {chunk_power}",
                         hex::encode(sinsemilla_root)
                     )
                     .as_bytes(),
@@ -149,11 +147,13 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::MmrTree(root_key, mmr_root, mmr_size, flags) => {
-                drawer.write(b"mmr_tree: ")?;
-                drawer = root_key.as_deref().visualize(drawer)?;
+            Element::MmrTree(mmr_root, mmr_size, flags) => {
                 drawer.write(
-                    format!(" mmr_root: {} mmr_size: {mmr_size}", hex::encode(mmr_root)).as_bytes(),
+                    format!(
+                        "mmr_tree: mmr_root: {} mmr_size: {mmr_size}",
+                        hex::encode(mmr_root)
+                    )
+                    .as_bytes(),
                 )?;
 
                 if let Some(f) = flags {
@@ -162,12 +162,11 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::BulkAppendTree(root_key, state_root, total_count, epoch_size, flags) => {
-                drawer.write(b"bulk_append_tree: ")?;
-                drawer = root_key.as_deref().visualize(drawer)?;
+            Element::BulkAppendTree(state_root, total_count, chunk_power, flags) => {
                 drawer.write(
                     format!(
-                        " state_root: {} total_count: {total_count} epoch_size: {epoch_size}",
+                        "bulk_append_tree: state_root: {} total_count: {total_count} chunk_power: \
+                         {chunk_power}",
                         hex::encode(state_root)
                     )
                     .as_bytes(),
@@ -179,12 +178,10 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::DenseAppendOnlyFixedSizeTree(root_key, root_hash, count, height, flags) => {
-                drawer.write(b"dense_tree: ")?;
-                drawer = root_key.as_deref().visualize(drawer)?;
+            Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, flags) => {
                 drawer.write(
                     format!(
-                        " root_hash: {} count: {count} height: {height}",
+                        "dense_tree: root_hash: {} count: {count} height: {height}",
                         hex::encode(root_hash)
                     )
                     .as_bytes(),

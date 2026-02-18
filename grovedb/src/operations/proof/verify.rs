@@ -629,7 +629,7 @@ impl GroveDb {
     {
         // Extract the MMR root and size from the element
         let (mmr_root, element_mmr_size) = match element {
-            Element::MmrTree(_, mmr_root, mmr_size, ..) => (*mmr_root, *mmr_size),
+            Element::MmrTree(mmr_root, mmr_size, ..) => (*mmr_root, *mmr_size),
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
@@ -707,7 +707,7 @@ impl GroveDb {
     {
         // Extract state_root from element, or None for CommitmentTree
         let (state_root_opt, is_commitment_tree) = match element {
-            Element::BulkAppendTree(_, state_root, ..) => (Some(*state_root), false),
+            Element::BulkAppendTree(state_root, ..) => (Some(*state_root), false),
             Element::CommitmentTree(..) => (None, true),
             _ => {
                 return Err(Error::InvalidProof(
@@ -804,7 +804,7 @@ impl GroveDb {
     {
         // Extract the root hash, count, and height from the authenticated element
         let (dense_root, element_count, element_height) = match element {
-            Element::DenseAppendOnlyFixedSizeTree(_, root_hash, count, height, _) => {
+            Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, _) => {
                 (*root_hash, *count, *height)
             }
             _ => {
@@ -1102,8 +1102,7 @@ impl GroveDb {
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
-                            | Element::ProvableCountSumTree(Some(_), ..)
-                            | Element::CommitmentTree(Some(_), ..) => {
+                            | Element::ProvableCountSumTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -1222,7 +1221,7 @@ impl GroveDb {
                             | Element::CountSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
-                            | Element::CommitmentTree(None, ..)
+                            | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
                             | Element::DenseAppendOnlyFixedSizeTree(..)

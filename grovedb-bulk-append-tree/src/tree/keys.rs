@@ -11,10 +11,10 @@ pub fn buffer_key(index: u32) -> [u8; 5] {
     key
 }
 
-/// Build aux key for an epoch blob: e{index} (9 bytes: 'e' + u64 BE).
-pub fn epoch_key(index: u64) -> [u8; 9] {
+/// Build aux key for a chunk blob: c{index} (9 bytes: 'c' + u64 BE).
+pub fn chunk_key(index: u64) -> [u8; 9] {
     let mut key = [0u8; 9];
-    key[0] = b'e';
+    key[0] = b'c';
     key[1..9].copy_from_slice(&index.to_be_bytes());
     key
 }

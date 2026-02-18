@@ -378,7 +378,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::CommitmentTree(Some(_), ..))
+                            | Ok(Element::CommitmentTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -914,7 +914,7 @@ impl GroveDb {
 
                             // MmrTree with subquery → generate MMR proof
                             // root_key is always None for MmrTree (no child Merk data)
-                            Ok(Element::MmrTree(_, mmr_root, mmr_size, _))
+                            Ok(Element::MmrTree(mmr_root, mmr_size, _))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -941,10 +941,9 @@ impl GroveDb {
                             // BulkAppendTree with subquery → generate BulkAppend proof
                             // root_key is always None for BulkAppendTree (no child Merk data)
                             Ok(Element::BulkAppendTree(
-                                _,
                                 state_root,
                                 total_count,
-                                epoch_size,
+                                chunk_power,
                                 _,
                             )) if !done_with_results
                                 && query.has_subquery_or_matching_in_path_on_key(key) =>
@@ -959,7 +958,7 @@ impl GroveDb {
                                         path_query,
                                         state_root,
                                         total_count,
-                                        epoch_size,
+                                        chunk_power,
                                         overall_limit,
                                         &tx,
                                         grove_version,
@@ -973,7 +972,6 @@ impl GroveDb {
                             // DenseAppendOnlyFixedSizeTree with subquery → generate
                             // dense tree proof
                             Ok(Element::DenseAppendOnlyFixedSizeTree(
-                                _,
                                 _dense_root,
                                 dense_count,
                                 dense_height,
@@ -1005,10 +1003,9 @@ impl GroveDb {
                             // proof (CommitmentTree stores data via
                             // BulkAppendTree, root_key is always None)
                             Ok(Element::CommitmentTree(
-                                _,
                                 _sinsemilla_root,
                                 total_count,
-                                epoch_size,
+                                chunk_power,
                                 _,
                             )) if !done_with_results
                                 && query.has_subquery_or_matching_in_path_on_key(key) =>
@@ -1023,7 +1020,7 @@ impl GroveDb {
                                         path_query,
                                         [0u8; 32], // unused param
                                         total_count,
-                                        epoch_size,
+                                        chunk_power,
                                         overall_limit,
                                         &tx,
                                         grove_version,
@@ -1213,7 +1210,7 @@ impl GroveDb {
         path_query: &PathQuery,
         _state_root: [u8; 32],
         total_count: u64,
-        epoch_size: u32,
+        chunk_power: u8,
         overall_limit: &mut Option<u16>,
         tx: &crate::Transaction,
         grove_version: &GroveVersion,
@@ -1270,7 +1267,7 @@ impl GroveDb {
             cost,
             BulkAppendTreeProof::generate(
                 total_count,
-                epoch_size,
+                chunk_power,
                 mmr_size,
                 buffer_hash,
                 start,
@@ -1290,18 +1287,18 @@ impl GroveDb {
 
         // Update limit: count individual values, not whole epochs
         if let Some(limit) = overall_limit.as_mut() {
-            let epoch_size_u64 = epoch_size as u64;
-            let completed_epochs = total_count / epoch_size_u64;
+            let chunk_size = (1u32 << chunk_power) as u64;
+            let completed_chunks = total_count / chunk_size;
 
-            // Count individual values from epoch blobs within [start, end)
-            let mut epoch_values_in_range: u16 = 0;
-            for (epoch_idx, _) in &bulk_proof.epoch_blobs {
-                let epoch_start = epoch_idx * epoch_size_u64;
-                let epoch_end = epoch_start + epoch_size_u64;
-                let overlap_start = start.max(epoch_start);
-                let overlap_end = end.min(epoch_end);
+            // Count individual values from chunk blobs within [start, end)
+            let mut chunk_values_in_range: u16 = 0;
+            for (chunk_idx, _) in &bulk_proof.chunk_blobs {
+                let chunk_start = chunk_idx * chunk_size;
+                let chunk_end = chunk_start + chunk_size;
+                let overlap_start = start.max(chunk_start);
+                let overlap_end = end.min(chunk_end);
                 if overlap_start < overlap_end {
-                    epoch_values_in_range += (overlap_end - overlap_start) as u16;
+                    chunk_values_in_range += (overlap_end - overlap_start) as u16;
                 }
             }
 
@@ -1310,11 +1307,11 @@ impl GroveDb {
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| {
-                    let global_pos = completed_epochs * epoch_size_u64 + *i as u64;
+                    let global_pos = completed_chunks * chunk_size + *i as u64;
                     global_pos >= start && global_pos < end
                 })
                 .count() as u16;
-            *limit = limit.saturating_sub(epoch_values_in_range + buffer_in_range);
+            *limit = limit.saturating_sub(chunk_values_in_range + buffer_in_range);
         }
 
         let proof_bytes = cost_return_on_error_no_add!(

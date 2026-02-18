@@ -1,12 +1,12 @@
 //! BulkAppendTree proof generation and verification.
 //!
-//! Generates proofs that specific values/epochs exist in a BulkAppendTree.
+//! Generates proofs that specific values/chunks exist in a BulkAppendTree.
 //! The proof ties into the GroveDB hierarchy: the parent Merk proves the
 //! BulkAppendTree element bytes (containing the state_root), and this proof
 //! shows that queried data is consistent with that root.
 //!
 //! For range queries, the proof returns:
-//! - Full epoch blobs for any completed epoch overlapping the range
+//! - Full chunk blobs for any completed chunk overlapping the range
 //! - Individual buffer entries for data still in the buffer
 //! - All buffer entries needed to recompute the buffer_hash chain
 
@@ -18,37 +18,37 @@ use grovedb_mmr::{
 };
 
 use crate::{
-    chain_buffer_hash, compute_state_root, deserialize_epoch_blob, error::BulkAppendError,
+    chain_buffer_hash, compute_state_root, deserialize_chunk_blob, error::BulkAppendError,
 };
 
 /// A proof that specific data exists in a BulkAppendTree.
 ///
 /// Contains:
-/// - Epoch blobs for completed epochs overlapping the query range
-/// - An MMR proof binding those epochs to the epoch MMR root
+/// - Chunk blobs for completed chunks overlapping the query range
+/// - An MMR proof binding those chunks to the chunk MMR root
 /// - All buffer entries (needed to recompute buffer_hash)
 /// - Metadata to recompute state_root = blake3("bulk_state" || mmr_root ||
 ///   buffer_hash)
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BulkAppendTreeProof {
-    /// The epoch size (power of 2).
-    pub epoch_size: u32,
+    /// The chunk power (chunk_size = 1 << chunk_power).
+    pub chunk_power: u8,
     /// Total count of values appended.
     pub total_count: u64,
-    /// (epoch_index, epoch_blob_bytes) for epochs overlapping the range.
-    pub epoch_blobs: Vec<(u64, Vec<u8>)>,
-    /// Epoch MMR size.
-    pub epoch_mmr_size: u64,
-    /// MMR proof sibling/peak hashes for the proved epochs.
-    pub epoch_mmr_proof_items: Vec<[u8; 32]>,
-    /// (leaf_index_in_mmr, dense_merkle_root) for each proved epoch.
-    pub epoch_mmr_leaves: Vec<(u64, [u8; 32])>,
+    /// (chunk_index, chunk_blob_bytes) for chunks overlapping the range.
+    pub chunk_blobs: Vec<(u64, Vec<u8>)>,
+    /// Chunk MMR size.
+    pub chunk_mmr_size: u64,
+    /// MMR proof sibling/peak hashes for the proved chunks.
+    pub chunk_mmr_proof_items: Vec<[u8; 32]>,
+    /// (leaf_index_in_mmr, dense_merkle_root) for each proved chunk.
+    pub chunk_mmr_leaves: Vec<(u64, [u8; 32])>,
     /// ALL buffer entries (needed to recompute buffer_hash from [0;32]).
     pub buffer_entries: Vec<Vec<u8>>,
     /// The buffer_hash from metadata (for verification).
     pub buffer_hash: [u8; 32],
-    /// The epoch MMR root hash.
-    pub epoch_mmr_root: [u8; 32],
+    /// The chunk MMR root hash.
+    pub chunk_mmr_root: [u8; 32],
 }
 
 impl BulkAppendTreeProof {
@@ -56,7 +56,8 @@ impl BulkAppendTreeProof {
     ///
     /// # Arguments
     /// * `total_count` - Total values appended
-    /// * `epoch_size` - Epoch size from the element
+    /// * `chunk_power` - Chunk power from the element (chunk_size = 1 <<
+    ///   chunk_power)
     /// * `mmr_size` - Internal MMR size from metadata
     /// * `buffer_hash` - Running buffer hash from metadata
     /// * `start` - Start position (inclusive)
@@ -64,7 +65,7 @@ impl BulkAppendTreeProof {
     /// * `get_aux` - Closure to read storage values by key
     pub fn generate<F>(
         total_count: u64,
-        epoch_size: u32,
+        chunk_power: u8,
         mmr_size: u64,
         buffer_hash: [u8; 32],
         start: u64,
@@ -74,49 +75,50 @@ impl BulkAppendTreeProof {
     where
         F: Fn(&[u8]) -> Result<Option<Vec<u8>>, BulkAppendError>,
     {
-        let epoch_size_u64 = epoch_size as u64;
-        let completed_epochs = total_count / epoch_size_u64;
-        let buffer_count = (total_count % epoch_size_u64) as u32;
+        let chunk_size = 1u32 << chunk_power;
+        let chunk_size_u64 = chunk_size as u64;
+        let completed_chunks = total_count / chunk_size_u64;
+        let buffer_count = (total_count % chunk_size_u64) as u32;
 
-        // Determine overlapping epochs
-        let mut epoch_blobs = Vec::new();
-        let mut epoch_indices = Vec::new();
+        // Determine overlapping chunks
+        let mut chunk_blobs = Vec::new();
+        let mut chunk_indices = Vec::new();
 
-        if completed_epochs > 0 && start < completed_epochs * epoch_size_u64 {
-            let first_epoch = start / epoch_size_u64;
-            let last_epoch = std::cmp::min(
-                (end.saturating_sub(1)) / epoch_size_u64,
-                completed_epochs - 1,
+        if completed_chunks > 0 && start < completed_chunks * chunk_size_u64 {
+            let first_chunk = start / chunk_size_u64;
+            let last_chunk = std::cmp::min(
+                (end.saturating_sub(1)) / chunk_size_u64,
+                completed_chunks - 1,
             );
 
-            for epoch_idx in first_epoch..=last_epoch {
-                let key = crate::epoch_key(epoch_idx);
+            for chunk_idx in first_chunk..=last_chunk {
+                let key = crate::chunk_key(chunk_idx);
                 let blob = get_aux(&key)?.ok_or_else(|| {
                     BulkAppendError::CorruptedData(format!(
-                        "epoch blob missing for epoch {}",
-                        epoch_idx
+                        "chunk blob missing for chunk {}",
+                        chunk_idx
                     ))
                 })?;
-                epoch_blobs.push((epoch_idx, blob));
-                epoch_indices.push(epoch_idx);
+                chunk_blobs.push((chunk_idx, blob));
+                chunk_indices.push(chunk_idx);
             }
         }
 
-        // Generate MMR proof for the epoch indices
-        let mut epoch_mmr_proof_items = Vec::new();
-        let mut epoch_mmr_leaves = Vec::new();
+        // Generate MMR proof for the chunk indices
+        let mut chunk_mmr_proof_items = Vec::new();
+        let mut chunk_mmr_leaves = Vec::new();
 
         // Create a shared lazy-loading store for MMR node access.
         // Used for both proof generation and root computation.
         let lazy_mmr_store = LazyMmrNodeStore::new(&get_aux);
 
-        if !epoch_indices.is_empty() {
-            // Compute dense Merkle root for each epoch blob
-            for (epoch_idx, blob) in &epoch_blobs {
-                let values = deserialize_epoch_blob(blob).map_err(|e| {
+        if !chunk_indices.is_empty() {
+            // Compute dense Merkle root for each chunk blob
+            for (chunk_idx, blob) in &chunk_blobs {
+                let values = deserialize_chunk_blob(blob).map_err(|e| {
                     BulkAppendError::CorruptedData(format!(
-                        "failed to deserialize epoch {} blob: {}",
-                        epoch_idx, e
+                        "failed to deserialize chunk {} blob: {}",
+                        chunk_idx, e
                     ))
                 })?;
                 let value_refs: Vec<&[u8]> = values.iter().map(|v| v.as_slice()).collect();
@@ -126,32 +128,32 @@ impl BulkAppendTreeProof {
                     )
                     .map_err(|e| {
                         BulkAppendError::CorruptedData(format!(
-                            "failed to compute dense merkle root for epoch {}: {}",
-                            epoch_idx, e
+                            "failed to compute dense merkle root for chunk {}: {}",
+                            chunk_idx, e
                         ))
                     })?;
-                epoch_mmr_leaves.push((*epoch_idx, dense_root));
+                chunk_mmr_leaves.push((*chunk_idx, dense_root));
             }
 
             // Build MMR positions and generate proof (lazy store)
-            let positions: Vec<u64> = epoch_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
+            let positions: Vec<u64> = chunk_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
             let mmr = grovedb_mmr::MMR::<MmrNode, MergeBlake3, _>::new(mmr_size, &lazy_mmr_store);
             let proof_result = mmr.gen_proof(positions);
 
-            // Check deferred storage errors first — if the store failed,
+            // Check deferred storage errors first -- if the store failed,
             // the ckb error is a symptom, not the root cause.
             if let Some(err) = lazy_mmr_store.take_error() {
                 return Err(err);
             }
             let proof = proof_result.map_err(|e| {
-                BulkAppendError::MmrError(format!("epoch MMR gen_proof failed: {}", e))
+                BulkAppendError::MmrError(format!("chunk MMR gen_proof failed: {}", e))
             })?;
 
-            epoch_mmr_proof_items = proof.proof_items().iter().map(|node| node.hash).collect();
+            chunk_mmr_proof_items = proof.proof_items().iter().map(|node| node.hash).collect();
         }
 
-        // Get the epoch MMR root (reuses cached nodes from proof generation)
-        let epoch_mmr_root = if mmr_size > 0 {
+        // Get the chunk MMR root (reuses cached nodes from proof generation)
+        let chunk_mmr_root = if mmr_size > 0 {
             let mmr = grovedb_mmr::MMR::<MmrNode, MergeBlake3, _>::new(mmr_size, &lazy_mmr_store);
             let root_result = mmr.get_root();
 
@@ -159,7 +161,7 @@ impl BulkAppendTreeProof {
                 return Err(err);
             }
             let root = root_result.map_err(|e| {
-                BulkAppendError::MmrError(format!("epoch MMR get_root failed: {}", e))
+                BulkAppendError::MmrError(format!("chunk MMR get_root failed: {}", e))
             })?;
 
             root.hash
@@ -167,7 +169,7 @@ impl BulkAppendTreeProof {
             [0u8; 32]
         };
 
-        // Read ALL buffer entries (bounded by epoch_size)
+        // Read ALL buffer entries (bounded by chunk_size)
         let mut buffer_entries = Vec::with_capacity(buffer_count as usize);
         for i in 0..buffer_count {
             let key = crate::buffer_key(i);
@@ -178,15 +180,15 @@ impl BulkAppendTreeProof {
         }
 
         Ok(BulkAppendTreeProof {
-            epoch_size,
+            chunk_power,
             total_count,
-            epoch_blobs,
-            epoch_mmr_size: mmr_size,
-            epoch_mmr_proof_items,
-            epoch_mmr_leaves,
+            chunk_blobs,
+            chunk_mmr_size: mmr_size,
+            chunk_mmr_proof_items,
+            chunk_mmr_leaves,
             buffer_entries,
             buffer_hash,
-            epoch_mmr_root,
+            chunk_mmr_root,
         })
     }
 
@@ -198,7 +200,7 @@ impl BulkAppendTreeProof {
     /// * `expected_state_root` - The state_root from the parent element
     ///
     /// # Returns
-    /// The data in the queried range, as a mix of epoch blobs and buffer
+    /// The data in the queried range, as a mix of chunk blobs and buffer
     /// entries.
     pub fn verify(
         &self,
@@ -239,66 +241,66 @@ impl BulkAppendTreeProof {
     /// Returns `(computed_state_root, proof_result)`.
     fn verify_inner(&self) -> Result<([u8; 32], BulkAppendTreeProofResult), BulkAppendError> {
         // 0. Cross-validate metadata consistency
-        if self.epoch_size == 0 || !self.epoch_size.is_power_of_two() {
+        if self.chunk_power > 31 {
             return Err(BulkAppendError::InvalidProof(format!(
-                "invalid epoch_size: {} (must be non-zero power of 2)",
-                self.epoch_size
+                "invalid chunk_power: {} (must be <= 31)",
+                self.chunk_power
             )));
         }
 
-        let epoch_size_u64 = self.epoch_size as u64;
-        let completed_epochs = self.total_count / epoch_size_u64;
-        let buffer_count = (self.total_count % epoch_size_u64) as usize;
+        let chunk_size_u64 = (1u32 << self.chunk_power) as u64;
+        let completed_chunks = self.total_count / chunk_size_u64;
+        let buffer_count = (self.total_count % chunk_size_u64) as usize;
 
         // Verify buffer entry count matches metadata
         if self.buffer_entries.len() != buffer_count {
             return Err(BulkAppendError::InvalidProof(format!(
                 "buffer entry count mismatch: proof has {}, expected {} (total_count={}, \
-                 epoch_size={})",
+                 chunk_power={})",
                 self.buffer_entries.len(),
                 buffer_count,
                 self.total_count,
-                self.epoch_size
+                self.chunk_power
             )));
         }
 
-        // Verify epoch_mmr_size is consistent with completed_epochs
-        if completed_epochs > 0 {
-            let expected_leaf_count = grovedb_mmr::mmr_size_to_leaf_count(self.epoch_mmr_size);
-            if expected_leaf_count != completed_epochs {
+        // Verify chunk_mmr_size is consistent with completed_chunks
+        if completed_chunks > 0 {
+            let expected_leaf_count = grovedb_mmr::mmr_size_to_leaf_count(self.chunk_mmr_size);
+            if expected_leaf_count != completed_chunks {
                 return Err(BulkAppendError::InvalidProof(format!(
-                    "epoch MMR leaf count mismatch: MMR has {} leaves, expected {} completed \
-                     epochs",
-                    expected_leaf_count, completed_epochs
+                    "chunk MMR leaf count mismatch: MMR has {} leaves, expected {} completed \
+                     chunks",
+                    expected_leaf_count, completed_chunks
                 )));
             }
-        } else if self.epoch_mmr_size != 0 {
+        } else if self.chunk_mmr_size != 0 {
             return Err(BulkAppendError::InvalidProof(format!(
-                "epoch_mmr_size should be 0 with no completed epochs, got {}",
-                self.epoch_mmr_size
+                "chunk_mmr_size should be 0 with no completed chunks, got {}",
+                self.chunk_mmr_size
             )));
         }
 
-        // 1. Verify epoch blobs: compute dense Merkle root for each and check it
-        //    matches the epoch_mmr_leaves
-        for (epoch_idx, blob) in &self.epoch_blobs {
-            let values = deserialize_epoch_blob(blob).map_err(|e| {
+        // 1. Verify chunk blobs: compute dense Merkle root for each and check it
+        //    matches the chunk_mmr_leaves
+        for (chunk_idx, blob) in &self.chunk_blobs {
+            let values = deserialize_chunk_blob(blob).map_err(|e| {
                 BulkAppendError::InvalidProof(format!(
-                    "failed to deserialize epoch {} blob: {}",
-                    epoch_idx, e
+                    "failed to deserialize chunk {} blob: {}",
+                    chunk_idx, e
                 ))
             })?;
 
             // Find the corresponding leaf entry
             let expected_root = self
-                .epoch_mmr_leaves
+                .chunk_mmr_leaves
                 .iter()
-                .find(|(idx, _)| idx == epoch_idx)
+                .find(|(idx, _)| idx == chunk_idx)
                 .map(|(_, root)| root)
                 .ok_or_else(|| {
                     BulkAppendError::InvalidProof(format!(
-                        "no MMR leaf entry for epoch {}",
-                        epoch_idx
+                        "no MMR leaf entry for chunk {}",
+                        chunk_idx
                     ))
                 })?;
 
@@ -309,33 +311,33 @@ impl BulkAppendTreeProof {
                 )
                 .map_err(|e| {
                     BulkAppendError::InvalidProof(format!(
-                        "failed to compute dense merkle root for epoch {}: {}",
-                        epoch_idx, e
+                        "failed to compute dense merkle root for chunk {}: {}",
+                        chunk_idx, e
                     ))
                 })?;
 
             if &computed_root != expected_root {
                 return Err(BulkAppendError::InvalidProof(format!(
-                    "dense merkle root mismatch for epoch {}: expected {}, got {}",
-                    epoch_idx,
+                    "dense merkle root mismatch for chunk {}: expected {}, got {}",
+                    chunk_idx,
                     hex::encode(expected_root),
                     hex::encode(computed_root)
                 )));
             }
         }
 
-        // 2. Verify epoch MMR proof
-        if !self.epoch_mmr_leaves.is_empty() {
+        // 2. Verify chunk MMR proof
+        if !self.chunk_mmr_leaves.is_empty() {
             let proof_nodes: Vec<MmrNode> = self
-                .epoch_mmr_proof_items
+                .chunk_mmr_proof_items
                 .iter()
                 .map(|hash| MmrNode::internal(*hash))
                 .collect();
 
-            let proof = MerkleProof::<MmrNode, MergeBlake3>::new(self.epoch_mmr_size, proof_nodes);
+            let proof = MerkleProof::<MmrNode, MergeBlake3>::new(self.chunk_mmr_size, proof_nodes);
 
             let verification_leaves: Vec<(u64, MmrNode)> = self
-                .epoch_mmr_leaves
+                .chunk_mmr_leaves
                 .iter()
                 .map(|(idx, root)| {
                     let pos = leaf_to_pos(*idx);
@@ -344,14 +346,14 @@ impl BulkAppendTreeProof {
                 })
                 .collect();
 
-            let root_node = MmrNode::internal(self.epoch_mmr_root);
+            let root_node = MmrNode::internal(self.chunk_mmr_root);
             let valid = proof.verify(root_node, verification_leaves).map_err(|e| {
-                BulkAppendError::InvalidProof(format!("epoch MMR proof verification failed: {}", e))
+                BulkAppendError::InvalidProof(format!("chunk MMR proof verification failed: {}", e))
             })?;
 
             if !valid {
                 return Err(BulkAppendError::InvalidProof(
-                    "epoch MMR proof root hash mismatch".to_string(),
+                    "chunk MMR proof root hash mismatch".to_string(),
                 ));
             }
         }
@@ -370,22 +372,16 @@ impl BulkAppendTreeProof {
             )));
         }
 
-        // 4. Compute state_root = blake3("bulk_state" || mmr_root || buffer_hash ||
-        //    total_count || epoch_size)
-        let computed_state_root = compute_state_root(
-            &self.epoch_mmr_root,
-            &self.buffer_hash,
-            self.total_count,
-            self.epoch_size,
-        );
+        // 4. Compute state_root = blake3("bulk_state" || mmr_root || buffer_hash)
+        let computed_state_root = compute_state_root(&self.chunk_mmr_root, &self.buffer_hash);
 
         Ok((
             computed_state_root,
             BulkAppendTreeProofResult {
-                epoch_blobs: self.epoch_blobs.clone(),
+                chunk_blobs: self.chunk_blobs.clone(),
                 buffer_entries: self.buffer_entries.clone(),
                 total_count: self.total_count,
-                epoch_size: self.epoch_size,
+                chunk_power: self.chunk_power,
             },
         ))
     }
@@ -418,42 +414,42 @@ impl BulkAppendTreeProof {
 /// Result of a verified BulkAppendTree proof.
 #[derive(Debug, Clone)]
 pub struct BulkAppendTreeProofResult {
-    /// Epoch blobs overlapping the queried range.
-    pub epoch_blobs: Vec<(u64, Vec<u8>)>,
+    /// Chunk blobs overlapping the queried range.
+    pub chunk_blobs: Vec<(u64, Vec<u8>)>,
     /// All buffer entries.
     pub buffer_entries: Vec<Vec<u8>>,
     /// Total count of values in the tree.
     pub total_count: u64,
-    /// Epoch size.
-    pub epoch_size: u32,
+    /// Chunk power (chunk_size = 1 << chunk_power).
+    pub chunk_power: u8,
 }
 
 impl BulkAppendTreeProofResult {
     /// Extract values in the position range [start, end).
     ///
-    /// Collects values from epoch blobs and buffer entries that fall within
+    /// Collects values from chunk blobs and buffer entries that fall within
     /// the specified range.
     pub fn values_in_range(
         &self,
         start: u64,
         end: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, BulkAppendError> {
-        let epoch_size_u64 = self.epoch_size as u64;
-        let completed_epochs = self.total_count / epoch_size_u64;
+        let chunk_size_u64 = (1u32 << self.chunk_power) as u64;
+        let completed_chunks = self.total_count / chunk_size_u64;
         let mut result = Vec::new();
 
-        // Extract from epoch blobs
-        for (epoch_idx, blob) in &self.epoch_blobs {
-            let values = deserialize_epoch_blob(blob).map_err(|e| {
+        // Extract from chunk blobs
+        for (chunk_idx, blob) in &self.chunk_blobs {
+            let values = deserialize_chunk_blob(blob).map_err(|e| {
                 BulkAppendError::CorruptedData(format!(
-                    "failed to deserialize epoch blob {}: {}",
-                    epoch_idx, e
+                    "failed to deserialize chunk blob {}: {}",
+                    chunk_idx, e
                 ))
             })?;
 
-            let epoch_start = epoch_idx * epoch_size_u64;
+            let chunk_start = chunk_idx * chunk_size_u64;
             for (i, value) in values.into_iter().enumerate() {
-                let global_pos = epoch_start + i as u64;
+                let global_pos = chunk_start + i as u64;
                 if global_pos >= start && global_pos < end {
                     result.push((global_pos, value));
                 }
@@ -461,7 +457,7 @@ impl BulkAppendTreeProofResult {
         }
 
         // Extract from buffer entries
-        let buffer_start = completed_epochs * epoch_size_u64;
+        let buffer_start = completed_chunks * chunk_size_u64;
         for (i, entry) in self.buffer_entries.iter().enumerate() {
             let global_pos = buffer_start + i as u64;
             if global_pos >= start && global_pos < end {
@@ -578,7 +574,7 @@ mod tests {
     /// Helper: build an in-memory BulkAppendTree with N values and return
     /// the state needed for proof generation.
     fn build_test_tree(
-        epoch_size: u32,
+        chunk_power: u8,
         values: &[Vec<u8>],
     ) -> (
         u64,                                         // total_count
@@ -588,7 +584,7 @@ mod tests {
         std::collections::HashMap<Vec<u8>, Vec<u8>>, // aux storage
     ) {
         let store = InMemBulkStore::new();
-        let mut tree = BulkAppendTree::new(epoch_size).expect("create tree");
+        let mut tree = BulkAppendTree::new(chunk_power).expect("create tree");
 
         for value in values {
             tree.append(&store, value).expect("append value");
@@ -610,12 +606,7 @@ mod tests {
         } else {
             [0u8; 32]
         };
-        let state_root = compute_state_root(
-            &mmr_root,
-            &tree.buffer_hash(),
-            tree.total_count(),
-            tree.epoch_size(),
-        );
+        let state_root = compute_state_root(&mmr_root, &tree.buffer_hash());
 
         let aux: std::collections::HashMap<Vec<u8>, Vec<u8>> = store
             .0
@@ -663,15 +654,15 @@ mod tests {
         let values: Vec<Vec<u8>> = (0..3u32)
             .map(|i| format!("val_{}", i).into_bytes())
             .collect();
-        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(4, &values);
+        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(2u8, &values);
 
         let proof =
-            BulkAppendTreeProof::generate(total_count, 4, mmr_size, buffer_hash, 0, 3, |key| {
+            BulkAppendTreeProof::generate(total_count, 2u8, mmr_size, buffer_hash, 0, 3, |key| {
                 Ok(aux.get(key).cloned())
             })
             .expect("generate proof");
 
-        assert!(proof.epoch_blobs.is_empty());
+        assert!(proof.chunk_blobs.is_empty());
         assert_eq!(proof.buffer_entries.len(), 3);
 
         let result = proof.verify(&state_root).expect("verify proof");
@@ -683,23 +674,24 @@ mod tests {
     }
 
     #[test]
-    fn test_bulk_proof_epoch_and_buffer() {
-        // 6 values with epoch_size=4 → 1 epoch (0..4) + 2 buffer entries (4..6)
+    fn test_bulk_proof_chunk_and_buffer() {
+        // 6 values with chunk_size=4 (chunk_power=2) -> 1 chunk (0..4) + 2 buffer
+        // entries (4..6)
         let values: Vec<Vec<u8>> = (0..6u32)
             .map(|i| format!("data_{}", i).into_bytes())
             .collect();
-        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(4, &values);
+        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(2u8, &values);
 
         assert_eq!(total_count, 6);
 
         // Query range 0..6 (all data)
         let proof =
-            BulkAppendTreeProof::generate(total_count, 4, mmr_size, buffer_hash, 0, 6, |key| {
+            BulkAppendTreeProof::generate(total_count, 2u8, mmr_size, buffer_hash, 0, 6, |key| {
                 Ok(aux.get(key).cloned())
             })
             .expect("generate proof");
 
-        assert_eq!(proof.epoch_blobs.len(), 1);
+        assert_eq!(proof.chunk_blobs.len(), 1);
         assert_eq!(proof.buffer_entries.len(), 2);
 
         let result = proof.verify(&state_root).expect("verify proof");
@@ -711,21 +703,21 @@ mod tests {
     }
 
     #[test]
-    fn test_bulk_proof_multiple_epochs() {
-        // 12 values with epoch_size=4 → 3 epochs
+    fn test_bulk_proof_multiple_chunks() {
+        // 12 values with chunk_size=4 (chunk_power=2) -> 3 chunks
         let values: Vec<Vec<u8>> = (0..12u32)
             .map(|i| format!("e_{}", i).into_bytes())
             .collect();
-        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(4, &values);
+        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(2u8, &values);
 
-        // Query range 2..10 (overlaps epoch 0, 1, 2)
+        // Query range 2..10 (overlaps chunk 0, 1, 2)
         let proof =
-            BulkAppendTreeProof::generate(total_count, 4, mmr_size, buffer_hash, 2, 10, |key| {
+            BulkAppendTreeProof::generate(total_count, 2u8, mmr_size, buffer_hash, 2, 10, |key| {
                 Ok(aux.get(key).cloned())
             })
             .expect("generate proof");
 
-        assert_eq!(proof.epoch_blobs.len(), 3);
+        assert_eq!(proof.chunk_blobs.len(), 3);
 
         let result = proof.verify(&state_root).expect("verify proof");
         let vals = result.values_in_range(2, 10).expect("extract range");
@@ -737,10 +729,10 @@ mod tests {
     #[test]
     fn test_bulk_proof_wrong_state_root_fails() {
         let values: Vec<Vec<u8>> = (0..4u32).map(|i| format!("x_{}", i).into_bytes()).collect();
-        let (total_count, mmr_size, buffer_hash, _state_root, aux) = build_test_tree(4, &values);
+        let (total_count, mmr_size, buffer_hash, _state_root, aux) = build_test_tree(2u8, &values);
 
         let proof =
-            BulkAppendTreeProof::generate(total_count, 4, mmr_size, buffer_hash, 0, 4, |key| {
+            BulkAppendTreeProof::generate(total_count, 2u8, mmr_size, buffer_hash, 0, 4, |key| {
                 Ok(aux.get(key).cloned())
             })
             .expect("generate proof");
@@ -752,10 +744,10 @@ mod tests {
     #[test]
     fn test_bulk_proof_encode_decode() {
         let values: Vec<Vec<u8>> = (0..5u32).map(|i| format!("r_{}", i).into_bytes()).collect();
-        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(4, &values);
+        let (total_count, mmr_size, buffer_hash, state_root, aux) = build_test_tree(2u8, &values);
 
         let proof =
-            BulkAppendTreeProof::generate(total_count, 4, mmr_size, buffer_hash, 0, 5, |key| {
+            BulkAppendTreeProof::generate(total_count, 2u8, mmr_size, buffer_hash, 0, 5, |key| {
                 Ok(aux.get(key).cloned())
             })
             .expect("generate proof");

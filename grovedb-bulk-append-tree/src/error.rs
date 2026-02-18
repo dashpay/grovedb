@@ -13,4 +13,6 @@ pub enum BulkAppendError {
     MmrError(String),
     #[error("invalid proof: {0}")]
     InvalidProof(String),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }

@@ -417,23 +417,24 @@ fn decode_bulk_append_proof(bytes: &[u8]) -> String {
     match BulkAppendTreeProof::decode_from_slice(bytes) {
         Ok(proof) => {
             let mut s = format!(
-                "\n    epoch_size: {}, total_count: {}, epoch_mmr_size: {}, epochs: {}, \
+                "\n    chunk_power: {}, total_count: {}, chunk_mmr_size: {}, chunks: {}, \
                  buffer_entries: {}",
-                proof.epoch_size,
+                proof.chunk_power,
                 proof.total_count,
-                proof.epoch_mmr_size,
-                proof.epoch_blobs.len(),
+                proof.chunk_mmr_size,
+                proof.chunk_blobs.len(),
                 proof.buffer_entries.len(),
             );
-            for (i, (idx, blob)) in proof.epoch_blobs.iter().enumerate() {
+            for (i, (idx, blob)) in proof.chunk_blobs.iter().enumerate() {
                 s.push_str(&format!(
-                    "\n    epoch[{}]: index={}, blob={} bytes",
+                    "\n    chunk[{}]: index={}, blob={} bytes\n      0x{}",
                     i,
                     idx,
                     blob.len(),
+                    hex::encode(blob),
                 ));
             }
-            for (i, (idx, root)) in proof.epoch_mmr_leaves.iter().enumerate() {
+            for (i, (idx, root)) in proof.chunk_mmr_leaves.iter().enumerate() {
                 s.push_str(&format!(
                     "\n    mmr_leaf[{}]: index={}, root=HASH[{}]",
                     i,
@@ -441,7 +442,7 @@ fn decode_bulk_append_proof(bytes: &[u8]) -> String {
                     hex::encode(root),
                 ));
             }
-            for (i, hash) in proof.epoch_mmr_proof_items.iter().enumerate() {
+            for (i, hash) in proof.chunk_mmr_proof_items.iter().enumerate() {
                 s.push_str(&format!(
                     "\n    mmr_sibling[{}]: HASH[{}]",
                     i,

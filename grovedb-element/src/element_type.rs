@@ -582,25 +582,25 @@ mod tests {
             ),
             // discriminant 11
             (
-                Element::CommitmentTree(None, [0u8; 32], 0, 1024, None),
+                Element::CommitmentTree([0u8; 32], 0, 10, None),
                 ElementType::CommitmentTree,
                 "CommitmentTree",
             ),
             // discriminant 12
             (
-                Element::MmrTree(None, [0u8; 32], 0, None),
+                Element::MmrTree([0u8; 32], 0, None),
                 ElementType::MmrTree,
                 "MmrTree",
             ),
             // discriminant 13
             (
-                Element::BulkAppendTree(None, [0u8; 32], 0, 0, None),
+                Element::BulkAppendTree([0u8; 32], 0, 2, None),
                 ElementType::BulkAppendTree,
                 "BulkAppendTree",
             ),
             // discriminant 14
             (
-                Element::DenseAppendOnlyFixedSizeTree(None, [0u8; 32], 0, 1, None),
+                Element::DenseAppendOnlyFixedSizeTree([0u8; 32], 0, 1, None),
                 ElementType::DenseAppendOnlyFixedSizeTree,
                 "DenseAppendOnlyFixedSizeTree",
             ),

@@ -2,9 +2,9 @@
 //!
 //! - A dense Merkle tree buffer (fixed capacity, power of 2) holds incoming
 //!   values
-//! - When the buffer fills, entries are serialized into an immutable epoch
-//!   blob, the dense Merkle root is computed and appended to an epoch-level MMR
-//! - Completed epoch blobs are permanently immutable and CDN-cacheable
+//! - When the buffer fills, entries are serialized into an immutable chunk
+//!   blob, the dense Merkle root is computed and appended to a chunk-level MMR
+//! - Completed chunk blobs are permanently immutable and CDN-cacheable
 //!
 //! State root = blake3(mmr_root || buffer_hash) — changes on every append.
 
@@ -39,16 +39,16 @@ pub struct AppendResult {
 
 /// A two-level authenticated append-only data structure.
 ///
-/// Values are appended to a buffer of fixed `epoch_size`. When the buffer
-/// fills, entries are serialized into an immutable epoch blob, a dense Merkle
-/// root is computed, and that root is appended to an epoch-level MMR.
+/// Values are appended to a buffer of fixed size `2^chunk_power`. When the
+/// buffer fills, entries are serialized into an immutable chunk blob, a dense
+/// Merkle root is computed, and that root is appended to a chunk-level MMR.
 ///
 /// The state root is `blake3(mmr_root || buffer_hash)` and changes on every
 /// append. The `buffer_hash` is a running chain: `blake3(prev ||
 /// blake3(value))`.
 pub struct BulkAppendTree {
     pub(crate) total_count: u64,
-    pub(crate) epoch_size: u32,
+    pub(crate) chunk_power: u8,
     pub(crate) mmr_size: u64,
     pub(crate) buffer_hash: [u8; 32],
     pub(crate) mmr_node_cache: RefCell<HashMap<u64, MmrNode>>,
@@ -57,12 +57,17 @@ pub struct BulkAppendTree {
 impl BulkAppendTree {
     /// Create a new empty tree.
     ///
-    /// Returns an error if `epoch_size` is not a power of 2 or is 0.
-    pub fn new(epoch_size: u32) -> Result<Self, BulkAppendError> {
-        Self::validate_epoch_size(epoch_size)?;
+    /// `chunk_power` is the log2 of the chunk size (e.g. 2 means chunks of 4).
+    /// Returns an error if `chunk_power` is greater than 31.
+    pub fn new(chunk_power: u8) -> Result<Self, BulkAppendError> {
+        if chunk_power > 31 {
+            return Err(BulkAppendError::InvalidInput(
+                "chunk_power must be <= 31".into(),
+            ));
+        }
         Ok(Self {
             total_count: 0,
-            epoch_size,
+            chunk_power,
             mmr_size: 0,
             buffer_hash: [0u8; 32],
             mmr_node_cache: RefCell::new(HashMap::new()),
@@ -71,31 +76,30 @@ impl BulkAppendTree {
 
     /// Restore from persisted state.
     ///
-    /// Returns an error if `epoch_size` is not a power of 2 or is 0.
+    /// Returns an error if `chunk_power` is greater than 31.
     pub fn from_state(
         total_count: u64,
-        epoch_size: u32,
+        chunk_power: u8,
         mmr_size: u64,
         buffer_hash: [u8; 32],
     ) -> Result<Self, BulkAppendError> {
-        Self::validate_epoch_size(epoch_size)?;
+        if chunk_power > 31 {
+            return Err(BulkAppendError::InvalidInput(
+                "chunk_power must be <= 31".into(),
+            ));
+        }
         Ok(Self {
             total_count,
-            epoch_size,
+            chunk_power,
             mmr_size,
             buffer_hash,
             mmr_node_cache: RefCell::new(HashMap::new()),
         })
     }
 
-    fn validate_epoch_size(epoch_size: u32) -> Result<(), BulkAppendError> {
-        if epoch_size == 0 || !epoch_size.is_power_of_two() {
-            return Err(BulkAppendError::CorruptedData(format!(
-                "epoch_size must be a non-zero power of 2, got {}",
-                epoch_size
-            )));
-        }
-        Ok(())
+    /// Compute the chunk size from `chunk_power`: `2^chunk_power`.
+    pub fn chunk_size(&self) -> u32 {
+        1u32 << self.chunk_power
     }
 
     // ── State accessors ─────────────────────────────────────────────────
@@ -104,16 +108,16 @@ impl BulkAppendTree {
         self.total_count
     }
 
-    pub fn epoch_count(&self) -> u64 {
-        self.total_count / self.epoch_size as u64
+    pub fn chunk_count(&self) -> u64 {
+        self.total_count / self.chunk_size() as u64
     }
 
     pub fn buffer_count(&self) -> u32 {
-        (self.total_count % self.epoch_size as u64) as u32
+        (self.total_count % self.chunk_size() as u64) as u32
     }
 
-    pub fn epoch_size(&self) -> u32 {
-        self.epoch_size
+    pub fn chunk_power(&self) -> u8 {
+        self.chunk_power
     }
 
     pub fn mmr_size(&self) -> u64 {
@@ -157,7 +161,7 @@ impl BulkAppendTree {
     pub fn load_from_store<S: BulkStore>(
         store: &S,
         total_count: u64,
-        epoch_size: u32,
+        chunk_power: u8,
     ) -> Result<Self, BulkAppendError> {
         let meta_result = store
             .get(META_KEY)
@@ -165,7 +169,7 @@ impl BulkAppendTree {
         match meta_result {
             Some(bytes) => {
                 let (mmr_size, buffer_hash) = Self::deserialize_meta(&bytes)?;
-                Self::from_state(total_count, epoch_size, mmr_size, buffer_hash)
+                Self::from_state(total_count, chunk_power, mmr_size, buffer_hash)
             }
             None => {
                 if total_count > 0 {
@@ -174,7 +178,7 @@ impl BulkAppendTree {
                         total_count
                     )));
                 }
-                Self::new(epoch_size)
+                Self::new(chunk_power)
             }
         }
     }

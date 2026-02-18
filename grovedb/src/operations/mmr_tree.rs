@@ -150,7 +150,7 @@ impl GroveDb {
         );
 
         let (mmr_size, existing_flags) = match &element {
-            Element::MmrTree(_, _, size, flags) => (*size, flags.clone()),
+            Element::MmrTree(_, size, flags) => (*size, flags.clone()),
             _ => {
                 return Err(Error::InvalidInput("element is not an MMR tree")).wrap_with_cost(cost);
             }
@@ -285,7 +285,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::MmrTree(_, mmr_root, ..) => Ok(mmr_root).wrap_with_cost(cost),
+            Element::MmrTree(mmr_root, ..) => Ok(mmr_root).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not an MMR tree")).wrap_with_cost(cost),
         }
     }
@@ -316,7 +316,7 @@ impl GroveDb {
         );
 
         let mmr_size = match &element {
-            Element::MmrTree(_, _, size, _) => *size,
+            Element::MmrTree(_, size, _) => *size,
             _ => {
                 return Err(Error::InvalidInput("element is not an MMR tree")).wrap_with_cost(cost);
             }
@@ -379,7 +379,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::MmrTree(_, _, mmr_size, _) => {
+            Element::MmrTree(_, mmr_size, _) => {
                 Ok(mmr_size_to_leaf_count(mmr_size)).wrap_with_cost(cost)
             }
             _ => Err(Error::InvalidInput("element is not an MMR tree")).wrap_with_cost(cost),
@@ -458,7 +458,7 @@ impl GroveDb {
             );
 
             let mmr_size = match &element {
-                Element::MmrTree(_, _, size, _) => *size,
+                Element::MmrTree(_, size, _) => *size,
                 _ => {
                     return Err(Error::InvalidInput("element is not an MMR tree"))
                         .wrap_with_cost(cost);

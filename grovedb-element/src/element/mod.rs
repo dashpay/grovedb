@@ -77,26 +77,47 @@ pub enum Element {
     /// Orchard-style commitment tree: combines a BulkAppendTree (for efficient
     /// append-only storage of cmx||encrypted_note payloads with epoch
     /// compaction) and a Sinsemilla Frontier (for anchor computation).
-    /// The sinsemilla_root ([u8; 32]) is authenticated through the Merk hash
-    /// chain. Items are stored in the data namespace via BulkAppendTree;
+    /// Items are stored in the data namespace via BulkAppendTree;
     /// the frontier is stored in aux storage.
-    CommitmentTree(Option<Vec<u8>>, [u8; 32], u64, u32, Option<ElementFlags>),
+    ///
+    /// Fields: `(sinsemilla_root, total_count, chunk_power, flags)`
+    /// - `sinsemilla_root`: The Sinsemilla frontier root hash, authenticated
+    ///   through the Merk hash chain via the BulkAppendTree state_root as child
+    ///   Merk hash.
+    /// - `total_count`: Number of notes appended so far.
+    /// - `chunk_power`: Log2 of the chunk size (actual size = `1 <<
+    ///   chunk_power`).
+    /// - `flags`: Optional per-element metadata.
+    CommitmentTree([u8; 32], u64, u8, Option<ElementFlags>),
     /// MMR (Merkle Mountain Range) tree: append-only authenticated data
     /// structure with zero rotations, O(N) total hashes, sequential I/O.
-    /// The mmr_root ([u8; 32]) is the bagged peaks root hash.
-    /// The mmr_size (u64) is the total number of MMR nodes (internal +
-    /// leaves). First Element type with no Merk subtree underneath.
-    MmrTree(Option<Vec<u8>>, [u8; 32], u64, Option<ElementFlags>),
-    /// Bulk-append tree: like MmrTree but with an additional epoch_size (u32)
-    /// parameter that must be a power of 2. The state_root ([u8; 32]) is the
-    /// authenticated root, total_count (u64) is the number of appended items,
-    /// and epoch_size (u32) controls the epoch granularity.
-    BulkAppendTree(Option<Vec<u8>>, [u8; 32], u64, u32, Option<ElementFlags>),
+    ///
+    /// Fields: `(mmr_root, mmr_size, flags)`
+    /// - `mmr_root`: The bagged peaks root hash.
+    /// - `mmr_size`: Total number of MMR nodes (internal + leaves).
+    /// - `flags`: Optional per-element metadata.
+    MmrTree([u8; 32], u64, Option<ElementFlags>),
+    /// Bulk-append tree: two-level structure with a dense Merkle buffer that
+    /// compacts into chunk blobs stored in an MMR.
+    ///
+    /// Fields: `(state_root, total_count, chunk_power, flags)`
+    /// - `state_root`: `blake3(mmr_root || buffer_hash)`, authenticated as the
+    ///   child Merk hash.
+    /// - `total_count`: Number of items appended so far.
+    /// - `chunk_power`: Log2 of the chunk size (actual size = `1 <<
+    ///   chunk_power`).
+    /// - `flags`: Optional per-element metadata.
+    BulkAppendTree([u8; 32], u64, u8, Option<ElementFlags>),
     /// Dense fixed-sized Merkle tree: a complete binary tree of height h with
-    /// 2^h - 1 positions. All nodes (internal + leaf) store data values,
-    /// filled sequentially in level-order (BFS). Root hash is computed
-    /// on-the-fly. Fields: root_key, root_hash, count, height, flags.
-    DenseAppendOnlyFixedSizeTree(Option<Vec<u8>>, [u8; 32], u64, u8, Option<ElementFlags>),
+    /// 2^h - 1 positions. Nodes are filled sequentially in level-order (BFS).
+    /// Root hash is computed on-the-fly.
+    ///
+    /// Fields: `(root_hash, count, height, flags)`
+    /// - `root_hash`: The dense Merkle root hash.
+    /// - `count`: Number of values inserted so far.
+    /// - `height`: Tree height h; the tree has 2^h - 1 positions.
+    /// - `flags`: Optional per-element metadata.
+    DenseAppendOnlyFixedSizeTree([u8; 32], u64, u8, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -239,24 +260,22 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::CommitmentTree(root_key, sinsemilla_root, total_count, epoch_size, flags) => {
+            Element::CommitmentTree(sinsemilla_root, total_count, chunk_power, flags) => {
                 write!(
                     f,
-                    "CommitmentTree({}, sinsemilla: {}, count: {}, epoch_size: {}{})",
-                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    "CommitmentTree(sinsemilla: {}, count: {}, chunk_power: {}{})",
                     hex::encode(sinsemilla_root),
                     total_count,
-                    epoch_size,
+                    chunk_power,
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::MmrTree(root_key, mmr_root, mmr_size, flags) => {
+            Element::MmrTree(mmr_root, mmr_size, flags) => {
                 write!(
                     f,
-                    "MmrTree({}, mmr_root: {}, mmr_size: {}{})",
-                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    "MmrTree(mmr_root: {}, mmr_size: {}{})",
                     hex::encode(mmr_root),
                     mmr_size,
                     flags
@@ -264,24 +283,22 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::BulkAppendTree(root_key, state_root, total_count, epoch_size, flags) => {
+            Element::BulkAppendTree(state_root, total_count, chunk_power, flags) => {
                 write!(
                     f,
-                    "BulkAppendTree({}, state_root: {}, total_count: {}, epoch_size: {}{})",
-                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    "BulkAppendTree(state_root: {}, total_count: {}, chunk_power: {}{})",
                     hex::encode(state_root),
                     total_count,
-                    epoch_size,
+                    chunk_power,
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::DenseAppendOnlyFixedSizeTree(root_key, root_hash, count, height, flags) => {
+            Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, flags) => {
                 write!(
                     f,
-                    "DenseAppendOnlyFixedSizeTree({}, root_hash: {}, count: {}, height: {}{})",
-                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    "DenseAppendOnlyFixedSizeTree(root_hash: {}, count: {}, height: {}{})",
                     hex::encode(root_hash),
                     count,
                     height,

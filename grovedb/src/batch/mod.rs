@@ -112,9 +112,9 @@ pub enum GroveOp {
         /// MmrTree/CommitmentTree/BulkAppendTree, count for DenseTree).
         /// None for standard aggregate trees.
         custom_count: Option<u64>,
-        /// BulkAppendTree/CommitmentTree state: (total_count, epoch_size).
+        /// BulkAppendTree/CommitmentTree state: (total_count, chunk_power).
         /// None for other tree types.
-        bulk_state: Option<(u64, u32)>,
+        bulk_state: Option<(u64, u8)>,
     },
     /// Inserts an element that is known to not yet exist
     InsertOnly {
@@ -160,9 +160,9 @@ pub enum GroveOp {
         /// BulkAppendTree, dense root for DenseTree). None for standard
         /// aggregate trees.
         custom_root: Option<[u8; 32]>,
-        /// BulkAppendTree/CommitmentTree state: (total_count, epoch_size).
+        /// BulkAppendTree/CommitmentTree state: (total_count, chunk_power).
         /// None for other tree types.
-        bulk_state: Option<(u64, u32)>,
+        bulk_state: Option<(u64, u8)>,
         /// Explicit tree type for non-Merk trees to prevent type confusion.
         /// None means infer from aggregate_data (standard Merk trees).
         non_merk_tree_type: Option<TreeType>,
@@ -1720,22 +1720,22 @@ where
                     let element = match non_merk_tree_type {
                         Some(TreeType::CommitmentTree) => {
                             let sr = custom_root.unwrap_or([0u8; 32]);
-                            let (tc, es) = bulk_state.unwrap_or((0, 0));
-                            Element::new_commitment_tree_with_all(root_key, sr, tc, es, flags)
+                            let (tc, cp) = bulk_state.unwrap_or((0, 0));
+                            Element::new_commitment_tree_with_all(sr, tc, cp, flags)
                         }
                         Some(TreeType::MmrTree) => {
                             let mr = custom_root.unwrap_or([0u8; 32]);
-                            Element::MmrTree(root_key, mr, 0, flags)
+                            Element::MmrTree(mr, 0, flags)
                         }
                         Some(TreeType::BulkAppendTree) => {
                             let sr = custom_root.unwrap_or([0u8; 32]);
-                            let (tc, es) = bulk_state.unwrap_or((0, 0));
-                            Element::BulkAppendTree(root_key, sr, tc, es, flags)
+                            let (tc, cp) = bulk_state.unwrap_or((0, 0));
+                            Element::BulkAppendTree(sr, tc, cp, flags)
                         }
                         Some(TreeType::DenseAppendOnlyFixedSizeTree) => {
                             let dr = custom_root.unwrap_or([0u8; 32]);
-                            let (count, height_u32) = bulk_state.unwrap_or((0, 0));
-                            Element::new_dense_tree(dr, count, height_u32 as u8, flags)
+                            let (count, height) = bulk_state.unwrap_or((0, 0));
+                            Element::new_dense_tree(dr, count, height, flags)
                         }
                         Some(_) | None => {
                             // Standard aggregate trees — infer from
@@ -2204,10 +2204,9 @@ impl GroveDb {
                                                                 non_merk_tree_type: None,
                                                             }
                                                     } else if let Element::CommitmentTree(
-                                                        _,
                                                         sr,
                                                         total_count,
-                                                        epoch_size,
+                                                        chunk_power,
                                                         flags,
                                                     ) = element
                                                     {
@@ -2220,14 +2219,13 @@ impl GroveDb {
                                                                 custom_root: Some(*sr),
                                                                 bulk_state: Some((
                                                                     *total_count,
-                                                                    *epoch_size,
+                                                                    *chunk_power,
                                                                 )),
                                                                 non_merk_tree_type: Some(
                                                                     TreeType::CommitmentTree,
                                                                 ),
                                                             }
                                                     } else if let Element::MmrTree(
-                                                        _,
                                                         mmr_root,
                                                         _mmr_size,
                                                         flags,
@@ -2246,10 +2244,9 @@ impl GroveDb {
                                                                 ),
                                                             }
                                                     } else if let Element::BulkAppendTree(
-                                                        _,
                                                         state_root,
                                                         total_count,
-                                                        epoch_size,
+                                                        chunk_power,
                                                         flags,
                                                     ) = element
                                                     {
@@ -2262,7 +2259,7 @@ impl GroveDb {
                                                                 custom_root: Some(*state_root),
                                                                 bulk_state: Some((
                                                                     *total_count,
-                                                                    *epoch_size,
+                                                                    *chunk_power,
                                                                 )),
                                                                 non_merk_tree_type: Some(
                                                                     TreeType::BulkAppendTree,
@@ -2270,7 +2267,6 @@ impl GroveDb {
                                                             }
                                                     } else if let
                                                         Element::DenseAppendOnlyFixedSizeTree(
-                                                            _,
                                                             dense_root,
                                                             count,
                                                             height,
@@ -2286,7 +2282,7 @@ impl GroveDb {
                                                                 custom_root: Some(*dense_root),
                                                                 bulk_state: Some((
                                                                     *count,
-                                                                    *height as u32,
+                                                                    *height,
                                                                 )),
                                                                 non_merk_tree_type: Some(
                                                                     DenseTreeType,

@@ -49,11 +49,11 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
-            Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
-            Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
-            Element::DenseAppendOnlyFixedSizeTree(root_key, ..) => {
-                Some((root_key, TreeType::DenseAppendOnlyFixedSizeTree))
+            Element::CommitmentTree(..) => Some((None, TreeType::CommitmentTree)),
+            Element::MmrTree(..) => Some((None, TreeType::MmrTree)),
+            Element::BulkAppendTree(..) => Some((None, TreeType::BulkAppendTree)),
+            Element::DenseAppendOnlyFixedSizeTree(..) => {
+                Some((None, TreeType::DenseAppendOnlyFixedSizeTree))
             }
             _ => None,
         }
@@ -62,6 +62,8 @@ impl ElementTreeTypeExtensions for Element {
     /// Check if the element is a tree and return the root_tree info and the
     /// tree type
     fn root_key_and_tree_type(&self) -> Option<(&Option<Vec<u8>>, TreeType)> {
+        // We use a const None to return a stable reference for non-Merk tree types.
+        const NONE_ROOT_KEY: Option<Vec<u8>> = None;
         match self {
             Element::Tree(root_key, _) => Some((root_key, TreeType::NormalTree)),
             Element::SumTree(root_key, ..) => Some((root_key, TreeType::SumTree)),
@@ -74,11 +76,11 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(root_key, ..) => Some((root_key, TreeType::CommitmentTree)),
-            Element::MmrTree(root_key, ..) => Some((root_key, TreeType::MmrTree)),
-            Element::BulkAppendTree(root_key, ..) => Some((root_key, TreeType::BulkAppendTree)),
-            Element::DenseAppendOnlyFixedSizeTree(root_key, ..) => {
-                Some((root_key, TreeType::DenseAppendOnlyFixedSizeTree))
+            Element::CommitmentTree(..) => Some((&NONE_ROOT_KEY, TreeType::CommitmentTree)),
+            Element::MmrTree(..) => Some((&NONE_ROOT_KEY, TreeType::MmrTree)),
+            Element::BulkAppendTree(..) => Some((&NONE_ROOT_KEY, TreeType::BulkAppendTree)),
+            Element::DenseAppendOnlyFixedSizeTree(..) => {
+                Some((&NONE_ROOT_KEY, TreeType::DenseAppendOnlyFixedSizeTree))
             }
             _ => None,
         }
@@ -96,10 +98,10 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(_, _, _, _, flags) => Some((flags, TreeType::CommitmentTree)),
-            Element::MmrTree(_, _, _, flags) => Some((flags, TreeType::MmrTree)),
-            Element::BulkAppendTree(_, _, _, _, flags) => Some((flags, TreeType::BulkAppendTree)),
-            Element::DenseAppendOnlyFixedSizeTree(_, _, _, _, flags) => {
+            Element::CommitmentTree(.., flags) => Some((flags, TreeType::CommitmentTree)),
+            Element::MmrTree(.., flags) => Some((flags, TreeType::MmrTree)),
+            Element::BulkAppendTree(.., flags) => Some((flags, TreeType::BulkAppendTree)),
+            Element::DenseAppendOnlyFixedSizeTree(.., flags) => {
                 Some((flags, TreeType::DenseAppendOnlyFixedSizeTree))
             }
             _ => None,

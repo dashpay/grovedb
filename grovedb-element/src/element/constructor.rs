@@ -301,91 +301,72 @@ impl Element {
     }
 
     /// Set element to an empty commitment tree
-    pub fn empty_commitment_tree(epoch_size: u32) -> Self {
-        assert!(
-            epoch_size.is_power_of_two(),
-            "epoch_size must be a power of 2"
-        );
-        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, epoch_size, None)
+    pub fn empty_commitment_tree(chunk_power: u8) -> Self {
+        assert!(chunk_power <= 31, "chunk_power must be <= 31");
+        Element::CommitmentTree(Self::EMPTY_SINSEMILLA_ROOT, 0, chunk_power, None)
     }
 
     /// Set element to an empty commitment tree with flags
-    pub fn empty_commitment_tree_with_flags(epoch_size: u32, flags: Option<ElementFlags>) -> Self {
-        assert!(
-            epoch_size.is_power_of_two(),
-            "epoch_size must be a power of 2"
-        );
-        Element::CommitmentTree(None, Self::EMPTY_SINSEMILLA_ROOT, 0, epoch_size, flags)
+    pub fn empty_commitment_tree_with_flags(chunk_power: u8, flags: Option<ElementFlags>) -> Self {
+        assert!(chunk_power <= 31, "chunk_power must be <= 31");
+        Element::CommitmentTree(Self::EMPTY_SINSEMILLA_ROOT, 0, chunk_power, flags)
     }
 
     /// Set element to a commitment tree with all fields
     pub fn new_commitment_tree_with_all(
-        maybe_root_key: Option<Vec<u8>>,
         sinsemilla_root: [u8; 32],
         total_count: u64,
-        epoch_size: u32,
+        chunk_power: u8,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::CommitmentTree(
-            maybe_root_key,
-            sinsemilla_root,
-            total_count,
-            epoch_size,
-            flags,
-        )
+        Element::CommitmentTree(sinsemilla_root, total_count, chunk_power, flags)
     }
 
     /// Set element to an empty MMR tree
     pub fn empty_mmr_tree() -> Self {
-        Element::MmrTree(None, [0u8; 32], 0, None)
+        Element::MmrTree([0u8; 32], 0, None)
     }
 
     /// Set element to an empty MMR tree with flags
     pub fn empty_mmr_tree_with_flags(flags: Option<ElementFlags>) -> Self {
-        Element::MmrTree(None, [0u8; 32], 0, flags)
+        Element::MmrTree([0u8; 32], 0, flags)
     }
 
     /// Set element to an MMR tree with all fields
     pub fn new_mmr_tree(mmr_root: [u8; 32], mmr_size: u64, flags: Option<ElementFlags>) -> Self {
-        Element::MmrTree(None, mmr_root, mmr_size, flags)
+        Element::MmrTree(mmr_root, mmr_size, flags)
     }
 
     /// Set element to an empty bulk append tree without flags
-    pub fn empty_bulk_append_tree(epoch_size: u32) -> Self {
-        assert!(
-            epoch_size.is_power_of_two(),
-            "epoch_size must be a power of 2"
-        );
-        Element::BulkAppendTree(None, [0u8; 32], 0, epoch_size, None)
+    pub fn empty_bulk_append_tree(chunk_power: u8) -> Self {
+        assert!(chunk_power <= 31, "chunk_power must be <= 31");
+        Element::BulkAppendTree([0u8; 32], 0, chunk_power, None)
     }
 
     /// Set element to an empty bulk append tree with flags
-    pub fn empty_bulk_append_tree_with_flags(epoch_size: u32, flags: Option<ElementFlags>) -> Self {
-        assert!(
-            epoch_size.is_power_of_two(),
-            "epoch_size must be a power of 2"
-        );
-        Element::BulkAppendTree(None, [0u8; 32], 0, epoch_size, flags)
+    pub fn empty_bulk_append_tree_with_flags(chunk_power: u8, flags: Option<ElementFlags>) -> Self {
+        assert!(chunk_power <= 31, "chunk_power must be <= 31");
+        Element::BulkAppendTree([0u8; 32], 0, chunk_power, flags)
     }
 
     /// Set element to a bulk append tree with all fields
     pub fn new_bulk_append_tree(
         state_root: [u8; 32],
         total_count: u64,
-        epoch_size: u32,
+        chunk_power: u8,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::BulkAppendTree(None, state_root, total_count, epoch_size, flags)
+        Element::BulkAppendTree(state_root, total_count, chunk_power, flags)
     }
 
     /// Set element to an empty dense tree without flags
     pub fn empty_dense_tree(height: u8) -> Self {
-        Element::DenseAppendOnlyFixedSizeTree(None, [0u8; 32], 0, height, None)
+        Element::DenseAppendOnlyFixedSizeTree([0u8; 32], 0, height, None)
     }
 
     /// Set element to an empty dense tree with flags
     pub fn empty_dense_tree_with_flags(height: u8, flags: Option<ElementFlags>) -> Self {
-        Element::DenseAppendOnlyFixedSizeTree(None, [0u8; 32], 0, height, flags)
+        Element::DenseAppendOnlyFixedSizeTree([0u8; 32], 0, height, flags)
     }
 
     /// Set element to a dense tree with all fields
@@ -395,6 +376,6 @@ impl Element {
         height: u8,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::DenseAppendOnlyFixedSizeTree(None, root_hash, count, height, flags)
+        Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, flags)
     }
 }

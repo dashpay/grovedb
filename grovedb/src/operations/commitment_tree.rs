@@ -2,7 +2,7 @@
 //!
 //! Provides methods to interact with CommitmentTree subtrees, which combine a
 //! BulkAppendTree (for efficient append-only storage of cmx||encrypted_note
-//! payloads with epoch compaction) and a lightweight Sinsemilla frontier (for
+//! payloads with chunk compaction) and a lightweight Sinsemilla frontier (for
 //! Orchard anchor computation).
 //!
 //! Items are stored as `cmx (32 bytes) || payload` in the BulkAppendTree data
@@ -226,8 +226,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (total_count, epoch_size, existing_flags) = match &element {
-            Element::CommitmentTree(_, _, tc, es, flags) => (*tc, *es, flags.clone()),
+        let (total_count, chunk_power, existing_flags) = match &element {
+            Element::CommitmentTree(_, tc, cp, flags) => (*tc, *cp, flags.clone()),
             _ => {
                 return Err(Error::InvalidInput("element is not a commitment tree"))
                     .wrap_with_cost(cost);
@@ -249,7 +249,7 @@ impl GroveDb {
         let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let mut tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::load_from_store(&store, total_count, epoch_size).map_err(map_bulk_err)
+            BulkAppendTree::load_from_store(&store, total_count, chunk_power).map_err(map_bulk_err)
         );
 
         let mut item_value = Vec::with_capacity(32 + payload.len());
@@ -306,10 +306,9 @@ impl GroveDb {
         );
 
         let updated_element = Element::new_commitment_tree_with_all(
-            None,
             new_sinsemilla_root,
             new_total_count,
-            epoch_size,
+            chunk_power,
             existing_flags,
         );
 
@@ -423,8 +422,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (total_count, epoch_size) = match &element {
-            Element::CommitmentTree(_, _, tc, es, _) => (*tc, *es),
+        let (total_count, chunk_power) = match &element {
+            Element::CommitmentTree(_, tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a commitment tree"))
                     .wrap_with_cost(cost);
@@ -443,7 +442,8 @@ impl GroveDb {
         let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, epoch_size, 0, [0u8; 32]).map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, 0, [0u8; 32])
+                .map_err(map_bulk_err)
         );
         let result = cost_return_on_error_no_add!(
             cost,
@@ -476,7 +476,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::CommitmentTree(_, _, total_count, ..) => Ok(total_count).wrap_with_cost(cost),
+            Element::CommitmentTree(_, total_count, ..) => Ok(total_count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a commitment tree")).wrap_with_cost(cost),
         }
     }
@@ -570,8 +570,8 @@ impl GroveDb {
                 )
             );
 
-            let (total_count, epoch_size) = match &element {
-                Element::CommitmentTree(_, _, tc, es, _) => (*tc, *es),
+            let (total_count, chunk_power) = match &element {
+                Element::CommitmentTree(_, tc, cp, _) => (*tc, *cp),
                 _ => {
                     return Err(Error::InvalidInput("element is not a commitment tree"))
                         .wrap_with_cost(cost);
@@ -594,7 +594,7 @@ impl GroveDb {
             let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
             let mut tree = cost_return_on_error_no_add!(
                 cost,
-                BulkAppendTree::load_from_store(&store, total_count, epoch_size)
+                BulkAppendTree::load_from_store(&store, total_count, chunk_power)
                     .map_err(map_bulk_err)
             );
 
@@ -666,7 +666,7 @@ impl GroveDb {
                     aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
                     custom_root: Some(new_sinsemilla_root),
                     custom_count: Some(current_total_count),
-                    bulk_state: Some((current_total_count, epoch_size)),
+                    bulk_state: Some((current_total_count, chunk_power)),
                 },
             };
             replacements.insert(path_key.clone(), replacement);

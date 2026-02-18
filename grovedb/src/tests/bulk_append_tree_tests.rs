@@ -1,7 +1,7 @@
 //! BulkAppendTree integration tests
 //!
 //! Tests for BulkAppendTree as a GroveDB subtree type: a two-level
-//! authenticated append-only structure with dense Merkle buffer and epoch MMR.
+//! authenticated append-only structure with dense Merkle buffer and chunk MMR.
 
 use grovedb_version::version::GroveVersion;
 
@@ -12,8 +12,10 @@ use crate::{
     Element, Error,
 };
 
-/// Small epoch size for tests — triggers compaction after 4 appends.
-const TEST_EPOCH_SIZE: u32 = 4;
+/// Small chunk power for tests — chunk size = 2^2 = 4, triggers compaction
+/// after 4 appends.
+const TEST_CHUNK_POWER: u8 = 2;
+const TEST_CHUNK_SIZE: u32 = 1 << (TEST_CHUNK_POWER as u32);
 
 // ===========================================================================
 // Element tests
@@ -27,7 +29,7 @@ fn test_insert_bulk_append_tree_at_root() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -61,7 +63,7 @@ fn test_bulk_append_tree_under_normal_tree() {
     db.insert(
         [b"parent"].as_ref(),
         b"notes",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -85,7 +87,7 @@ fn test_bulk_append_tree_with_flags() {
     db.insert(
         EMPTY_PATH,
         b"flagged",
-        Element::empty_bulk_append_tree_with_flags(TEST_EPOCH_SIZE, flags.clone()),
+        Element::empty_bulk_append_tree_with_flags(TEST_CHUNK_POWER, flags.clone()),
         None,
         None,
         grove_version,
@@ -103,7 +105,7 @@ fn test_bulk_append_tree_with_flags() {
 
 #[test]
 fn test_bulk_append_tree_is_any_tree() {
-    let element = Element::empty_bulk_append_tree(TEST_EPOCH_SIZE);
+    let element = Element::empty_bulk_append_tree(TEST_CHUNK_POWER);
     assert!(element.is_any_tree());
     assert!(element.is_bulk_append_tree());
     assert!(!element.is_any_item());
@@ -112,7 +114,7 @@ fn test_bulk_append_tree_is_any_tree() {
 #[test]
 fn test_bulk_append_tree_serialization_roundtrip() {
     let grove_version = GroveVersion::latest();
-    let original = Element::new_bulk_append_tree([42u8; 32], 100, 8, Some(vec![7, 8, 9]));
+    let original = Element::new_bulk_append_tree([42u8; 32], 100, 3, Some(vec![7, 8, 9]));
     let bytes = original.serialize(grove_version).expect("serialize");
     let deserialized = Element::deserialize(&bytes, grove_version).expect("deserialize");
     assert_eq!(original, deserialized);
@@ -130,7 +132,7 @@ fn test_bulk_append_single_value() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -155,7 +157,7 @@ fn test_bulk_append_multiple_in_buffer() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -163,7 +165,7 @@ fn test_bulk_append_multiple_in_buffer() {
     .unwrap()
     .expect("insert");
 
-    // Append 3 values (less than epoch_size=4, no compaction)
+    // Append 3 values (less than chunk_size=4, no compaction)
     for i in 0u8..3 {
         let (_sr, pos) = db
             .bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
@@ -179,12 +181,12 @@ fn test_bulk_append_multiple_in_buffer() {
         .expect("count");
     assert_eq!(count, 3);
 
-    // No completed epochs
-    let epoch_count = db
-        .bulk_epoch_count(EMPTY_PATH, b"bulk", None, grove_version)
+    // No completed chunks
+    let chunk_count = db
+        .bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
         .unwrap()
-        .expect("epoch count");
-    assert_eq!(epoch_count, 0);
+        .expect("chunk count");
+    assert_eq!(chunk_count, 0);
 }
 
 #[test]
@@ -195,7 +197,7 @@ fn test_bulk_get_value_from_buffer() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -235,7 +237,7 @@ fn test_bulk_get_buffer() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -265,7 +267,7 @@ fn test_bulk_state_root_changes_each_append() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -291,14 +293,14 @@ fn test_bulk_state_root_changes_each_append() {
 // ===========================================================================
 
 #[test]
-fn test_bulk_compaction_at_epoch_boundary() {
+fn test_bulk_compaction_at_chunk_boundary() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -306,26 +308,26 @@ fn test_bulk_compaction_at_epoch_boundary() {
     .unwrap()
     .expect("insert");
 
-    // Append exactly epoch_size (4) values → should trigger compaction
-    for i in 0u8..TEST_EPOCH_SIZE as u8 {
+    // Append exactly chunk_size (4) values → should trigger compaction
+    for i in 0u8..TEST_CHUNK_SIZE as u8 {
         db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
             .unwrap()
             .expect("append");
     }
 
-    // 1 completed epoch
-    let epoch_count = db
-        .bulk_epoch_count(EMPTY_PATH, b"bulk", None, grove_version)
+    // 1 completed chunk
+    let chunk_count = db
+        .bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
         .unwrap()
-        .expect("epoch count");
-    assert_eq!(epoch_count, 1);
+        .expect("chunk count");
+    assert_eq!(chunk_count, 1);
 
     // Total count = 4
     let count = db
         .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
         .unwrap()
         .expect("count");
-    assert_eq!(count, TEST_EPOCH_SIZE as u64);
+    assert_eq!(count, TEST_CHUNK_SIZE as u64);
 
     // Buffer should be empty after compaction
     let buffer = db
@@ -336,14 +338,14 @@ fn test_bulk_compaction_at_epoch_boundary() {
 }
 
 #[test]
-fn test_bulk_epoch_blob_retrievable() {
+fn test_bulk_chunk_blob_retrievable() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -351,25 +353,25 @@ fn test_bulk_epoch_blob_retrievable() {
     .unwrap()
     .expect("insert");
 
-    let values: Vec<Vec<u8>> = (0u8..TEST_EPOCH_SIZE as u8).map(|i| vec![i]).collect();
+    let values: Vec<Vec<u8>> = (0u8..TEST_CHUNK_SIZE as u8).map(|i| vec![i]).collect();
     for v in &values {
         db.bulk_append(EMPTY_PATH, b"bulk", v.clone(), None, grove_version)
             .unwrap()
             .expect("append");
     }
 
-    // Epoch 0 should be retrievable
+    // Chunk 0 should be retrievable
     let blob = db
-        .bulk_get_epoch(EMPTY_PATH, b"bulk", 0, None, grove_version)
+        .bulk_get_chunk(EMPTY_PATH, b"bulk", 0, None, grove_version)
         .unwrap()
-        .expect("get epoch");
-    assert!(blob.is_some(), "epoch 0 should exist");
+        .expect("get chunk");
+    assert!(blob.is_some(), "chunk 0 should exist");
 
-    // Epoch 1 doesn't exist yet
+    // Chunk 1 doesn't exist yet
     let none_blob = db
-        .bulk_get_epoch(EMPTY_PATH, b"bulk", 1, None, grove_version)
+        .bulk_get_chunk(EMPTY_PATH, b"bulk", 1, None, grove_version)
         .unwrap()
-        .expect("get nonexistent epoch");
+        .expect("get nonexistent chunk");
     assert!(none_blob.is_none());
 }
 
@@ -381,7 +383,7 @@ fn test_bulk_values_accessible_after_compaction() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -389,7 +391,7 @@ fn test_bulk_values_accessible_after_compaction() {
     .unwrap()
     .expect("insert");
 
-    let values: Vec<Vec<u8>> = (0u8..TEST_EPOCH_SIZE as u8)
+    let values: Vec<Vec<u8>> = (0u8..TEST_CHUNK_SIZE as u8)
         .map(|i| vec![100 + i])
         .collect();
     for v in &values {
@@ -398,7 +400,7 @@ fn test_bulk_values_accessible_after_compaction() {
             .expect("append");
     }
 
-    // All values should still be accessible via bulk_get_value (reads from epoch
+    // All values should still be accessible via bulk_get_value (reads from chunk
     // blob)
     for (i, expected) in values.iter().enumerate() {
         let got = db
@@ -421,7 +423,7 @@ fn test_bulk_state_root_deterministic() {
         db.insert(
             EMPTY_PATH,
             b"bulk",
-            Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+            Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
             None,
             None,
             grove_version,
@@ -429,7 +431,7 @@ fn test_bulk_state_root_deterministic() {
         .unwrap()
         .expect("insert");
 
-        for i in 0u8..TEST_EPOCH_SIZE as u8 {
+        for i in 0u8..TEST_CHUNK_SIZE as u8 {
             db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
                 .unwrap()
                 .expect("append");
@@ -447,31 +449,28 @@ fn test_bulk_state_root_deterministic() {
         .expect("get2");
 
     match (&elem1, &elem2) {
-        (
-            Element::BulkAppendTree(_, sr1, tc1, es1, _),
-            Element::BulkAppendTree(_, sr2, tc2, es2, _),
-        ) => {
+        (Element::BulkAppendTree(sr1, tc1, cp1, _), Element::BulkAppendTree(sr2, tc2, cp2, _)) => {
             assert_eq!(sr1, sr2, "state roots should be deterministic");
             assert_eq!(tc1, tc2);
-            assert_eq!(es1, es2);
+            assert_eq!(cp1, cp2);
         }
         _ => panic!("expected BulkAppendTree elements"),
     }
 }
 
 // ===========================================================================
-// Multi-epoch tests
+// Multi-chunk tests
 // ===========================================================================
 
 #[test]
-fn test_bulk_multi_epoch() {
+fn test_bulk_multi_chunk() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -479,8 +478,8 @@ fn test_bulk_multi_epoch() {
     .unwrap()
     .expect("insert");
 
-    // Append 2 * epoch_size + 2 = 10 values → 2 completed epochs + 2 in buffer
-    let total = 2 * TEST_EPOCH_SIZE as u8 + 2;
+    // Append 2 * chunk_size + 2 = 10 values → 2 completed chunks + 2 in buffer
+    let total = 2 * TEST_CHUNK_SIZE as u8 + 2;
     for i in 0..total {
         db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
             .unwrap()
@@ -495,9 +494,9 @@ fn test_bulk_multi_epoch() {
     );
 
     assert_eq!(
-        db.bulk_epoch_count(EMPTY_PATH, b"bulk", None, grove_version)
+        db.bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
             .unwrap()
-            .expect("epoch count"),
+            .expect("chunk count"),
         2
     );
 
@@ -508,7 +507,7 @@ fn test_bulk_multi_epoch() {
         .expect("buffer");
     assert_eq!(buffer.len(), 2);
 
-    // Access values from epoch 0, epoch 1, and buffer
+    // Access values from chunk 0, chunk 1, and buffer
     for i in 0..total {
         let got = db
             .bulk_get_value(EMPTY_PATH, b"bulk", i as u64, None, grove_version)
@@ -519,14 +518,14 @@ fn test_bulk_multi_epoch() {
 }
 
 #[test]
-fn test_bulk_three_full_epochs() {
+fn test_bulk_three_full_chunks() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -534,7 +533,7 @@ fn test_bulk_three_full_epochs() {
     .unwrap()
     .expect("insert");
 
-    let total = 3 * TEST_EPOCH_SIZE;
+    let total = 3 * TEST_CHUNK_SIZE;
     for i in 0..total {
         db.bulk_append(EMPTY_PATH, b"bulk", vec![i as u8], None, grove_version)
             .unwrap()
@@ -542,25 +541,25 @@ fn test_bulk_three_full_epochs() {
     }
 
     assert_eq!(
-        db.bulk_epoch_count(EMPTY_PATH, b"bulk", None, grove_version)
+        db.bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
             .unwrap()
-            .expect("epoch count"),
+            .expect("chunk count"),
         3
     );
 
-    // Buffer empty (exactly 3 full epochs)
+    // Buffer empty (exactly 3 full chunks)
     let buffer = db
         .bulk_get_buffer(EMPTY_PATH, b"bulk", None, grove_version)
         .unwrap()
         .expect("buffer");
     assert!(buffer.is_empty());
 
-    // All 3 epoch blobs should exist
-    for epoch in 0..3u64 {
+    // All 3 chunk blobs should exist
+    for chunk in 0..3u64 {
         let blob = db
-            .bulk_get_epoch(EMPTY_PATH, b"bulk", epoch, None, grove_version)
+            .bulk_get_chunk(EMPTY_PATH, b"bulk", chunk, None, grove_version)
             .unwrap()
-            .expect("get epoch");
+            .expect("get chunk");
         assert!(blob.is_some());
     }
 }
@@ -577,7 +576,7 @@ fn test_bulk_batch_single_append() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -616,7 +615,7 @@ fn test_bulk_batch_multiple_appends() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -655,7 +654,7 @@ fn test_bulk_batch_spanning_compaction() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -663,7 +662,7 @@ fn test_bulk_batch_spanning_compaction() {
     .unwrap()
     .expect("insert");
 
-    // Batch with 6 appends — should trigger 1 compaction (epoch_size=4)
+    // Batch with 6 appends — should trigger 1 compaction (chunk_size=4)
     // and leave 2 in buffer
     let ops: Vec<QualifiedGroveDbOp> = (0u8..6)
         .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![], b"bulk".to_vec(), vec![i]))
@@ -681,9 +680,9 @@ fn test_bulk_batch_spanning_compaction() {
     );
 
     assert_eq!(
-        db.bulk_epoch_count(EMPTY_PATH, b"bulk", None, grove_version)
+        db.bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
             .unwrap()
-            .expect("epoch count"),
+            .expect("chunk count"),
         1
     );
 
@@ -712,7 +711,7 @@ fn test_bulk_batch_matches_direct_ops() {
     db1.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -731,7 +730,7 @@ fn test_bulk_batch_matches_direct_ops() {
     db2.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -788,7 +787,7 @@ fn test_bulk_batch_with_mixed_ops() {
     db.insert(
         [b"parent"].as_ref(),
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -856,7 +855,7 @@ fn test_bulk_root_hash_propagation() {
     db.insert(
         [b"parent"].as_ref(),
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -897,7 +896,7 @@ fn test_bulk_transaction_commit() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -942,7 +941,7 @@ fn test_bulk_transaction_rollback() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1006,7 +1005,7 @@ fn test_bulk_get_value_out_of_range() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1026,9 +1025,9 @@ fn test_bulk_get_value_out_of_range() {
 }
 
 #[test]
-#[should_panic(expected = "power of 2")]
-fn test_bulk_invalid_epoch_size() {
-    let _element = Element::empty_bulk_append_tree(3); // Not a power of 2
+#[should_panic(expected = "chunk_power must be <= 31")]
+fn test_bulk_invalid_chunk_power() {
+    let _element = Element::empty_bulk_append_tree(32); // Power too large
 }
 
 // ===========================================================================
@@ -1043,7 +1042,7 @@ fn test_bulk_delete_empty() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1069,7 +1068,7 @@ fn test_bulk_delete_non_empty() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1112,7 +1111,7 @@ fn test_bulk_delete_non_empty_with_compaction() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1120,7 +1119,7 @@ fn test_bulk_delete_non_empty_with_compaction() {
     .unwrap()
     .expect("insert bulk append tree");
 
-    // Append 6 values (epoch_size=4 triggers 1 compaction, 2 remain in buffer)
+    // Append 6 values (chunk_size=4 triggers 1 compaction, 2 remain in buffer)
     for i in 0..6u8 {
         db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
             .unwrap()
@@ -1128,11 +1127,11 @@ fn test_bulk_delete_non_empty_with_compaction() {
     }
 
     // Verify compaction happened
-    let epoch_count = db
-        .bulk_epoch_count(EMPTY_PATH, b"bulk", None, grove_version)
+    let chunk_count = db
+        .bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
         .unwrap()
-        .expect("epoch count");
-    assert_eq!(epoch_count, 1, "should have 1 completed epoch");
+        .expect("chunk count");
+    assert_eq!(chunk_count, 1, "should have 1 completed chunk");
 
     // Delete with allow_deleting_non_empty_trees
     db.delete(
@@ -1147,7 +1146,7 @@ fn test_bulk_delete_non_empty_with_compaction() {
         grove_version,
     )
     .unwrap()
-    .expect("should delete bulk tree with compacted epochs");
+    .expect("should delete bulk tree with compacted chunks");
 
     // Verify tree is gone
     let result = db.get(EMPTY_PATH, b"bulk", None, grove_version).unwrap();
@@ -1162,7 +1161,7 @@ fn test_bulk_delete_non_empty_error() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1196,7 +1195,7 @@ fn test_bulk_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1204,7 +1203,7 @@ fn test_bulk_delete_and_recreate() {
     .unwrap()
     .expect("insert bulk append tree");
 
-    // Append 5 values (1 epoch + 1 in buffer)
+    // Append 5 values (1 chunk + 1 in buffer)
     for i in 0..5u8 {
         db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
             .unwrap()
@@ -1226,11 +1225,11 @@ fn test_bulk_delete_and_recreate() {
     .unwrap()
     .expect("should delete non-empty bulk append tree");
 
-    // Recreate with same epoch_size
+    // Recreate with same chunk_power
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1263,7 +1262,7 @@ fn test_verify_grovedb_bulk_tree_valid() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_EPOCH_SIZE),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,

@@ -17,9 +17,9 @@ use crate::{
     Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
-/// Default epoch size for tests (large enough that compaction doesn't happen
-/// in most tests with only a few items).
-const TEST_EPOCH_SIZE: u32 = 1024;
+/// Default chunk power for tests (2^10 = 1024, large enough that compaction
+/// doesn't happen in most tests with only a few items).
+const TEST_CHUNK_POWER: u8 = 10;
 
 // ---------------------------------------------------------------------------
 // Helper: generate a deterministic 32-byte cmx from an index
@@ -54,7 +54,7 @@ fn test_insert_commitment_tree_at_root() {
     db.insert(
         EMPTY_PATH,
         b"commitments",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -90,7 +90,7 @@ fn test_commitment_tree_under_normal_tree() {
     db.insert(
         [b"parent"].as_ref(),
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -114,7 +114,7 @@ fn test_commitment_tree_with_flags() {
     db.insert(
         EMPTY_PATH,
         b"flagged",
-        Element::empty_commitment_tree_with_flags(TEST_EPOCH_SIZE, flags.clone()),
+        Element::empty_commitment_tree_with_flags(TEST_CHUNK_POWER, flags.clone()),
         None,
         None,
         grove_version,
@@ -137,7 +137,7 @@ fn test_empty_commitment_tree_serialization_roundtrip() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -165,7 +165,7 @@ fn test_commitment_tree_insert_single() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -214,7 +214,7 @@ fn test_commitment_tree_insert_multiple() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -265,7 +265,7 @@ fn test_commitment_tree_insert_with_transaction() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -322,7 +322,7 @@ fn test_commitment_tree_insert_transaction_rollback() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -367,7 +367,7 @@ fn test_commitment_tree_anchor_empty() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -393,7 +393,7 @@ fn test_commitment_tree_anchor_changes_after_insert() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -437,7 +437,7 @@ fn test_commitment_tree_anchor_deterministic() {
         db.insert(
             EMPTY_PATH,
             b"pool",
-            Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+            Element::empty_commitment_tree(TEST_CHUNK_POWER),
             None,
             None,
             grove_version,
@@ -494,7 +494,7 @@ fn test_commitment_tree_insert_propagates_root_hash() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -540,7 +540,7 @@ fn test_commitment_tree_nested_propagation() {
     db.insert(
         [b"parent"].as_ref(),
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -577,7 +577,7 @@ fn test_commitment_tree_count() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -625,7 +625,7 @@ fn test_commitment_tree_get_value() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -665,7 +665,7 @@ fn test_commitment_tree_get_value() {
 }
 
 // ===========================================================================
-// Compaction test (small epoch_size)
+// Compaction test (small chunk_power)
 // ===========================================================================
 
 #[test]
@@ -673,11 +673,11 @@ fn test_commitment_tree_compaction() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
-    // Use epoch_size=4 to trigger compaction after 4 items
+    // Use chunk_power=2 (chunk_size=4) to trigger compaction after 4 items
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(4),
+        Element::empty_commitment_tree(2),
         None,
         None,
         grove_version,
@@ -705,7 +705,7 @@ fn test_commitment_tree_compaction() {
         .expect("count");
     assert_eq!(count, 6);
 
-    // All items should be retrievable (from epoch blob or buffer)
+    // All items should be retrievable (from chunk blob or buffer)
     for i in 0..6u64 {
         let value = db
             .commitment_tree_get_value(EMPTY_PATH, b"pool", i, None, grove_version)
@@ -741,7 +741,7 @@ fn test_commitment_tree_batch_insert() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -807,7 +807,7 @@ fn test_commitment_tree_batch_with_transaction() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -858,7 +858,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
     db_a.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -884,7 +884,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
     db_b.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -936,7 +936,7 @@ fn test_commitment_tree_delete() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -979,7 +979,7 @@ fn test_commitment_tree_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1011,7 +1011,7 @@ fn test_commitment_tree_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1111,7 +1111,7 @@ fn test_multiple_commitment_trees_independent() {
     db.insert(
         EMPTY_PATH,
         b"pool_a",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1122,7 +1122,7 @@ fn test_multiple_commitment_trees_independent() {
     db.insert(
         EMPTY_PATH,
         b"pool_b",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1190,7 +1190,7 @@ fn test_verify_grovedb_commitment_tree_valid() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1225,7 +1225,7 @@ fn test_commitment_tree_delete_empty() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1252,7 +1252,7 @@ fn test_commitment_tree_delete_non_empty_error() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1305,7 +1305,7 @@ fn test_verify_grovedb_after_commitment_tree_delete() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1389,7 +1389,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
     db.insert(
         &[b"root"],
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,
@@ -1397,7 +1397,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
     .unwrap()
     .expect("insert commitment tree");
 
-    // Append 5 notes (all in buffer — well below TEST_EPOCH_SIZE)
+    // Append 5 notes (all in buffer — well below chunk_size=2^TEST_CHUNK_POWER)
     let mut expected_values = Vec::new();
     for i in 0..5u8 {
         let cmx = test_cmx(i);
@@ -1488,12 +1488,12 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
 }
 
 #[test]
-fn test_commitment_tree_prove_query_v1_with_epochs() {
+fn test_commitment_tree_prove_query_v1_with_chunks() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
-    let epoch_size: u32 = 4;
+    let chunk_power: u8 = 2;
 
-    // Insert a parent tree and CommitmentTree with small epoch_size
+    // Insert a parent tree and CommitmentTree with small chunk_power
     db.insert(
         EMPTY_PATH,
         b"root",
@@ -1508,7 +1508,7 @@ fn test_commitment_tree_prove_query_v1_with_epochs() {
     db.insert(
         &[b"root"],
         b"pool",
-        Element::empty_commitment_tree(epoch_size),
+        Element::empty_commitment_tree(chunk_power),
         None,
         None,
         grove_version,
@@ -1516,7 +1516,7 @@ fn test_commitment_tree_prove_query_v1_with_epochs() {
     .unwrap()
     .expect("insert commitment tree");
 
-    // Append 6 notes: 1 full epoch (4) + 2 buffer entries
+    // Append 6 notes: 1 full chunk (4) + 2 buffer entries
     let mut expected_values = Vec::new();
     for i in 0..6u8 {
         let cmx = test_cmx(i);
@@ -1563,7 +1563,14 @@ fn test_commitment_tree_prove_query_v1_with_epochs() {
     let proof_bytes = db
         .prove_query_v1(&path_query, None, grove_version)
         .unwrap()
-        .expect("generate V1 proof with epochs");
+        .expect("generate V1 proof with chunks");
+
+    // Decode and display the proof structure
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+    let (proof, _): (crate::operations::proof::GroveDBProof, _) =
+        bincode::decode_from_slice(&proof_bytes, config).expect("decode proof for display");
 
     let (root_hash, result_set) = GroveDb::verify_query_with_options(
         &proof_bytes,
@@ -1575,7 +1582,7 @@ fn test_commitment_tree_prove_query_v1_with_epochs() {
         },
         grove_version,
     )
-    .expect("verify V1 proof with epochs");
+    .expect("verify V1 proof with chunks");
 
     let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
     assert_eq!(root_hash, expected_root, "root hash should match");
@@ -1612,7 +1619,7 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
     db.insert(
         &[b"root"],
         b"pool",
-        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
         None,
         None,
         grove_version,

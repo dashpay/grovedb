@@ -729,19 +729,13 @@ impl GroveDb {
                     grove_version,
                 )
                 .map_err(|e| e.into())
-            } else if let Element::CommitmentTree(
-                _,
-                sinsemilla_root,
-                total_count,
-                epoch_size,
-                flag,
-            ) = element
+            } else if let Element::CommitmentTree(sinsemilla_root, total_count, chunk_power, flag) =
+                element
             {
                 let tree = Element::new_commitment_tree_with_all(
-                    maybe_root_key,
                     sinsemilla_root,
                     total_count,
-                    epoch_size,
+                    chunk_power,
                     flag,
                 );
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
@@ -752,23 +746,19 @@ impl GroveDb {
                             e
                         ))
                     })
-            } else if let Element::MmrTree(_, mmr_root, mmr_size, flag) = element {
+            } else if let Element::MmrTree(mmr_root, mmr_size, flag) = element {
                 let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| e.into())
-            } else if let Element::BulkAppendTree(_, state_root, total_count, epoch_size, flag) =
+            } else if let Element::BulkAppendTree(state_root, total_count, chunk_power, flag) =
                 element
             {
-                let tree = Element::new_bulk_append_tree(state_root, total_count, epoch_size, flag);
+                let tree =
+                    Element::new_bulk_append_tree(state_root, total_count, chunk_power, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| e.into())
-            } else if let Element::DenseAppendOnlyFixedSizeTree(
-                _,
-                dense_root,
-                count,
-                height,
-                flag,
-            ) = element
+            } else if let Element::DenseAppendOnlyFixedSizeTree(dense_root, count, height, flag) =
+                element
             {
                 let tree = Element::new_dense_tree(dense_root, count, height, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
@@ -942,23 +932,17 @@ impl GroveDb {
                     )
                     .map_err(|e| e.into())
                 } else if let Element::CommitmentTree(
-                    _,
                     existing_sr,
                     existing_total_count,
-                    epoch_size,
+                    chunk_power,
                     flag,
                 ) = element
                 {
                     // Use override if provided (from preprocessing), else preserve
                     let sr = custom_root_override.unwrap_or(existing_sr);
                     let total_count = custom_count_override.unwrap_or(existing_total_count);
-                    let tree = Element::new_commitment_tree_with_all(
-                        maybe_root_key,
-                        sr,
-                        total_count,
-                        epoch_size,
-                        flag,
-                    );
+                    let tree =
+                        Element::new_commitment_tree_with_all(sr, total_count, chunk_power, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -979,8 +963,7 @@ impl GroveDb {
                             key_hex, e
                         ))
                     })
-                } else if let Element::MmrTree(_, existing_mmr_root, existing_mmr_size, flag) =
-                    element
+                } else if let Element::MmrTree(existing_mmr_root, existing_mmr_size, flag) = element
                 {
                     let mmr_root = custom_root_override.unwrap_or(existing_mmr_root);
                     let mmr_size = custom_count_override.unwrap_or(existing_mmr_size);
@@ -1000,10 +983,9 @@ impl GroveDb {
                     )
                     .map_err(|e| e.into())
                 } else if let Element::BulkAppendTree(
-                    _,
                     existing_state_root,
                     existing_total_count,
-                    existing_epoch_size,
+                    existing_chunk_power,
                     flag,
                 ) = element
                 {
@@ -1012,7 +994,7 @@ impl GroveDb {
                     let tree = Element::new_bulk_append_tree(
                         state_root,
                         total_count,
-                        existing_epoch_size,
+                        existing_chunk_power,
                         flag,
                     );
                     let merk_feature_type = cost_return_on_error_into!(
@@ -1030,7 +1012,6 @@ impl GroveDb {
                     )
                     .map_err(|e| e.into())
                 } else if let Element::DenseAppendOnlyFixedSizeTree(
-                    _,
                     existing_dense_root,
                     existing_count,
                     existing_height,
@@ -1305,32 +1286,31 @@ impl GroveDb {
 
                     // CommitmentTree uses bulk_state_root as the child hash
                     // (not the inner Merk root, which is always empty).
-                    let root_hash =
-                        if let Element::CommitmentTree(_, _, total_count, epoch_size, _) = &element
-                        {
-                            let storage_ctx = self
-                                .db
-                                .get_transactional_storage_context(
-                                    new_path_ref.clone(),
-                                    None,
-                                    transaction,
-                                )
-                                .unwrap();
-                            let store =
-                                operations::bulk_append_tree::DataBulkStore::new(&storage_ctx);
-                            match grovedb_bulk_append_tree::BulkAppendTree::load_from_store(
-                                &store,
-                                *total_count,
-                                *epoch_size,
-                            ) {
-                                Ok(tree) => tree
-                                    .compute_current_state_root(&store)
-                                    .unwrap_or(merk_root_hash),
-                                Err(_) => merk_root_hash,
-                            }
-                        } else {
-                            merk_root_hash
-                        };
+                    let root_hash = if let Element::CommitmentTree(_, total_count, chunk_power, _) =
+                        &element
+                    {
+                        let storage_ctx = self
+                            .db
+                            .get_transactional_storage_context(
+                                new_path_ref.clone(),
+                                None,
+                                transaction,
+                            )
+                            .unwrap();
+                        let store = operations::bulk_append_tree::DataBulkStore::new(&storage_ctx);
+                        match grovedb_bulk_append_tree::BulkAppendTree::load_from_store(
+                            &store,
+                            *total_count,
+                            *chunk_power,
+                        ) {
+                            Ok(tree) => tree
+                                .compute_current_state_root(&store)
+                                .unwrap_or(merk_root_hash),
+                            Err(_) => merk_root_hash,
+                        }
+                    } else {
+                        merk_root_hash
+                    };
 
                     let actual_value_hash = value_hash(&kv_value).unwrap();
                     let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
@@ -1344,7 +1324,7 @@ impl GroveDb {
 
                     // For CommitmentTree elements, verify the sinsemilla_root
                     // matches the actual frontier state in aux storage
-                    if let Element::CommitmentTree(_, sinsemilla_root, ..) = &element {
+                    if let Element::CommitmentTree(sinsemilla_root, ..) = &element {
                         let frontier_ctx = self
                             .db
                             .get_transactional_storage_context(

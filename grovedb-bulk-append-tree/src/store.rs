@@ -285,7 +285,7 @@ mod tests {
         let inner = CountingStore::new();
         let cached = CachedBulkStore::new(inner);
 
-        let mut tree = BulkAppendTree::new(4).expect("create tree with epoch_size=4");
+        let mut tree = BulkAppendTree::new(2u8).expect("create tree with chunk_power=2");
 
         // Append 8 values to trigger 2 compaction cycles
         for i in 0..8u8 {
@@ -293,7 +293,7 @@ mod tests {
         }
         tree.save_meta(&cached).expect("save metadata");
 
-        assert_eq!(tree.epoch_count(), 2, "should have 2 completed epochs");
+        assert_eq!(tree.chunk_count(), 2, "should have 2 completed chunks");
         assert_eq!(
             tree.buffer_count(),
             0,

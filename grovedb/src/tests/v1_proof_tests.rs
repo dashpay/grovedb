@@ -272,11 +272,11 @@ fn test_bulk_append_tree_v1_proof_buffer_range() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
-    // Insert a BulkAppendTree with epoch_size=4
+    // Insert a BulkAppendTree with chunk_power=2 (chunk_size=4)
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(4),
+        Element::empty_bulk_append_tree(2),
         None,
         None,
         grove_version,
@@ -284,7 +284,7 @@ fn test_bulk_append_tree_v1_proof_buffer_range() {
     .unwrap()
     .expect("insert bulk append tree");
 
-    // Append 3 values (all in buffer, no epoch compaction)
+    // Append 3 values (all in buffer, no chunk compaction)
     for i in 0..3u64 {
         db.bulk_append(
             EMPTY_PATH,
@@ -353,15 +353,16 @@ fn test_bulk_append_tree_v1_proof_buffer_range() {
 }
 
 #[test]
-fn test_bulk_append_tree_v1_proof_epoch_and_buffer() {
+fn test_bulk_append_tree_v1_proof_chunk_and_buffer() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
-    // epoch_size=4: 6 values → 1 full epoch (0-3) + 2 buffer entries (4-5)
+    // chunk_power=2 (chunk_size=4): 6 values → 1 full chunk (0-3) + 2 buffer
+    // entries (4-5)
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(4),
+        Element::empty_bulk_append_tree(2),
         None,
         None,
         grove_version,
@@ -381,7 +382,7 @@ fn test_bulk_append_tree_v1_proof_epoch_and_buffer() {
         .expect("bulk append");
     }
 
-    // Query range [0, 6) — spans the full epoch and buffer
+    // Query range [0, 6) — spans the full chunk and buffer
     let mut inner_query = Query::new();
     inner_query.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=5u64.to_be_bytes().to_vec());
 

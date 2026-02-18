@@ -123,7 +123,7 @@ impl GroveDb {
         );
 
         let (existing_count, height, existing_flags) = match &element {
-            Element::DenseAppendOnlyFixedSizeTree(_, _, count, h, flags) => {
+            Element::DenseAppendOnlyFixedSizeTree(_, count, h, flags) => {
                 (*count, *h, flags.clone())
             }
             _ => {
@@ -240,7 +240,7 @@ impl GroveDb {
         );
 
         let count = match &element {
-            Element::DenseAppendOnlyFixedSizeTree(_, _, count, ..) => *count,
+            Element::DenseAppendOnlyFixedSizeTree(_, count, ..) => *count,
             _ => {
                 return Err(Error::InvalidInput("element is not a dense tree"))
                     .wrap_with_cost(cost);
@@ -291,7 +291,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::DenseAppendOnlyFixedSizeTree(_, root_hash, ..) => {
+            Element::DenseAppendOnlyFixedSizeTree(root_hash, ..) => {
                 Ok(root_hash).wrap_with_cost(cost)
             }
             _ => Err(Error::InvalidInput("element is not a dense tree")).wrap_with_cost(cost),
@@ -319,9 +319,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::DenseAppendOnlyFixedSizeTree(_, _, count, ..) => {
-                Ok(count).wrap_with_cost(cost)
-            }
+            Element::DenseAppendOnlyFixedSizeTree(_, count, ..) => Ok(count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a dense tree")).wrap_with_cost(cost),
         }
     }
@@ -391,7 +389,7 @@ impl GroveDb {
             );
 
             let (existing_count, height) = match &element {
-                Element::DenseAppendOnlyFixedSizeTree(_, _, count, h, _) => (*count, *h),
+                Element::DenseAppendOnlyFixedSizeTree(_, count, h, _) => (*count, *h),
                 _ => {
                     return Err(Error::InvalidInput("element is not a dense tree"))
                         .wrap_with_cost(cost);
