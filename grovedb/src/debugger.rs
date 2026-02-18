@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
 
 use crate::{
-    operations::proof::{GroveDBProof, MerkOnlyLayerProof, ProveOptions},
+    operations::proof::{GroveDBProof, LayerProof, MerkOnlyLayerProof, ProofBytes, ProveOptions},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     GroveDb,
@@ -368,6 +368,10 @@ fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, crate
             root_layer: proof_layer_to_grovedbg(p.root_layer)?,
             prove_options: prove_options_to_grovedbg(p.prove_options),
         }),
+        GroveDBProof::V1(p) => Ok(grovedbg_types::Proof {
+            root_layer: v1_proof_layer_to_grovedbg(p.root_layer)?,
+            prove_options: prove_options_to_grovedbg(p.prove_options),
+        }),
     }
 }
 
@@ -380,6 +384,25 @@ fn proof_layer_to_grovedbg(
             .lower_layers
             .into_iter()
             .map(|(k, v)| proof_layer_to_grovedbg(v).map(|layer| (k, layer)))
+            .collect::<Result<BTreeMap<Vec<u8>, grovedbg_types::ProofLayer>, crate::Error>>()?,
+    })
+}
+
+fn v1_proof_layer_to_grovedbg(
+    proof_layer: LayerProof,
+) -> Result<grovedbg_types::ProofLayer, crate::Error> {
+    let merk_bytes = match &proof_layer.merk_proof {
+        ProofBytes::Merk(bytes) => bytes.as_slice(),
+        // Non-Merk proofs (MMR, BulkAppendTree, DenseTree) cannot be
+        // decoded into Merk proof ops; return an empty op list.
+        _ => &[],
+    };
+    Ok(grovedbg_types::ProofLayer {
+        merk_proof: merk_proof_to_grovedbg(merk_bytes)?,
+        lower_layers: proof_layer
+            .lower_layers
+            .into_iter()
+            .map(|(k, v)| v1_proof_layer_to_grovedbg(v).map(|layer| (k, layer)))
             .collect::<Result<BTreeMap<Vec<u8>, grovedbg_types::ProofLayer>, crate::Error>>()?,
     })
 }
