@@ -1,6 +1,6 @@
 //! Client-side commitment tree with full witness generation.
 //!
-//! This module provides [`ClientCommitmentTree`], a wrapper around
+//! This module provides [`ClientMemoryCommitmentTree`], a wrapper around
 //! `shardtree::ShardTree` with an in-memory store, pinned to Orchard types.
 //! It is intended for wallets and test harnesses that need to generate
 //! Merkle path witnesses for spending notes.
@@ -33,7 +33,7 @@ const SHARD_HEIGHT: u8 = 4;
 ///
 /// Do **not** use this for server-side anchor tracking — use
 /// [`CommitmentFrontier`](crate::CommitmentFrontier) instead.
-pub struct ClientCommitmentTree {
+pub struct ClientMemoryCommitmentTree {
     inner: ShardTree<
         MemoryShardStore<MerkleHashOrchard, u32>,
         { NOTE_COMMITMENT_TREE_DEPTH as u8 },
@@ -41,7 +41,7 @@ pub struct ClientCommitmentTree {
     >,
 }
 
-impl ClientCommitmentTree {
+impl ClientMemoryCommitmentTree {
     /// Create a new empty client commitment tree.
     ///
     /// `max_checkpoints` controls how many checkpoints are retained before
@@ -148,14 +148,14 @@ mod tests {
 
     #[test]
     fn test_empty_tree() {
-        let tree = ClientCommitmentTree::new(10);
+        let tree = ClientMemoryCommitmentTree::new(10);
         assert_eq!(tree.max_leaf_position().unwrap(), None);
         assert_eq!(tree.anchor().unwrap(), Anchor::empty_tree());
     }
 
     #[test]
     fn test_append_and_position() {
-        let mut tree = ClientCommitmentTree::new(10);
+        let mut tree = ClientMemoryCommitmentTree::new(10);
 
         tree.append(test_leaf(0), Retention::Marked).unwrap();
         assert_eq!(tree.max_leaf_position().unwrap(), Some(Position::from(0)));
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_anchor_changes() {
-        let mut tree = ClientCommitmentTree::new(10);
+        let mut tree = ClientMemoryCommitmentTree::new(10);
         let empty_anchor = tree.anchor().unwrap();
 
         tree.append(test_leaf(0), Retention::Marked).unwrap();
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_witness_generation() {
-        let mut tree = ClientCommitmentTree::new(10);
+        let mut tree = ClientMemoryCommitmentTree::new(10);
 
         // Append a marked leaf so we can witness it
         tree.append(test_leaf(0), Retention::Marked).unwrap();
@@ -198,7 +198,7 @@ mod tests {
         use crate::CommitmentFrontier;
 
         let mut frontier = CommitmentFrontier::new();
-        let mut client = ClientCommitmentTree::new(10);
+        let mut client = ClientMemoryCommitmentTree::new(10);
 
         for i in 0..20u64 {
             frontier.append(test_leaf(i)).unwrap();

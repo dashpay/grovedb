@@ -14,9 +14,14 @@ documentation = "https://docs.rs/grovedb"
 default = []
 server = []
 client = ["shardtree"]
+sqlite = ["shardtree", "rusqlite"]
 
 [dependencies]
 orchard = { git = "https://github.com/dashpay/orchard.git", rev = "41c8f7169f2683c99cf0e0c63e8d25ec12c47a79", features = ["circuit"] }
 incrementalmerkletree = "0.8"
 shardtree = { version = "0.6", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3"

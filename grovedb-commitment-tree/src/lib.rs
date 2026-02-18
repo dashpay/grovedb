@@ -17,7 +17,11 @@
 #[cfg(feature = "client")]
 mod client;
 #[cfg(feature = "client")]
-pub use client::ClientCommitmentTree;
+pub use client::ClientMemoryCommitmentTree;
+#[cfg(feature = "sqlite")]
+mod sqlite_client;
+#[cfg(feature = "sqlite")]
+mod sqlite_store;
 #[cfg(feature = "server")]
 use incrementalmerkletree::frontier::Frontier;
 pub use incrementalmerkletree::{Hashable, Level, Position, Retention};
@@ -85,6 +89,10 @@ pub use orchard::{
     value::{NoteValue, ValueCommitment},
     Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
 };
+#[cfg(feature = "sqlite")]
+pub use sqlite_client::ClientPersistentCommitmentTree;
+#[cfg(feature = "sqlite")]
+pub use sqlite_store::{SqliteShardStore, SqliteShardStoreError};
 use thiserror::Error;
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
