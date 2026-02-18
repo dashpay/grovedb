@@ -90,6 +90,8 @@ pub use orchard::{
     Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
 };
 #[cfg(feature = "sqlite")]
+pub use rusqlite;
+#[cfg(feature = "sqlite")]
 pub use sqlite_client::ClientPersistentCommitmentTree;
 #[cfg(feature = "sqlite")]
 pub use sqlite_store::{SqliteShardStore, SqliteShardStoreError};
