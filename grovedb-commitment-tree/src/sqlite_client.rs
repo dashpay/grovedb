@@ -21,7 +21,10 @@
 //! // State is persisted — survives restarts.
 //! ```
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use incrementalmerkletree::{Position, Retention};
 use orchard::{
@@ -57,6 +60,22 @@ impl ClientPersistentCommitmentTree {
     /// Pass your wallet's existing database connection to share the same file.
     pub fn open(conn: Connection, max_checkpoints: usize) -> Result<Self, SqliteShardStoreError> {
         let store = SqliteShardStore::new(conn)?;
+        Ok(Self {
+            inner: ShardTree::new(store, max_checkpoints),
+        })
+    }
+
+    /// Open a persistent commitment tree on a shared SQLite connection.
+    ///
+    /// Use this when your application already holds an `Arc<Mutex<Connection>>`
+    /// (e.g., a wallet database). The commitment tree tables are created if
+    /// missing, and the mutex is locked only for the duration of each SQL
+    /// operation.
+    pub fn open_on_shared_connection(
+        conn: Arc<Mutex<Connection>>,
+        max_checkpoints: usize,
+    ) -> Result<Self, SqliteShardStoreError> {
+        let store = SqliteShardStore::new_shared(conn)?;
         Ok(Self {
             inner: ShardTree::new(store, max_checkpoints),
         })
@@ -155,6 +174,8 @@ impl ClientPersistentCommitmentTree {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use incrementalmerkletree::{Hashable, Level, Retention};
     use orchard::tree::{Anchor, MerkleHashOrchard};
     use rusqlite::Connection;
@@ -317,5 +338,30 @@ mod tests {
                 "should produce witness for marked leaf after reopen"
             );
         }
+    }
+
+    #[test]
+    fn test_shared_connection_append_and_anchor() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let arc = Arc::new(Mutex::new(conn));
+
+        let mut tree = ClientPersistentCommitmentTree::open_on_shared_connection(arc.clone(), 100)
+            .expect("open shared tree");
+
+        let empty_anchor = tree.anchor().expect("anchor");
+
+        tree.append(test_leaf(0), Retention::Marked)
+            .expect("append via shared");
+        let anchor1 = tree.anchor().expect("anchor");
+        assert_ne!(empty_anchor, anchor1);
+
+        // The Arc is still usable from outside
+        let guard = arc.lock().expect("lock");
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM commitment_tree_shards", [], |row| {
+                row.get(0)
+            })
+            .expect("direct query");
+        assert!(count > 0, "shards should have been written");
     }
 }

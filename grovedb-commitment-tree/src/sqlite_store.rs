@@ -5,8 +5,18 @@
 //!
 //! The store creates 4 tables with a `commitment_tree_` prefix so it can
 //! coexist safely in any existing SQLite database.
+//!
+//! # Connection modes
+//!
+//! - **Owned**: `SqliteShardStore::new(conn)` takes ownership of a
+//!   `Connection`.
+//! - **Shared**: `SqliteShardStore::new_shared(arc)` shares an
+//!   `Arc<Mutex<Connection>>` with other components (e.g., PMT's `Database`).
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 use incrementalmerkletree::{Address, Level, Position};
 use orchard::tree::MerkleHashOrchard;
@@ -22,17 +32,26 @@ use crate::merkle_hash_from_bytes;
 /// `ClientPersistentCommitmentTree`.
 const SHARD_HEIGHT: u8 = 4;
 
+/// How the store accesses the SQLite connection.
+enum ConnectionHolder {
+    /// The store owns the connection exclusively.
+    Owned(Connection),
+    /// The store shares the connection with other components.
+    Shared(Arc<Mutex<Connection>>),
+}
+
 /// SQLite-backed implementation of `ShardStore` for Orchard commitment trees.
 ///
 /// Stores shard data, cap, and checkpoints in 4 SQLite tables prefixed with
 /// `commitment_tree_`. The tables are created automatically on construction.
 ///
-/// # Bring-your-own-connection
+/// # Connection modes
 ///
-/// Pass any `rusqlite::Connection` — the store only creates its own tables and
-/// will not interfere with other tables in the same database.
+/// Use [`new`](Self::new) with an owned `Connection`, or
+/// [`new_shared`](Self::new_shared) with an `Arc<Mutex<Connection>>` to share
+/// one connection with the rest of your application.
 pub struct SqliteShardStore {
-    conn: Connection,
+    holder: ConnectionHolder,
 }
 
 /// Errors from the SQLite shard store.
@@ -69,35 +88,413 @@ impl From<rusqlite::Error> for SqliteShardStoreError {
 }
 
 impl SqliteShardStore {
-    /// Create a new `SqliteShardStore` from an existing SQLite connection.
+    /// Create a store that **owns** the given connection.
     ///
-    /// Creates the required tables if they do not already exist. The tables are
-    /// prefixed with `commitment_tree_` to coexist with other application
-    /// tables.
+    /// Creates the required tables if they do not already exist.
     pub fn new(conn: Connection) -> Result<Self, SqliteShardStoreError> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS commitment_tree_shards (
-                shard_index INTEGER PRIMARY KEY,
-                shard_data  BLOB NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS commitment_tree_cap (
-                id       INTEGER PRIMARY KEY CHECK (id = 0),
-                cap_data BLOB NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS commitment_tree_checkpoints (
-                checkpoint_id INTEGER PRIMARY KEY,
-                position      INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS commitment_tree_checkpoint_marks_removed (
-                checkpoint_id INTEGER NOT NULL,
-                position      INTEGER NOT NULL,
-                PRIMARY KEY (checkpoint_id, position),
-                FOREIGN KEY (checkpoint_id) REFERENCES commitment_tree_checkpoints(checkpoint_id)
-            );",
-        )?;
-        Ok(Self { conn })
+        create_tables(&conn)?;
+        Ok(Self {
+            holder: ConnectionHolder::Owned(conn),
+        })
+    }
+
+    /// Create a store that **shares** a connection via
+    /// `Arc<Mutex<Connection>>`.
+    ///
+    /// This lets you use the same SQLite connection that the rest of your
+    /// application (e.g., a wallet database) already holds. The store locks the
+    /// mutex for each individual SQL operation.
+    ///
+    /// Creates the required tables if they do not already exist.
+    pub fn new_shared(conn: Arc<Mutex<Connection>>) -> Result<Self, SqliteShardStoreError> {
+        {
+            let guard = conn.lock().expect("connection mutex poisoned");
+            create_tables(&guard)?;
+        }
+        Ok(Self {
+            holder: ConnectionHolder::Shared(conn),
+        })
+    }
+
+    /// Execute a closure with a reference to the underlying connection.
+    ///
+    /// For the `Owned` variant this is a direct borrow. For `Shared` it
+    /// acquires the mutex for the duration of the closure.
+    fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> T) -> T {
+        match &self.holder {
+            ConnectionHolder::Owned(conn) => f(conn),
+            ConnectionHolder::Shared(arc) => {
+                let guard = arc.lock().expect("connection mutex poisoned");
+                f(&guard)
+            }
+        }
     }
 }
+
+/// Create the 4 commitment-tree tables if they don't already exist.
+fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS commitment_tree_shards (
+            shard_index INTEGER PRIMARY KEY,
+            shard_data  BLOB NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS commitment_tree_cap (
+            id       INTEGER PRIMARY KEY CHECK (id = 0),
+            cap_data BLOB NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS commitment_tree_checkpoints (
+            checkpoint_id INTEGER PRIMARY KEY,
+            position      INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS commitment_tree_checkpoint_marks_removed (
+            checkpoint_id INTEGER NOT NULL,
+            position      INTEGER NOT NULL,
+            PRIMARY KEY (checkpoint_id, position),
+            FOREIGN KEY (checkpoint_id) REFERENCES commitment_tree_checkpoints(checkpoint_id)
+        );",
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SQL helpers — all take &Connection so they can be called from with_conn
+// ---------------------------------------------------------------------------
+
+fn sql_get_shard(
+    conn: &Connection,
+    shard_root: Address,
+) -> Result<Option<LocatedPrunableTree<MerkleHashOrchard>>, SqliteShardStoreError> {
+    let index = shard_root.index() as i64;
+    let row: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT shard_data FROM commitment_tree_shards WHERE shard_index = ?1",
+            params![index],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    match row {
+        None => Ok(None),
+        Some(data) => {
+            let mut pos = 0;
+            let tree = deserialize_tree(&data, &mut pos)?;
+            let located = LocatedTree::from_parts(shard_root, tree).map_err(|addr| {
+                SqliteShardStoreError::Serialization(format!(
+                    "tree extends beyond shard root at {addr:?}"
+                ))
+            })?;
+            Ok(Some(located))
+        }
+    }
+}
+
+fn sql_last_shard(
+    conn: &Connection,
+) -> Result<Option<LocatedPrunableTree<MerkleHashOrchard>>, SqliteShardStoreError> {
+    let row: Option<(i64, Vec<u8>)> = conn
+        .query_row(
+            "SELECT shard_index, shard_data FROM commitment_tree_shards ORDER BY shard_index DESC \
+             LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    match row {
+        None => Ok(None),
+        Some((index, data)) => {
+            let addr = Address::from_parts(Level::from(SHARD_HEIGHT), index as u64);
+            let mut pos = 0;
+            let tree = deserialize_tree(&data, &mut pos)?;
+            let located = LocatedTree::from_parts(addr, tree).map_err(|addr| {
+                SqliteShardStoreError::Serialization(format!(
+                    "tree extends beyond shard root at {addr:?}"
+                ))
+            })?;
+            Ok(Some(located))
+        }
+    }
+}
+
+fn sql_put_shard(
+    conn: &Connection,
+    subtree: &LocatedPrunableTree<MerkleHashOrchard>,
+) -> Result<(), SqliteShardStoreError> {
+    let index = subtree.root_addr().index() as i64;
+    let data = serialize_tree(subtree.root());
+    conn.execute(
+        "INSERT OR REPLACE INTO commitment_tree_shards (shard_index, shard_data) VALUES (?1, ?2)",
+        params![index, data],
+    )?;
+    Ok(())
+}
+
+fn sql_get_shard_roots(conn: &Connection) -> Result<Vec<Address>, SqliteShardStoreError> {
+    let mut stmt =
+        conn.prepare("SELECT shard_index FROM commitment_tree_shards ORDER BY shard_index")?;
+    let rows = stmt.query_map([], |row| {
+        let index: i64 = row.get(0)?;
+        Ok(Address::from_parts(Level::from(SHARD_HEIGHT), index as u64))
+    })?;
+    let mut result = Vec::new();
+    for addr in rows {
+        result.push(addr?);
+    }
+    Ok(result)
+}
+
+fn sql_truncate_shards(conn: &Connection, shard_index: u64) -> Result<(), SqliteShardStoreError> {
+    conn.execute(
+        "DELETE FROM commitment_tree_shards WHERE shard_index >= ?1",
+        params![shard_index as i64],
+    )?;
+    Ok(())
+}
+
+fn sql_get_cap(
+    conn: &Connection,
+) -> Result<PrunableTree<MerkleHashOrchard>, SqliteShardStoreError> {
+    let row: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT cap_data FROM commitment_tree_cap WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    match row {
+        None => Ok(Tree::empty()),
+        Some(data) => {
+            let mut pos = 0;
+            deserialize_tree(&data, &mut pos)
+        }
+    }
+}
+
+fn sql_put_cap(
+    conn: &Connection,
+    cap: &PrunableTree<MerkleHashOrchard>,
+) -> Result<(), SqliteShardStoreError> {
+    let data = serialize_tree(cap);
+    conn.execute(
+        "INSERT OR REPLACE INTO commitment_tree_cap (id, cap_data) VALUES (0, ?1)",
+        params![data],
+    )?;
+    Ok(())
+}
+
+fn sql_min_checkpoint_id(conn: &Connection) -> Result<Option<u32>, SqliteShardStoreError> {
+    let row: Option<u32> = conn.query_row(
+        "SELECT MIN(checkpoint_id) FROM commitment_tree_checkpoints",
+        [],
+        |row| row.get::<_, Option<u32>>(0),
+    )?;
+    Ok(row)
+}
+
+fn sql_max_checkpoint_id(conn: &Connection) -> Result<Option<u32>, SqliteShardStoreError> {
+    let row: Option<u32> = conn.query_row(
+        "SELECT MAX(checkpoint_id) FROM commitment_tree_checkpoints",
+        [],
+        |row| row.get::<_, Option<u32>>(0),
+    )?;
+    Ok(row)
+}
+
+fn sql_add_checkpoint(
+    conn: &Connection,
+    checkpoint_id: u32,
+    checkpoint: &Checkpoint,
+) -> Result<(), SqliteShardStoreError> {
+    let position: Option<i64> = match checkpoint.tree_state() {
+        TreeState::Empty => None,
+        TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
+    };
+    conn.execute(
+        "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
+        params![checkpoint_id, position],
+    )?;
+
+    for mark_pos in checkpoint.marks_removed() {
+        conn.execute(
+            "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) \
+             VALUES (?1, ?2)",
+            params![checkpoint_id, u64::from(*mark_pos) as i64],
+        )?;
+    }
+    Ok(())
+}
+
+fn sql_checkpoint_count(conn: &Connection) -> Result<usize, SqliteShardStoreError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM commitment_tree_checkpoints",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+fn sql_get_checkpoint_at_depth(
+    conn: &Connection,
+    checkpoint_depth: usize,
+) -> Result<Option<(u32, Checkpoint)>, SqliteShardStoreError> {
+    let row: Option<(u32, Option<i64>)> = conn
+        .query_row(
+            "SELECT checkpoint_id, position FROM commitment_tree_checkpoints ORDER BY \
+             checkpoint_id DESC LIMIT 1 OFFSET ?1",
+            params![checkpoint_depth as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    match row {
+        None => Ok(None),
+        Some((id, pos)) => {
+            let checkpoint = sql_load_checkpoint(conn, id, pos)?;
+            Ok(Some((id, checkpoint)))
+        }
+    }
+}
+
+fn sql_get_checkpoint(
+    conn: &Connection,
+    checkpoint_id: u32,
+) -> Result<Option<Checkpoint>, SqliteShardStoreError> {
+    let row: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT position FROM commitment_tree_checkpoints WHERE checkpoint_id = ?1",
+            params![checkpoint_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    match row {
+        None => Ok(None),
+        Some(pos) => {
+            let checkpoint = sql_load_checkpoint(conn, checkpoint_id, pos)?;
+            Ok(Some(checkpoint))
+        }
+    }
+}
+
+fn sql_list_checkpoints(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(u32, Checkpoint)>, SqliteShardStoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT checkpoint_id, position FROM commitment_tree_checkpoints ORDER BY checkpoint_id \
+         DESC LIMIT ?1",
+    )?;
+    let rows: Vec<(u32, Option<i64>)> = stmt
+        .query_map(params![limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut result = Vec::with_capacity(rows.len());
+    for (id, pos) in rows {
+        let checkpoint = sql_load_checkpoint(conn, id, pos)?;
+        result.push((id, checkpoint));
+    }
+    Ok(result)
+}
+
+fn sql_update_checkpoint_with<F>(
+    conn: &Connection,
+    checkpoint_id: u32,
+    update: F,
+) -> Result<bool, SqliteShardStoreError>
+where
+    F: Fn(&mut Checkpoint) -> Result<(), SqliteShardStoreError>,
+{
+    let existing = sql_get_checkpoint(conn, checkpoint_id)?;
+    match existing {
+        None => Ok(false),
+        Some(mut cp) => {
+            update(&mut cp)?;
+            conn.execute(
+                "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
+                params![checkpoint_id],
+            )?;
+            let position: Option<i64> = match cp.tree_state() {
+                TreeState::Empty => None,
+                TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
+            };
+            conn.execute(
+                "UPDATE commitment_tree_checkpoints SET position = ?1 WHERE checkpoint_id = ?2",
+                params![position, checkpoint_id],
+            )?;
+            for mark_pos in cp.marks_removed() {
+                conn.execute(
+                    "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, \
+                     position) VALUES (?1, ?2)",
+                    params![checkpoint_id, u64::from(*mark_pos) as i64],
+                )?;
+            }
+            Ok(true)
+        }
+    }
+}
+
+fn sql_remove_checkpoint(
+    conn: &Connection,
+    checkpoint_id: u32,
+) -> Result<(), SqliteShardStoreError> {
+    conn.execute(
+        "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
+        params![checkpoint_id],
+    )?;
+    conn.execute(
+        "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id = ?1",
+        params![checkpoint_id],
+    )?;
+    Ok(())
+}
+
+fn sql_truncate_checkpoints_retaining(
+    conn: &Connection,
+    checkpoint_id: u32,
+) -> Result<(), SqliteShardStoreError> {
+    conn.execute(
+        "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id > ?1",
+        params![checkpoint_id],
+    )?;
+    conn.execute(
+        "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id > ?1",
+        params![checkpoint_id],
+    )?;
+    conn.execute(
+        "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
+        params![checkpoint_id],
+    )?;
+    Ok(())
+}
+
+/// Load a full Checkpoint (including marks_removed).
+fn sql_load_checkpoint(
+    conn: &Connection,
+    checkpoint_id: u32,
+    position: Option<i64>,
+) -> Result<Checkpoint, SqliteShardStoreError> {
+    let tree_state = match position {
+        None => TreeState::Empty,
+        Some(p) => TreeState::AtPosition(Position::from(p as u64)),
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT position FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
+    )?;
+    let marks: BTreeSet<Position> = stmt
+        .query_map(params![checkpoint_id], |row| {
+            let p: i64 = row.get(0)?;
+            Ok(Position::from(p as u64))
+        })?
+        .collect::<Result<BTreeSet<_>, _>>()?;
+
+    Ok(Checkpoint::from_parts(tree_state, marks))
+}
+
+// ---------------------------------------------------------------------------
+// ShardStore trait implementation — delegates to sql_* via with_conn
+// ---------------------------------------------------------------------------
 
 impl ShardStore for SqliteShardStore {
     type CheckpointId = u32;
@@ -108,137 +505,39 @@ impl ShardStore for SqliteShardStore {
         &self,
         shard_root: Address,
     ) -> Result<Option<LocatedPrunableTree<Self::H>>, Self::Error> {
-        let index = shard_root.index() as i64;
-        let row: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT shard_data FROM commitment_tree_shards WHERE shard_index = ?1",
-                params![index],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        match row {
-            None => Ok(None),
-            Some(data) => {
-                let mut pos = 0;
-                let tree = deserialize_tree(&data, &mut pos)?;
-                let located = LocatedTree::from_parts(shard_root, tree).map_err(|addr| {
-                    SqliteShardStoreError::Serialization(format!(
-                        "tree extends beyond shard root at {addr:?}"
-                    ))
-                })?;
-                Ok(Some(located))
-            }
-        }
+        self.with_conn(|conn| sql_get_shard(conn, shard_root))
     }
 
     fn last_shard(&self) -> Result<Option<LocatedPrunableTree<Self::H>>, Self::Error> {
-        let row: Option<(i64, Vec<u8>)> = self
-            .conn
-            .query_row(
-                "SELECT shard_index, shard_data FROM commitment_tree_shards ORDER BY shard_index \
-                 DESC LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-
-        match row {
-            None => Ok(None),
-            Some((index, data)) => {
-                let addr = Address::from_parts(Level::from(SHARD_HEIGHT), index as u64);
-                let mut pos = 0;
-                let tree = deserialize_tree(&data, &mut pos)?;
-                let located = LocatedTree::from_parts(addr, tree).map_err(|addr| {
-                    SqliteShardStoreError::Serialization(format!(
-                        "tree extends beyond shard root at {addr:?}"
-                    ))
-                })?;
-                Ok(Some(located))
-            }
-        }
+        self.with_conn(sql_last_shard)
     }
 
     fn put_shard(&mut self, subtree: LocatedPrunableTree<Self::H>) -> Result<(), Self::Error> {
-        let index = subtree.root_addr().index() as i64;
-        let data = serialize_tree(subtree.root());
-        self.conn.execute(
-            "INSERT OR REPLACE INTO commitment_tree_shards (shard_index, shard_data) VALUES (?1, \
-             ?2)",
-            params![index, data],
-        )?;
-        Ok(())
+        self.with_conn(|conn| sql_put_shard(conn, &subtree))
     }
 
     fn get_shard_roots(&self) -> Result<Vec<Address>, Self::Error> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT shard_index FROM commitment_tree_shards ORDER BY shard_index")?;
-        let rows = stmt.query_map([], |row| {
-            let index: i64 = row.get(0)?;
-            Ok(Address::from_parts(Level::from(SHARD_HEIGHT), index as u64))
-        })?;
-        let mut result = Vec::new();
-        for addr in rows {
-            result.push(addr?);
-        }
-        Ok(result)
+        self.with_conn(sql_get_shard_roots)
     }
 
     fn truncate_shards(&mut self, shard_index: u64) -> Result<(), Self::Error> {
-        self.conn.execute(
-            "DELETE FROM commitment_tree_shards WHERE shard_index >= ?1",
-            params![shard_index as i64],
-        )?;
-        Ok(())
+        self.with_conn(|conn| sql_truncate_shards(conn, shard_index))
     }
 
     fn get_cap(&self) -> Result<PrunableTree<Self::H>, Self::Error> {
-        let row: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT cap_data FROM commitment_tree_cap WHERE id = 0",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        match row {
-            None => Ok(Tree::empty()),
-            Some(data) => {
-                let mut pos = 0;
-                deserialize_tree(&data, &mut pos)
-            }
-        }
+        self.with_conn(sql_get_cap)
     }
 
     fn put_cap(&mut self, cap: PrunableTree<Self::H>) -> Result<(), Self::Error> {
-        let data = serialize_tree(&cap);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO commitment_tree_cap (id, cap_data) VALUES (0, ?1)",
-            params![data],
-        )?;
-        Ok(())
+        self.with_conn(|conn| sql_put_cap(conn, &cap))
     }
 
     fn min_checkpoint_id(&self) -> Result<Option<Self::CheckpointId>, Self::Error> {
-        // MIN returns NULL when the table is empty, so extract Option<u32>
-        let row: Option<u32> = self.conn.query_row(
-            "SELECT MIN(checkpoint_id) FROM commitment_tree_checkpoints",
-            [],
-            |row| row.get::<_, Option<u32>>(0),
-        )?;
-        Ok(row)
+        self.with_conn(sql_min_checkpoint_id)
     }
 
     fn max_checkpoint_id(&self) -> Result<Option<Self::CheckpointId>, Self::Error> {
-        let row: Option<u32> = self.conn.query_row(
-            "SELECT MAX(checkpoint_id) FROM commitment_tree_checkpoints",
-            [],
-            |row| row.get::<_, Option<u32>>(0),
-        )?;
-        Ok(row)
+        self.with_conn(sql_max_checkpoint_id)
     }
 
     fn add_checkpoint(
@@ -246,84 +545,32 @@ impl ShardStore for SqliteShardStore {
         checkpoint_id: Self::CheckpointId,
         checkpoint: Checkpoint,
     ) -> Result<(), Self::Error> {
-        let position: Option<i64> = match checkpoint.tree_state() {
-            TreeState::Empty => None,
-            TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
-        };
-        self.conn.execute(
-            "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
-            params![checkpoint_id, position],
-        )?;
-
-        for mark_pos in checkpoint.marks_removed() {
-            self.conn.execute(
-                "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) \
-                 VALUES (?1, ?2)",
-                params![checkpoint_id, u64::from(*mark_pos) as i64],
-            )?;
-        }
-        Ok(())
+        self.with_conn(|conn| sql_add_checkpoint(conn, checkpoint_id, &checkpoint))
     }
 
     fn checkpoint_count(&self) -> Result<usize, Self::Error> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM commitment_tree_checkpoints",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count as usize)
+        self.with_conn(sql_checkpoint_count)
     }
 
     fn get_checkpoint_at_depth(
         &self,
         checkpoint_depth: usize,
     ) -> Result<Option<(Self::CheckpointId, Checkpoint)>, Self::Error> {
-        let row: Option<(u32, Option<i64>)> = self
-            .conn
-            .query_row(
-                "SELECT checkpoint_id, position FROM commitment_tree_checkpoints ORDER BY \
-                 checkpoint_id DESC LIMIT 1 OFFSET ?1",
-                params![checkpoint_depth as i64],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-
-        match row {
-            None => Ok(None),
-            Some((id, pos)) => {
-                let checkpoint = self.load_checkpoint(id, pos)?;
-                Ok(Some((id, checkpoint)))
-            }
-        }
+        self.with_conn(|conn| sql_get_checkpoint_at_depth(conn, checkpoint_depth))
     }
 
     fn get_checkpoint(
         &self,
         checkpoint_id: &Self::CheckpointId,
     ) -> Result<Option<Checkpoint>, Self::Error> {
-        let row: Option<Option<i64>> = self
-            .conn
-            .query_row(
-                "SELECT position FROM commitment_tree_checkpoints WHERE checkpoint_id = ?1",
-                params![*checkpoint_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        match row {
-            None => Ok(None),
-            Some(pos) => {
-                let checkpoint = self.load_checkpoint(*checkpoint_id, pos)?;
-                Ok(Some(checkpoint))
-            }
-        }
+        self.with_conn(|conn| sql_get_checkpoint(conn, *checkpoint_id))
     }
 
     fn with_checkpoints<F>(&mut self, limit: usize, mut callback: F) -> Result<(), Self::Error>
     where
         F: FnMut(&Self::CheckpointId, &Checkpoint) -> Result<(), Self::Error>,
     {
-        let entries = self.list_checkpoints(limit)?;
+        let entries = self.with_conn(|conn| sql_list_checkpoints(conn, limit))?;
         for (id, checkpoint) in &entries {
             callback(id, checkpoint)?;
         }
@@ -334,7 +581,7 @@ impl ShardStore for SqliteShardStore {
     where
         F: FnMut(&Self::CheckpointId, &Checkpoint) -> Result<(), Self::Error>,
     {
-        let entries = self.list_checkpoints(limit)?;
+        let entries = self.with_conn(|conn| sql_list_checkpoints(conn, limit))?;
         for (id, checkpoint) in &entries {
             callback(id, checkpoint)?;
         }
@@ -349,122 +596,18 @@ impl ShardStore for SqliteShardStore {
     where
         F: Fn(&mut Checkpoint) -> Result<(), Self::Error>,
     {
-        let existing = self.get_checkpoint(checkpoint_id)?;
-        match existing {
-            None => Ok(false),
-            Some(cp) => {
-                let mut cp = cp;
-                update(&mut cp)?;
-                // Delete old marks and re-insert
-                self.conn.execute(
-                    "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
-                    params![*checkpoint_id],
-                )?;
-                let position: Option<i64> = match cp.tree_state() {
-                    TreeState::Empty => None,
-                    TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
-                };
-                self.conn.execute(
-                    "UPDATE commitment_tree_checkpoints SET position = ?1 WHERE checkpoint_id = ?2",
-                    params![position, *checkpoint_id],
-                )?;
-                for mark_pos in cp.marks_removed() {
-                    self.conn.execute(
-                        "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, \
-                         position) VALUES (?1, ?2)",
-                        params![*checkpoint_id, u64::from(*mark_pos) as i64],
-                    )?;
-                }
-                Ok(true)
-            }
-        }
+        self.with_conn(|conn| sql_update_checkpoint_with(conn, *checkpoint_id, update))
     }
 
     fn remove_checkpoint(&mut self, checkpoint_id: &Self::CheckpointId) -> Result<(), Self::Error> {
-        self.conn.execute(
-            "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
-            params![*checkpoint_id],
-        )?;
-        self.conn.execute(
-            "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id = ?1",
-            params![*checkpoint_id],
-        )?;
-        Ok(())
+        self.with_conn(|conn| sql_remove_checkpoint(conn, *checkpoint_id))
     }
 
     fn truncate_checkpoints_retaining(
         &mut self,
         checkpoint_id: &Self::CheckpointId,
     ) -> Result<(), Self::Error> {
-        // Delete marks_removed for checkpoints that will be truncated
-        self.conn.execute(
-            "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id > ?1",
-            params![*checkpoint_id],
-        )?;
-        // Delete the checkpoints themselves
-        self.conn.execute(
-            "DELETE FROM commitment_tree_checkpoints WHERE checkpoint_id > ?1",
-            params![*checkpoint_id],
-        )?;
-        // Clear marks_removed for the retained checkpoint
-        self.conn.execute(
-            "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
-            params![*checkpoint_id],
-        )?;
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
-impl SqliteShardStore {
-    /// Load a full Checkpoint (including marks_removed) given the checkpoint_id
-    /// and the position value from the main checkpoints table.
-    fn load_checkpoint(
-        &self,
-        checkpoint_id: u32,
-        position: Option<i64>,
-    ) -> Result<Checkpoint, SqliteShardStoreError> {
-        let tree_state = match position {
-            None => TreeState::Empty,
-            Some(p) => TreeState::AtPosition(Position::from(p as u64)),
-        };
-
-        let mut stmt = self.conn.prepare(
-            "SELECT position FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = \
-             ?1",
-        )?;
-        let marks: BTreeSet<Position> = stmt
-            .query_map(params![checkpoint_id], |row| {
-                let p: i64 = row.get(0)?;
-                Ok(Position::from(p as u64))
-            })?
-            .collect::<Result<BTreeSet<_>, _>>()?;
-
-        Ok(Checkpoint::from_parts(tree_state, marks))
-    }
-
-    /// List checkpoints ordered by descending id, up to `limit`.
-    fn list_checkpoints(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<(u32, Checkpoint)>, SqliteShardStoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT checkpoint_id, position FROM commitment_tree_checkpoints ORDER BY \
-             checkpoint_id DESC LIMIT ?1",
-        )?;
-        let rows: Vec<(u32, Option<i64>)> = stmt
-            .query_map(params![limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut result = Vec::with_capacity(rows.len());
-        for (id, pos) in rows {
-            let checkpoint = self.load_checkpoint(id, pos)?;
-            result.push((id, checkpoint));
-        }
-        Ok(result)
+        self.with_conn(|conn| sql_truncate_checkpoints_retaining(conn, *checkpoint_id))
     }
 }
 
@@ -596,14 +739,17 @@ fn deserialize_tree(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        collections::BTreeSet,
+        sync::{Arc, Mutex},
+    };
 
     use incrementalmerkletree::{Address, Hashable, Level, Position};
     use orchard::tree::MerkleHashOrchard;
     use rusqlite::Connection;
     use shardtree::{
         store::{Checkpoint, ShardStore, TreeState},
-        LocatedTree, RetentionFlags, Tree,
+        LocatedTree, Node, PrunableTree, RetentionFlags, Tree,
     };
 
     use super::*;
@@ -623,15 +769,15 @@ mod tests {
     #[test]
     fn test_schema_creation() {
         let store = test_store();
-        // Verify all four tables exist
         let count: i64 = store
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE \
-                 'commitment_tree_%'",
-                [],
-                |row| row.get(0),
-            )
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE \
+                     'commitment_tree_%'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
             .expect("query tables");
         assert_eq!(count, 4, "expected 4 commitment_tree_ tables");
     }
@@ -639,9 +785,33 @@ mod tests {
     #[test]
     fn test_schema_idempotent() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
-        let _store1 = SqliteShardStore::new(conn).expect("first create");
-        // Can't re-use conn since it was moved, but let's verify tables are
-        // CREATE IF NOT EXISTS by checking a single store works
+        let _store = SqliteShardStore::new(conn).expect("first create");
+    }
+
+    #[test]
+    fn test_shared_connection() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let arc = Arc::new(Mutex::new(conn));
+        let mut store = SqliteShardStore::new_shared(arc.clone()).expect("create shared store");
+
+        // Store works
+        let addr = Address::from_parts(Level::from(SHARD_HEIGHT), 0);
+        let h = test_hash(1);
+        let tree = Tree::leaf((h, RetentionFlags::MARKED));
+        let located = LocatedTree::from_parts(addr, tree).expect("create located");
+        store.put_shard(located).expect("put shard via shared");
+
+        let retrieved = store.get_shard(addr).expect("get shard via shared");
+        assert!(retrieved.is_some());
+
+        // Original Arc is still usable (mutex not poisoned)
+        let guard = arc.lock().expect("lock after store ops");
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM commitment_tree_shards", [], |row| {
+                row.get(0)
+            })
+            .expect("direct query");
+        assert_eq!(count, 1);
     }
 
     // -- Serialization round-trip tests --
@@ -715,7 +885,6 @@ mod tests {
         let h1 = test_hash(1);
         let h2 = test_hash(2);
         let h3 = test_hash(3);
-        // Build a 3-level tree
         let leaf1 = Tree::leaf((h1, RetentionFlags::MARKED));
         let leaf2 = Tree::leaf((h2, RetentionFlags::EPHEMERAL));
         let inner: PrunableTree<MerkleHashOrchard> = Tree::parent(None, leaf1, leaf2);
@@ -725,11 +894,9 @@ mod tests {
         let mut pos = 0;
         let decoded = deserialize_tree(&data, &mut pos).expect("deserialize deep tree");
         assert_eq!(pos, data.len(), "should consume all bytes");
-        // Verify structure: root is parent
         match &*decoded {
             Node::Parent { ann, left, right } => {
                 assert!(ann.is_some());
-                // left is parent (left: &Arc<Tree>, deref Arc then Tree)
                 match &***left {
                     Node::Parent { ann: inner_ann, .. } => {
                         let _: &Option<Arc<MerkleHashOrchard>> = inner_ann;
@@ -737,7 +904,6 @@ mod tests {
                     }
                     _ => panic!("expected inner parent"),
                 }
-                // right is leaf
                 match &***right {
                     Node::Leaf { value: (_, f) } => {
                         assert!(f.is_checkpoint());
@@ -909,7 +1075,6 @@ mod tests {
             store.add_checkpoint(i, cp).expect("add checkpoint");
         }
 
-        // depth 0 = most recent = checkpoint_id 5
         let (id, cp) = store
             .get_checkpoint_at_depth(0)
             .expect("depth 0")
@@ -917,14 +1082,12 @@ mod tests {
         assert_eq!(id, 5);
         assert_eq!(cp.tree_state(), TreeState::AtPosition(Position::from(50)));
 
-        // depth 2 = third most recent = checkpoint_id 3
         let (id, _) = store
             .get_checkpoint_at_depth(2)
             .expect("depth 2")
             .expect("exists");
         assert_eq!(id, 3);
 
-        // depth beyond count
         assert!(store
             .get_checkpoint_at_depth(10)
             .expect("depth 10")
@@ -973,11 +1136,9 @@ mod tests {
         assert_eq!(store.checkpoint_count().expect("count"), 3);
         assert_eq!(store.max_checkpoint_id().expect("max"), Some(3));
 
-        // Checkpoint 3 should have its marks cleared
         let cp3 = store.get_checkpoint(&3).expect("get").expect("exists");
         assert!(cp3.marks_removed().is_empty());
 
-        // Checkpoint 2 should still have marks
         let cp2 = store.get_checkpoint(&2).expect("get").expect("exists");
         assert_eq!(cp2.marks_removed().len(), 1);
     }
@@ -988,17 +1149,11 @@ mod tests {
         let cp = Checkpoint::at_position(Position::from(10));
         store.add_checkpoint(1, cp).expect("add");
 
-        // update_checkpoint_with returns true for existing checkpoint
         let updated = store
-            .update_checkpoint_with(&1, |_cp| {
-                // mark_removed is pub(crate) in shardtree, so we can't call it
-                // from here, but we can verify the callback is invoked
-                Ok(())
-            })
+            .update_checkpoint_with(&1, |_cp| Ok(()))
             .expect("update");
         assert!(updated);
 
-        // Non-existent checkpoint returns false
         let updated = store
             .update_checkpoint_with(&999, |_| Ok(()))
             .expect("update nonexistent");
@@ -1021,7 +1176,6 @@ mod tests {
                 Ok(())
             })
             .expect("for_each");
-        // Should be descending order, limited to 3
         assert_eq!(ids, vec![5, 4, 3]);
     }
 }
