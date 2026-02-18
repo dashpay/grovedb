@@ -261,6 +261,7 @@ impl GroveDb {
             tree.append(&store, &item_value).map_err(map_bulk_err)
         );
         cost.hash_node_calls += result.hash_count;
+        let bulk_state_root = result.state_root;
         cost += store.into_inner().take_cost();
 
         let position = result.global_position;
@@ -317,7 +318,7 @@ impl GroveDb {
             updated_element.insert_subtree(
                 &mut parent_merk,
                 key,
-                grovedb_merk::tree::NULL_HASH,
+                bulk_state_root,
                 None,
                 grove_version,
             )
@@ -632,8 +633,13 @@ impl GroveDb {
                 );
             }
 
-            // Save BulkAppendTree metadata
+            // Save BulkAppendTree metadata and compute state root
             cost_return_on_error_no_add!(cost, tree.save_meta(&store).map_err(map_bulk_err));
+            let bulk_state_root = cost_return_on_error_no_add!(
+                cost,
+                tree.compute_current_state_root(&store)
+                    .map_err(map_bulk_err)
+            );
             cost += store.into_inner().take_cost();
 
             // Save Sinsemilla frontier back to aux
@@ -655,7 +661,7 @@ impl GroveDb {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
                 key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
                 op: GroveOp::ReplaceTreeRootKey {
-                    hash: grovedb_merk::tree::NULL_HASH,
+                    hash: bulk_state_root,
                     root_key: None,
                     aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
                     custom_root: Some(new_sinsemilla_root),

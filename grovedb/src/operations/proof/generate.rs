@@ -1001,6 +1001,39 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
+                            // CommitmentTree with subquery → generate BulkAppend
+                            // proof (CommitmentTree stores data via
+                            // BulkAppendTree, root_key is always None)
+                            Ok(Element::CommitmentTree(
+                                _,
+                                _sinsemilla_root,
+                                total_count,
+                                epoch_size,
+                                _,
+                            )) if !done_with_results
+                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_bulk_append_layer_proof(
+                                        &lower_path,
+                                        path_query,
+                                        [0u8; 32], // unused param
+                                        total_count,
+                                        epoch_size,
+                                        overall_limit,
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
+
+                                has_a_result_at_level |= true;
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+
                             // Other tree types with subqueries → recurse into Merk
                             Ok(Element::Tree(Some(_), _))
                             | Ok(Element::SumTree(Some(_), ..))
@@ -1009,7 +1042,6 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
-                            | Ok(Element::CommitmentTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {

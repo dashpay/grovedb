@@ -1301,7 +1301,36 @@ impl GroveDb {
                             grove_version,
                         )
                         .unwrap()?;
-                    let root_hash = inner_merk.root_hash().unwrap();
+                    let merk_root_hash = inner_merk.root_hash().unwrap();
+
+                    // CommitmentTree uses bulk_state_root as the child hash
+                    // (not the inner Merk root, which is always empty).
+                    let root_hash =
+                        if let Element::CommitmentTree(_, _, total_count, epoch_size, _) = &element
+                        {
+                            let storage_ctx = self
+                                .db
+                                .get_transactional_storage_context(
+                                    new_path_ref.clone(),
+                                    None,
+                                    transaction,
+                                )
+                                .unwrap();
+                            let store =
+                                operations::bulk_append_tree::DataBulkStore::new(&storage_ctx);
+                            match grovedb_bulk_append_tree::BulkAppendTree::load_from_store(
+                                &store,
+                                *total_count,
+                                *epoch_size,
+                            ) {
+                                Ok(tree) => tree
+                                    .compute_current_state_root(&store)
+                                    .unwrap_or(merk_root_hash),
+                                Err(_) => merk_root_hash,
+                            }
+                        } else {
+                            merk_root_hash
+                        };
 
                     let actual_value_hash = value_hash(&kv_value).unwrap();
                     let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();

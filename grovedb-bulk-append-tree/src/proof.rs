@@ -204,6 +204,40 @@ impl BulkAppendTreeProof {
         &self,
         expected_state_root: &[u8; 32],
     ) -> Result<BulkAppendTreeProofResult, BulkAppendError> {
+        let (computed_state_root, result) = self.verify_inner()?;
+
+        if &computed_state_root != expected_state_root {
+            return Err(BulkAppendError::InvalidProof(format!(
+                "state root mismatch: expected {}, computed {}",
+                hex::encode(expected_state_root),
+                hex::encode(computed_state_root)
+            )));
+        }
+
+        Ok(result)
+    }
+
+    /// Verify this proof's internal consistency and return the computed
+    /// state root.
+    ///
+    /// Unlike [`verify`], this does NOT check against an expected state root.
+    /// The caller is responsible for authenticating the returned state root
+    /// through some other mechanism (e.g., as a child Merk hash).
+    ///
+    /// # Returns
+    /// `(computed_state_root, proof_result)` — the state root derived from the
+    /// proof's internal data plus the verified result.
+    pub fn verify_and_compute_root(
+        &self,
+    ) -> Result<([u8; 32], BulkAppendTreeProofResult), BulkAppendError> {
+        self.verify_inner()
+    }
+
+    /// Internal verification logic shared by `verify` and
+    /// `verify_and_compute_root`.
+    ///
+    /// Returns `(computed_state_root, proof_result)`.
+    fn verify_inner(&self) -> Result<([u8; 32], BulkAppendTreeProofResult), BulkAppendError> {
         // 0. Cross-validate metadata consistency
         if self.epoch_size == 0 || !self.epoch_size.is_power_of_two() {
             return Err(BulkAppendError::InvalidProof(format!(
@@ -336,7 +370,7 @@ impl BulkAppendTreeProof {
             )));
         }
 
-        // 4. Verify state_root = blake3("bulk_state" || mmr_root || buffer_hash ||
+        // 4. Compute state_root = blake3("bulk_state" || mmr_root || buffer_hash ||
         //    total_count || epoch_size)
         let computed_state_root = compute_state_root(
             &self.epoch_mmr_root,
@@ -345,20 +379,15 @@ impl BulkAppendTreeProof {
             self.epoch_size,
         );
 
-        if &computed_state_root != expected_state_root {
-            return Err(BulkAppendError::InvalidProof(format!(
-                "state root mismatch: expected {}, computed {}",
-                hex::encode(expected_state_root),
-                hex::encode(computed_state_root)
-            )));
-        }
-
-        Ok(BulkAppendTreeProofResult {
-            epoch_blobs: self.epoch_blobs.clone(),
-            buffer_entries: self.buffer_entries.clone(),
-            total_count: self.total_count,
-            epoch_size: self.epoch_size,
-        })
+        Ok((
+            computed_state_root,
+            BulkAppendTreeProofResult {
+                epoch_blobs: self.epoch_blobs.clone(),
+                buffer_entries: self.buffer_entries.clone(),
+                total_count: self.total_count,
+                epoch_size: self.epoch_size,
+            },
+        ))
     }
 
     /// Serialize this proof to bytes using bincode.

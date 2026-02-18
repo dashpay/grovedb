@@ -464,7 +464,7 @@ impl GroveDb {
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
-                            | Element::CommitmentTree(Some(_), ..)
+                            | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
                             | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -571,7 +571,7 @@ impl GroveDb {
                                     }
                                 }
                             }
-                            // MmrTree/BulkAppendTree are handled above (match all variants)
+                            // MmrTree/BulkAppendTree/CommitmentTree handled above
                             Element::Tree(None, _)
                             | Element::SumTree(None, ..)
                             | Element::BigSumTree(None, ..)
@@ -579,7 +579,6 @@ impl GroveDb {
                             | Element::CountSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
-                            | Element::CommitmentTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -686,7 +685,13 @@ impl GroveDb {
     }
 
     /// Verify a BulkAppendTree lower layer proof and add results.
-    /// Returns NULL_HASH since BulkAppendTree has no child Merk.
+    ///
+    /// For `BulkAppendTree` elements: verifies against the state_root stored in
+    /// the element and returns NULL_HASH (no child Merk).
+    ///
+    /// For `CommitmentTree` elements: verifies internal consistency and returns
+    /// the computed state_root as the lower hash (authenticated via child Merk
+    /// hash).
     fn verify_bulk_append_lower_layer<T>(
         bulk_bytes: &[u8],
         element: &Element,
@@ -700,13 +705,14 @@ impl GroveDb {
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
-        // Extract the state root from the element
-        let state_root = match element {
-            Element::BulkAppendTree(_, state_root, ..) => *state_root,
+        // Extract state_root from element, or None for CommitmentTree
+        let (state_root_opt, is_commitment_tree) = match element {
+            Element::BulkAppendTree(_, state_root, ..) => (Some(*state_root), false),
+            Element::CommitmentTree(..) => (None, true),
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
-                    "BulkAppendTree proof attached to non-BulkAppendTree element".to_string(),
+                    "BulkAppendTree proof attached to incompatible element".to_string(),
                 ))
             }
         };
@@ -714,9 +720,20 @@ impl GroveDb {
         let bulk_proof =
             grovedb_bulk_append_tree::BulkAppendTreeProof::decode_from_slice(bulk_bytes)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
-        let proof_result = bulk_proof
-            .verify(&state_root)
-            .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        let (proof_result, bulk_state_root) = if let Some(sr) = state_root_opt {
+            // BulkAppendTree: verify against known state_root from element
+            let result = bulk_proof
+                .verify(&sr)
+                .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+            (result, sr)
+        } else {
+            // CommitmentTree: verify internal consistency, return computed root
+            let (sr, result) = bulk_proof
+                .verify_and_compute_root()
+                .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+            (result, sr)
+        };
 
         // Get the query range from the path query to extract matching values
         let sub_query =
@@ -761,8 +778,13 @@ impl GroveDb {
             }
         }
 
-        // BulkAppendTree has no child Merk - return NULL_HASH
-        Ok([0u8; 32])
+        // BulkAppendTree: no child Merk, return NULL_HASH
+        // CommitmentTree: return computed state_root as child Merk hash
+        Ok(if is_commitment_tree {
+            bulk_state_root
+        } else {
+            [0u8; 32]
+        })
     }
 
     /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.

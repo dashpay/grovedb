@@ -4,13 +4,17 @@
 //! subtree type.
 
 use grovedb_commitment_tree::{Anchor, CommitmentFrontier};
+use grovedb_merk::proofs::{
+    query::{QueryItem, SubqueryBranch},
+    Query,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::QualifiedGroveDbOp,
     operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element, Error,
+    Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
 /// Default epoch size for tests (large enough that compaction doesn't happen
@@ -1359,4 +1363,336 @@ fn test_verify_grovedb_after_commitment_tree_delete() {
         "expected no issues after delete, got: {:?}",
         issues
     );
+}
+
+// ===========================================================================
+// V1 proof tests
+// ===========================================================================
+
+#[test]
+fn test_commitment_tree_prove_query_v1_buffer_only() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a parent tree and CommitmentTree beneath it
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"pool",
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Append 5 notes (all in buffer — well below TEST_EPOCH_SIZE)
+    let mut expected_values = Vec::new();
+    for i in 0..5u8 {
+        let cmx = test_cmx(i);
+        let payload = format!("note_{}", i).into_bytes();
+        db.commitment_tree_insert(
+            &[b"root"],
+            b"pool",
+            cmx,
+            payload.clone(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+
+        let mut expected = Vec::with_capacity(32 + payload.len());
+        expected.extend_from_slice(&cmx);
+        expected.extend_from_slice(&payload);
+        expected_values.push(expected);
+    }
+
+    // Build PathQuery: path=[b"root"], key=b"pool", subquery = range [0..5)
+    let mut inner_query = Query::new();
+    inner_query.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=4u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"pool".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    // Generate V1 proof
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof for commitment tree");
+
+    // Verify the proof
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof for commitment tree");
+
+    // Check root hash matches
+    let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    // Check result set
+    assert_eq!(result_set.len(), 5, "should have 5 results");
+    for i in 0..5u64 {
+        let (_, key, element) = &result_set[i as usize];
+        assert_eq!(
+            key,
+            &i.to_be_bytes().to_vec(),
+            "key should be position {}",
+            i
+        );
+        match element.as_ref().expect("element should be Some") {
+            Element::Item(data, _) => {
+                assert_eq!(
+                    data, &expected_values[i as usize],
+                    "value at position {} should match (cmx || payload)",
+                    i
+                );
+            }
+            other => panic!("expected Item, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn test_commitment_tree_prove_query_v1_with_epochs() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    let epoch_size: u32 = 4;
+
+    // Insert a parent tree and CommitmentTree with small epoch_size
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"pool",
+        Element::empty_commitment_tree(epoch_size),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Append 6 notes: 1 full epoch (4) + 2 buffer entries
+    let mut expected_values = Vec::new();
+    for i in 0..6u8 {
+        let cmx = test_cmx(i);
+        let payload = format!("ep_note_{}", i).into_bytes();
+        db.commitment_tree_insert(
+            &[b"root"],
+            b"pool",
+            cmx,
+            payload.clone(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+
+        let mut expected = Vec::with_capacity(32 + payload.len());
+        expected.extend_from_slice(&cmx);
+        expected.extend_from_slice(&payload);
+        expected_values.push(expected);
+    }
+
+    // Query all 6 positions [0..6)
+    let mut inner_query = Query::new();
+    inner_query.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=5u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"pool".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof with epochs");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof with epochs");
+
+    let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root, "root hash should match");
+    assert_eq!(result_set.len(), 6, "should have 6 results");
+
+    for i in 0..6u64 {
+        let (_, key, element) = &result_set[i as usize];
+        assert_eq!(key, &i.to_be_bytes().to_vec());
+        match element.as_ref().expect("element should be Some") {
+            Element::Item(data, _) => {
+                assert_eq!(data, &expected_values[i as usize]);
+            }
+            other => panic!("expected Item at position {}, got {:?}", i, other),
+        }
+    }
+}
+
+#[test]
+fn test_commitment_tree_prove_query_v1_partial_range() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"pool",
+        Element::empty_commitment_tree(TEST_EPOCH_SIZE),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Append 10 notes
+    let mut expected_values = Vec::new();
+    for i in 0..10u8 {
+        let cmx = test_cmx(i);
+        let payload = format!("partial_{}", i).into_bytes();
+        db.commitment_tree_insert(
+            &[b"root"],
+            b"pool",
+            cmx,
+            payload.clone(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("commitment tree insert");
+
+        let mut expected = Vec::with_capacity(32 + payload.len());
+        expected.extend_from_slice(&cmx);
+        expected.extend_from_slice(&payload);
+        expected_values.push(expected);
+    }
+
+    // Query only positions [3..7)
+    let mut inner_query = Query::new();
+    inner_query.insert_range_inclusive(3u64.to_be_bytes().to_vec()..=6u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"pool".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof for partial range");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof for partial range");
+
+    let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root, "root hash should match");
+    assert_eq!(result_set.len(), 4, "should have 4 results (positions 3-6)");
+
+    for (i, pos) in (3u64..=6u64).enumerate() {
+        let (_, key, element) = &result_set[i];
+        assert_eq!(key, &pos.to_be_bytes().to_vec());
+        match element.as_ref().expect("element should be Some") {
+            Element::Item(data, _) => {
+                assert_eq!(data, &expected_values[pos as usize]);
+            }
+            other => panic!("expected Item at position {}, got {:?}", pos, other),
+        }
+    }
 }

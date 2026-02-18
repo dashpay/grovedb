@@ -28,13 +28,13 @@ use crate::{
 ///
 /// Wraps normal `get`/`put`/`delete` calls (data storage, not aux) and
 /// accumulates their `OperationCost` in a `RefCell` for later retrieval.
-struct DataBulkStore<'a, C> {
+pub(crate) struct DataBulkStore<'a, C> {
     ctx: &'a C,
     cost: RefCell<OperationCost>,
 }
 
 impl<'a, C> DataBulkStore<'a, C> {
-    fn new(ctx: &'a C) -> Self {
+    pub(crate) fn new(ctx: &'a C) -> Self {
         Self {
             ctx,
             cost: RefCell::new(OperationCost::default()),
