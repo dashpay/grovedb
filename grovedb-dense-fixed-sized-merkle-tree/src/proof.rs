@@ -25,15 +25,15 @@ pub struct DenseTreeProof {
     /// Height of the tree (capacity = 2^height - 1).
     pub(crate) height: u8,
     /// Number of filled positions.
-    pub(crate) count: u64,
+    pub(crate) count: u16,
     /// The proved (position, value) pairs.
-    pub(crate) entries: Vec<(u64, Vec<u8>)>,
+    pub(crate) entries: Vec<(u16, Vec<u8>)>,
     /// Hashes of ancestor node values on the auth path that are NOT proved
     /// entries. Only the 32-byte hash is needed because internal nodes use
     /// `H(value)` in their hash computation.
-    pub(crate) node_value_hashes: Vec<(u64, [u8; 32])>,
+    pub(crate) node_value_hashes: Vec<(u16, [u8; 32])>,
     /// Precomputed subtree hashes for sibling nodes not in the expanded set.
-    pub(crate) node_hashes: Vec<(u64, [u8; 32])>,
+    pub(crate) node_hashes: Vec<(u16, [u8; 32])>,
 }
 
 impl DenseTreeProof {
@@ -45,7 +45,7 @@ impl DenseTreeProof {
     /// Returns the `(height, count)` stored in this proof.
     ///
     /// Used by callers to cross-validate against authenticated element state.
-    pub fn height_and_count(&self) -> (u8, u64) {
+    pub fn height_and_count(&self) -> (u8, u16) {
         (self.height, self.count)
     }
 
@@ -55,17 +55,17 @@ impl DenseTreeProof {
     }
 
     /// Number of filled positions.
-    pub fn count(&self) -> u64 {
+    pub fn count(&self) -> u16 {
         self.count
     }
 
     /// The proved (position, value) pairs.
-    pub fn entries(&self) -> &[(u64, Vec<u8>)] {
+    pub fn entries(&self) -> &[(u16, Vec<u8>)] {
         &self.entries
     }
 
     /// Ancestor node value hashes on the auth path.
-    pub fn node_value_hashes(&self) -> &[(u64, [u8; 32])] {
+    pub fn node_value_hashes(&self) -> &[(u16, [u8; 32])] {
         &self.node_value_hashes
     }
 
@@ -75,7 +75,7 @@ impl DenseTreeProof {
     }
 
     /// Precomputed subtree hashes for sibling nodes.
-    pub fn node_hashes(&self) -> &[(u64, [u8; 32])] {
+    pub fn node_hashes(&self) -> &[(u16, [u8; 32])] {
         &self.node_hashes
     }
 
@@ -89,13 +89,13 @@ impl DenseTreeProof {
     /// Positions must be < count. Duplicates are deduplicated.
     pub fn generate<S: DenseTreeStore>(
         height: u8,
-        count: u64,
-        positions: &[u64],
+        count: u16,
+        positions: &[u16],
         store: &S,
     ) -> Result<Self, DenseMerkleError> {
-        // Validate height before the shift to avoid panic on height >= 64
+        // Validate height before the shift to avoid panic on height >= 16
         crate::error::validate_height(height)?;
-        let capacity = (1u64 << height) - 1;
+        let capacity = ((1u32 << height) - 1) as u16;
 
         // Validate positions
         for &pos in positions {
@@ -108,10 +108,10 @@ impl DenseTreeProof {
         }
 
         // Deduplicate
-        let proved_set: BTreeSet<u64> = positions.iter().copied().collect();
+        let proved_set: BTreeSet<u16> = positions.iter().copied().collect();
 
         // Build expanded set: proved positions + all ancestors up to root
-        let mut expanded: BTreeSet<u64> = proved_set.clone();
+        let mut expanded: BTreeSet<u16> = proved_set.clone();
         for &pos in &proved_set {
             let mut p = pos;
             while p > 0 {
@@ -121,9 +121,9 @@ impl DenseTreeProof {
         }
 
         // Collect entries, node_value_hashes, node_hashes
-        let mut entries: Vec<(u64, Vec<u8>)> = Vec::new();
-        let mut node_value_hashes: Vec<(u64, [u8; 32])> = Vec::new();
-        let mut node_hashes: Vec<(u64, [u8; 32])> = Vec::new();
+        let mut entries: Vec<(u16, Vec<u8>)> = Vec::new();
+        let mut node_value_hashes: Vec<(u16, [u8; 32])> = Vec::new();
+        let mut node_hashes: Vec<(u16, [u8; 32])> = Vec::new();
 
         // Use from_state to get a tree object for hash_position
         let tree = crate::tree::DenseFixedSizedMerkleTree::from_state(height, count)?;
@@ -147,8 +147,6 @@ impl DenseTreeProof {
 
             // For each child of this position that is NOT in the expanded set,
             // compute its hash and include it.
-            // Check leaf condition before computing child indices to avoid
-            // u64 overflow for large heights.
             let first_leaf = (capacity - 1) / 2;
             if pos < first_leaf {
                 let left_child = 2 * pos + 1;
@@ -185,20 +183,20 @@ impl DenseTreeProof {
 
     /// Decode from bytes using bincode.
     ///
-    /// Validates that the decoded height is in [1, 63] to prevent overflow.
+    /// Validates that the decoded height is in [1, 16] to prevent overflow.
     pub fn decode_from_slice(bytes: &[u8]) -> Result<Self, DenseMerkleError> {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>(); // 100MB limit
         let (proof, _): (Self, _) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| DenseMerkleError::InvalidProof(format!("decode error: {}", e)))?;
-        if !(1..=63).contains(&proof.height) {
+        if !(1..=16).contains(&proof.height) {
             return Err(DenseMerkleError::InvalidProof(format!(
-                "invalid height {} in proof (must be 1..=63)",
+                "invalid height {} in proof (must be 1..=16)",
                 proof.height
             )));
         }
-        let capacity = (1u64 << proof.height) - 1;
+        let capacity = ((1u32 << proof.height) - 1) as u16;
         if proof.count > capacity {
             return Err(DenseMerkleError::InvalidProof(format!(
                 "count {} exceeds capacity {} for height {}",
@@ -217,7 +215,7 @@ mod tests {
 
     /// In-memory store for testing.
     struct MemStore {
-        data: RefCell<HashMap<u64, Vec<u8>>>,
+        data: RefCell<HashMap<u16, Vec<u8>>>,
     }
 
     impl MemStore {
@@ -229,11 +227,11 @@ mod tests {
     }
 
     impl DenseTreeStore for MemStore {
-        fn get_value(&self, position: u64) -> Result<Option<Vec<u8>>, DenseMerkleError> {
+        fn get_value(&self, position: u16) -> Result<Option<Vec<u8>>, DenseMerkleError> {
             Ok(self.data.borrow().get(&position).cloned())
         }
 
-        fn put_value(&self, position: u64, value: &[u8]) -> Result<(), DenseMerkleError> {
+        fn put_value(&self, position: u16, value: &[u8]) -> Result<(), DenseMerkleError> {
             self.data.borrow_mut().insert(position, value.to_vec());
             Ok(())
         }

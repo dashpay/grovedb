@@ -117,7 +117,7 @@ pub enum Element {
     /// - `count`: Number of values inserted so far.
     /// - `height`: Tree height h; the tree has 2^h - 1 positions.
     /// - `flags`: Optional per-element metadata.
-    DenseAppendOnlyFixedSizeTree([u8; 32], u64, u8, Option<ElementFlags>),
+    DenseAppendOnlyFixedSizeTree([u8; 32], u16, u8, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {

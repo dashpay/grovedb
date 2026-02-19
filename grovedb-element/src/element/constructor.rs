@@ -372,7 +372,7 @@ impl Element {
     /// Set element to a dense tree with all fields
     pub fn new_dense_tree(
         root_hash: [u8; 32],
-        count: u64,
+        count: u16,
         height: u8,
         flags: Option<ElementFlags>,
     ) -> Self {

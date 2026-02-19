@@ -25,16 +25,16 @@ impl DenseTreeProof {
     pub fn verify(
         &self,
         expected_root: &[u8; 32],
-    ) -> Result<Vec<(u64, Vec<u8>)>, DenseMerkleError> {
+    ) -> Result<Vec<(u16, Vec<u8>)>, DenseMerkleError> {
         // Validate height to prevent shift overflow
-        if !(1..=63).contains(&self.height) {
+        if !(1..=16).contains(&self.height) {
             return Err(DenseMerkleError::InvalidProof(format!(
-                "invalid height {} in proof (must be 1..=63)",
+                "invalid height {} in proof (must be 1..=16)",
                 self.height
             )));
         }
 
-        let capacity = (1u64 << self.height) - 1;
+        let capacity = ((1u32 << self.height) - 1) as u16;
 
         // Validate count against capacity
         if self.count > capacity {
@@ -96,11 +96,11 @@ impl DenseTreeProof {
 
         // Vuln 6: Validate that entries, node_value_hashes, and node_hashes have
         // pairwise-disjoint position sets
-        let entry_positions: std::collections::BTreeSet<u64> =
+        let entry_positions: std::collections::BTreeSet<u16> =
             self.entries.iter().map(|(p, _)| *p).collect();
-        let value_hash_positions: std::collections::BTreeSet<u64> =
+        let value_hash_positions: std::collections::BTreeSet<u16> =
             self.node_value_hashes.iter().map(|(p, _)| *p).collect();
-        let hash_positions: std::collections::BTreeSet<u64> =
+        let hash_positions: std::collections::BTreeSet<u16> =
             self.node_hashes.iter().map(|(p, _)| *p).collect();
 
         if !entry_positions.is_disjoint(&value_hash_positions) {
@@ -139,14 +139,14 @@ impl DenseTreeProof {
         }
 
         // Build lookup maps
-        let entry_map: BTreeMap<u64, &Vec<u8>> =
+        let entry_map: BTreeMap<u16, &Vec<u8>> =
             self.entries.iter().map(|(pos, val)| (*pos, val)).collect();
-        let value_hash_map: BTreeMap<u64, &[u8; 32]> = self
+        let value_hash_map: BTreeMap<u16, &[u8; 32]> = self
             .node_value_hashes
             .iter()
             .map(|(pos, hash)| (*pos, hash))
             .collect();
-        let hash_map: BTreeMap<u64, &[u8; 32]> = self
+        let hash_map: BTreeMap<u16, &[u8; 32]> = self
             .node_hashes
             .iter()
             .map(|(pos, hash)| (*pos, hash))
@@ -176,11 +176,11 @@ impl DenseTreeProof {
     /// Recursively recompute the hash for a position.
     fn recompute_hash(
         &self,
-        position: u64,
-        capacity: u64,
-        entry_map: &BTreeMap<u64, &Vec<u8>>,
-        value_hash_map: &BTreeMap<u64, &[u8; 32]>,
-        hash_map: &BTreeMap<u64, &[u8; 32]>,
+        position: u16,
+        capacity: u16,
+        entry_map: &BTreeMap<u16, &Vec<u8>>,
+        value_hash_map: &BTreeMap<u16, &[u8; 32]>,
+        hash_map: &BTreeMap<u16, &[u8; 32]>,
     ) -> Result<[u8; 32], DenseMerkleError> {
         // Beyond capacity or count -> zero hash
         if position >= capacity || position >= self.count {
@@ -192,8 +192,7 @@ impl DenseTreeProof {
             return Ok(**hash);
         }
 
-        // Check leaf condition BEFORE computing child indices to avoid
-        // u64 overflow for positions near capacity in height-62/63 trees.
+        // Check leaf condition BEFORE computing child indices.
         let first_leaf = (capacity - 1) / 2;
         if position >= first_leaf {
             // Leaf node: must have full value (from entries)

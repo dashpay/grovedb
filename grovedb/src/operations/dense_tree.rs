@@ -34,12 +34,12 @@ use crate::{
 /// operations.
 ///
 /// Reads and writes node values to auxiliary storage keyed by position
-/// (big-endian u64). Uses `RefCell` for cost accumulation and a write-through
+/// (big-endian u16). Uses `RefCell` for cost accumulation and a write-through
 /// cache since DenseTreeStore takes `&self`.
 pub(crate) struct AuxDenseTreeStore<'a, C> {
     ctx: &'a C,
     cost: RefCell<OperationCost>,
-    cache: RefCell<HashMap<u64, Vec<u8>>>,
+    cache: RefCell<HashMap<u16, Vec<u8>>>,
 }
 
 impl<'a, C> AuxDenseTreeStore<'a, C> {
@@ -56,12 +56,12 @@ impl<'a, C> AuxDenseTreeStore<'a, C> {
     }
 }
 
-fn position_key(pos: u64) -> [u8; 8] {
+fn position_key(pos: u16) -> [u8; 2] {
     pos.to_be_bytes()
 }
 
 impl<'db, C: StorageContext<'db>> DenseTreeStore for AuxDenseTreeStore<'_, C> {
-    fn get_value(&self, position: u64) -> Result<Option<Vec<u8>>, DenseMerkleError> {
+    fn get_value(&self, position: u16) -> Result<Option<Vec<u8>>, DenseMerkleError> {
         // Check write-through cache first
         if let Some(val) = self.cache.borrow().get(&position) {
             return Ok(Some(val.clone()));
@@ -81,7 +81,7 @@ impl<'db, C: StorageContext<'db>> DenseTreeStore for AuxDenseTreeStore<'_, C> {
         }
     }
 
-    fn put_value(&self, position: u64, value: &[u8]) -> Result<(), DenseMerkleError> {
+    fn put_value(&self, position: u16, value: &[u8]) -> Result<(), DenseMerkleError> {
         let key = position_key(position);
         let result = self.ctx.put(&key, value, None, None);
         let mut cost = self.cost.borrow_mut();
@@ -107,7 +107,7 @@ impl GroveDb {
         value: Vec<u8>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<([u8; 32], u64), Error>
+    ) -> CostResult<([u8; 32], u16), Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -222,7 +222,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &[u8],
-        position: u64,
+        position: u16,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error>
@@ -305,7 +305,7 @@ impl GroveDb {
         key: &[u8],
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<u64, Error>
+    ) -> CostResult<u16, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
@@ -439,7 +439,7 @@ impl GroveDb {
                     root_key: None,
                     aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
                     custom_root: Some(new_root_hash),
-                    custom_count: Some(tree.count()),
+                    custom_count: Some(tree.count() as u64),
                     bulk_state: None,
                 },
             };

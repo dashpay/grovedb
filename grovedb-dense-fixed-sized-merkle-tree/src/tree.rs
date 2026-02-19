@@ -7,7 +7,7 @@ use crate::{
 /// A dense fixed-sized Merkle tree.
 ///
 /// Positions are indexed level-order (BFS): root=0, left child=2i+1, right
-/// child=2i+2. The tree has height `h` and capacity `2^h - 1`.
+/// child=2i+2. The tree has height `h` (max 16) and capacity `2^h - 1`.
 ///
 /// Note: root hash computation is O(n) per insert where n = count, since no
 /// intermediate hashes are cached. Suitable for small trees (epoch sizes
@@ -15,22 +15,22 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub struct DenseFixedSizedMerkleTree {
     height: u8,
-    count: u64,
+    count: u16,
 }
 
 impl DenseFixedSizedMerkleTree {
     /// Create a new empty tree with the given height.
     ///
-    /// Height must be between 1 and 63 inclusive.
+    /// Height must be between 1 and 16 inclusive.
     pub fn new(height: u8) -> Result<Self, DenseMerkleError> {
         validate_height(height)?;
         Ok(Self { height, count: 0 })
     }
 
     /// Reconstitute a tree from stored state.
-    pub fn from_state(height: u8, count: u64) -> Result<Self, DenseMerkleError> {
+    pub fn from_state(height: u8, count: u16) -> Result<Self, DenseMerkleError> {
         validate_height(height)?;
-        let capacity = (1u64 << height) - 1;
+        let capacity = Self::capacity_for_height(height);
         if count > capacity {
             return Err(DenseMerkleError::InvalidData(format!(
                 "count {} exceeds capacity {} for height {}",
@@ -41,12 +41,18 @@ impl DenseFixedSizedMerkleTree {
     }
 
     /// Maximum number of values this tree can hold.
-    pub fn capacity(&self) -> u64 {
-        (1u64 << self.height) - 1
+    pub fn capacity(&self) -> u16 {
+        Self::capacity_for_height(self.height)
+    }
+
+    /// Compute capacity from height. Height must be 1..=16.
+    /// Uses u32 internally to avoid overflow since 1u16 << 16 would overflow.
+    fn capacity_for_height(height: u8) -> u16 {
+        ((1u32 << height) - 1) as u16
     }
 
     /// Current number of values stored.
-    pub fn count(&self) -> u64 {
+    pub fn count(&self) -> u16 {
         self.count
     }
 
@@ -57,13 +63,13 @@ impl DenseFixedSizedMerkleTree {
 
     /// Insert a value at the next available position.
     ///
-    /// Returns `(root_hash, position)` where position is the 0-based index
-    /// where the value was inserted.
+    /// Returns `(root_hash, position, hash_calls)` where position is the
+    /// 0-based index where the value was inserted.
     pub fn insert<S: DenseTreeStore>(
         &mut self,
         value: &[u8],
         store: &S,
-    ) -> Result<([u8; 32], u64, u32), DenseMerkleError> {
+    ) -> Result<([u8; 32], u16, u32), DenseMerkleError> {
         if self.count >= self.capacity() {
             return Err(DenseMerkleError::TreeFull {
                 capacity: self.capacity(),
@@ -95,7 +101,7 @@ impl DenseFixedSizedMerkleTree {
         &mut self,
         value: &[u8],
         store: &S,
-    ) -> Result<Option<([u8; 32], u64, u32)>, DenseMerkleError> {
+    ) -> Result<Option<([u8; 32], u16, u32)>, DenseMerkleError> {
         if self.count >= self.capacity() {
             return Ok(None);
         }
@@ -119,7 +125,7 @@ impl DenseFixedSizedMerkleTree {
     /// count but the store has no value (store inconsistency).
     pub fn get<S: DenseTreeStore>(
         &self,
-        position: u64,
+        position: u16,
         store: &S,
     ) -> Result<Option<Vec<u8>>, DenseMerkleError> {
         if position >= self.count {
@@ -154,7 +160,7 @@ impl DenseFixedSizedMerkleTree {
     /// Returns `(hash, hash_call_count)` otherwise.
     pub(crate) fn hash_position<S: DenseTreeStore>(
         &self,
-        position: u64,
+        position: u16,
         store: &S,
     ) -> Result<([u8; 32], u32), DenseMerkleError> {
         self.hash_node(position, store)
@@ -176,7 +182,7 @@ impl DenseFixedSizedMerkleTree {
     /// Returns `(hash, hash_call_count)`.
     fn hash_node<S: DenseTreeStore>(
         &self,
-        position: u64,
+        position: u16,
         store: &S,
     ) -> Result<([u8; 32], u32), DenseMerkleError> {
         let capacity = self.capacity();
@@ -193,8 +199,7 @@ impl DenseFixedSizedMerkleTree {
             ))
         })?;
 
-        // Check if this is a leaf BEFORE computing child indices to avoid
-        // u64 overflow for positions near capacity in height-62/63 trees.
+        // Check if this is a leaf BEFORE computing child indices.
         // A node is a leaf when its left child (2*pos+1) would be >= capacity.
         // Equivalently: position >= (capacity - 1) / 2, which is overflow-safe.
         let first_leaf = (capacity - 1) / 2;

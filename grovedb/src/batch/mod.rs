@@ -1755,7 +1755,7 @@ where
                         Some(TreeType::DenseAppendOnlyFixedSizeTree) => {
                             let dr = custom_root.unwrap_or([0u8; 32]);
                             let (count, height) = bulk_state.unwrap_or((0, 0));
-                            Element::new_dense_tree(dr, count, height, flags)
+                            Element::new_dense_tree(dr, count as u16, height, flags)
                         }
                         Some(_) | None => {
                             // Standard aggregate trees — infer from
@@ -2301,7 +2301,7 @@ impl GroveDb {
                                                                 aggregate_data,
                                                                 custom_root: Some(*dense_root),
                                                                 bulk_state: Some((
-                                                                    *count,
+                                                                    *count as u64,
                                                                     *height,
                                                                 )),
                                                                 non_merk_tree_type: Some(

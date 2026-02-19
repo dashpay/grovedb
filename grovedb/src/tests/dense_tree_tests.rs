@@ -3,13 +3,17 @@
 //! Tests for DenseAppendOnlyFixedSizeTree as a GroveDB subtree type, using
 //! blake3-based dense Merkle trees with level-order (BFS) filling.
 
+use grovedb_merk::proofs::{
+    query::{QueryItem, SubqueryBranch},
+    Query,
+};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::QualifiedGroveDbOp,
     operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element, Error,
+    Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
 // ===========================================================================
@@ -151,7 +155,7 @@ fn test_dense_tree_sequential_inserts() {
     .expect("insert dense tree");
 
     let mut last_root = [0u8; 32];
-    for i in 0u64..7 {
+    for i in 0u16..7 {
         let value = format!("value_{}", i).into_bytes();
         let (root_hash, position) = db
             .dense_tree_insert(EMPTY_PATH, b"dense", value, None, grove_version)
@@ -621,7 +625,7 @@ fn test_dense_tree_batch_multiple_inserts() {
 
     for (i, expected) in ["first", "second", "third"].iter().enumerate() {
         let val = db
-            .dense_tree_get(EMPTY_PATH, b"dense", i as u64, None, grove_version)
+            .dense_tree_get(EMPTY_PATH, b"dense", i as u16, None, grove_version)
             .unwrap()
             .expect("get value");
         assert_eq!(val, Some(expected.as_bytes().to_vec()));
@@ -1095,4 +1099,503 @@ fn test_verify_grovedb_dense_tree_valid() {
         .verify_grovedb(None, true, false, grove_version)
         .expect("verify should not fail");
     assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
+}
+
+// ===========================================================================
+// V1 proof tests
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_v1_proof_range_query() {
+    // Insert 10 values into a height-4 dense tree (capacity 15).
+    // Query range [4..=8] and verify that the proof returns exactly
+    // positions 4, 5, 6, 7, 8 — and nothing else.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(4), // capacity = 15
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Insert 10 values at positions 0..9
+    for i in 0..10u16 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("val_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense tree insert");
+    }
+
+    // Build a query for range [4..=8]
+    let mut inner_query = Query::new();
+    inner_query
+        .insert_range_inclusive(4u16.to_be_bytes().to_vec()..=8u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    // Generate V1 proof
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof for dense tree range");
+
+    // Verify the proof
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof for dense tree range");
+
+    // Root hash must match
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    // Exactly 5 results: positions 4, 5, 6, 7, 8
+    assert_eq!(result_set.len(), 5, "should have exactly 5 results");
+
+    for (i, expected_pos) in (4u16..=8).enumerate() {
+        let (_, key, element) = &result_set[i];
+        assert_eq!(
+            key,
+            &expected_pos.to_be_bytes().to_vec(),
+            "key at index {} should be position {}",
+            i,
+            expected_pos
+        );
+        let element = element
+            .as_ref()
+            .expect("element should be Some");
+        match element {
+            Element::Item(data, _) => {
+                assert_eq!(
+                    data,
+                    &format!("val_{}", expected_pos).into_bytes(),
+                    "value at position {} should match",
+                    expected_pos
+                );
+            }
+            other => panic!(
+                "expected Item at position {}, got {:?}",
+                expected_pos, other
+            ),
+        }
+    }
+}
+
+#[test]
+fn test_dense_tree_v1_proof_single_position() {
+    // Prove a single position and verify only that position is returned.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3), // capacity = 7
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    for i in 0..7u16 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("item_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense tree insert");
+    }
+
+    // Query only position 3
+    let mut inner_query = Query::new();
+    inner_query.insert_key(3u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    assert_eq!(result_set.len(), 1, "should have exactly 1 result");
+    let (_, key, element) = &result_set[0];
+    assert_eq!(key, &3u16.to_be_bytes().to_vec());
+    match element.as_ref().expect("element should be Some") {
+        Element::Item(data, _) => assert_eq!(data, b"item_3"),
+        other => panic!("expected Item, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_dense_tree_v1_proof_multiple_disjoint_positions() {
+    // Query positions 1, 5, 9 from a tree with 10 values.
+    // Verifies that non-contiguous positions are returned correctly
+    // and that intermediate positions (2, 3, 4, 6, 7, 8) are NOT included.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(4), // capacity = 15
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    for i in 0..10u16 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("d_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense tree insert");
+    }
+
+    // Query specific positions: 1, 5, 9
+    let mut inner_query = Query::new();
+    inner_query.insert_key(1u16.to_be_bytes().to_vec());
+    inner_query.insert_key(5u16.to_be_bytes().to_vec());
+    inner_query.insert_key(9u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    assert_eq!(result_set.len(), 3, "should have exactly 3 results");
+
+    let expected = vec![
+        (1u16, b"d_1".to_vec()),
+        (5u16, b"d_5".to_vec()),
+        (9u16, b"d_9".to_vec()),
+    ];
+    for (i, (pos, val)) in expected.iter().enumerate() {
+        let (_, key, element) = &result_set[i];
+        assert_eq!(
+            key,
+            &pos.to_be_bytes().to_vec(),
+            "key at index {} should be position {}",
+            i,
+            pos
+        );
+        match element.as_ref().expect("element should be Some") {
+            Element::Item(data, _) => assert_eq!(data, val),
+            other => panic!("expected Item at position {}, got {:?}", pos, other),
+        }
+    }
+}
+
+#[test]
+fn test_dense_tree_v1_proof_nested_in_tree() {
+    // Dense tree nested under a normal tree — proves the full path works.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    let parent_path: &[&[u8]] = &[b"parent"];
+    db.insert(
+        parent_path,
+        b"dense",
+        Element::empty_dense_tree(3), // capacity = 7
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree under parent");
+
+    for i in 0..7u16 {
+        db.dense_tree_insert(
+            parent_path,
+            b"dense",
+            format!("nested_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense tree insert");
+    }
+
+    // Query range [2..=5] inside the nested dense tree
+    let mut inner_query = Query::new();
+    inner_query
+        .insert_range_inclusive(2u16.to_be_bytes().to_vec()..=5u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof for nested dense tree");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof for nested dense tree");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    assert_eq!(result_set.len(), 4, "should have 4 results (positions 2-5)");
+
+    for (i, expected_pos) in (2u16..=5).enumerate() {
+        let (_, key, element) = &result_set[i];
+        assert_eq!(key, &expected_pos.to_be_bytes().to_vec());
+        match element.as_ref().expect("element should be Some") {
+            Element::Item(data, _) => {
+                assert_eq!(data, &format!("nested_{}", expected_pos).into_bytes());
+            }
+            other => panic!("expected Item, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn test_dense_tree_v1_proof_with_limit() {
+    // Query range [0..=9] but with limit=3 — should return only first 3.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(4), // capacity = 15
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    for i in 0..10u16 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("v_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense tree insert");
+    }
+
+    let mut inner_query = Query::new();
+    inner_query
+        .insert_range_inclusive(0u16.to_be_bytes().to_vec()..=9u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: Some(3),
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof with limit");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof with limit");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    assert_eq!(
+        result_set.len(),
+        3,
+        "should have exactly 3 results due to limit"
+    );
+
+    for (i, expected_pos) in (0u16..3).enumerate() {
+        let (_, key, element) = &result_set[i];
+        assert_eq!(key, &expected_pos.to_be_bytes().to_vec());
+        match element.as_ref().expect("element should be Some") {
+            Element::Item(data, _) => {
+                assert_eq!(data, &format!("v_{}", expected_pos).into_bytes());
+            }
+            other => panic!("expected Item, got {:?}", other),
+        }
+    }
 }

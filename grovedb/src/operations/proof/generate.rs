@@ -1333,7 +1333,7 @@ impl GroveDb {
         &self,
         subtree_path: &[&[u8]],
         path_query: &PathQuery,
-        dense_count: u64,
+        dense_count: u16,
         dense_height: u8,
         overall_limit: &mut Option<u16>,
         tx: &crate::Transaction,
@@ -1403,27 +1403,27 @@ impl GroveDb {
 
     /// Convert query items to position indices for dense tree proofs.
     ///
-    /// Query keys are interpreted as BE u64 bytes representing positions.
-    fn query_items_to_positions(items: &[QueryItem], count: u64) -> Result<Vec<u64>, Error> {
+    /// Query keys are interpreted as BE u16 bytes representing positions.
+    fn query_items_to_positions(items: &[QueryItem], count: u16) -> Result<Vec<u16>, Error> {
         if count == 0 {
             return Ok(Vec::new());
         }
 
-        const MAX_INDICES: usize = 10_000_000;
+        const MAX_INDICES: usize = 65_535;
         let max_idx = count - 1;
         let mut indices = Vec::new();
 
         for item in items {
             match item {
                 QueryItem::Key(key) => {
-                    let idx = Self::decode_be_u64(key)?;
+                    let idx = Self::decode_be_u16(key)?;
                     if idx < count {
                         indices.push(idx);
                     }
                 }
                 QueryItem::RangeInclusive(range) => {
-                    let start = Self::decode_be_u64(range.start())?;
-                    let end = Self::decode_be_u64(range.end())?;
+                    let start = Self::decode_be_u16(range.start())?;
+                    let end = Self::decode_be_u16(range.end())?;
                     for idx in start..=end.min(max_idx) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1434,8 +1434,8 @@ impl GroveDb {
                     }
                 }
                 QueryItem::Range(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
-                    let end = Self::decode_be_u64(&range.end)?;
+                    let start = Self::decode_be_u16(&range.start)?;
+                    let end = Self::decode_be_u16(&range.end)?;
                     for idx in start..end.min(count) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1446,7 +1446,7 @@ impl GroveDb {
                     }
                 }
                 QueryItem::RangeFrom(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
+                    let start = Self::decode_be_u16(&range.start)?;
                     for idx in start..count {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1457,7 +1457,7 @@ impl GroveDb {
                     }
                 }
                 QueryItem::RangeTo(range) => {
-                    let end = Self::decode_be_u64(&range.end)?;
+                    let end = Self::decode_be_u16(&range.end)?;
                     for idx in 0..end.min(count) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1468,7 +1468,7 @@ impl GroveDb {
                     }
                 }
                 QueryItem::RangeToInclusive(range) => {
-                    let end = Self::decode_be_u64(&range.end)?;
+                    let end = Self::decode_be_u16(&range.end)?;
                     for idx in 0..=end.min(max_idx) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1489,7 +1489,7 @@ impl GroveDb {
                     }
                 }
                 QueryItem::RangeAfter(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
+                    let start = Self::decode_be_u16(&range.start)?;
                     for idx in (start + 1)..count {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1500,8 +1500,8 @@ impl GroveDb {
                     }
                 }
                 QueryItem::RangeAfterTo(range) => {
-                    let start = Self::decode_be_u64(&range.start)?;
-                    let end = Self::decode_be_u64(&range.end)?;
+                    let start = Self::decode_be_u16(&range.start)?;
+                    let end = Self::decode_be_u16(&range.end)?;
                     for idx in (start + 1)..end.min(count) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1512,8 +1512,8 @@ impl GroveDb {
                     }
                 }
                 QueryItem::RangeAfterToInclusive(range) => {
-                    let start = Self::decode_be_u64(range.start())?;
-                    let end = Self::decode_be_u64(range.end())?;
+                    let start = Self::decode_be_u16(range.start())?;
+                    let end = Self::decode_be_u16(range.end())?;
                     for idx in (start + 1)..=end.min(max_idx) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
@@ -1728,5 +1728,18 @@ impl GroveDb {
             .try_into()
             .map_err(|_| Error::InvalidInput("invalid u64 key bytes"))?;
         Ok(u64::from_be_bytes(arr))
+    }
+
+    /// Decode a big-endian u16 from key bytes.
+    fn decode_be_u16(key: &[u8]) -> Result<u16, Error> {
+        if key.len() != 2 {
+            return Err(Error::InvalidInput(
+                "position key must be exactly 2 bytes (BE u16)",
+            ));
+        }
+        let arr: [u8; 2] = key
+            .try_into()
+            .map_err(|_| Error::InvalidInput("invalid u16 key bytes"))?;
+        Ok(u16::from_be_bytes(arr))
     }
 }

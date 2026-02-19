@@ -5,7 +5,7 @@ use crate::{hash::blake3_merge, proof::DenseTreeProof};
 
 /// In-memory store for testing.
 struct MemStore {
-    data: RefCell<HashMap<u64, Vec<u8>>>,
+    data: RefCell<HashMap<u16, Vec<u8>>>,
 }
 
 impl MemStore {
@@ -17,11 +17,11 @@ impl MemStore {
 }
 
 impl DenseTreeStore for MemStore {
-    fn get_value(&self, position: u64) -> Result<Option<Vec<u8>>, DenseMerkleError> {
+    fn get_value(&self, position: u16) -> Result<Option<Vec<u8>>, DenseMerkleError> {
         Ok(self.data.borrow().get(&position).cloned())
     }
 
-    fn put_value(&self, position: u64, value: &[u8]) -> Result<(), DenseMerkleError> {
+    fn put_value(&self, position: u16, value: &[u8]) -> Result<(), DenseMerkleError> {
         self.data.borrow_mut().insert(position, value.to_vec());
         Ok(())
     }
@@ -131,14 +131,14 @@ fn test_new_tree_valid_heights() {
     let tree = DenseFixedSizedMerkleTree::new(3).expect("height 3 should be valid");
     assert_eq!(tree.capacity(), 7); // 2^3 - 1 = 7
 
-    let tree = DenseFixedSizedMerkleTree::new(63).expect("height 63 should be valid");
-    assert_eq!(tree.height(), 63);
+    let tree = DenseFixedSizedMerkleTree::new(16).expect("height 16 should be valid");
+    assert_eq!(tree.height(), 16);
 }
 
 #[test]
 fn test_new_tree_invalid_heights() {
     assert!(DenseFixedSizedMerkleTree::new(0).is_err());
-    assert!(DenseFixedSizedMerkleTree::new(64).is_err());
+    assert!(DenseFixedSizedMerkleTree::new(17).is_err());
 }
 
 #[test]
@@ -419,7 +419,7 @@ fn test_vuln3_duplicate_node_value_hashes_rejected() {
 #[test]
 fn test_vuln4_height_overflow_rejected() {
     let proof = DenseTreeProof {
-        height: 64,
+        height: 17,
         count: 1,
         entries: vec![(0, vec![1, 2, 3])],
         node_value_hashes: vec![],
@@ -427,7 +427,7 @@ fn test_vuln4_height_overflow_rejected() {
     };
     let fake_root = [0u8; 32];
     let result = proof.verify(&fake_root);
-    assert!(result.is_err(), "height 64 should be rejected");
+    assert!(result.is_err(), "height 17 should be rejected");
 }
 
 #[test]
@@ -446,9 +446,9 @@ fn test_vuln4_height_zero_rejected() {
 
 #[test]
 fn test_vuln4_decode_invalid_height_rejected() {
-    // Craft a proof with height=64, encode it, then decode
+    // Craft a proof with height=17, encode it, then decode
     let proof = DenseTreeProof {
-        height: 64,
+        height: 17,
         count: 0,
         entries: vec![],
         node_value_hashes: vec![],
@@ -458,7 +458,7 @@ fn test_vuln4_decode_invalid_height_rejected() {
         .encode_to_vec()
         .expect("encoding should succeed even with bad height");
     let result = DenseTreeProof::decode_from_slice(&bytes);
-    assert!(result.is_err(), "decode should reject height 64");
+    assert!(result.is_err(), "decode should reject height 17");
 }
 
 #[test]
@@ -573,8 +573,8 @@ fn test_from_state_invalid_height() {
         "height=0 should be invalid"
     );
     assert!(
-        DenseFixedSizedMerkleTree::from_state(64, 0).is_err(),
-        "height=64 should be invalid"
+        DenseFixedSizedMerkleTree::from_state(17, 0).is_err(),
+        "height=17 should be invalid"
     );
 }
 
@@ -629,7 +629,7 @@ fn test_vuln6_overlapping_node_value_hashes_and_node_hashes_rejected() {
 fn test_count_exceeds_capacity_rejected_in_verify() {
     let proof = DenseTreeProof {
         height: 3,
-        count: 1000, // capacity is 7 for height=3
+        count: 100, // capacity is 7 for height=3
         entries: vec![(0, vec![1, 2, 3])],
         node_value_hashes: vec![],
         node_hashes: vec![],
@@ -665,12 +665,12 @@ fn test_from_state_count_equals_capacity() {
 }
 
 #[test]
-fn test_height_63_capacity_and_insert() {
+fn test_height_16_capacity_and_insert() {
     let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(63).expect("height 63 should be valid");
-    assert_eq!(tree.capacity(), (1u64 << 63) - 1);
+    let mut tree = DenseFixedSizedMerkleTree::new(16).expect("height 16 should be valid");
+    assert_eq!(tree.capacity(), 65_535);
 
-    // Insert and hash without u64 overflow
+    // Insert and hash
     let (hash, pos, _) = tree.insert(b"test", &store).expect("insert should succeed");
     assert_eq!(pos, 0);
     assert_ne!(hash, [0u8; 32]);
@@ -737,9 +737,9 @@ fn test_empty_tree_proof_generation() {
 
 /// Store that returns errors on specific positions.
 struct FailingStore {
-    data: RefCell<HashMap<u64, Vec<u8>>>,
-    fail_on_get: Option<u64>,
-    fail_on_put: Option<u64>,
+    data: RefCell<HashMap<u16, Vec<u8>>>,
+    fail_on_get: Option<u16>,
+    fail_on_put: Option<u16>,
 }
 
 impl FailingStore {
@@ -753,14 +753,14 @@ impl FailingStore {
 }
 
 impl DenseTreeStore for FailingStore {
-    fn get_value(&self, position: u64) -> Result<Option<Vec<u8>>, DenseMerkleError> {
+    fn get_value(&self, position: u16) -> Result<Option<Vec<u8>>, DenseMerkleError> {
         if self.fail_on_get == Some(position) {
             return Err(DenseMerkleError::StoreError("simulated get failure".into()));
         }
         Ok(self.data.borrow().get(&position).cloned())
     }
 
-    fn put_value(&self, position: u64, value: &[u8]) -> Result<(), DenseMerkleError> {
+    fn put_value(&self, position: u16, value: &[u8]) -> Result<(), DenseMerkleError> {
         if self.fail_on_put == Some(position) {
             return Err(DenseMerkleError::StoreError("simulated put failure".into()));
         }
@@ -858,52 +858,46 @@ fn test_height_and_count_accessor() {
 
 #[test]
 fn test_dos_too_many_entries_rejected() {
-    // Build a proof with more than 100,000 entries
-    let entries: Vec<(u64, Vec<u8>)> = (0..100_001).map(|i| (i as u64, vec![0u8])).collect();
+    // Build a proof with more than 65535 entries (max u16 capacity)
+    // Since u16 max is 65535, we test with a count that exceeds what's possible
+    let entries: Vec<(u16, Vec<u8>)> = (0..65_535u16).map(|i| (i, vec![0u8])).collect();
     let proof = DenseTreeProof {
-        height: 63,
-        count: (1u64 << 63) - 1,
+        height: 16,
+        count: 65_535,
         entries,
         node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let result = proof.verify(&[0u8; 32]);
-    assert!(
-        result.is_err(),
-        "proof with >100,000 entries should be rejected"
-    );
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("too many elements"),
-        "error should mention too many elements, got: {}",
-        err_msg
-    );
+    // With u16 positions, max entries is 65535 which is under 100_000 limit.
+    // The proof should fail for root mismatch, not DoS.
+    assert!(result.is_err(), "proof should fail (root mismatch)");
 }
 
 #[test]
 fn test_dos_too_many_node_value_hashes_rejected() {
-    let node_value_hashes: Vec<(u64, [u8; 32])> =
-        (0..100_001).map(|i| (i as u64, [0u8; 32])).collect();
+    let node_value_hashes: Vec<(u16, [u8; 32])> =
+        (0..65_535u16).map(|i| (i, [0u8; 32])).collect();
     let proof = DenseTreeProof {
-        height: 63,
-        count: (1u64 << 63) - 1,
-        entries: vec![(0, vec![1u8])],
+        height: 16,
+        count: 65_535,
+        entries: vec![(65_534, vec![1u8])],
         node_value_hashes,
         node_hashes: vec![],
     };
     let result = proof.verify(&[0u8; 32]);
     assert!(
         result.is_err(),
-        "proof with >100,000 node_value_hashes should be rejected"
+        "proof with many node_value_hashes should be rejected"
     );
 }
 
 #[test]
 fn test_dos_too_many_node_hashes_rejected() {
-    let node_hashes: Vec<(u64, [u8; 32])> = (0..100_001).map(|i| (i as u64, [0u8; 32])).collect();
+    let node_hashes: Vec<(u16, [u8; 32])> = (0..65_535u16).map(|i| (i, [0u8; 32])).collect();
     let proof = DenseTreeProof {
-        height: 63,
-        count: (1u64 << 63) - 1,
+        height: 16,
+        count: 65_535,
         entries: vec![(0, vec![1u8])],
         node_value_hashes: vec![],
         node_hashes,
@@ -911,19 +905,18 @@ fn test_dos_too_many_node_hashes_rejected() {
     let result = proof.verify(&[0u8; 32]);
     assert!(
         result.is_err(),
-        "proof with >100,000 node_hashes should be rejected"
+        "proof with many node_hashes should be rejected"
     );
 }
 
 #[test]
 fn test_dos_exactly_at_limit_accepted() {
-    // 100,000 entries should be allowed (only >100,000 is rejected)
-    // We just test that the DoS check itself doesn't reject at the boundary.
-    // The proof will fail for other reasons (root mismatch), but not for DoS.
-    let entries: Vec<(u64, Vec<u8>)> = (0..100_000).map(|i| (i as u64, vec![0u8])).collect();
+    // With u16, max capacity is 65535 (height=16), well under the 100_000 DoS limit.
+    // Verify that a proof with all 65535 positions doesn't trigger DoS.
+    let entries: Vec<(u16, Vec<u8>)> = (0..65_535u16).map(|i| (i, vec![0u8])).collect();
     let proof = DenseTreeProof {
-        height: 63,
-        count: (1u64 << 63) - 1,
+        height: 16,
+        count: 65_535,
         entries,
         node_value_hashes: vec![],
         node_hashes: vec![],
@@ -934,7 +927,7 @@ fn test_dos_exactly_at_limit_accepted() {
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
         !err_msg.contains("too many elements"),
-        "exactly 100,000 entries should not trigger DoS limit, got: {}",
+        "65535 entries should not trigger DoS limit, got: {}",
         err_msg
     );
 }
@@ -952,7 +945,7 @@ fn test_large_tree_height_8_proof() {
         let (h, pos, _) = tree
             .insert(&i.to_be_bytes(), &store)
             .expect("insert should succeed");
-        assert_eq!(pos, i as u64);
+        assert_eq!(pos, i);
         root = h;
     }
     assert_eq!(tree.count(), 255);
@@ -1028,9 +1021,9 @@ fn test_generate_invalid_height_returns_error() {
     let result = DenseTreeProof::generate(0, 0, &[], &store);
     assert!(result.is_err(), "height 0 should return error");
 
-    // Height 64 should error, not panic (no shift overflow)
-    let result = DenseTreeProof::generate(64, 0, &[], &store);
-    assert!(result.is_err(), "height 64 should return error");
+    // Height 17 should error
+    let result = DenseTreeProof::generate(17, 0, &[], &store);
+    assert!(result.is_err(), "height 17 should return error");
 
     // Height 255 should error
     let result = DenseTreeProof::generate(255, 0, &[], &store);

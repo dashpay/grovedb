@@ -1019,7 +1019,9 @@ impl GroveDb {
                 ) = element
                 {
                     let dense_root = custom_root_override.unwrap_or(existing_dense_root);
-                    let count = custom_count_override.unwrap_or(existing_count);
+                    let count = custom_count_override
+                        .map(|c| c as u16)
+                        .unwrap_or(existing_count);
                     let tree = Element::new_dense_tree(dense_root, count, existing_height, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
