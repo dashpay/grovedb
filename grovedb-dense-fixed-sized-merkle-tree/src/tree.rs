@@ -207,19 +207,20 @@ impl DenseFixedSizedMerkleTree {
             return Ok((hash, 1));
         }
 
-        // Internal node: hash = blake3(0x01 || value || H(left) || H(right))
+        // Internal node: hash = blake3(0x01 || H(value) || H(left) || H(right))
         let left_child = 2 * position + 1;
         let right_child = 2 * position + 2;
         let (left_hash, left_calls) = self.hash_node(left_child, store)?;
         let (right_hash, right_calls) = self.hash_node(right_child, store)?;
 
+        let value_hash = blake3::hash(&value);
         let mut hasher = blake3::Hasher::new();
         hasher.update(&[INTERNAL_DOMAIN_TAG]);
-        hasher.update(&value);
+        hasher.update(value_hash.as_bytes());
         hasher.update(&left_hash);
         hasher.update(&right_hash);
         let hash = *hasher.finalize().as_bytes();
 
-        Ok((hash, 1 + left_calls + right_calls))
+        Ok((hash, 2 + left_calls + right_calls))
     }
 }

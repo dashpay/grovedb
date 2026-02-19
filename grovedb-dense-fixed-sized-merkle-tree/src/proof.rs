@@ -3,9 +3,9 @@
 //! A `DenseTreeProof` proves that specific positions hold specific values,
 //! authenticated against the tree's root hash.
 //!
-//! Because internal nodes hash their OWN value (not just child hashes), the
-//! auth path must include ancestor values in addition to sibling subtree
-//! hashes.
+//! Internal nodes hash `blake3(0x01 || H(value) || H(left) || H(right))`,
+//! so ancestor nodes on the auth path only need their value *hash* (not the
+//! full value), keeping proofs compact.
 
 use std::collections::BTreeSet;
 
@@ -28,8 +28,10 @@ pub struct DenseTreeProof {
     pub(crate) count: u64,
     /// The proved (position, value) pairs.
     pub(crate) entries: Vec<(u64, Vec<u8>)>,
-    /// Ancestor node values on the auth path that are NOT proved entries.
-    pub(crate) node_values: Vec<(u64, Vec<u8>)>,
+    /// Hashes of ancestor node values on the auth path that are NOT proved
+    /// entries. Only the 32-byte hash is needed because internal nodes use
+    /// `H(value)` in their hash computation.
+    pub(crate) node_value_hashes: Vec<(u64, [u8; 32])>,
     /// Precomputed subtree hashes for sibling nodes not in the expanded set.
     pub(crate) node_hashes: Vec<(u64, [u8; 32])>,
 }
@@ -62,14 +64,14 @@ impl DenseTreeProof {
         &self.entries
     }
 
-    /// Ancestor node values on the auth path.
-    pub fn node_values(&self) -> &[(u64, Vec<u8>)] {
-        &self.node_values
+    /// Ancestor node value hashes on the auth path.
+    pub fn node_value_hashes(&self) -> &[(u64, [u8; 32])] {
+        &self.node_value_hashes
     }
 
-    /// Number of ancestor node values.
-    pub fn node_values_len(&self) -> usize {
-        self.node_values.len()
+    /// Number of ancestor node value hashes.
+    pub fn node_value_hashes_len(&self) -> usize {
+        self.node_value_hashes.len()
     }
 
     /// Precomputed subtree hashes for sibling nodes.
@@ -118,9 +120,9 @@ impl DenseTreeProof {
             }
         }
 
-        // Collect entries, node_values, node_hashes
+        // Collect entries, node_value_hashes, node_hashes
         let mut entries: Vec<(u64, Vec<u8>)> = Vec::new();
-        let mut node_values: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut node_value_hashes: Vec<(u64, [u8; 32])> = Vec::new();
         let mut node_hashes: Vec<(u64, [u8; 32])> = Vec::new();
 
         // Use from_state to get a tree object for hash_position
@@ -138,7 +140,9 @@ impl DenseTreeProof {
             if proved_set.contains(&pos) {
                 entries.push((pos, value));
             } else {
-                node_values.push((pos, value));
+                // Ancestor node: only need the hash of the value
+                let value_hash = *blake3::hash(&value).as_bytes();
+                node_value_hashes.push((pos, value_hash));
             }
 
             // For each child of this position that is NOT in the expanded set,
@@ -165,7 +169,7 @@ impl DenseTreeProof {
             height,
             count,
             entries,
-            node_values,
+            node_value_hashes,
             node_hashes,
         })
     }

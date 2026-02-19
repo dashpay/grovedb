@@ -464,11 +464,11 @@ fn decode_dense_proof(bytes: &[u8]) -> String {
     match DenseTreeProof::decode_from_slice(bytes) {
         Ok(proof) => {
             let mut s = format!(
-                "\n    height: {}, count: {}, entries: {}, node_values: {}, node_hashes: {}",
+                "\n    height: {}, count: {}, entries: {}, node_value_hashes: {}, node_hashes: {}",
                 proof.height(),
                 proof.count(),
                 proof.entries_len(),
-                proof.node_values_len(),
+                proof.node_value_hashes_len(),
                 proof.node_hashes_len(),
             );
             for (i, (pos, value)) in proof.entries().iter().enumerate() {
@@ -479,12 +479,12 @@ fn decode_dense_proof(bytes: &[u8]) -> String {
                     hex_to_ascii(value),
                 ));
             }
-            for (i, (pos, value)) in proof.node_values().iter().enumerate() {
+            for (i, (pos, hash)) in proof.node_value_hashes().iter().enumerate() {
                 s.push_str(&format!(
-                    "\n    node[{}]: pos={}, value={}",
+                    "\n    value_hash[{}]: pos={}, HASH[{}]",
                     i,
                     pos,
-                    hex_to_ascii(value),
+                    hex::encode(hash),
                 ));
             }
             for (i, (pos, hash)) in proof.node_hashes().iter().enumerate() {

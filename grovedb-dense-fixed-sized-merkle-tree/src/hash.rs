@@ -4,7 +4,7 @@ use crate::DenseMerkleError;
 pub(crate) const LEAF_DOMAIN_TAG: u8 = 0x00;
 
 /// Domain separation tag for internal node hashing:
-/// `blake3(0x01 || value || H(left) || H(right))`.
+/// `blake3(0x01 || H(value) || H(left) || H(right))`.
 pub(crate) const INTERNAL_DOMAIN_TAG: u8 = 0x01;
 
 /// Merge two 32-byte hashes by concatenating and hashing with Blake3.

@@ -183,7 +183,7 @@ fn test_sequential_fill_height_2() {
     assert_eq!(tree.count(), 3);
 
     // Verify structure: root=0 has children at 1 and 2
-    // Root hash = blake3(0x01 || root_val || H(left) || H(right))
+    // Root hash = blake3(0x01 || H(root_val) || H(left) || H(right))
     // H(left) = blake3(0x00 || left_val), H(right) = blake3(0x00 || right_val)
     // (both leaves)
     let h_left = {
@@ -198,10 +198,11 @@ fn test_sequential_fill_height_2() {
         h.update(b"right_val");
         *h.finalize().as_bytes()
     };
+    let h_root_val = *blake3::hash(b"root_val").as_bytes();
     let expected = {
         let mut h = blake3::Hasher::new();
         h.update(&[0x01]);
-        h.update(b"root_val");
+        h.update(&h_root_val);
         h.update(&h_left);
         h.update(&h_right);
         *h.finalize().as_bytes()
@@ -310,7 +311,7 @@ fn test_vuln1_node_hashes_root_bypass_rejected() {
         height: 3,
         count: 7,
         entries: vec![(4, b"FORGED".to_vec())],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![(0, real_root)],
     };
 
@@ -332,7 +333,7 @@ fn test_vuln1_node_hashes_ancestor_bypass_rejected() {
         height: 3,
         count: 7,
         entries: vec![(4, b"FORGED".to_vec())],
-        node_values: vec![(0, vec![0u8])],
+        node_value_hashes: vec![(0, *blake3::hash(&[0u8]).as_bytes())],
         node_hashes: vec![(1, [0xAA; 32]), (2, [0xBB; 32])],
     };
 
@@ -395,22 +396,22 @@ fn test_vuln3_duplicate_entries_rejected() {
 }
 
 #[test]
-fn test_vuln3_duplicate_node_values_rejected() {
+fn test_vuln3_duplicate_node_value_hashes_rejected() {
     let (store, root) = make_full_h3_tree();
 
     let mut proof = DenseTreeProof::generate(3, 7, &[4], &store).expect("generate should succeed");
 
-    // Inject duplicate in node_values
-    if let Some(first) = proof.node_values.first().cloned() {
-        proof.node_values.push(first);
+    // Inject duplicate in node_value_hashes
+    if let Some(first) = proof.node_value_hashes.first().cloned() {
+        proof.node_value_hashes.push(first);
     }
 
     let result = proof.verify(&root);
-    // Should fail if there are duplicate node_values
-    if proof.node_values.len() > 1 {
+    // Should fail if there are duplicate node_value_hashes
+    if proof.node_value_hashes.len() > 1 {
         assert!(
             result.is_err(),
-            "proof with duplicate node_values should be rejected"
+            "proof with duplicate node_value_hashes should be rejected"
         );
     }
 }
@@ -421,7 +422,7 @@ fn test_vuln4_height_overflow_rejected() {
         height: 64,
         count: 1,
         entries: vec![(0, vec![1, 2, 3])],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let fake_root = [0u8; 32];
@@ -435,7 +436,7 @@ fn test_vuln4_height_zero_rejected() {
         height: 0,
         count: 0,
         entries: vec![],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let zero_root = [0u8; 32];
@@ -450,7 +451,7 @@ fn test_vuln4_decode_invalid_height_rejected() {
         height: 64,
         count: 0,
         entries: vec![],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let bytes = proof
@@ -461,18 +462,20 @@ fn test_vuln4_decode_invalid_height_rejected() {
 }
 
 #[test]
-fn test_vuln6_overlapping_entries_and_node_values_rejected() {
+fn test_vuln6_overlapping_entries_and_node_value_hashes_rejected() {
     let (store, root) = make_full_h3_tree();
 
     let mut proof = DenseTreeProof::generate(3, 7, &[4], &store).expect("generate should succeed");
 
-    // Put position 4 in both entries and node_values
-    proof.node_values.push((4, vec![4u8]));
+    // Put position 4 in both entries and node_value_hashes
+    proof
+        .node_value_hashes
+        .push((4, *blake3::hash(&[4u8]).as_bytes()));
 
     let result = proof.verify(&root);
     assert!(
         result.is_err(),
-        "proof with overlapping entries and node_values should be rejected"
+        "proof with overlapping entries and node_value_hashes should be rejected"
     );
 }
 
@@ -607,17 +610,17 @@ fn test_vuln3_duplicate_node_hashes_rejected() {
 }
 
 #[test]
-fn test_vuln6_overlapping_node_values_and_node_hashes_rejected() {
+fn test_vuln6_overlapping_node_value_hashes_and_node_hashes_rejected() {
     let (store, root) = make_full_h3_tree();
     let mut proof = DenseTreeProof::generate(3, 7, &[4], &store).expect("generate should succeed");
 
-    // Take a position from node_values and add it to node_hashes
-    if let Some((pos, _)) = proof.node_values.first().cloned() {
+    // Take a position from node_value_hashes and add it to node_hashes
+    if let Some((pos, _)) = proof.node_value_hashes.first().cloned() {
         proof.node_hashes.push((pos, [0xCC; 32]));
         let result = proof.verify(&root);
         assert!(
             result.is_err(),
-            "proof with overlapping node_values and node_hashes should be rejected"
+            "proof with overlapping node_value_hashes and node_hashes should be rejected"
         );
     }
 }
@@ -628,7 +631,7 @@ fn test_count_exceeds_capacity_rejected_in_verify() {
         height: 3,
         count: 1000, // capacity is 7 for height=3
         entries: vec![(0, vec![1, 2, 3])],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let result = proof.verify(&[0u8; 32]);
@@ -645,7 +648,7 @@ fn test_count_exceeds_capacity_rejected_in_decode() {
         height: 3,
         count: 100,
         entries: vec![],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let bytes = proof.encode_to_vec().expect("encoding should succeed");
@@ -701,19 +704,19 @@ fn test_proof_verify_all_zero_root() {
 }
 
 #[test]
-fn test_incomplete_proof_missing_node_value() {
-    // Manually construct a proof missing a required node_value
+fn test_incomplete_proof_missing_node_value_hash() {
+    // Manually construct a proof missing a required node_value_hash
     let proof = DenseTreeProof {
         height: 3,
         count: 7,
         entries: vec![(4, vec![4u8])],
-        node_values: vec![], // missing ancestors 0 and 1
+        node_value_hashes: vec![], // missing ancestors 0 and 1
         node_hashes: vec![],
     };
     let result = proof.verify(&[0u8; 32]);
     assert!(
         result.is_err(),
-        "proof missing node_values for ancestors should fail"
+        "proof missing node_value_hashes for ancestors should fail"
     );
 }
 
@@ -843,7 +846,7 @@ fn test_height_and_count_accessor() {
         height: 5,
         count: 10,
         entries: vec![],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let (h, c) = proof.height_and_count();
@@ -861,7 +864,7 @@ fn test_dos_too_many_entries_rejected() {
         height: 63,
         count: (1u64 << 63) - 1,
         entries,
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let result = proof.verify(&[0u8; 32]);
@@ -878,19 +881,20 @@ fn test_dos_too_many_entries_rejected() {
 }
 
 #[test]
-fn test_dos_too_many_node_values_rejected() {
-    let node_values: Vec<(u64, Vec<u8>)> = (0..100_001).map(|i| (i as u64, vec![0u8])).collect();
+fn test_dos_too_many_node_value_hashes_rejected() {
+    let node_value_hashes: Vec<(u64, [u8; 32])> =
+        (0..100_001).map(|i| (i as u64, [0u8; 32])).collect();
     let proof = DenseTreeProof {
         height: 63,
         count: (1u64 << 63) - 1,
         entries: vec![(0, vec![1u8])],
-        node_values,
+        node_value_hashes,
         node_hashes: vec![],
     };
     let result = proof.verify(&[0u8; 32]);
     assert!(
         result.is_err(),
-        "proof with >100,000 node_values should be rejected"
+        "proof with >100,000 node_value_hashes should be rejected"
     );
 }
 
@@ -901,7 +905,7 @@ fn test_dos_too_many_node_hashes_rejected() {
         height: 63,
         count: (1u64 << 63) - 1,
         entries: vec![(0, vec![1u8])],
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes,
     };
     let result = proof.verify(&[0u8; 32]);
@@ -921,7 +925,7 @@ fn test_dos_exactly_at_limit_accepted() {
         height: 63,
         count: (1u64 << 63) - 1,
         entries,
-        node_values: vec![],
+        node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let result = proof.verify(&[0u8; 32]);
@@ -993,7 +997,7 @@ fn test_large_tree_multiple_positions_proof() {
 
 #[test]
 fn test_proof_complex_with_all_three_fields() {
-    // Generate a proof that has entries, node_values, and node_hashes
+    // Generate a proof that has entries, node_value_hashes, and node_hashes
     let (store, root) = make_full_h3_tree();
 
     // Prove position 4 (leaf): ancestors are 1 and 0
@@ -1002,8 +1006,8 @@ fn test_proof_complex_with_all_three_fields() {
     // Verify the proof has all three field types populated
     assert!(!proof.entries.is_empty(), "proof should have entries");
     assert!(
-        !proof.node_values.is_empty(),
-        "proof should have node_values (ancestor values)"
+        !proof.node_value_hashes.is_empty(),
+        "proof should have node_value_hashes (ancestor value hashes)"
     );
     assert!(
         !proof.node_hashes.is_empty(),
