@@ -9,6 +9,6 @@ homepage = "https://www.grovedb.org"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
-blake3 = "1"
-bincode = { version = "2.0.0-rc.3", features = ["derive"] }
+blake3 = "1.8.1"
+bincode = { version = "2.0.1", features = ["derive"] }
 thiserror = "2.0"

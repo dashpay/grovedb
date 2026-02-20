@@ -876,8 +876,7 @@ fn test_dos_too_many_entries_rejected() {
 
 #[test]
 fn test_dos_too_many_node_value_hashes_rejected() {
-    let node_value_hashes: Vec<(u16, [u8; 32])> =
-        (0..65_535u16).map(|i| (i, [0u8; 32])).collect();
+    let node_value_hashes: Vec<(u16, [u8; 32])> = (0..65_535u16).map(|i| (i, [0u8; 32])).collect();
     let proof = DenseTreeProof {
         height: 16,
         count: 65_535,
@@ -911,8 +910,8 @@ fn test_dos_too_many_node_hashes_rejected() {
 
 #[test]
 fn test_dos_exactly_at_limit_accepted() {
-    // With u16, max capacity is 65535 (height=16), well under the 100_000 DoS limit.
-    // Verify that a proof with all 65535 positions doesn't trigger DoS.
+    // With u16, max capacity is 65535 (height=16), well under the 100_000 DoS
+    // limit. Verify that a proof with all 65535 positions doesn't trigger DoS.
     let entries: Vec<(u16, Vec<u8>)> = (0..65_535u16).map(|i| (i, vec![0u8])).collect();
     let proof = DenseTreeProof {
         height: 16,

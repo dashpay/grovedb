@@ -61,7 +61,7 @@ impl GroveDb {
 
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
@@ -110,7 +110,7 @@ impl GroveDb {
 
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
@@ -141,7 +141,7 @@ impl GroveDb {
         );
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
@@ -1520,7 +1520,7 @@ impl GroveDb {
     ) -> Result<(CryptoHash, GroveTrunkQueryResult), Error> {
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;

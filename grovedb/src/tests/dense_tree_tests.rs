@@ -1139,8 +1139,7 @@ fn test_dense_tree_v1_proof_range_query() {
 
     // Build a query for range [4..=8]
     let mut inner_query = Query::new();
-    inner_query
-        .insert_range_inclusive(4u16.to_be_bytes().to_vec()..=8u16.to_be_bytes().to_vec());
+    inner_query.insert_range_inclusive(4u16.to_be_bytes().to_vec()..=8u16.to_be_bytes().to_vec());
 
     let path_query = PathQuery {
         path: vec![],
@@ -1199,9 +1198,7 @@ fn test_dense_tree_v1_proof_range_query() {
             i,
             expected_pos
         );
-        let element = element
-            .as_ref()
-            .expect("element should be Some");
+        let element = element.as_ref().expect("element should be Some");
         match element {
             Element::Item(data, _) => {
                 assert_eq!(
@@ -1448,8 +1445,7 @@ fn test_dense_tree_v1_proof_nested_in_tree() {
 
     // Query range [2..=5] inside the nested dense tree
     let mut inner_query = Query::new();
-    inner_query
-        .insert_range_inclusive(2u16.to_be_bytes().to_vec()..=5u16.to_be_bytes().to_vec());
+    inner_query.insert_range_inclusive(2u16.to_be_bytes().to_vec()..=5u16.to_be_bytes().to_vec());
 
     let path_query = PathQuery {
         path: vec![b"parent".to_vec()],
@@ -1537,8 +1533,7 @@ fn test_dense_tree_v1_proof_with_limit() {
     }
 
     let mut inner_query = Query::new();
-    inner_query
-        .insert_range_inclusive(0u16.to_be_bytes().to_vec()..=9u16.to_be_bytes().to_vec());
+    inner_query.insert_range_inclusive(0u16.to_be_bytes().to_vec()..=9u16.to_be_bytes().to_vec());
 
     let path_query = PathQuery {
         path: vec![],

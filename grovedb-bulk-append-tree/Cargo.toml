@@ -13,7 +13,7 @@ documentation = "https://docs.rs/grovedb"
 [dependencies]
 grovedb-mmr = { version = "4.0.0", path = "../grovedb-mmr" }
 grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree" }
-blake3 = "1"
+blake3 = "1.8.1"
 bincode = { version = "2.0.1", features = ["derive"] }
 hex = "0.4"
 thiserror = "2.0"
