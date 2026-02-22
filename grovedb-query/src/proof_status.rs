@@ -8,7 +8,7 @@ pub struct ProofStatus {
 impl ProofStatus {
     /// Returns `true` if the limit has been reached (equals zero).
     pub fn hit_limit(&self) -> bool {
-        self.limit.is_some() && self.limit.unwrap() == 0
+        self.limit == Some(0)
     }
 }
 

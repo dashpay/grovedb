@@ -846,11 +846,11 @@ impl Terminated for Op {}
 impl Op {
     fn encode_into_with_error<W: std::io::Write>(&self, dest: &mut W) -> Result<(), Error> {
         Encode::encode_into(self, dest).map_err(|e| match e {
-            EdError::UnexpectedByte(byte) => Error::InvalidProofError(format!(
-                "failed to encode an proofs::Op structure (UnexpectedByte: {byte})"
+            EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
+                "failed to encode a proofs::Op structure (UnexpectedByte: {byte})"
             )),
-            EdError::IOError(error) => Error::InvalidProofError(format!(
-                "failed to encode an proofs::Op structure ({error})"
+            EdError::IOError(error) => Error::ProofCreationError(format!(
+                "failed to encode a proofs::Op structure ({error})"
             )),
         })
     }

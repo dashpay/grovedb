@@ -264,7 +264,7 @@ impl Decode for TreeFeatureType {
                 let encoded_sum: i64 = input.read_varint()?;
                 Ok(ProvableCountedSummedMerkNode(encoded_count, encoded_sum))
             }
-            _ => Err(ed::Error::UnexpectedByte(55)),
+            [b] => Err(ed::Error::UnexpectedByte(b)),
         }
     }
 }

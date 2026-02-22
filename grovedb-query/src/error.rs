@@ -18,6 +18,10 @@ pub enum Error {
     #[error("invalid operation error {0}")]
     InvalidOperation(&'static str),
 
+    /// Proof creation error
+    #[error("proof creation error {0}")]
+    ProofCreationError(String),
+
     /// Invalid proof error
     #[error("invalid proof error {0}")]
     InvalidProofError(String),

@@ -67,7 +67,10 @@ impl<Context> Decode<Context> for Query {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        let _version = u8::decode(decoder)?;
+        let version = u8::decode(decoder)?;
+        if version != 1 {
+            return Err(DecodeError::Other("unsupported Query encoding version"));
+        }
         // Decode the items vector
         let items = Vec::<QueryItem>::decode(decoder)?;
 
@@ -88,10 +91,8 @@ impl<Context> Decode<Context> for Query {
             None
         };
 
-        // Decode the left_to_right boolean
         let left_to_right = bool::decode(decoder)?;
 
-        // Decode the left_to_right boolean
         let add_parent_tree_on_subquery = bool::decode(decoder)?;
 
         Ok(Query {
@@ -166,6 +167,11 @@ impl fmt::Display for Query {
             writeln!(f, "  }},")?;
         }
         writeln!(f, "  left_to_right: {},", self.left_to_right)?;
+        writeln!(
+            f,
+            "  add_parent_tree_on_subquery: {},",
+            self.add_parent_tree_on_subquery
+        )?;
         write!(f, "}}")
     }
 }
