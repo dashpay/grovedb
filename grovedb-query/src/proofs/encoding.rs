@@ -1,29 +1,20 @@
 //! Proofs encoding
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 use std::io::{Read, Write};
 
-#[cfg(feature = "minimal")]
-use ed::Terminated;
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use ed::{Decode, Encode, Error as EdError};
+use ed::{Decode, Encode, Error as EdError, Terminated};
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 use super::{Node, Op};
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::{error::Error, tree::HASH_LENGTH, TreeFeatureType};
-
-// Large value opcodes use u32 for value length (values >= 64KB)
-// Push large variants: 0x20-0x25
-// PushInverted large variants: 0x28-0x2d
+use crate::{
+    error::Error,
+    proofs::{TreeFeatureType, HASH_LENGTH},
+};
 
 /// Maximum allowed value length for large value variants (64MB).
 /// This prevents DoS attacks via malicious proofs specifying unreasonably large
 /// allocations.
-#[cfg(any(feature = "minimal", feature = "verify"))]
 const MAX_VALUE_LEN: u32 = 64 * 1024 * 1024;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
         match self {
@@ -297,9 +288,6 @@ impl Encode for Op {
     }
 
     fn encoding_length(&self) -> ed::Result<usize> {
-        // Header size: 1 (opcode) + 1 (key_len) + 2 (value_len u16) = 4 for small
-        // values Header size: 1 (opcode) + 1 (key_len) + 4 (value_len u32) = 6
-        // for large values
         Ok(match self {
             Op::Push(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::Push(Node::KVHash(_)) => 1 + HASH_LENGTH,
@@ -373,7 +361,6 @@ impl Encode for Op {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Decode for Op {
     fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
         let variant: u8 = Decode::decode(&mut input)?;
@@ -849,65 +836,59 @@ impl Decode for Op {
             0x11 => Self::Child,
             0x12 => Self::ParentInverted,
             0x13 => Self::ChildInverted,
-            // TODO: Remove dependency on ed and throw an internal error
             _ => return Err(ed::Error::UnexpectedByte(variant)),
         })
     }
 }
 
-#[cfg(feature = "minimal")]
 impl Terminated for Op {}
 
 impl Op {
-    #[cfg(feature = "minimal")]
-    fn encode_into<W: Write>(&self, dest: &mut W) -> Result<(), Error> {
+    fn encode_into_with_error<W: std::io::Write>(&self, dest: &mut W) -> Result<(), Error> {
         Encode::encode_into(self, dest).map_err(|e| match e {
             EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
-                "failed to encode an proofs::Op structure (UnexpectedByte: {byte})"
+                "failed to encode a proofs::Op structure (UnexpectedByte: {byte})"
             )),
             EdError::IOError(error) => Error::ProofCreationError(format!(
-                "failed to encode an proofs::Op structure ({error})"
+                "failed to encode a proofs::Op structure ({error})"
             )),
         })
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
-    fn encoding_length(&self) -> usize {
-        Encode::encoding_length(self).unwrap()
+    /// Get the encoding length of this Op
+    pub fn encoding_length(&self) -> usize {
+        Encode::encoding_length(self).expect("encoding length should not fail")
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
-    /// Decode
+    /// Decode an Op from bytes
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         Decode::decode(bytes).map_err(|e| match e {
-            EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
+            EdError::UnexpectedByte(byte) => Error::InvalidProofError(format!(
                 "failed to decode an proofs::Op structure (UnexpectedByte: {byte})"
             )),
-            EdError::IOError(error) => Error::ProofCreationError(format!(
+            EdError::IOError(error) => Error::InvalidProofError(format!(
                 "failed to decode an proofs::Op structure ({error})"
             )),
         })
     }
 }
 
-#[cfg(feature = "minimal")]
-/// Encode into
+/// Encode a sequence of Ops into a byte vector
 pub fn encode_into<'a, T: Iterator<Item = &'a Op>>(ops: T, output: &mut Vec<u8>) {
     for op in ops {
-        op.encode_into(output).unwrap();
+        op.encode_into_with_error(output)
+            .expect("encoding should not fail");
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-/// Decoder
+/// Decoder iterates over proof bytes, yielding Op values
 pub struct Decoder<'a> {
     offset: usize,
     bytes: &'a [u8],
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl<'a> Decoder<'a> {
-    /// New decoder
+    /// Create a new Decoder from proof bytes
     pub const fn new(proof_bytes: &'a [u8]) -> Self {
         Decoder {
             offset: 0,
@@ -916,7 +897,6 @@ impl<'a> Decoder<'a> {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Iterator for Decoder<'_> {
     type Item = Result<Op, Error>;
 
@@ -934,14 +914,14 @@ impl Iterator for Decoder<'_> {
     }
 }
 
-#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
-    use super::super::{Node, Op};
-    use crate::{
-        proofs::Decoder,
-        tree::HASH_LENGTH,
+    use ed::Encode;
+
+    use super::{Decoder, Node, Op};
+    use crate::proofs::{
         TreeFeatureType::{BasicMerkNode, SummedMerkNode},
+        HASH_LENGTH,
     };
 
     #[test]
@@ -950,7 +930,8 @@ mod test {
         assert_eq!(op.encoding_length(), 1 + HASH_LENGTH);
 
         let mut bytes = vec![];
-        op.encode_into(&mut bytes).unwrap();
+        op.encode_into_with_error(&mut bytes)
+            .expect("encode failed");
         assert_eq!(
             bytes,
             vec![
@@ -967,7 +948,8 @@ mod test {
         assert_eq!(op.encoding_length(), 1 + HASH_LENGTH);
 
         let mut bytes = vec![];
-        op.encode_into(&mut bytes).unwrap();
+        op.encode_into_with_error(&mut bytes)
+            .expect("encode failed");
         assert_eq!(
             bytes,
             vec![
@@ -1001,7 +983,8 @@ mod test {
         assert_eq!(op.encoding_length(), 10);
 
         let mut bytes = vec![];
-        op.encode_into(&mut bytes).unwrap();
+        op.encode_into_with_error(&mut bytes)
+            .expect("encode failed");
         assert_eq!(bytes, vec![0x03, 3, 1, 2, 3, 0, 3, 4, 5, 6]);
     }
 
@@ -1214,7 +1197,8 @@ mod test {
         assert_eq!(op.encoding_length(), 1);
 
         let mut bytes = vec![];
-        op.encode_into(&mut bytes).unwrap();
+        op.encode_into_with_error(&mut bytes)
+            .expect("encode failed");
         assert_eq!(bytes, vec![0x10]);
     }
 
@@ -1224,7 +1208,8 @@ mod test {
         assert_eq!(op.encoding_length(), 1);
 
         let mut bytes = vec![];
-        op.encode_into(&mut bytes).unwrap();
+        op.encode_into_with_error(&mut bytes)
+            .expect("encode failed");
         assert_eq!(bytes, vec![0x11]);
     }
 
@@ -1631,5 +1616,55 @@ mod test {
 
         let decoded = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_push_kvvalue_hash_feature_type() {
+        let op = Op::Push(Node::KVValueHashFeatureType(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            BasicMerkNode,
+        ));
+        assert_eq!(op.encoding_length(), 43);
+
+        let mut bytes = vec![];
+        op.encode_into_with_error(&mut bytes)
+            .expect("encode failed");
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+
+        let op2 = Op::Push(Node::KVValueHashFeatureType(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            SummedMerkNode(6),
+        ));
+        let mut bytes2 = vec![];
+        op2.encode_into_with_error(&mut bytes2)
+            .expect("encode failed");
+        let decoded2 = Op::decode(&bytes2[..]).expect("decode failed");
+        assert_eq!(decoded2, op2);
+    }
+
+    #[test]
+    fn decoder_multiple_ops() {
+        let ops = vec![
+            Op::Push(Node::KVCount(vec![1, 2, 3], vec![4, 5, 6], 42)),
+            Op::Push(Node::KVHashCount([123; HASH_LENGTH], 100)),
+            Op::Child,
+            Op::Parent,
+        ];
+
+        let mut encoded = vec![];
+        for op in &ops {
+            op.encode_into_with_error(&mut encoded)
+                .expect("encode failed");
+        }
+
+        let decoder = Decoder::new(&encoded);
+        let decoded_ops: Result<Vec<Op>, _> = decoder.collect();
+        assert_eq!(decoded_ops.expect("decode failed"), ops);
     }
 }

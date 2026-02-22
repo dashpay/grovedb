@@ -4,13 +4,15 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use crate::proofs::query::query_item::{
+use crate::query_item::{
     intersect::RangeSetItem::{
         ExclusiveEnd, ExclusiveStart, Inclusive, UnboundedEnd, UnboundedStart,
     },
     QueryItem,
 };
 
+/// Result of intersecting two `RangeSet`s, splitting them into the shared
+/// region and up to four leftover regions.
 pub struct RangeSetIntersection {
     in_both: Option<RangeSet>,
     ours_left: Option<RangeSet>,
@@ -19,17 +21,24 @@ pub struct RangeSetIntersection {
     theirs_right: Option<RangeSet>,
 }
 
-/// Concise query item representation
+/// An owned range defined by a start and end [`RangeSetItem`], used as a
+/// normalized representation of any [`QueryItem`] variant.
 #[derive(Clone, Debug)]
 pub struct RangeSet {
+    /// The start boundary of the range.
     pub start: RangeSetItem,
+    /// The end boundary of the range.
     pub end: RangeSetItem,
 }
 
-/// Concise query item representation
+/// A borrowed range defined by a start and end
+/// [`RangeSetSimpleItemBorrowed`], avoiding allocations during proof
+/// generation.
 #[derive(Clone, Copy, Debug)]
 pub struct RangeSetBorrowed<'a> {
+    /// The start boundary of the range.
     pub start: RangeSetSimpleItemBorrowed<'a>,
+    /// The end boundary of the range.
     pub end: RangeSetSimpleItemBorrowed<'a>,
 }
 
@@ -50,9 +59,12 @@ pub enum Direction {
     RightOf,
 }
 
+/// Result of checking whether a key falls within a range set's boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyContainmentResult {
+    /// `true` if the key is inside the range (satisfies both bounds).
     pub included: bool,
+    /// `true` if the key is exactly on an exclusive boundary.
     pub on_bounds_not_included: bool,
 }
 
@@ -143,15 +155,23 @@ impl RangeSetBorrowed<'_> {
     }
 }
 
+/// Result of intersecting two ordered sets of query items, partitioned into
+/// shared items and each side's leftovers.
 #[derive(Default)]
 pub struct QueryItemManyIntersectionResult {
+    /// Query items that exist in both sets.
     pub in_both: Option<Vec<QueryItem>>,
+    /// Query items that exist only in the first (ours) set.
     pub ours: Option<Vec<QueryItem>>,
+    /// Query items that exist only in the second (theirs) set.
     pub theirs: Option<Vec<QueryItem>>,
 }
 
+/// The leftover portions of the "theirs" side after an intersection.
 pub struct QueryItemIntersectionResultTheirsLeftovers {
+    /// Portion of theirs to the left of the intersection.
     pub theirs_left: Option<QueryItem>,
+    /// Portion of theirs to the right of the intersection.
     pub theirs_right: Option<QueryItem>,
 }
 
@@ -236,11 +256,18 @@ impl QueryItemManyIntersectionResult {
     }
 }
 
+/// Result of intersecting two query items, split into the shared region and up
+/// to four leftover regions (left/right for each side).
 pub struct QueryItemIntersectionResult {
+    /// The overlapping portion shared by both items, if any.
     pub in_both: Option<QueryItem>,
+    /// Portion of ours to the left of the intersection.
     pub ours_left: Option<QueryItem>,
+    /// Portion of ours to the right of the intersection.
     pub ours_right: Option<QueryItem>,
+    /// Portion of theirs to the left of the intersection.
     pub theirs_left: Option<QueryItem>,
+    /// Portion of theirs to the right of the intersection.
     pub theirs_right: Option<QueryItem>,
 }
 
@@ -261,6 +288,8 @@ impl From<RangeSetIntersection> for QueryItemIntersectionResult {
 }
 
 impl RangeSet {
+    /// Converts this normalized range back into the most specific [`QueryItem`]
+    /// variant.
     // TODO: convert to impl of From/To trait
     pub fn to_query_item(&self) -> QueryItem {
         match (&self.start, &self.end) {
@@ -314,6 +343,8 @@ impl RangeSet {
         }
     }
 
+    /// Computes the intersection of two range sets, returning the shared
+    /// region and any leftover portions for each side.
     pub fn intersect(&self, other: RangeSet) -> RangeSetIntersection {
         // check if the range sets do not overlap
         if self.end < other.start || other.end < self.start {
@@ -396,20 +427,32 @@ impl RangeSet {
     }
 }
 
-/// Represents all possible value types in a range set
+/// Represents a boundary value in a range set (start or end, bounded or
+/// unbounded, inclusive or exclusive).
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum RangeSetItem {
+    /// Unbounded lower bound (negative infinity).
     UnboundedStart,
+    /// Unbounded upper bound (positive infinity).
     UnboundedEnd,
+    /// An inclusive boundary value.
     Inclusive(Vec<u8>),
+    /// An exclusive start boundary (value is excluded, range begins after it).
     ExclusiveStart(Vec<u8>),
+    /// An exclusive end boundary (value is excluded, range ends before it).
     ExclusiveEnd(Vec<u8>),
 }
 
+/// A borrowed boundary value for a range set, used to avoid allocations during
+/// proof generation.
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
 pub enum RangeSetSimpleItemBorrowed<'a> {
+    /// An unbounded boundary (negative or positive infinity depending on
+    /// context).
     Unbounded,
+    /// An inclusive boundary value (borrowed).
     Inclusive(&'a Vec<u8>),
+    /// An exclusive boundary value (borrowed).
     Exclusive(&'a Vec<u8>),
 }
 impl fmt::Display for RangeSetSimpleItemBorrowed<'_> {
@@ -423,6 +466,9 @@ impl fmt::Display for RangeSetSimpleItemBorrowed<'_> {
 }
 
 impl RangeSetItem {
+    /// Flips the inclusivity of this boundary. Inclusive becomes exclusive and
+    /// vice versa. `is_start` determines whether the exclusive result is a
+    /// start or end boundary.
     pub fn invert(&self, is_start: bool) -> RangeSetItem {
         match &self {
             RangeSetItem::Inclusive(v) => {
@@ -440,7 +486,8 @@ impl RangeSetItem {
         }
     }
 
-    /// Given som ordering and two items, this returns the items orders
+    /// Given an ordering and two items, returns them in (smaller, bigger)
+    /// order.
     pub fn order_items<'a>(
         item_one: &'a RangeSetItem,
         item_two: &'a RangeSetItem,
@@ -504,10 +551,14 @@ impl Ord for RangeSetItem {
 }
 
 impl QueryItem {
+    /// Computes the intersection of two query items, returning the shared
+    /// region and any leftover portions.
     pub fn intersect(&self, other: &Self) -> QueryItemIntersectionResult {
         self.to_range_set().intersect(other.to_range_set()).into()
     }
 
+    /// Converts this query item into an owned [`RangeSet`] for intersection
+    /// operations.
     // TODO: convert to impl of From/To trait
     pub fn to_range_set(&self) -> RangeSet {
         match self {
@@ -554,6 +605,8 @@ impl QueryItem {
         }
     }
 
+    /// Converts this query item into a borrowed [`RangeSetBorrowed`] for
+    /// zero-allocation range checks.
     // TODO: convert to impl of From/To trait
     pub fn to_range_set_borrowed(&self) -> Option<RangeSetBorrowed<'_>> {
         match self {
@@ -600,7 +653,8 @@ impl QueryItem {
         }
     }
 
-    /// For this intersection to work ours and theirs must be ordered
+    /// Intersects two ordered sets of query items, returning items in both,
+    /// ours-only, and theirs-only. Both input vectors must be sorted.
     pub fn intersect_many_ordered(
         ours: &mut Vec<Self>,
         theirs: Vec<Self>,
@@ -657,7 +711,7 @@ mod test {
         ops::{Range, RangeInclusive},
     };
 
-    use crate::proofs::query::query_item::{intersect::RangeSetItem, QueryItem};
+    use crate::query_item::{intersect::RangeSetItem, QueryItem};
 
     #[test]
     pub fn test_range_set_query_item_conversion() {

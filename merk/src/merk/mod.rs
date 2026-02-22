@@ -246,43 +246,9 @@ impl MerkType {
     }
 }
 
+// Re-export NodeType from grovedb-query
 #[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NodeType {
-    NormalNode,
-    SumNode,
-    BigSumNode,
-    CountNode,
-    CountSumNode,
-    ProvableCountNode,
-    ProvableCountSumNode,
-}
-
-impl NodeType {
-    pub const fn feature_len(&self) -> u32 {
-        match self {
-            NodeType::NormalNode => 1,
-            NodeType::SumNode => 9,
-            NodeType::BigSumNode => 17,
-            NodeType::CountNode => 9,
-            NodeType::CountSumNode => 17,
-            NodeType::ProvableCountNode => 9,
-            NodeType::ProvableCountSumNode => 17, // count (varint) + sum (varint)
-        }
-    }
-
-    pub const fn cost(&self) -> u32 {
-        match self {
-            NodeType::NormalNode => 0,
-            NodeType::SumNode => 8,
-            NodeType::BigSumNode => 16,
-            NodeType::CountNode => 8,
-            NodeType::CountSumNode => 16,
-            NodeType::ProvableCountNode => 8,
-            NodeType::ProvableCountSumNode => 16, // count (8) + sum (8)
-        }
-    }
-}
+pub use grovedb_query::proofs::NodeType;
 
 /// A Merkle AVL tree providing authenticated key/value storage.
 ///

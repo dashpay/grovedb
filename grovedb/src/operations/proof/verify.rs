@@ -5,7 +5,7 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     proofs::{
         execute,
-        query::{PathKey, VerifyOptions},
+        query::{PathKey, QueryProofVerify, VerifyOptions},
         Decoder, Node, Op, Query,
     },
     tree::{combine_hash, value_hash},

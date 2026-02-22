@@ -185,6 +185,28 @@ impl From<grovedb_element::error::ElementError> for Error {
     }
 }
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+impl From<grovedb_query::error::Error> for Error {
+    fn from(value: grovedb_query::error::Error) -> Self {
+        match value {
+            grovedb_query::error::Error::NotSupported(s) => Error::NotSupported(s),
+            grovedb_query::error::Error::RequestAmountExceeded(s) => {
+                Error::RequestAmountExceeded(s)
+            }
+            grovedb_query::error::Error::CorruptedCodeExecution(s) => {
+                Error::CorruptedCodeExecution(s)
+            }
+            grovedb_query::error::Error::InvalidOperation(s) => Error::InvalidOperation(s),
+            // These variants exist when grovedb-query has verify feature enabled.
+            // Since minimal implies verify, they're always present when this impl is compiled.
+            grovedb_query::error::Error::ProofCreationError(s) => Error::ProofCreationError(s),
+            grovedb_query::error::Error::InvalidProofError(s) => Error::InvalidProofError(s),
+            grovedb_query::error::Error::KeyOrderingError(s) => Error::KeyOrderingError(s),
+            grovedb_query::error::Error::EdError(e) => Error::EdError(e),
+        }
+    }
+}
+
 pub trait MerkErrorExt {
     fn add_context(self, append: impl AsRef<str>) -> Self;
 }
