@@ -16,7 +16,7 @@ fn prepare_mmr(count: u32) -> (u64, MemStore, Vec<u64>) {
     let positions: Vec<u64> = (0u32..count)
         .map(|i| mmr.push(leaf_from_u32(i)).unwrap().expect("push"))
         .collect();
-    let mmr_size = mmr.mmr_size();
+    let mmr_size = mmr.mmr_size;
     mmr.commit().unwrap().expect("write to store");
     (mmr_size, store, positions)
 }

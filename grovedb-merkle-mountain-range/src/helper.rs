@@ -92,9 +92,11 @@ pub fn get_peak_map(mmr_size: u64) -> u64 {
 ///
 /// please note that when the mmr_size is invalid, it will return the peaks of
 /// the last valid mmr. in the below example, the mmr_size is 6, but it's not a
-/// valid mmr, it will return [2, 3].   2     5
-///  / \   /  \
-/// 0   1 3   4
+/// valid mmr (size 4 is the last valid one with 3 leaves), so it will return
+/// [2, 3].
+///   2
+///  / \
+/// 0   1 3
 pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
     if mmr_size == 0 {
         return vec![];

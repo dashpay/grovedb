@@ -23,7 +23,7 @@
 mod error;
 /// MMR helper functions for position arithmetic, storage keys, and cost
 /// calculations.
-pub mod helper;
+pub(crate) mod helper;
 /// In-memory MMR store (requires `mem_store` feature).
 #[cfg(any(test, feature = "mem_store"))]
 pub mod mem_store;
@@ -45,7 +45,7 @@ pub use helper::{
 #[cfg(any(test, feature = "mem_store"))]
 pub use mem_store::MemStore;
 pub use mmr::MMR;
-pub use mmr_store::{MMRStoreReadOps, MMRStoreWriteOps};
+pub use mmr_store::{MMRBatch, MMRStoreReadOps, MMRStoreWriteOps};
 pub use node::{MmrNode, blake3_merge, leaf_hash};
 pub use proof::{MerkleProof, MmrTreeProof};
 #[cfg(feature = "storage")]

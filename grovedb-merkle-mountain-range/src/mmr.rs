@@ -21,8 +21,12 @@ use crate::{
 /// them to the store.
 #[allow(clippy::upper_case_acronyms)]
 pub struct MMR<S> {
-    mmr_size: u64,
-    batch: MMRBatch<S>,
+    /// The current total number of nodes (leaves + internal) in the MMR.
+    pub mmr_size: u64,
+    /// Write-ahead batch buffer. Public so callers (e.g. BulkAppendTree) can
+    /// read uncommitted elements via `batch.element_at_position()` or inspect
+    /// the underlying store via `batch.store()`.
+    pub batch: MMRBatch<S>,
 }
 
 impl<S> MMR<S> {
@@ -38,24 +42,9 @@ impl<S> MMR<S> {
         }
     }
 
-    /// The current total number of nodes (leaves + internal) in the MMR.
-    pub fn mmr_size(&self) -> u64 {
-        self.mmr_size
-    }
-
     /// Returns `true` if the MMR contains no elements.
     pub fn is_empty(&self) -> bool {
         self.mmr_size == 0
-    }
-
-    /// Return a reference to the internal [`MMRBatch`].
-    pub fn batch(&self) -> &MMRBatch<S> {
-        &self.batch
-    }
-
-    /// Return a reference to the underlying store.
-    pub fn store(&self) -> &S {
-        self.batch.store()
     }
 }
 

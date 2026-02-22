@@ -3,7 +3,8 @@ use proptest::prelude::*;
 use rand::{Rng, seq::SliceRandom, thread_rng};
 
 use crate::{
-    Error, MMR, MmrNode, helper::pos_height_in_tree, leaf_index_to_mmr_size, mem_store::MemStore,
+    Error, MMR, MMRStoreReadOps, MmrNode, MmrTreeProof, helper::pos_height_in_tree,
+    leaf_index_to_mmr_size, mem_store::MemStore,
 };
 
 /// Create an MmrNode leaf from an integer (for test convenience).
@@ -174,7 +175,7 @@ fn test_invalid_proof_verification(
         .map(|pos| {
             (
                 *pos,
-                mmr.batch()
+                mmr.batch
                     .element_at_position(*pos)
                     .unwrap()
                     .expect("read")
@@ -194,11 +195,11 @@ fn test_invalid_proof_verification(
     let handrolled_proof: Option<crate::MerkleProof> =
         handrolled_proof_positions.map(|handrolled_proof_positions| {
             crate::MerkleProof::new(
-                mmr.mmr_size(),
+                mmr.mmr_size,
                 handrolled_proof_positions
                     .iter()
                     .map(|pos| {
-                        mmr.batch()
+                        mmr.batch
                             .element_at_position(*pos)
                             .unwrap()
                             .expect("read")
@@ -273,7 +274,7 @@ fn test_batch_cache_hit_returns_nonzero_cost() {
     let pos = mmr.push(leaf).unwrap().expect("push should succeed");
 
     // Before commit, read from the batch (cache hit)
-    let cost_result = mmr.batch().element_at_position(pos);
+    let cost_result = mmr.batch.element_at_position(pos);
     let cost = cost_result.cost;
     let elem = cost_result.value.expect("element should exist");
     assert!(elem.is_some(), "element should be found in batch");
@@ -346,6 +347,43 @@ fn test_get_root_cost_reflects_peak_reads() {
         root_cost.storage_loaded_bytes > 0,
         "get_root should report non-zero loaded bytes"
     );
+}
+
+/// MmrTreeProof generate → verify round-trip for standard leaves.
+#[test]
+fn test_mmr_tree_proof_standard_leaf_verify_succeeds() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+
+    // Push standard leaves — leaf_hash(value) matches the stored hash
+    for i in 0u32..5 {
+        mmr.push(MmrNode::leaf(i.to_le_bytes().to_vec()))
+            .unwrap()
+            .expect("push should succeed");
+    }
+    mmr.commit().unwrap().expect("commit should succeed");
+
+    let mmr_size = mmr.mmr_size;
+    let root = mmr.get_root().unwrap().expect("get root should succeed");
+
+    let get_node = |pos: u64| -> crate::Result<Option<MmrNode>> {
+        (&store)
+            .element_at_position(pos)
+            .value
+            .map_err(|e| crate::Error::StoreError(format!("{}", e)))
+    };
+
+    let proof =
+        MmrTreeProof::generate(mmr_size, &[0, 2, 4], get_node).expect("generate should succeed");
+
+    let verified = proof
+        .verify(&root.hash())
+        .expect("verify should succeed for standard leaves");
+
+    assert_eq!(verified.len(), 3, "should return 3 verified leaves");
+    assert_eq!(verified[0].0, 0, "first leaf index should be 0");
+    assert_eq!(verified[1].0, 2, "second leaf index should be 2");
+    assert_eq!(verified[2].0, 4, "third leaf index should be 4");
 }
 
 prop_compose! {

@@ -61,7 +61,8 @@ impl MmrNode {
     /// Unlike `leaf()` which computes `hash = blake3(0x00 || value)`, this
     /// stores an arbitrary hash alongside the data. Used by BulkAppendTree
     /// where the hash is a dense Merkle root of the chunk entries.
-    pub fn data_leaf(hash: [u8; 32], data: Vec<u8>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn data_leaf(hash: [u8; 32], data: Vec<u8>) -> Self {
         MmrNode {
             hash,
             value: Some(data),

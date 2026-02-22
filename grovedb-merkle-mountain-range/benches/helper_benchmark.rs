@@ -5,7 +5,7 @@ use grovedb_merkle_mountain_range::{leaf_index_to_mmr_size, leaf_index_to_pos};
 use rand::{Rng, thread_rng};
 
 fn bench(c: &mut Criterion) {
-    c.bench_function("left_index_to_pos", |b| {
+    c.bench_function("leaf_index_to_pos", |b| {
         let mut rng = thread_rng();
         b.iter(|| {
             let leaf_index = rng.gen_range(50_000_000_000..70_000_000_000);
@@ -13,7 +13,7 @@ fn bench(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("left_index_to_mmr_size", |b| {
+    c.bench_function("leaf_index_to_mmr_size", |b| {
         let mut rng = thread_rng();
         b.iter(|| {
             let leaf_index = rng.gen_range(50_000_000_000..70_000_000_000);

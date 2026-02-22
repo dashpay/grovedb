@@ -73,16 +73,33 @@ impl MerkleProof {
         new_elem: MmrNode,
         new_mmr_size: u64,
     ) -> Result<MmrNode> {
+        if new_pos >= new_mmr_size {
+            return Err(Error::InvalidInput(format!(
+                "new_pos {} must be less than new_mmr_size {}",
+                new_pos, new_mmr_size
+            )));
+        }
         let pos_height = pos_height_in_tree(new_pos);
         let next_height = pos_height_in_tree(new_pos + 1);
         if next_height > pos_height {
             let mut peaks_hashes =
                 calculate_peaks_hashes(leaves, self.mmr_size, self.proof.iter())?;
             let peaks_pos = get_peaks(new_mmr_size);
-            // reverse touched peaks
-            let mut i = 0;
-            while peaks_pos[i] < new_pos {
-                i += 1
+            let i = peaks_pos
+                .iter()
+                .position(|p| *p >= new_pos)
+                .ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "new_pos {} exceeds all peaks for new_mmr_size {}",
+                        new_pos, new_mmr_size
+                    ))
+                })?;
+            if i > peaks_hashes.len() {
+                return Err(Error::InvalidInput(format!(
+                    "peak index {} out of range for {} peak hashes",
+                    i,
+                    peaks_hashes.len()
+                )));
             }
             peaks_hashes[i..].reverse();
             calculate_root(vec![(new_pos, new_elem)], new_mmr_size, peaks_hashes.iter())
@@ -453,6 +470,18 @@ impl MmrTreeProof {
             ));
         }
 
+        // Validate leaf indices to prevent arithmetic overflow in
+        // leaf_index_to_pos / leaf_index_to_mmr_size.
+        let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
+        for (idx, _) in &self.leaves {
+            if *idx >= leaf_count {
+                return Err(Error::InvalidProof(format!(
+                    "leaf index {} out of range for mmr_size {} (leaf_count {})",
+                    idx, self.mmr_size, leaf_count
+                )));
+            }
+        }
+
         // Reconstruct proof items as MmrNodes (internal, hash-only)
         let proof_nodes: Vec<MmrNode> = self
             .proof_items
@@ -512,6 +541,18 @@ impl MmrTreeProof {
             return Err(Error::InvalidProof(
                 "proof contains no leaves to verify".into(),
             ));
+        }
+
+        // Validate leaf indices to prevent arithmetic overflow in
+        // leaf_index_to_pos / leaf_index_to_mmr_size.
+        let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
+        for (idx, _) in &self.leaves {
+            if *idx >= leaf_count {
+                return Err(Error::InvalidProof(format!(
+                    "leaf index {} out of range for mmr_size {} (leaf_count {})",
+                    idx, self.mmr_size, leaf_count
+                )));
+            }
         }
 
         // Reconstruct proof items as MmrNodes (internal, hash-only)
@@ -665,7 +706,7 @@ mod tests {
                 .expect("push should succeed");
         }
         mmr.commit().unwrap().expect("commit should succeed");
-        let size = mmr.mmr_size();
+        let size = mmr.mmr_size;
         (store, size)
     }
 
