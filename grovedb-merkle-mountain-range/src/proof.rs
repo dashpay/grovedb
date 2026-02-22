@@ -970,4 +970,195 @@ mod tests {
             err_msg
         );
     }
+
+    #[test]
+    fn test_calculate_root_with_new_leaf_rejects_out_of_bounds() {
+        let proof = MerkleProof::new(1, vec![]);
+        let result = proof.calculate_root_with_new_leaf(
+            vec![],
+            5,
+            MmrNode::internal([0u8; 32]),
+            3,
+        );
+        assert!(result.is_err(), "new_pos >= new_mmr_size should error");
+        let err_msg = format!("{}", result.expect_err("should be bounds error"));
+        assert!(
+            err_msg.contains("must be less than"),
+            "error should mention bounds: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_lazy_node_store_defers_and_surfaces_error() {
+        let error_fn = |_pos: u64| -> Result<Option<MmrNode>> {
+            Err(Error::StoreError("storage exploded".into()))
+        };
+        let store = LazyNodeStore::new(error_fn);
+
+        // Read triggers error capture, returns None
+        let result: Option<MmrNode> = MMRStoreReadOps::element_at_position(&&store, 0)
+            .unwrap()
+            .expect("CostResult should be Ok");
+        assert!(result.is_none(), "should return None when error is deferred");
+
+        // Error is available via take_error
+        let err = store.take_error().expect("should have captured error");
+        assert!(
+            format!("{}", err).contains("storage exploded"),
+            "should contain original error message"
+        );
+    }
+
+    #[test]
+    fn test_lazy_node_store_short_circuits_on_prior_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+
+        let call_count = Arc::new(AtomicU64::new(0));
+        let count_clone = call_count.clone();
+        let failing_fn = move |_pos: u64| -> Result<Option<MmrNode>> {
+            count_clone.fetch_add(1, Ordering::Relaxed);
+            Err(Error::StoreError("fail".into()))
+        };
+        let store = LazyNodeStore::new(failing_fn);
+
+        // First read: calls closure, captures error
+        let _ = MMRStoreReadOps::element_at_position(&&store, 0);
+        assert_eq!(call_count.load(Ordering::Relaxed), 1);
+
+        // Second read: short-circuits without calling closure
+        let _ = MMRStoreReadOps::element_at_position(&&store, 1);
+        assert_eq!(
+            call_count.load(Ordering::Relaxed),
+            1,
+            "second read should short-circuit"
+        );
+    }
+
+    #[test]
+    fn test_verify_rejects_out_of_range_leaf_index() {
+        // mmr_size=7 → 4 leaves (indices 0..3). Index 10 is out of range.
+        let proof = MmrTreeProof::new(7, vec![(10, b"fake".to_vec())], vec![]);
+        let result = proof.verify(&[0u8; 32]);
+        assert!(result.is_err(), "should reject out-of-range leaf index");
+        let err_msg = format!("{}", result.expect_err("should be range error"));
+        assert!(
+            err_msg.contains("out of range"),
+            "error should mention out of range: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_verify_and_get_root_rejects_out_of_range_leaf_index() {
+        let proof = MmrTreeProof::new(7, vec![(10, b"fake".to_vec())], vec![]);
+        let result = proof.verify_and_get_root();
+        assert!(
+            result.is_err(),
+            "verify_and_get_root should reject out-of-range leaf index"
+        );
+    }
+
+    #[test]
+    fn test_verify_and_get_root_rejects_empty_leaves() {
+        let proof = MmrTreeProof::new(7, vec![], vec![]);
+        let result = proof.verify_and_get_root();
+        assert!(
+            result.is_err(),
+            "verify_and_get_root should reject empty leaves"
+        );
+    }
+
+    #[test]
+    fn test_generate_missing_leaf_node() {
+        let empty_store = |_pos: u64| -> Result<Option<MmrNode>> { Ok(None) };
+        let result = MmrTreeProof::generate(7, &[0], empty_store);
+        assert!(result.is_err(), "should error when leaf node is missing");
+        let err_msg = format!("{}", result.expect_err("should be missing node error"));
+        assert!(
+            err_msg.contains("missing"),
+            "error should mention missing: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_generate_internal_node_at_leaf_position() {
+        let internal_store = |_pos: u64| -> Result<Option<MmrNode>> {
+            Ok(Some(MmrNode::internal([0xABu8; 32])))
+        };
+        let result = MmrTreeProof::generate(7, &[0], internal_store);
+        assert!(
+            result.is_err(),
+            "should error when leaf position has internal node"
+        );
+        let err_msg = format!("{}", result.expect_err("should be internal node error"));
+        assert!(
+            err_msg.contains("internal"),
+            "error should mention internal: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_generate_surfaces_deferred_storage_error() {
+        // Leaf at position 0 exists, but sibling reads fail
+        let leaf = MmrNode::leaf(b"leaf_0".to_vec());
+        let get_node = move |pos: u64| -> Result<Option<MmrNode>> {
+            if pos == 0 {
+                Ok(Some(leaf.clone()))
+            } else {
+                Err(Error::StoreError("disk failure".into()))
+            }
+        };
+        // mmr_size=7 (4 leaves), prove leaf 0 → needs sibling at pos 1 → fails
+        let result = MmrTreeProof::generate(7, &[0], get_node);
+        assert!(result.is_err(), "should surface deferred storage error");
+        let err_msg = format!("{}", result.expect_err("should be deferred error"));
+        assert!(
+            err_msg.contains("disk failure"),
+            "should contain original error message: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_verify_rejects_excess_proof_items() {
+        // Build a valid proof for 3 leaves, then append extra proof items
+        let (store, mmr_size) = build_mmr(&[b"a", b"b", b"c"]);
+        let root = root_hash(&store, mmr_size);
+
+        let proof = MmrTreeProof::generate(mmr_size, &[0], get_node_from_store(&store))
+            .expect("generate should succeed");
+
+        // Add 2 extra proof items to trigger the "excess proof items" check
+        let mut items = proof.proof_items().to_vec();
+        items.push([0xFFu8; 32]);
+        items.push([0xEEu8; 32]);
+
+        let tampered = MmrTreeProof::new(mmr_size, proof.leaves().to_vec(), items);
+        let result = tampered.verify(&root);
+        assert!(result.is_err(), "should reject proof with excess items");
+    }
+
+    #[test]
+    fn test_verify_and_get_root_roundtrip() {
+        let (store, mmr_size) =
+            build_mmr(&[b"item_0", b"item_1", b"item_2", b"item_3", b"item_4"]);
+        let root = root_hash(&store, mmr_size);
+
+        let proof = MmrTreeProof::generate(mmr_size, &[1, 3], get_node_from_store(&store))
+            .expect("generate should succeed");
+
+        let (computed_root, verified_leaves) = proof
+            .verify_and_get_root()
+            .expect("verify_and_get_root should succeed");
+        assert_eq!(computed_root, root, "computed root should match actual root");
+        assert_eq!(verified_leaves.len(), 2);
+        assert_eq!(verified_leaves[0], (1, b"item_1".to_vec()));
+        assert_eq!(verified_leaves[1], (3, b"item_3".to_vec()));
+    }
 }
