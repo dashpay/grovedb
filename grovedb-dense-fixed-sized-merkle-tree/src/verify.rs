@@ -6,15 +6,21 @@
 //! All nodes use `blake3(H(value) || H(left) || H(right))`,
 //! so ancestor nodes only need a 32-byte value hash, not the full value.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use grovedb_query::Query;
 
 use crate::{hash::node_hash, proof::DenseTreeProof, DenseMerkleError};
+
+/// Result of proof verification: computed root hash and proved (position,
+/// value) pairs.
+type VerifyResult = Result<([u8; 32], Vec<(u16, Vec<u8>)>), DenseMerkleError>;
 
 impl DenseTreeProof {
     /// Verify the proof against an expected root hash.
     ///
     /// Returns the proved `(position, value)` pairs on success.
-    pub fn verify(
+    pub fn verify_against_expected_root(
         &self,
         expected_root: &[u8; 32],
     ) -> Result<Vec<(u16, Vec<u8>)>, DenseMerkleError> {
@@ -36,13 +42,62 @@ impl DenseTreeProof {
     ///
     /// This is used when the root hash flows through the Merk child hash
     /// mechanism rather than being stored in the Element.
-    pub fn verify_and_get_root(&self) -> Result<([u8; 32], Vec<(u16, Vec<u8>)>), DenseMerkleError> {
+    pub fn verify_and_get_root(&self) -> VerifyResult {
         self.verify_inner()
+    }
+
+    /// Verify the proof against a [`Query`], returning the computed root hash
+    /// and proved entries.
+    ///
+    /// In addition to the structural checks performed by
+    /// [`verify_and_get_root`](Self::verify_and_get_root), this method ensures
+    /// the proof is **complete** and **sound** with respect to the query:
+    ///
+    /// - **Complete**: every position requested by the query has a
+    ///   corresponding entry in the proof.
+    /// - **Sound**: the proof contains no entries for positions that were not
+    ///   requested by the query.
+    pub fn verify_for_query(&self, query: &Query) -> VerifyResult {
+        let (root, entries) = self.verify_inner()?;
+
+        let expected_positions: BTreeSet<u16> =
+            match crate::proof::query_to_positions(query, self.count) {
+                Ok(p) => p.into_iter().collect(),
+                Err(e) => return Err(e),
+            };
+
+        let proved_positions: BTreeSet<u16> = entries.iter().map(|(pos, _)| *pos).collect();
+
+        // Completeness: every queried position must be in the proof
+        let missing: Vec<u16> = expected_positions
+            .difference(&proved_positions)
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            return Err(DenseMerkleError::InvalidProof(format!(
+                "incomplete proof: missing positions {:?}",
+                missing
+            )));
+        }
+
+        // Soundness: no extra positions beyond what was queried
+        let extra: Vec<u16> = proved_positions
+            .difference(&expected_positions)
+            .copied()
+            .collect();
+        if !extra.is_empty() {
+            return Err(DenseMerkleError::InvalidProof(format!(
+                "unsound proof: unexpected positions {:?}",
+                extra
+            )));
+        }
+
+        Ok((root, entries))
     }
 
     /// Shared verification logic: validates the proof structure, recomputes
     /// the root hash, and returns `(computed_root, proved_entries)`.
-    fn verify_inner(&self) -> Result<([u8; 32], Vec<(u16, Vec<u8>)>), DenseMerkleError> {
+    fn verify_inner(&self) -> VerifyResult {
         // Validate height to prevent shift overflow
         if !(1..=16).contains(&self.height) {
             return Err(DenseMerkleError::InvalidProof(format!(

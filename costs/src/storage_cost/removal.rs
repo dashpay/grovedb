@@ -231,8 +231,8 @@ impl StorageRemovedBytes {
             NoStorageRemoval => 0,
             BasicStorageRemoval(r) => *r,
             SectionedStorageRemoval(m) => m
-                .iter()
-                .map(|(_, int_map)| int_map.iter().map(|(_, r)| *r).sum::<u32>())
+                .values()
+                .map(|int_map| int_map.values().copied().sum::<u32>())
                 .sum(),
         }
     }

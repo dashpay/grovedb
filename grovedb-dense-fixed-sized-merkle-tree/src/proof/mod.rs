@@ -34,7 +34,7 @@ fn bytes_to_position(bytes: &[u8]) -> Result<u16, DenseMerkleError> {
 /// Each `QueryItem` is interpreted as specifying positions (big-endian u16
 /// encoded). All bounds are clamped to `[0, count)` — positions at or beyond
 /// `count` are silently excluded.
-fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, DenseMerkleError> {
+pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, DenseMerkleError> {
     let mut positions = BTreeSet::new();
 
     for item in &query.items {
