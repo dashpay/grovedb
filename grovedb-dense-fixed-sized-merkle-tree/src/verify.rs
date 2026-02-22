@@ -72,11 +72,11 @@ impl DenseTreeProof {
     pub fn verify_for_query(&self, query: &Query, height: u8, count: u16) -> VerifyResult {
         let (root, entries) = self.verify_inner(height, count)?;
 
-        let expected_positions: BTreeSet<u16> =
-            match crate::proof::query_to_positions(query, count) {
-                Ok(p) => p.into_iter().collect(),
-                Err(e) => return Err(e),
-            };
+        let expected_positions: BTreeSet<u16> = match crate::proof::query_to_positions(query, count)
+        {
+            Ok(p) => p.into_iter().collect(),
+            Err(e) => return Err(e),
+        };
 
         let proved_positions: BTreeSet<u16> = entries.iter().map(|(pos, _)| *pos).collect();
 
@@ -254,7 +254,6 @@ impl DenseTreeProof {
 
         Ok((computed_root, entries))
     }
-
 }
 
 /// Recursively recompute the hash for a position.

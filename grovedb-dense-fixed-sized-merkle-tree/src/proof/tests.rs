@@ -1525,7 +1525,9 @@ mod proof_tests {
             let proof = DenseTreeProof::generate_for_query(3, 0, &query, &store)
                 .unwrap()
                 .expect("should succeed for empty query on empty tree");
-            let (_root, entries) = proof.verify_for_query(&query, 3, 0).expect("should succeed");
+            let (_root, entries) = proof
+                .verify_for_query(&query, 3, 0)
+                .expect("should succeed");
             assert!(entries.is_empty());
         }
 
@@ -1608,8 +1610,8 @@ mod proof_tests {
             // Query [5..100) on a tree with count=11.
             // Both generate and verify clamp to count=11 → {5..10}.
             let store = MemStore::new();
-            let mut tree = crate::tree::DenseFixedSizedMerkleTree::new(4)
-                .expect("height 4 should be valid");
+            let mut tree =
+                crate::tree::DenseFixedSizedMerkleTree::new(4).expect("height 4 should be valid");
             for i in 0..11u8 {
                 tree.insert(&[i], &store)
                     .unwrap()
