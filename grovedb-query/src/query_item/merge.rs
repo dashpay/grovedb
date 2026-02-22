@@ -3,11 +3,11 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use crate::proofs::query::query_item::QueryItem;
+use crate::query_item::QueryItem;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl QueryItem {
-    pub(crate) fn merge(&self, other: &Self) -> Self {
+    /// Merge two overlapping query items into one that covers both ranges.
+    pub fn merge(&self, other: &Self) -> Self {
         if self.is_key() && other.is_key() && self == other {
             return self.clone();
         }

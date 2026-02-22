@@ -1,5 +1,5 @@
+/// Range set intersection and set-theoretic operations on query items.
 pub mod intersect;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 mod merge;
 
 use std::{
@@ -11,18 +11,16 @@ use std::{
 };
 
 use bincode::{enc::write::Writer, error::DecodeError, BorrowDecode, Decode, Encode};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "blockchain")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "blockchain")]
 use grovedb_storage::RawIterator;
 #[cfg(feature = "serde")]
 use serde::de::VariantAccess;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::error::Error;
-use crate::proofs::hex_to_ascii;
+use crate::{error::Error, hex_to_ascii};
 
 /// A `QueryItem` represents a key or a range of keys to be included in a proof.
 ///
@@ -44,7 +42,6 @@ use crate::proofs::hex_to_ascii;
 /// - `RangeAfterTo(Range<Vec<u8>>)` → A range between two keys, starting after
 ///   the lower bound.
 /// - `RangeAfterToInclusive(RangeInclusive<Vec<u8>>)` → A range between two
-#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum QueryItem {
     /// A specific key to be included in the proof.
@@ -223,7 +220,6 @@ impl<'de> Deserialize<'de> for QueryItem {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Encode for QueryItem {
     fn encode<E: bincode::enc::Encoder>(
         &self,
@@ -278,7 +274,6 @@ impl Encode for QueryItem {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl<Context> Decode<Context> for QueryItem {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
@@ -336,7 +331,6 @@ impl<Context> Decode<Context> for QueryItem {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
@@ -394,7 +388,6 @@ impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for QueryItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -439,7 +432,7 @@ impl fmt::Display for QueryItem {
 }
 
 impl QueryItem {
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns an approximate byte size of this query item for cost estimation.
     pub fn processing_footprint(&self) -> u32 {
         match self {
             QueryItem::Key(key) => key.len() as u32,
@@ -451,7 +444,8 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns the lower bound of this query item as `(bound, is_exclusive)`.
+    /// `None` means the lower bound is unbounded.
     pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), false),
@@ -467,7 +461,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if this query item has no lower bound (extends to -inf).
     pub const fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -483,7 +477,8 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns the upper bound of this query item as `(bound, is_inclusive)`.
+    /// `None` means the upper bound is unbounded.
     pub fn upper_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), true),
@@ -499,7 +494,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if this query item has no upper bound (extends to +inf).
     pub const fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -515,7 +510,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if the given key falls within this query item's bounds.
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
@@ -527,8 +522,8 @@ impl QueryItem {
                 || (Some(key) == upper_bound && upper_bound_inclusive))
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
-    fn enum_value(&self) -> u32 {
+    /// Returns a numeric discriminant for this query item variant.
+    pub fn enum_value(&self) -> u32 {
         match self {
             QueryItem::Key(_) => 0,
             QueryItem::Range(_) => 1,
@@ -543,12 +538,13 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if this query item is a single key lookup.
     pub const fn is_key(&self) -> bool {
         matches!(self, QueryItem::Key(_))
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if this query item is any kind of range (not a single
+    /// key).
     pub const fn is_range(&self) -> bool {
         matches!(
             self,
@@ -564,12 +560,13 @@ impl QueryItem {
         )
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if this query item matches exactly one key.
     pub const fn is_single(&self) -> bool {
         matches!(self, QueryItem::Key(_))
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if this query item is a range with at least one unbounded
+    /// end (e.g., `RangeFull`, `RangeFrom`, `RangeTo`, etc.).
     pub const fn is_unbounded_range(&self) -> bool {
         !matches!(
             self,
@@ -577,7 +574,9 @@ impl QueryItem {
         )
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Enumerates all distinct keys in this query item. Only works for `Key`,
+    /// `Range`, and `RangeInclusive` with single-byte boundaries; returns an
+    /// error for unbounded ranges.
     pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key.clone()]),
@@ -627,7 +626,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Like [`keys`](Self::keys) but consumes `self`, avoiding clones.
     pub fn keys_consume(self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key]),
@@ -677,7 +676,9 @@ impl QueryItem {
         }
     }
 
-    #[cfg(feature = "minimal")]
+    /// Positions a storage iterator to the start of this query item, seeking
+    /// forward or backward based on `left_to_right`.
+    #[cfg(feature = "blockchain")]
     pub fn seek_for_iter<I: RawIterator>(
         &self,
         iter: &mut I,
@@ -777,7 +778,7 @@ impl QueryItem {
         }
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Lexicographically compares two byte slices.
     pub fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
         for (ai, bi) in a.iter().zip(b.iter()) {
             match ai.cmp(bi) {
@@ -790,7 +791,9 @@ impl QueryItem {
         a.len().cmp(&b.len())
     }
 
-    #[cfg(feature = "minimal")]
+    /// Returns `true` if the iterator is currently positioned at a valid key
+    /// within this query item's bounds, respecting direction and limit.
+    #[cfg(feature = "blockchain")]
     pub fn iter_is_valid_for_type<I: RawIterator>(
         &self,
         iter: &I,
@@ -867,20 +870,18 @@ impl QueryItem {
         is_valid.wrap_with_cost(cost)
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+    /// Returns `true` if this query item overlaps with `other` in any way.
     pub fn collides_with(&self, other: &Self) -> bool {
         self.intersect(other).in_both.is_some()
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialEq<&[u8]> for QueryItem {
     fn eq(&self, other: &&[u8]) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
         let self_as_range_set = self.to_range_set();
@@ -898,14 +899,12 @@ impl Ord for QueryItem {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialOrd for QueryItem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PartialOrd<&[u8]> for QueryItem {
     fn partial_cmp(&self, other: &&[u8]) -> Option<Ordering> {
         let other = Self::Key(other.to_vec());
@@ -913,17 +912,15 @@ impl PartialOrd<&[u8]> for QueryItem {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl From<Vec<u8>> for QueryItem {
     fn from(key: Vec<u8>) -> Self {
         Self::Key(key)
     }
 }
 
-#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
-    use crate::proofs::query::query_item::QueryItem;
+    use crate::query_item::QueryItem;
 
     #[test]
     fn query_item_collides() {

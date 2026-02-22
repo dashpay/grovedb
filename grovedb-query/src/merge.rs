@@ -1,11 +1,8 @@
 use indexmap::IndexMap;
 
-use crate::proofs::{
-    query::{
-        common_path::CommonPathResult, query_item::QueryItem, QueryItemIntersectionResult,
-        SubqueryBranch,
-    },
-    Query,
+use crate::{
+    common_path::CommonPathResult, query_item::QueryItem, Query, QueryItemIntersectionResult,
+    SubqueryBranch,
 };
 
 impl SubqueryBranch {
@@ -25,6 +22,9 @@ impl SubqueryBranch {
         }
     }
 
+    /// Merges two subquery branches, combining their subquery paths and
+    /// subqueries. When paths differ, creates conditional subqueries to
+    /// preserve both branches.
     pub fn merge(&self, other: &Self) -> Self {
         match (&self.subquery_path, &other.subquery_path) {
             (None, None) => {
@@ -238,7 +238,6 @@ impl SubqueryBranch {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Query {
     fn merge_default_subquerys_branch_subquery(
         &mut self,
@@ -431,6 +430,8 @@ impl Query {
         }
     }
 
+    /// Merges multiple queries into a single query. Items are unioned and
+    /// conditional subquery branches are merged where they intersect.
     pub fn merge_multiple(mut queries: Vec<Query>) -> Self {
         if queries.is_empty() {
             return Query::new();
@@ -497,6 +498,8 @@ impl Query {
         merged_query
     }
 
+    /// Merges another query into this one, combining items and conditional
+    /// subquery branches.
     pub fn merge_with(&mut self, other: Query) {
         let Query {
             mut items,

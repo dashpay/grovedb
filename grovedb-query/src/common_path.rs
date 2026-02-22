@@ -1,16 +1,18 @@
-use crate::proofs::query::Path;
+use crate::Path;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-/// CommonPathResult is the result of trying to find the common path between two
-/// paths
+/// Result of finding the common prefix between two paths.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CommonPathResult {
+    /// The shared prefix segments common to both paths.
     pub common_path: Path,
+    /// The remaining segments of the left path after the common prefix.
     pub left_path_leftovers: Path,
+    /// The remaining segments of the right path after the common prefix.
     pub right_path_leftovers: Path,
 }
 
 impl CommonPathResult {
+    /// Splits two paths into their common prefix and the remaining segments.
     pub fn from_paths(left: &Path, right: &Path) -> Self {
         if left.eq(right) {
             return CommonPathResult {

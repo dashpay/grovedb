@@ -138,25 +138,25 @@ pub enum Error {
     /// Path not found in cache for estimated costs
     PathNotFoundInCacheForEstimatedCosts(String),
 
-    // Support errors
     #[error("not supported: {0}")]
     /// Not supported
     NotSupported(String),
 
-    // Merk errors
     #[error("merk error: {0}")]
     /// Merk error
     MerkError(grovedb_merk::error::Error),
 
-    // Version errors
     #[error(transparent)]
     /// Version error
     VersionError(grovedb_version::error::GroveVersionError),
 
-    // Element errors
     #[error(transparent)]
     /// Element error
     ElementError(grovedb_element::error::ElementError),
+
+    #[error("query error: {0}")]
+    /// Query error
+    QueryError(grovedb_query::error::Error),
 
     #[error("cyclic error")]
     /// Cyclic reference

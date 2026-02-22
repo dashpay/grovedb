@@ -309,9 +309,7 @@ where
                 let new_total = replacement_chunk.encoding_length().map_err(|_e| {
                     Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
                 })? + chunk_byte_length
-                    - chunk[iteration_index].encoding_length().map_err(|_e| {
-                        Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
-                    })?;
+                    - chunk[iteration_index].encoding_length();
 
                 // verify that this chunk doesn't make use exceed the limit
                 if let Some(limit) = limit {
