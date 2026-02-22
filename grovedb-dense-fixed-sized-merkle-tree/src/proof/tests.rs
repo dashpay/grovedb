@@ -526,16 +526,14 @@ mod proof_tests {
         let mut query = Query::new();
         query.insert_range(vec![0]..vec![4]);
         query.insert_range(vec![2]..vec![6]);
-        let positions =
-            query_to_positions(&query, 7).expect("query_to_positions should succeed");
+        let positions = query_to_positions(&query, 7).expect("query_to_positions should succeed");
         assert_eq!(positions, vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn test_query_to_positions_empty_query() {
         let query = Query::new();
-        let positions =
-            query_to_positions(&query, 7).expect("query_to_positions should succeed");
+        let positions = query_to_positions(&query, 7).expect("query_to_positions should succeed");
         assert!(positions.is_empty());
     }
 
