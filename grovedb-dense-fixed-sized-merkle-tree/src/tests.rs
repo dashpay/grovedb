@@ -265,7 +265,7 @@ fn test_vuln1_node_hashes_ancestor_bypass_rejected() {
 }
 
 #[test]
-fn test_vuln2_out_of_range_entries_filtered() {
+fn test_vuln2_out_of_range_entries_rejected() {
     let store = MemStore::new();
     let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3 should be valid");
     for i in 0..3u8 {
@@ -287,19 +287,12 @@ fn test_vuln2_out_of_range_entries_filtered() {
     let mut tampered = legit_proof.clone();
     tampered.entries.push((5, b"phantom".to_vec()));
 
-    // The proof may fail verification due to the phantom entry, but if it
-    // somehow passes, the phantom entry must NOT appear in results.
-    // The proof may fail verification due to the phantom entry, but if it
-    // somehow passes, the phantom entry must NOT appear in results.
-    if let Ok(verified) = tampered.verify_against_expected_root(&root, 3, 3) {
-        for (pos, _) in &verified {
-            assert!(
-                *pos < 3,
-                "entry at position {} is beyond count=3 and should be filtered",
-                pos
-            );
-        }
-    }
+    // Out-of-range entries must cause rejection, not silent filtering
+    let result = tampered.verify_against_expected_root(&root, 3, 3);
+    assert!(
+        result.is_err(),
+        "proof with out-of-range entry should be rejected"
+    );
 }
 
 #[test]
@@ -330,18 +323,18 @@ fn test_vuln3_duplicate_node_value_hashes_rejected() {
         .expect("generate should succeed");
 
     // Inject duplicate in node_value_hashes
-    if let Some(first) = proof.node_value_hashes.first().cloned() {
-        proof.node_value_hashes.push(first);
-    }
+    assert!(
+        !proof.node_value_hashes.is_empty(),
+        "proof for position 4 should have ancestor value hashes"
+    );
+    let first = proof.node_value_hashes[0];
+    proof.node_value_hashes.push(first);
 
     let result = proof.verify_against_expected_root(&root, 3, 7);
-    // Should fail if there are duplicate node_value_hashes
-    if proof.node_value_hashes.len() > 1 {
-        assert!(
-            result.is_err(),
-            "proof with duplicate node_value_hashes should be rejected"
-        );
-    }
+    assert!(
+        result.is_err(),
+        "proof with duplicate node_value_hashes should be rejected"
+    );
 }
 
 #[test]
@@ -520,14 +513,18 @@ fn test_vuln3_duplicate_node_hashes_rejected() {
         .expect("generate should succeed");
 
     // Inject a duplicate in node_hashes
-    if let Some(first) = proof.node_hashes.first().cloned() {
-        proof.node_hashes.push(first);
-        let result = proof.verify_against_expected_root(&root, 3, 7);
-        assert!(
-            result.is_err(),
-            "proof with duplicate node_hashes should be rejected"
-        );
-    }
+    assert!(
+        !proof.node_hashes.is_empty(),
+        "proof for position 4 should have sibling subtree hashes"
+    );
+    let first = proof.node_hashes[0];
+    proof.node_hashes.push(first);
+
+    let result = proof.verify_against_expected_root(&root, 3, 7);
+    assert!(
+        result.is_err(),
+        "proof with duplicate node_hashes should be rejected"
+    );
 }
 
 #[test]
@@ -538,14 +535,18 @@ fn test_vuln6_overlapping_node_value_hashes_and_node_hashes_rejected() {
         .expect("generate should succeed");
 
     // Take a position from node_value_hashes and add it to node_hashes
-    if let Some((pos, _)) = proof.node_value_hashes.first().cloned() {
-        proof.node_hashes.push((pos, [0xCC; 32]));
-        let result = proof.verify_against_expected_root(&root, 3, 7);
-        assert!(
-            result.is_err(),
-            "proof with overlapping node_value_hashes and node_hashes should be rejected"
-        );
-    }
+    assert!(
+        !proof.node_value_hashes.is_empty(),
+        "proof for position 4 should have ancestor value hashes"
+    );
+    let (pos, _) = proof.node_value_hashes[0];
+    proof.node_hashes.push((pos, [0xCC; 32]));
+
+    let result = proof.verify_against_expected_root(&root, 3, 7);
+    assert!(
+        result.is_err(),
+        "proof with overlapping node_value_hashes and node_hashes should be rejected"
+    );
 }
 
 #[test]

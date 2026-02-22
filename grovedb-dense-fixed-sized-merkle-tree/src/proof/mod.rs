@@ -86,14 +86,14 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
             }
             QueryItem::RangeAfter(r) => {
                 let start = bytes_to_position(&r.start)?;
-                for p in (start + 1)..count {
+                for p in start.saturating_add(1)..count {
                     positions.insert(p);
                 }
             }
             QueryItem::RangeAfterTo(r) => {
                 let start = bytes_to_position(&r.start)?;
                 let end = bytes_to_position(&r.end)?.min(count);
-                for p in (start + 1)..end {
+                for p in start.saturating_add(1)..end {
                     positions.insert(p);
                 }
             }
@@ -101,7 +101,7 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                 let start = bytes_to_position(r.start())?;
                 let end = bytes_to_position(r.end())?;
                 let clamped_end = end.min(count.saturating_sub(1));
-                for p in (start + 1)..=clamped_end {
+                for p in start.saturating_add(1)..=clamped_end {
                     positions.insert(p);
                 }
             }

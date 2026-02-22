@@ -128,6 +128,16 @@ impl DenseTreeProof {
             )));
         }
 
+        // Reject entries at out-of-range positions to prevent malleability
+        for (pos, _) in &self.entries {
+            if *pos >= count || *pos >= capacity {
+                return Err(DenseMerkleError::InvalidProof(format!(
+                    "entry at position {} is out of range (count={}, capacity={})",
+                    pos, count, capacity
+                )));
+            }
+        }
+
         // DoS prevention: no proof field can exceed the tree's capacity
         let cap = capacity as usize;
         if self.entries.len() > cap
@@ -143,7 +153,7 @@ impl DenseTreeProof {
             )));
         }
 
-        // Vuln 3: Reject duplicate positions in entries
+        // Reject duplicate positions in entries
         {
             let mut seen = std::collections::BTreeSet::new();
             for (pos, _) in &self.entries {
@@ -156,7 +166,7 @@ impl DenseTreeProof {
             }
         }
 
-        // Vuln 3: Reject duplicate positions in node_value_hashes
+        // Reject duplicate positions in node_value_hashes
         {
             let mut seen = std::collections::BTreeSet::new();
             for (pos, _) in &self.node_value_hashes {
@@ -169,7 +179,7 @@ impl DenseTreeProof {
             }
         }
 
-        // Vuln 3: Reject duplicate positions in node_hashes
+        // Reject duplicate positions in node_hashes
         {
             let mut seen = std::collections::BTreeSet::new();
             for (pos, _) in &self.node_hashes {
@@ -182,7 +192,7 @@ impl DenseTreeProof {
             }
         }
 
-        // Vuln 6: Validate that entries, node_value_hashes, and node_hashes have
+        // Validate that entries, node_value_hashes, and node_hashes have
         // pairwise-disjoint position sets
         let entry_positions: std::collections::BTreeSet<u16> =
             self.entries.iter().map(|(p, _)| *p).collect();
@@ -207,7 +217,7 @@ impl DenseTreeProof {
             ));
         }
 
-        // Vuln 1: Validate that no node_hash is at an ancestor of any proved
+        // Validate that no node_hash is at an ancestor of any proved
         // entry. Build the expanded set (proved positions + all ancestors).
         let mut ancestor_set = entry_positions.clone();
         for &pos in &entry_positions {
@@ -244,13 +254,8 @@ impl DenseTreeProof {
         let computed_root =
             recompute_hash(0, capacity, count, &entry_map, &value_hash_map, &hash_map)?;
 
-        // Vuln 2: Only return entries at valid positions (< count AND < capacity)
-        let entries = self
-            .entries
-            .iter()
-            .filter(|(pos, _)| *pos < count && *pos < capacity)
-            .map(|(pos, val)| (*pos, val.clone()))
-            .collect();
+        // All entry positions validated in-range above; return them directly
+        let entries: Vec<(u16, Vec<u8>)> = self.entries.to_vec();
 
         Ok((computed_root, entries))
     }
