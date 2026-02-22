@@ -3,31 +3,27 @@
 //! These types define the proof operators and node variants used to construct
 //! and verify Merkle proofs in GroveDB/Merk.
 
-#[cfg(feature = "verify")]
 mod encoding;
-#[cfg(feature = "verify")]
+
 mod tree_feature_type;
 
-#[cfg(feature = "verify")]
 pub use encoding::{encode_into, Decoder};
-#[cfg(feature = "verify")]
-pub use tree_feature_type::TreeFeatureType;
+pub use tree_feature_type::{NodeType, TreeFeatureType};
 
 use crate::hex_to_ascii;
 
 /// The length of a `Hash` (in bytes).
-#[cfg(feature = "verify")]
+
 pub const HASH_LENGTH: usize = 32;
 
 /// A zero-filled `Hash`.
-#[cfg(feature = "verify")]
+
 pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];
 
 /// A cryptographic hash digest.
-#[cfg(feature = "verify")]
+
 pub type CryptoHash = [u8; HASH_LENGTH];
 
-#[cfg(feature = "verify")]
 /// A proof operator, executed to verify the data in a Merkle proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
@@ -60,7 +56,6 @@ pub enum Op {
     ChildInverted,
 }
 
-#[cfg(feature = "verify")]
 /// A selected piece of data about a single tree node, to be contained in a
 /// `Push` operator in a proof.
 ///
@@ -130,7 +125,6 @@ pub enum Node {
 
 use std::fmt;
 
-#[cfg(feature = "verify")]
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let node_string = match self {

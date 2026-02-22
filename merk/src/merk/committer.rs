@@ -1,6 +1,6 @@
 use crate::{
     merk::BatchValue,
-    tree::{tree_feature_type::TreeFeatureTypeMerkExt, Commit, TreeNode},
+    tree::{Commit, TreeNode},
     Error,
 };
 

@@ -19,17 +19,14 @@ pub enum Error {
     InvalidOperation(&'static str),
 
     /// Invalid proof error
-    #[cfg(feature = "verify")]
     #[error("invalid proof error {0}")]
     InvalidProofError(String),
 
     /// Key ordering error
-    #[cfg(feature = "verify")]
     #[error("key ordering error {0}")]
     KeyOrderingError(&'static str),
 
     /// Ed encoding/decoding error
-    #[cfg(feature = "verify")]
     #[error("ed error: {0}")]
     EdError(ed::Error),
 }

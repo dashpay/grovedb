@@ -423,6 +423,11 @@ impl Query {
         self.items.len()
     }
 
+    /// Returns `true` if there are no query items.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     /// Iterate through query items
     pub fn iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter()
@@ -542,7 +547,7 @@ impl Query {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "blockchain")]
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
@@ -559,14 +564,12 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     }
 }
 
-#[cfg(feature = "minimal")]
 impl From<Query> for Vec<QueryItem> {
     fn from(q: Query) -> Self {
         q.into_iter().collect()
     }
 }
 
-#[cfg(feature = "minimal")]
 impl IntoIterator for Query {
     type IntoIter = <Vec<QueryItem> as IntoIterator>::IntoIter;
     type Item = QueryItem;

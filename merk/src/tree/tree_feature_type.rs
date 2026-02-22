@@ -1,90 +1,15 @@
 //! Merk tree feature type
 
-#[cfg(feature = "minimal")]
-use grovedb_costs::TreeCostType;
-// Re-export TreeFeatureType from grovedb-query
+// Re-export TreeFeatureType and NodeType from grovedb-query
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use grovedb_query::proofs::TreeFeatureType;
-#[cfg(feature = "minimal")]
-use integer_encoding::VarInt;
+pub use grovedb_query::proofs::{NodeType, TreeFeatureType};
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use self::TreeFeatureType::{
     BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode, SummedMerkNode,
 };
 #[cfg(feature = "minimal")]
-use crate::merk::NodeType;
-#[cfg(feature = "minimal")]
 use crate::tree_type::TreeType;
-
-/// Extension trait for TreeFeatureType methods specific to merk
-#[cfg(feature = "minimal")]
-pub trait TreeFeatureTypeMerkExt {
-    /// Get the NodeType for this feature type
-    fn node_type(&self) -> NodeType;
-
-    /// Get encoding cost of self
-    fn encoding_cost(&self) -> usize;
-
-    /// Get length of encoded feature type with TreeCostType
-    fn tree_feature_specialized_type_and_length(&self) -> Option<(TreeCostType, u32)>;
-}
-
-#[cfg(feature = "minimal")]
-impl TreeFeatureTypeMerkExt for TreeFeatureType {
-    fn node_type(&self) -> NodeType {
-        match self {
-            BasicMerkNode => NodeType::NormalNode,
-            SummedMerkNode(_) => NodeType::SumNode,
-            BigSummedMerkNode(_) => NodeType::BigSumNode,
-            CountedMerkNode(_) => NodeType::CountNode,
-            CountedSummedMerkNode(..) => NodeType::CountSumNode,
-            TreeFeatureType::ProvableCountedMerkNode(_) => NodeType::ProvableCountNode,
-            TreeFeatureType::ProvableCountedSummedMerkNode(..) => NodeType::ProvableCountSumNode,
-        }
-    }
-
-    #[inline]
-    fn encoding_cost(&self) -> usize {
-        match self {
-            BasicMerkNode => 1,
-            SummedMerkNode(_sum) => 9,
-            BigSummedMerkNode(_) => 17,
-            CountedMerkNode(_) => 9,
-            CountedSummedMerkNode(..) => 17,
-            TreeFeatureType::ProvableCountedMerkNode(_) => 9,
-            TreeFeatureType::ProvableCountedSummedMerkNode(..) => 17,
-        }
-    }
-
-    #[inline]
-    fn tree_feature_specialized_type_and_length(&self) -> Option<(TreeCostType, u32)> {
-        match self {
-            BasicMerkNode => None,
-            SummedMerkNode(m) => Some((
-                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
-                m.encode_var_vec().len() as u32,
-            )),
-            BigSummedMerkNode(_) => Some((TreeCostType::TreeFeatureUses16Bytes, 16)),
-            CountedMerkNode(m) => Some((
-                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
-                m.encode_var_vec().len() as u32,
-            )),
-            CountedSummedMerkNode(count, sum) => Some((
-                TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
-                count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32,
-            )),
-            TreeFeatureType::ProvableCountedMerkNode(m) => Some((
-                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
-                m.encode_var_vec().len() as u32,
-            )),
-            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => Some((
-                TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
-                count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32,
-            )),
-        }
-    }
-}
 
 #[cfg(feature = "minimal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

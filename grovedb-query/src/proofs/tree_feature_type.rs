@@ -1,22 +1,66 @@
 //! Tree feature type for Merk nodes
 
-#[cfg(feature = "verify")]
 use std::io::{Read, Write};
 
-#[cfg(feature = "verify")]
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-#[cfg(feature = "verify")]
 use ed::{Decode, Encode, Terminated};
-#[cfg(feature = "verify")]
+use grovedb_costs::TreeCostType;
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
-#[cfg(feature = "verify")]
 use self::TreeFeatureType::{
     BasicMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode,
     ProvableCountedMerkNode, SummedMerkNode,
 };
+use crate::proofs::TreeFeatureType::ProvableCountedSummedMerkNode;
 
-#[cfg(feature = "verify")]
+/// Node type classification for Merk tree nodes
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum NodeType {
+    /// Normal node (no aggregation)
+    NormalNode,
+    /// Sum node (i64 sum)
+    SumNode,
+    /// Big sum node (i128 sum)
+    BigSumNode,
+    /// Count node (u64 count)
+    CountNode,
+    /// Count + sum node
+    CountSumNode,
+    /// Provable count node (count included in hash)
+    ProvableCountNode,
+    /// Provable count + sum node (count included in hash)
+    ProvableCountSumNode,
+}
+
+impl NodeType {
+    /// The byte length of the feature data for this node type
+    pub const fn feature_len(&self) -> u32 {
+        match self {
+            NodeType::NormalNode => 1,
+            NodeType::SumNode => 9,
+            NodeType::BigSumNode => 17,
+            NodeType::CountNode => 9,
+            NodeType::CountSumNode => 17,
+            NodeType::ProvableCountNode => 9,
+            NodeType::ProvableCountSumNode => 17,
+        }
+    }
+
+    /// The cost in bytes of the feature data (excluding the 1-byte tag)
+    pub const fn cost(&self) -> u32 {
+        match self {
+            NodeType::NormalNode => 0,
+            NodeType::SumNode => 8,
+            NodeType::BigSumNode => 16,
+            NodeType::CountNode => 8,
+            NodeType::CountSumNode => 16,
+            NodeType::ProvableCountNode => 8,
+            NodeType::ProvableCountSumNode => 16,
+        }
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 /// Basic or summed
 pub enum TreeFeatureType {
@@ -36,7 +80,6 @@ pub enum TreeFeatureType {
     ProvableCountedSummedMerkNode(u64, i64),
 }
 
-#[cfg(feature = "verify")]
 impl TreeFeatureType {
     /// Returns the count of elements in this subtree, if available.
     /// Returns Some(count) for CountedMerkNode, ProvableCountedMerkNode,
@@ -47,13 +90,72 @@ impl TreeFeatureType {
             CountedMerkNode(count)
             | ProvableCountedMerkNode(count)
             | CountedSummedMerkNode(count, _)
-            | TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => Some(*count),
+            | ProvableCountedSummedMerkNode(count, _) => Some(*count),
             BasicMerkNode | SummedMerkNode(_) | BigSummedMerkNode(_) => None,
+        }
+    }
+
+    /// Get the NodeType for this feature type
+    pub fn node_type(&self) -> NodeType {
+        match self {
+            BasicMerkNode => NodeType::NormalNode,
+            SummedMerkNode(_) => NodeType::SumNode,
+            BigSummedMerkNode(_) => NodeType::BigSumNode,
+            CountedMerkNode(_) => NodeType::CountNode,
+            CountedSummedMerkNode(..) => NodeType::CountSumNode,
+            ProvableCountedMerkNode(_) => NodeType::ProvableCountNode,
+            ProvableCountedSummedMerkNode(..) => NodeType::ProvableCountSumNode,
+        }
+    }
+
+    /// Get encoding cost of self
+    #[inline]
+    pub fn encoding_cost(&self) -> usize {
+        match self {
+            BasicMerkNode => 1,
+            SummedMerkNode(_) => 9,
+            BigSummedMerkNode(_) => 17,
+            CountedMerkNode(_) => 9,
+            CountedSummedMerkNode(..) => 17,
+            ProvableCountedMerkNode(_) => 9,
+            ProvableCountedSummedMerkNode(..) => 17,
         }
     }
 }
 
-#[cfg(feature = "verify")]
+/// Methods that depend on grovedb-costs (behind `blockchain` feature)
+#[cfg(feature = "blockchain")]
+impl TreeFeatureType {
+    /// Get length of encoded feature type with TreeCostType
+    #[inline]
+    pub fn tree_feature_specialized_type_and_length(&self) -> Option<(TreeCostType, u32)> {
+        match self {
+            BasicMerkNode => None,
+            SummedMerkNode(m) => Some((
+                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
+                m.encode_var_vec().len() as u32,
+            )),
+            BigSummedMerkNode(_) => Some((TreeCostType::TreeFeatureUses16Bytes, 16)),
+            CountedMerkNode(m) => Some((
+                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
+                m.encode_var_vec().len() as u32,
+            )),
+            CountedSummedMerkNode(count, sum) => Some((
+                TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
+                count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32,
+            )),
+            ProvableCountedMerkNode(m) => Some((
+                TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes,
+                m.encode_var_vec().len() as u32,
+            )),
+            ProvableCountedSummedMerkNode(count, sum) => Some((
+                TreeCostType::TreeFeatureUsesTwoVarIntsCostAs16Bytes,
+                count.encode_var_vec().len() as u32 + sum.encode_var_vec().len() as u32,
+            )),
+        }
+    }
+}
+
 impl Encode for TreeFeatureType {
     #[inline]
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
@@ -83,12 +185,12 @@ impl Encode for TreeFeatureType {
                 dest.write_varint(*sum)?;
                 Ok(())
             }
-            TreeFeatureType::ProvableCountedMerkNode(count) => {
+            ProvableCountedMerkNode(count) => {
                 dest.write_all(&[5])?;
                 dest.write_varint(*count)?;
                 Ok(())
             }
-            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+            ProvableCountedSummedMerkNode(count, sum) => {
                 dest.write_all(&[6])?;
                 dest.write_varint(*count)?;
                 dest.write_varint(*sum)?;
@@ -103,41 +205,31 @@ impl Encode for TreeFeatureType {
             BasicMerkNode => Ok(1),
             SummedMerkNode(sum) => {
                 let encoded_sum = sum.encode_var_vec();
-                // 1 for the enum type
-                // encoded_sum.len() for the length of the encoded vector
                 Ok(1 + encoded_sum.len())
             }
             BigSummedMerkNode(_) => Ok(17),
             CountedMerkNode(count) => {
                 let encoded_sum = count.encode_var_vec();
-                // 1 for the enum type
-                // encoded_sum.len() for the length of the encoded vector
                 Ok(1 + encoded_sum.len())
             }
             CountedSummedMerkNode(count, sum) => {
                 let encoded_lengths = count.encode_var_vec().len() + sum.encode_var_vec().len();
-                // 1 for the enum type
                 Ok(1 + encoded_lengths)
             }
-            TreeFeatureType::ProvableCountedMerkNode(count) => {
+            ProvableCountedMerkNode(count) => {
                 let encoded_sum = count.encode_var_vec();
-                // 1 for the enum type
-                // encoded_sum.len() for the length of the encoded vector
                 Ok(1 + encoded_sum.len())
             }
-            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+            ProvableCountedSummedMerkNode(count, sum) => {
                 let encoded_lengths = count.encode_var_vec().len() + sum.encode_var_vec().len();
-                // 1 for the enum type
                 Ok(1 + encoded_lengths)
             }
         }
     }
 }
 
-#[cfg(feature = "verify")]
 impl Terminated for TreeFeatureType {}
 
-#[cfg(feature = "verify")]
 impl Decode for TreeFeatureType {
     #[inline]
     fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
@@ -169,10 +261,7 @@ impl Decode for TreeFeatureType {
             [6] => {
                 let encoded_count: u64 = input.read_varint()?;
                 let encoded_sum: i64 = input.read_varint()?;
-                Ok(TreeFeatureType::ProvableCountedSummedMerkNode(
-                    encoded_count,
-                    encoded_sum,
-                ))
+                Ok(ProvableCountedSummedMerkNode(encoded_count, encoded_sum))
             }
             _ => Err(ed::Error::UnexpectedByte(55)),
         }

@@ -11,9 +11,9 @@ use std::{
 };
 
 use bincode::{enc::write::Writer, error::DecodeError, BorrowDecode, Decode, Encode};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "blockchain")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "blockchain")]
 use grovedb_storage::RawIterator;
 #[cfg(feature = "serde")]
 use serde::de::VariantAccess;
@@ -522,7 +522,8 @@ impl QueryItem {
                 || (Some(key) == upper_bound && upper_bound_inclusive))
     }
 
-    fn enum_value(&self) -> u32 {
+    /// Returns a numeric discriminant for this query item variant.
+    pub fn enum_value(&self) -> u32 {
         match self {
             QueryItem::Key(_) => 0,
             QueryItem::Range(_) => 1,
@@ -677,7 +678,7 @@ impl QueryItem {
 
     /// Positions a storage iterator to the start of this query item, seeking
     /// forward or backward based on `left_to_right`.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "blockchain")]
     pub fn seek_for_iter<I: RawIterator>(
         &self,
         iter: &mut I,
@@ -792,7 +793,7 @@ impl QueryItem {
 
     /// Returns `true` if the iterator is currently positioned at a valid key
     /// within this query item's bounds, respecting direction and limit.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "blockchain")]
     pub fn iter_is_valid_for_type<I: RawIterator>(
         &self,
         iter: &I,
@@ -917,7 +918,6 @@ impl From<Vec<u8>> for QueryItem {
     }
 }
 
-#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod test {
     use crate::query_item::QueryItem;

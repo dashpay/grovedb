@@ -75,8 +75,6 @@ use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "minimal")]
-use crate::tree::tree_feature_type::TreeFeatureTypeMerkExt;
-#[cfg(feature = "minimal")]
 use crate::{error::Error, tree_type::TreeType, Error::Overflow};
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods

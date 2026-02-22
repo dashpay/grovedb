@@ -49,12 +49,12 @@ minimal = [
         "grovedb-storage",
         "grovedb-storage/rocksdb_storage",
         "grovedb-element/visualize",
-        "grovedb-query/minimal",
+        "grovedb-query/blockchain",
 ]
 full = ["minimal", "test_utils", "colored_debug"]
 test_utils = ["rand"]
 colored_debug = ["colored"]
-verify = ["ed", "blake3", "grovedb-query/verify"]
+verify = ["ed", "blake3"]
 grovedbg = ["full"]
 
 [dev-dependencies]
