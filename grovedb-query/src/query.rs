@@ -63,6 +63,10 @@ impl Encode for Query {
     }
 }
 
+/// Maximum number of conditional subquery branches allowed during decoding.
+/// Prevents OOM from malicious inputs with inflated lengths.
+const MAX_CONDITIONAL_BRANCHES: usize = 1024;
+
 impl<Context> Decode<Context> for Query {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
@@ -80,6 +84,11 @@ impl<Context> Decode<Context> for Query {
         // Decode the conditional subquery branches
         let conditional_subquery_branches = if u8::decode(decoder)? == 1 {
             let len = u64::decode(decoder)? as usize;
+            if len > MAX_CONDITIONAL_BRANCHES {
+                return Err(DecodeError::Other(
+                    "conditional subquery branches length exceeds maximum",
+                ));
+            }
             let mut map = IndexMap::with_capacity(len);
             for _ in 0..len {
                 let key = QueryItem::decode(decoder)?;
@@ -119,6 +128,11 @@ impl<'de, Context> BorrowDecode<'de, Context> for Query {
         // Borrow-decode the conditional subquery branches
         let conditional_subquery_branches = if u8::borrow_decode(decoder)? == 1 {
             let len = u64::borrow_decode(decoder)? as usize;
+            if len > MAX_CONDITIONAL_BRANCHES {
+                return Err(DecodeError::Other(
+                    "conditional subquery branches length exceeds maximum",
+                ));
+            }
             let mut map = IndexMap::with_capacity(len);
             for _ in 0..len {
                 let key = QueryItem::borrow_decode(decoder)?;
