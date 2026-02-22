@@ -199,6 +199,7 @@ impl From<grovedb_query::error::Error> for Error {
             grovedb_query::error::Error::InvalidOperation(s) => Error::InvalidOperation(s),
             // These variants exist when grovedb-query has verify feature enabled.
             // Since minimal implies verify, they're always present when this impl is compiled.
+            grovedb_query::error::Error::ProofCreationError(s) => Error::ProofCreationError(s),
             grovedb_query::error::Error::InvalidProofError(s) => Error::InvalidProofError(s),
             grovedb_query::error::Error::KeyOrderingError(s) => Error::KeyOrderingError(s),
             grovedb_query::error::Error::EdError(e) => Error::EdError(e),

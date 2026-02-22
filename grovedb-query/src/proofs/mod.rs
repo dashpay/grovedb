@@ -13,15 +13,12 @@ pub use tree_feature_type::{NodeType, TreeFeatureType};
 use crate::hex_to_ascii;
 
 /// The length of a `Hash` (in bytes).
-
 pub const HASH_LENGTH: usize = 32;
 
 /// A zero-filled `Hash`.
-
 pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];
 
 /// A cryptographic hash digest.
-
 pub type CryptoHash = [u8; HASH_LENGTH];
 
 /// A proof operator, executed to verify the data in a Merkle proof.
