@@ -386,7 +386,8 @@ fn test_mmr_tree_proof_standard_leaf_verify_succeeds() {
     assert_eq!(verified[2].0, 4, "third leaf index should be 4");
 }
 
-/// Single-element MMR: get_root returns the leaf itself (mmr_size == 1 fast path).
+/// Single-element MMR: get_root returns the leaf itself (mmr_size == 1 fast
+/// path).
 #[test]
 fn test_single_element_mmr_root() {
     let store = MemStore::default();
@@ -413,7 +414,10 @@ fn test_gen_proof_empty_positions() {
         .expect("push should succeed");
 
     assert!(
-        matches!(mmr.gen_proof(vec![]).unwrap(), Err(Error::GenProofForInvalidLeaves)),
+        matches!(
+            mmr.gen_proof(vec![]).unwrap(),
+            Err(Error::GenProofForInvalidLeaves)
+        ),
         "should reject empty positions"
     );
 }
@@ -428,7 +432,10 @@ fn test_gen_proof_rejects_internal_positions() {
     }
     // Position 2 is an internal node (height 1, merge of pos 0 and 1)
     assert!(
-        matches!(mmr.gen_proof(vec![2]).unwrap(), Err(Error::NodeProofsNotSupported)),
+        matches!(
+            mmr.gen_proof(vec![2]).unwrap(),
+            Err(Error::NodeProofsNotSupported)
+        ),
         "should reject internal node positions"
     );
 }
@@ -443,13 +450,16 @@ fn test_gen_proof_out_of_range_leaf_positions() {
     }
     // mmr_size = 7. Position 7 is a leaf position (height 0) but beyond range.
     assert!(
-        matches!(mmr.gen_proof(vec![7]).unwrap(), Err(Error::GenProofForInvalidLeaves)),
+        matches!(
+            mmr.gen_proof(vec![7]).unwrap(),
+            Err(Error::GenProofForInvalidLeaves)
+        ),
         "should reject leaf positions beyond MMR range"
     );
 }
 
-/// When proved leaves are only in the first peak, trailing peaks are bagged together.
-/// This exercises the bagging_track > 1 path in gen_proof.
+/// When proved leaves are only in the first peak, trailing peaks are bagged
+/// together. This exercises the bagging_track > 1 path in gen_proof.
 #[test]
 fn test_gen_proof_bags_trailing_peaks() {
     let store = MemStore::default();
@@ -475,14 +485,16 @@ fn test_gen_proof_bags_trailing_peaks() {
     );
 }
 
-/// calculate_root_with_new_leaf: adding a leaf that doesn't trigger merges (else branch).
-/// With 8 leaves (perfect binary tree), adding leaf 8 creates a new standalone peak.
+/// calculate_root_with_new_leaf: adding a leaf that doesn't trigger merges
+/// (else branch). With 8 leaves (perfect binary tree), adding leaf 8 creates a
+/// new standalone peak.
 #[test]
 fn test_gen_root_from_proof_no_merge_on_new_leaf() {
     test_gen_new_root_from_proof(8);
 }
 
-/// verify_incremental: extend an MMR and verify the old root + incremental leaves.
+/// verify_incremental: extend an MMR and verify the old root + incremental
+/// leaves.
 #[test]
 fn test_verify_incremental_success() {
     let store = MemStore::default();
@@ -544,10 +556,7 @@ fn test_verify_incremental_wrong_prev_root() {
     let valid = proof
         .verify_incremental(current_root, wrong_prev, incremental_leaves)
         .expect("should not error, just return false");
-    assert!(
-        !valid,
-        "should return false when prev_root doesn't match"
-    );
+    assert!(!valid, "should return false when prev_root doesn't match");
 }
 
 /// verify_incremental rejects when incremental count >= current leaf count.
@@ -567,7 +576,8 @@ fn test_verify_incremental_too_many_incremental() {
     );
 }
 
-/// verify_incremental rejects when proof item count doesn't match previous peak count.
+/// verify_incremental rejects when proof item count doesn't match previous peak
+/// count.
 #[test]
 fn test_verify_incremental_proof_count_mismatch() {
     // Current: 7 leaves (mmr_size=11). Incremental: 1 leaf.

@@ -87,8 +87,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use grovedb_costs::{
-        CostContext, CostResult, CostsExt, OperationCost,
-        storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree,
+        ChildrenSizesWithIsSumTree, CostContext, CostResult, CostsExt, OperationCost,
+        storage_cost::key_value_cost::KeyValueStorageCost,
     };
     use grovedb_storage::StorageContext;
 
@@ -145,8 +145,10 @@ mod tests {
         }
 
         fn delete<K: AsRef<[u8]>>(&mut self, _key: K, _cost_info: Option<KeyValueStorageCost>) {}
+
         fn delete_aux<K: AsRef<[u8]>>(&mut self, _key: K, _cost_info: Option<KeyValueStorageCost>) {
         }
+
         fn delete_root<K: AsRef<[u8]>>(
             &mut self,
             _key: K,
@@ -164,48 +166,56 @@ mod tests {
                 cost: Default::default(),
             }
         }
+
         fn seek_to_last(&mut self) -> CostContext<()> {
             CostContext {
                 value: (),
                 cost: Default::default(),
             }
         }
+
         fn seek<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
             CostContext {
                 value: (),
                 cost: Default::default(),
             }
         }
+
         fn seek_for_prev<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
             CostContext {
                 value: (),
                 cost: Default::default(),
             }
         }
+
         fn next(&mut self) -> CostContext<()> {
             CostContext {
                 value: (),
                 cost: Default::default(),
             }
         }
+
         fn prev(&mut self) -> CostContext<()> {
             CostContext {
                 value: (),
                 cost: Default::default(),
             }
         }
+
         fn value(&self) -> CostContext<Option<&[u8]>> {
             CostContext {
                 value: None,
                 cost: Default::default(),
             }
         }
+
         fn key(&self) -> CostContext<Option<&[u8]>> {
             CostContext {
                 value: None,
                 cost: Default::default(),
             }
         }
+
         fn valid(&self) -> CostContext<bool> {
             CostContext {
                 value: false,
@@ -256,6 +266,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn put_root<K: AsRef<[u8]>>(
             &self,
             _key: K,
@@ -264,6 +275,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn put_meta<K: AsRef<[u8]>>(
             &self,
             _key: K,
@@ -272,6 +284,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete<K: AsRef<[u8]>>(
             &self,
             _key: K,
@@ -279,6 +292,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete_aux<K: AsRef<[u8]>>(
             &self,
             _key: K,
@@ -286,6 +300,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete_root<K: AsRef<[u8]>>(
             &self,
             _key: K,
@@ -293,6 +308,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete_meta<K: AsRef<[u8]>>(
             &self,
             _key: K,
@@ -300,30 +316,36 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn get_aux<K: AsRef<[u8]>>(
             &self,
             _key: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
             Ok(None).wrap_with_cost(Default::default())
         }
+
         fn get_root<K: AsRef<[u8]>>(
             &self,
             _key: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
             Ok(None).wrap_with_cost(Default::default())
         }
+
         fn get_meta<K: AsRef<[u8]>>(
             &self,
             _key: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
             Ok(None).wrap_with_cost(Default::default())
         }
+
         fn new_batch(&self) -> Self::Batch {
             StubBatch
         }
+
         fn commit_batch(&self, _batch: Self::Batch) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn raw_iter(&self) -> Self::RawIterator {
             StubRawIterator
         }
@@ -365,7 +387,10 @@ mod tests {
 
         let result = MMRStoreReadOps::element_at_position(&store_ref, 42);
         let node = result.value.expect("read should succeed");
-        assert!(node.is_none(), "reading missing position should return None");
+        assert!(
+            node.is_none(),
+            "reading missing position should return None"
+        );
     }
 
     #[test]
@@ -542,6 +567,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn put_root<K: AsRef<[u8]>>(
             &self,
             _k: K,
@@ -550,6 +576,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn put_meta<K: AsRef<[u8]>>(
             &self,
             _k: K,
@@ -558,6 +585,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete<K: AsRef<[u8]>>(
             &self,
             _k: K,
@@ -565,6 +593,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete_aux<K: AsRef<[u8]>>(
             &self,
             _k: K,
@@ -572,6 +601,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete_root<K: AsRef<[u8]>>(
             &self,
             _k: K,
@@ -579,6 +609,7 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn delete_meta<K: AsRef<[u8]>>(
             &self,
             _k: K,
@@ -586,30 +617,36 @@ mod tests {
         ) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn get_aux<K: AsRef<[u8]>>(
             &self,
             _k: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
             Ok(None).wrap_with_cost(Default::default())
         }
+
         fn get_root<K: AsRef<[u8]>>(
             &self,
             _k: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
             Ok(None).wrap_with_cost(Default::default())
         }
+
         fn get_meta<K: AsRef<[u8]>>(
             &self,
             _k: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
             Ok(None).wrap_with_cost(Default::default())
         }
+
         fn new_batch(&self) -> Self::Batch {
             StubBatch
         }
+
         fn commit_batch(&self, _batch: Self::Batch) -> CostResult<(), grovedb_storage::Error> {
             Ok(()).wrap_with_cost(Default::default())
         }
+
         fn raw_iter(&self) -> Self::RawIterator {
             StubRawIterator
         }
@@ -622,10 +659,7 @@ mod tests {
         let store_ref: &MmrStore<'_, _> = &store;
 
         let result = MMRStoreReadOps::element_at_position(&store_ref, 0);
-        assert!(
-            result.value.is_err(),
-            "should surface storage get error"
-        );
+        assert!(result.value.is_err(), "should surface storage get error");
         let err_msg = format!("{}", result.value.expect_err("should be store error"));
         assert!(
             err_msg.contains("get failed"),
@@ -642,10 +676,7 @@ mod tests {
 
         let leaf = MmrNode::leaf(b"data".to_vec());
         let result = MMRStoreWriteOps::append(&mut store_ref, 0, vec![leaf]);
-        assert!(
-            result.value.is_err(),
-            "should surface storage put error"
-        );
+        assert!(result.value.is_err(), "should surface storage put error");
         let err_msg = format!("{}", result.value.expect_err("should be store error"));
         assert!(
             err_msg.contains("put failed"),

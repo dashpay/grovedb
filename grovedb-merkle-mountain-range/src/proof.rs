@@ -974,12 +974,7 @@ mod tests {
     #[test]
     fn test_calculate_root_with_new_leaf_rejects_out_of_bounds() {
         let proof = MerkleProof::new(1, vec![]);
-        let result = proof.calculate_root_with_new_leaf(
-            vec![],
-            5,
-            MmrNode::internal([0u8; 32]),
-            3,
-        );
+        let result = proof.calculate_root_with_new_leaf(vec![], 5, MmrNode::internal([0u8; 32]), 3);
         assert!(result.is_err(), "new_pos >= new_mmr_size should error");
         let err_msg = format!("{}", result.expect_err("should be bounds error"));
         assert!(
@@ -1000,7 +995,10 @@ mod tests {
         let result: Option<MmrNode> = MMRStoreReadOps::element_at_position(&&store, 0)
             .unwrap()
             .expect("CostResult should be Ok");
-        assert!(result.is_none(), "should return None when error is deferred");
+        assert!(
+            result.is_none(),
+            "should return None when error is deferred"
+        );
 
         // Error is available via take_error
         let err = store.take_error().expect("should have captured error");
@@ -1087,9 +1085,8 @@ mod tests {
 
     #[test]
     fn test_generate_internal_node_at_leaf_position() {
-        let internal_store = |_pos: u64| -> Result<Option<MmrNode>> {
-            Ok(Some(MmrNode::internal([0xABu8; 32])))
-        };
+        let internal_store =
+            |_pos: u64| -> Result<Option<MmrNode>> { Ok(Some(MmrNode::internal([0xABu8; 32]))) };
         let result = MmrTreeProof::generate(7, &[0], internal_store);
         assert!(
             result.is_err(),
@@ -1146,8 +1143,7 @@ mod tests {
 
     #[test]
     fn test_verify_and_get_root_roundtrip() {
-        let (store, mmr_size) =
-            build_mmr(&[b"item_0", b"item_1", b"item_2", b"item_3", b"item_4"]);
+        let (store, mmr_size) = build_mmr(&[b"item_0", b"item_1", b"item_2", b"item_3", b"item_4"]);
         let root = root_hash(&store, mmr_size);
 
         let proof = MmrTreeProof::generate(mmr_size, &[1, 3], get_node_from_store(&store))
@@ -1156,7 +1152,10 @@ mod tests {
         let (computed_root, verified_leaves) = proof
             .verify_and_get_root()
             .expect("verify_and_get_root should succeed");
-        assert_eq!(computed_root, root, "computed root should match actual root");
+        assert_eq!(
+            computed_root, root,
+            "computed root should match actual root"
+        );
         assert_eq!(verified_leaves.len(), 2);
         assert_eq!(verified_leaves[0], (1, b"item_1".to_vec()));
         assert_eq!(verified_leaves[1], (3, b"item_3".to_vec()));
