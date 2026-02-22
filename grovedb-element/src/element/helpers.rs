@@ -205,9 +205,9 @@ impl Element {
     pub fn non_merk_entry_count(&self) -> Option<u64> {
         match self {
             Element::CommitmentTree(_, count, ..) => Some(*count),
-            Element::MmrTree(_, mmr_size, _) => Some(*mmr_size),
-            Element::BulkAppendTree(_, count, ..) => Some(*count),
-            Element::DenseAppendOnlyFixedSizeTree(_, count, ..) => Some(*count as u64),
+            Element::MmrTree(mmr_size, _) => Some(*mmr_size),
+            Element::BulkAppendTree(count, ..) => Some(*count),
+            Element::DenseAppendOnlyFixedSizeTree(count, ..) => Some(*count as u64),
             _ => None,
         }
     }

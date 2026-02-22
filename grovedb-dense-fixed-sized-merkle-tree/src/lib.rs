@@ -10,6 +10,8 @@
 mod error;
 pub(crate) mod hash;
 pub(crate) mod proof;
+#[cfg(feature = "storage")]
+mod storage_adapter;
 mod store;
 pub(crate) mod tree;
 mod verify;
@@ -20,5 +22,7 @@ mod tests;
 pub use error::DenseMerkleError;
 pub use hash::{compute_dense_merkle_root, compute_dense_merkle_root_from_values};
 pub use proof::DenseTreeProof;
+#[cfg(feature = "storage")]
+pub use storage_adapter::{position_key, AuxDenseTreeStore};
 pub use store::DenseTreeStore;
 pub use tree::DenseFixedSizedMerkleTree;

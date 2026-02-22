@@ -305,9 +305,9 @@ impl GroveDb {
                     )
                 );
             }
-            // MmrTree, BulkAppendTree, DenseAppendOnlyFixedSizeTree: these are
-            // tree types that use insert_subtree with NULL_HASH. Their V1 proof
-            // verifiers return NULL_HASH for the lower layer.
+            // MmrTree, BulkAppendTree, DenseAppendOnlyFixedSizeTree: initial
+            // insert uses NULL_HASH since these trees start empty. For MmrTree,
+            // the MMR root becomes the child hash after the first append.
             Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..) => {

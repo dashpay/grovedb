@@ -92,32 +92,35 @@ pub enum Element {
     /// MMR (Merkle Mountain Range) tree: append-only authenticated data
     /// structure with zero rotations, O(N) total hashes, sequential I/O.
     ///
-    /// Fields: `(mmr_root, mmr_size, flags)`
-    /// - `mmr_root`: The bagged peaks root hash.
+    /// The MMR root hash is stored as the Merk child hash (not in the Element).
+    ///
+    /// Fields: `(mmr_size, flags)`
     /// - `mmr_size`: Total number of MMR nodes (internal + leaves).
     /// - `flags`: Optional per-element metadata.
-    MmrTree([u8; 32], u64, Option<ElementFlags>),
+    MmrTree(u64, Option<ElementFlags>),
     /// Bulk-append tree: two-level structure with a dense Merkle buffer that
     /// compacts into chunk blobs stored in an MMR.
     ///
-    /// Fields: `(state_root, total_count, chunk_power, flags)`
-    /// - `state_root`: `blake3(mmr_root || buffer_hash)`, authenticated as the
-    ///   child Merk hash.
+    /// Fields: `(total_count, chunk_power, flags)`
     /// - `total_count`: Number of items appended so far.
     /// - `chunk_power`: Log2 of the chunk size (actual size = `1 <<
     ///   chunk_power`).
     /// - `flags`: Optional per-element metadata.
-    BulkAppendTree([u8; 32], u64, u8, Option<ElementFlags>),
+    ///
+    /// The state root (`blake3(mmr_root || buffer_hash)`) flows through the
+    /// Merk child hash mechanism (`insert_subtree`'s `subtree_root_hash`
+    /// parameter).
+    BulkAppendTree(u64, u8, Option<ElementFlags>),
     /// Dense fixed-sized Merkle tree: a complete binary tree of height h with
     /// 2^h - 1 positions. Nodes are filled sequentially in level-order (BFS).
-    /// Root hash is computed on-the-fly.
+    /// Root hash flows through the Merk child hash mechanism (insert_subtree's
+    /// subtree_root_hash parameter).
     ///
-    /// Fields: `(root_hash, count, height, flags)`
-    /// - `root_hash`: The dense Merkle root hash.
+    /// Fields: `(count, height, flags)`
     /// - `count`: Number of values inserted so far.
     /// - `height`: Tree height h; the tree has 2^h - 1 positions.
     /// - `flags`: Optional per-element metadata.
-    DenseAppendOnlyFixedSizeTree([u8; 32], u16, u8, Option<ElementFlags>),
+    DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -272,22 +275,20 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::MmrTree(mmr_root, mmr_size, flags) => {
+            Element::MmrTree(mmr_size, flags) => {
                 write!(
                     f,
-                    "MmrTree(mmr_root: {}, mmr_size: {}{})",
-                    hex::encode(mmr_root),
+                    "MmrTree(mmr_size: {}{})",
                     mmr_size,
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::BulkAppendTree(state_root, total_count, chunk_power, flags) => {
+            Element::BulkAppendTree(total_count, chunk_power, flags) => {
                 write!(
                     f,
-                    "BulkAppendTree(state_root: {}, total_count: {}, chunk_power: {}{})",
-                    hex::encode(state_root),
+                    "BulkAppendTree(total_count: {}, chunk_power: {}{})",
                     total_count,
                     chunk_power,
                     flags
@@ -295,11 +296,10 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, flags) => {
+            Element::DenseAppendOnlyFixedSizeTree(count, height, flags) => {
                 write!(
                     f,
-                    "DenseAppendOnlyFixedSizeTree(root_hash: {}, count: {}, height: {}{})",
-                    hex::encode(root_hash),
+                    "DenseAppendOnlyFixedSizeTree(count: {}, height: {}{})",
                     count,
                     height,
                     flags

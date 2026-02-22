@@ -1,11 +1,11 @@
 //! Append and compaction logic for BulkAppendTree.
 
 use grovedb_dense_fixed_sized_merkle_tree::compute_dense_merkle_root_from_values;
-use grovedb_mmr::{hash_count_for_push, mmr_size_to_leaf_count, MergeBlake3, MmrNode, MMR};
+use grovedb_merkle_mountain_range::{hash_count_for_push, mmr_size_to_leaf_count, MmrNode, MMR};
 
 use super::{
     hash::{chain_buffer_hash, compute_state_root},
-    keys::{buffer_key, chunk_key, META_KEY},
+    keys::{buffer_key, META_KEY},
     mmr_adapter::MmrAdapter,
     AppendResult, BulkAppendTree,
 };
@@ -83,7 +83,7 @@ impl BulkAppendTree {
         let new_buffer_count = self.buffer_count();
 
         // 3. Check if compaction needed
-        let compacted = if new_buffer_count == 0 {
+        let (compacted, mmr_root) = if new_buffer_count == 0 {
             let entries = match &mut buffer_source {
                 BufferSource::Store => self.read_buffer_from_store(store)?,
                 BufferSource::Memory(buf) => {
@@ -91,14 +91,15 @@ impl BulkAppendTree {
                     entries
                 }
             };
-            hash_count += self.compact_entries(store, &entries)?;
-            true
+            let (compact_hashes, root) = self.compact_entries(store, &entries)?;
+            hash_count += compact_hashes;
+            (true, root)
         } else {
-            false
+            let root = self.get_mmr_root(store)?;
+            (false, root)
         };
 
         // 4. Compute state root (+1 hash)
-        let mmr_root = self.get_mmr_root(store)?;
         let state_root = compute_state_root(&mmr_root, &self.buffer_hash);
         hash_count += 1;
 
@@ -140,12 +141,12 @@ impl BulkAppendTree {
 
     /// Compact buffer entries into a chunk blob and append the dense Merkle
     /// root to the chunk MMR. Clears the buffer in storage and resets
-    /// `buffer_hash`. Returns the number of hash calls performed.
+    /// `buffer_hash`. Returns `(hash_count, mmr_root)`.
     fn compact_entries<S: BulkStore>(
         &mut self,
         store: &S,
         entries: &[Vec<u8>],
-    ) -> Result<u32, BulkAppendError> {
+    ) -> Result<(u32, [u8; 32]), BulkAppendError> {
         let mut hash_count: u32 = 0;
 
         // Compute dense Merkle root
@@ -156,31 +157,31 @@ impl BulkAppendTree {
             })?;
         hash_count += dense_hash_count;
 
-        // Serialize into chunk blob
-        let chunk_idx = self.chunk_count() - 1;
-        let ckey = chunk_key(chunk_idx);
+        // Store chunk blob inside the MMR leaf node
         let blob = serialize_chunk_blob(entries);
-        store
-            .put(&ckey, &blob)
-            .map_err(|e| BulkAppendError::StorageError(format!("put chunk failed: {}", e)))?;
+        let leaf = MmrNode::data_leaf(epoch_root, blob);
 
         // Append chunk root to MMR
         let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
         hash_count += hash_count_for_push(leaf_count);
 
-        let adapter = MmrAdapter {
-            store,
-            cache: &self.mmr_node_cache,
-        };
-        let leaf = MmrNode::internal(epoch_root);
-        {
-            let mut mmr = MMR::<MmrNode, MergeBlake3, _>::new(self.mmr_size, &adapter);
-            mmr.push(leaf)
-                .map_err(|e| BulkAppendError::MmrError(format!("MMR push failed: {}", e)))?;
-            mmr.commit()
-                .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
-            self.mmr_size = mmr.mmr_size();
-        }
+        let adapter = MmrAdapter { store };
+        let mut mmr = MMR::new(self.mmr_size, &adapter);
+        mmr.push(leaf)
+            .unwrap()
+            .map_err(|e| BulkAppendError::MmrError(format!("MMR push failed: {}", e)))?;
+
+        // Get root BEFORE commit — data is still in the MMRBatch overlay
+        let root_node = mmr
+            .get_root()
+            .unwrap()
+            .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
+        let mmr_root = root_node.hash();
+
+        mmr.commit()
+            .unwrap()
+            .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
+        self.mmr_size = mmr.mmr_size();
 
         // Delete buffer entries
         for i in 0..self.chunk_size() {
@@ -193,7 +194,7 @@ impl BulkAppendTree {
         // Reset buffer hash
         self.buffer_hash = [0u8; 32];
 
-        Ok(hash_count)
+        Ok((hash_count, mmr_root))
     }
 
     /// Save final metadata to the store. Call after a sequence of
@@ -215,6 +216,9 @@ impl BulkAppendTree {
     }
 
     /// Get the MMR root hash, or `[0; 32]` if no chunks exist.
+    ///
+    /// Only called when no compaction happened in the current append (so all
+    /// MMR nodes are already persisted in the store from prior operations).
     pub(crate) fn get_mmr_root<S: BulkStore>(
         &self,
         store: &S,
@@ -222,14 +226,12 @@ impl BulkAppendTree {
         if self.mmr_size == 0 {
             return Ok([0u8; 32]);
         }
-        let adapter = MmrAdapter {
-            store,
-            cache: &self.mmr_node_cache,
-        };
-        let mmr = MMR::<MmrNode, MergeBlake3, _>::new(self.mmr_size, &adapter);
+        let adapter = MmrAdapter { store };
+        let mmr = MMR::new(self.mmr_size, &adapter);
         let root_node = mmr
             .get_root()
+            .unwrap()
             .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
-        Ok(root_node.hash)
+        Ok(root_node.hash())
     }
 }

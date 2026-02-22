@@ -26,6 +26,31 @@ impl DenseTreeProof {
         &self,
         expected_root: &[u8; 32],
     ) -> Result<Vec<(u16, Vec<u8>)>, DenseMerkleError> {
+        let (computed_root, entries) = self.verify_inner()?;
+
+        if &computed_root != expected_root {
+            return Err(DenseMerkleError::InvalidProof(format!(
+                "root hash mismatch: expected {}, got {}",
+                hex_encode(expected_root),
+                hex_encode(&computed_root)
+            )));
+        }
+
+        Ok(entries)
+    }
+
+    /// Verify the proof and return the computed root hash along with proved
+    /// entries, without comparing against an expected root.
+    ///
+    /// This is used when the root hash flows through the Merk child hash
+    /// mechanism rather than being stored in the Element.
+    pub fn verify_and_get_root(&self) -> Result<([u8; 32], Vec<(u16, Vec<u8>)>), DenseMerkleError> {
+        self.verify_inner()
+    }
+
+    /// Shared verification logic: validates the proof structure, recomputes
+    /// the root hash, and returns `(computed_root, proved_entries)`.
+    fn verify_inner(&self) -> Result<([u8; 32], Vec<(u16, Vec<u8>)>), DenseMerkleError> {
         // Validate height to prevent shift overflow
         if !(1..=16).contains(&self.height) {
             return Err(DenseMerkleError::InvalidProof(format!(
@@ -156,21 +181,15 @@ impl DenseTreeProof {
         let computed_root =
             self.recompute_hash(0, capacity, &entry_map, &value_hash_map, &hash_map)?;
 
-        if &computed_root != expected_root {
-            return Err(DenseMerkleError::InvalidProof(format!(
-                "root hash mismatch: expected {}, got {}",
-                hex_encode(expected_root),
-                hex_encode(&computed_root)
-            )));
-        }
-
         // Vuln 2: Only return entries at valid positions (< count AND < capacity)
-        Ok(self
+        let entries = self
             .entries
             .iter()
             .filter(|(pos, _)| *pos < self.count && *pos < capacity)
             .map(|(pos, val)| (*pos, val.clone()))
-            .collect())
+            .collect();
+
+        Ok((computed_root, entries))
     }
 
     /// Recursively recompute the hash for a position.

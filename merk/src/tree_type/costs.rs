@@ -33,17 +33,18 @@ pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
 /// overhead)
 pub const COMMITMENT_TREE_COST_SIZE: u32 = 32 + 9 + 1 + 2; // 44
 
-/// The cost of an MMR tree (32 bytes for mmr_root + 9 bytes for mmr_size
-/// (u64 varint worst case) + 2 bytes overhead)
-pub const MMR_TREE_COST_SIZE: u32 = 32 + 9 + 2; // 43
+/// The cost of an MMR tree (9 bytes for mmr_size (u64 varint worst case) +
+/// 2 bytes overhead). The MMR root hash is stored as the Merk child hash,
+/// not in the Element.
+pub const MMR_TREE_COST_SIZE: u32 = 9 + 2; // 11
 
-/// The cost of a bulk-append tree (32 bytes state_root + 9 bytes total_count
-/// (u64 varint worst case) + 1 byte chunk_power (u8) + 2 bytes overhead)
-pub const BULK_APPEND_TREE_COST_SIZE: u32 = 32 + 9 + 1 + 2; // 44
+/// The cost of a bulk-append tree (9 bytes total_count (u64 varint worst case)
+/// + 1 byte chunk_power (u8) + 2 bytes overhead)
+pub const BULK_APPEND_TREE_COST_SIZE: u32 = 9 + 1 + 2; // 12
 
-/// The cost of a dense tree (32 bytes root_hash + 3 bytes count (u16 varint
-/// worst case) + 1 byte height (u8) + 2 bytes overhead)
-pub const DENSE_TREE_COST_SIZE: u32 = 32 + 3 + 1 + 2; // 38
+/// The cost of a dense tree (3 bytes count (u16 varint worst case) + 1 byte
+/// height (u8) + 2 bytes overhead)
+pub const DENSE_TREE_COST_SIZE: u32 = 3 + 1 + 2; // 6
 
 pub trait CostSize {
     fn cost_size(&self) -> u32;

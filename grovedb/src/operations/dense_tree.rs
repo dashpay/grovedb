@@ -8,14 +8,14 @@
 //! hash and count are tracked in the Element itself and propagated through
 //! the GroveDB Merk hierarchy.
 
-use std::{cell::RefCell, collections::HashMap};
+use std::collections::HashMap;
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
 };
 use grovedb_dense_fixed_sized_merkle_tree::{
-    DenseFixedSizedMerkleTree, DenseMerkleError, DenseTreeStore,
+    position_key, AuxDenseTreeStore, DenseFixedSizedMerkleTree, DenseMerkleError,
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
@@ -29,72 +29,6 @@ use crate::{
     util::TxRef,
     Element, Error, GroveDb, Merk, Transaction, TransactionArg,
 };
-
-/// Storage adapter wrapping a GroveDB `StorageContext` for dense tree
-/// operations.
-///
-/// Reads and writes node values to auxiliary storage keyed by position
-/// (big-endian u16). Uses `RefCell` for cost accumulation and a write-through
-/// cache since DenseTreeStore takes `&self`.
-pub(crate) struct AuxDenseTreeStore<'a, C> {
-    ctx: &'a C,
-    cost: RefCell<OperationCost>,
-    cache: RefCell<HashMap<u16, Vec<u8>>>,
-}
-
-impl<'a, C> AuxDenseTreeStore<'a, C> {
-    pub fn new(ctx: &'a C) -> Self {
-        Self {
-            ctx,
-            cost: RefCell::new(OperationCost::default()),
-            cache: RefCell::new(HashMap::new()),
-        }
-    }
-
-    pub fn take_cost(&self) -> OperationCost {
-        self.cost.take()
-    }
-}
-
-fn position_key(pos: u16) -> [u8; 2] {
-    pos.to_be_bytes()
-}
-
-impl<'db, C: StorageContext<'db>> DenseTreeStore for AuxDenseTreeStore<'_, C> {
-    fn get_value(&self, position: u16) -> Result<Option<Vec<u8>>, DenseMerkleError> {
-        // Check write-through cache first
-        if let Some(val) = self.cache.borrow().get(&position) {
-            return Ok(Some(val.clone()));
-        }
-
-        let key = position_key(position);
-        let result = self.ctx.get(&key);
-        let mut cost = self.cost.borrow_mut();
-        *cost += result.cost;
-        match result.value {
-            Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
-            Ok(None) => Ok(None),
-            Err(e) => Err(DenseMerkleError::StoreError(format!(
-                "get at pos {}: {}",
-                position, e
-            ))),
-        }
-    }
-
-    fn put_value(&self, position: u16, value: &[u8]) -> Result<(), DenseMerkleError> {
-        let key = position_key(position);
-        let result = self.ctx.put(&key, value, None, None);
-        let mut cost = self.cost.borrow_mut();
-        *cost += result.cost;
-        result
-            .value
-            .map_err(|e| DenseMerkleError::StoreError(format!("put at pos {}: {}", position, e)))?;
-        // Cache for subsequent reads
-        drop(cost);
-        self.cache.borrow_mut().insert(position, value.to_vec());
-        Ok(())
-    }
-}
 
 impl GroveDb {
     /// Insert a value into a DenseAppendOnlyFixedSizeTree subtree.
@@ -123,9 +57,7 @@ impl GroveDb {
         );
 
         let (existing_count, height, existing_flags) = match &element {
-            Element::DenseAppendOnlyFixedSizeTree(_, count, h, flags) => {
-                (*count, *h, flags.clone())
-            }
+            Element::DenseAppendOnlyFixedSizeTree(count, h, flags) => (*count, *h, flags.clone()),
             _ => {
                 return Err(Error::InvalidInput("element is not a dense tree"))
                     .wrap_with_cost(cost);
@@ -174,15 +106,14 @@ impl GroveDb {
             )
         );
 
-        let updated_element =
-            Element::new_dense_tree(new_root_hash, tree.count(), height, existing_flags);
+        let updated_element = Element::new_dense_tree(tree.count(), height, existing_flags);
 
         cost_return_on_error_into!(
             &mut cost,
             updated_element.insert_subtree(
                 &mut parent_merk,
                 key,
-                grovedb_merk::tree::NULL_HASH,
+                new_root_hash,
                 None,
                 grove_version,
             )
@@ -240,7 +171,7 @@ impl GroveDb {
         );
 
         let count = match &element {
-            Element::DenseAppendOnlyFixedSizeTree(_, count, ..) => *count,
+            Element::DenseAppendOnlyFixedSizeTree(count, ..) => *count,
             _ => {
                 return Err(Error::InvalidInput("element is not a dense tree"))
                     .wrap_with_cost(cost);
@@ -271,6 +202,8 @@ impl GroveDb {
     }
 
     /// Get the root hash of a DenseAppendOnlyFixedSizeTree.
+    ///
+    /// Computes the root hash from storage (same pattern as MmrTree).
     pub fn dense_tree_root_hash<'b, B, P>(
         &self,
         path: P,
@@ -284,18 +217,49 @@ impl GroveDb {
     {
         let path: SubtreePath<B> = path.into();
         let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
 
         let element = cost_return_on_error!(
             &mut cost,
-            self.get_raw_caching_optional(path, key, true, transaction, grove_version)
+            self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        match element {
-            Element::DenseAppendOnlyFixedSizeTree(root_hash, ..) => {
-                Ok(root_hash).wrap_with_cost(cost)
+        let (count, height) = match &element {
+            Element::DenseAppendOnlyFixedSizeTree(count, h, _) => (*count, *h),
+            _ => {
+                return Err(Error::InvalidInput("element is not a dense tree"))
+                    .wrap_with_cost(cost);
             }
-            _ => Err(Error::InvalidInput("element is not a dense tree")).wrap_with_cost(cost),
+        };
+
+        if count == 0 {
+            return Ok([0u8; 32]).wrap_with_cost(cost);
         }
+
+        let subtree_path_vec = self.build_subtree_path_for_dense_tree(&path, key);
+        let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
+        let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(subtree_path, tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        let store = AuxDenseTreeStore::new(&storage_ctx);
+        let tree = cost_return_on_error_no_add!(
+            cost,
+            DenseFixedSizedMerkleTree::from_state(height, count)
+                .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
+        );
+
+        let (root_hash, hash_calls) = cost_return_on_error_no_add!(
+            cost,
+            tree.root_hash(&store)
+                .map_err(|e| Error::CorruptedData(format!("dense tree root hash error: {}", e)))
+        );
+        cost.hash_node_calls += hash_calls;
+
+        Ok(root_hash).wrap_with_cost(cost)
     }
 
     /// Get the count of a DenseAppendOnlyFixedSizeTree.
@@ -319,7 +283,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::DenseAppendOnlyFixedSizeTree(_, count, ..) => Ok(count).wrap_with_cost(cost),
+            Element::DenseAppendOnlyFixedSizeTree(count, ..) => Ok(count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a dense tree")).wrap_with_cost(cost),
         }
     }
@@ -389,7 +353,7 @@ impl GroveDb {
             );
 
             let (existing_count, height) = match &element {
-                Element::DenseAppendOnlyFixedSizeTree(_, count, h, _) => (*count, *h),
+                Element::DenseAppendOnlyFixedSizeTree(count, h, _) => (*count, *h),
                 _ => {
                     return Err(Error::InvalidInput("element is not a dense tree"))
                         .wrap_with_cost(cost);
@@ -435,10 +399,10 @@ impl GroveDb {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
                 key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
                 op: GroveOp::ReplaceTreeRootKey {
-                    hash: grovedb_merk::tree::NULL_HASH,
+                    hash: new_root_hash,
                     root_key: None,
                     aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
-                    custom_root: Some(new_root_hash),
+                    custom_root: None,
                     custom_count: Some(tree.count() as u64),
                     bulk_state: None,
                 },

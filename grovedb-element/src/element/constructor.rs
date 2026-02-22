@@ -324,58 +324,52 @@ impl Element {
 
     /// Set element to an empty MMR tree
     pub fn empty_mmr_tree() -> Self {
-        Element::MmrTree([0u8; 32], 0, None)
+        Element::MmrTree(0, None)
     }
 
     /// Set element to an empty MMR tree with flags
     pub fn empty_mmr_tree_with_flags(flags: Option<ElementFlags>) -> Self {
-        Element::MmrTree([0u8; 32], 0, flags)
+        Element::MmrTree(0, flags)
     }
 
-    /// Set element to an MMR tree with all fields
-    pub fn new_mmr_tree(mmr_root: [u8; 32], mmr_size: u64, flags: Option<ElementFlags>) -> Self {
-        Element::MmrTree(mmr_root, mmr_size, flags)
+    /// Set element to an MMR tree with the given size
+    pub fn new_mmr_tree(mmr_size: u64, flags: Option<ElementFlags>) -> Self {
+        Element::MmrTree(mmr_size, flags)
     }
 
     /// Set element to an empty bulk append tree without flags
     pub fn empty_bulk_append_tree(chunk_power: u8) -> Self {
         assert!(chunk_power <= 31, "chunk_power must be <= 31");
-        Element::BulkAppendTree([0u8; 32], 0, chunk_power, None)
+        Element::BulkAppendTree(0, chunk_power, None)
     }
 
     /// Set element to an empty bulk append tree with flags
     pub fn empty_bulk_append_tree_with_flags(chunk_power: u8, flags: Option<ElementFlags>) -> Self {
         assert!(chunk_power <= 31, "chunk_power must be <= 31");
-        Element::BulkAppendTree([0u8; 32], 0, chunk_power, flags)
+        Element::BulkAppendTree(0, chunk_power, flags)
     }
 
     /// Set element to a bulk append tree with all fields
     pub fn new_bulk_append_tree(
-        state_root: [u8; 32],
         total_count: u64,
         chunk_power: u8,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::BulkAppendTree(state_root, total_count, chunk_power, flags)
+        Element::BulkAppendTree(total_count, chunk_power, flags)
     }
 
     /// Set element to an empty dense tree without flags
     pub fn empty_dense_tree(height: u8) -> Self {
-        Element::DenseAppendOnlyFixedSizeTree([0u8; 32], 0, height, None)
+        Element::DenseAppendOnlyFixedSizeTree(0, height, None)
     }
 
     /// Set element to an empty dense tree with flags
     pub fn empty_dense_tree_with_flags(height: u8, flags: Option<ElementFlags>) -> Self {
-        Element::DenseAppendOnlyFixedSizeTree([0u8; 32], 0, height, flags)
+        Element::DenseAppendOnlyFixedSizeTree(0, height, flags)
     }
 
     /// Set element to a dense tree with all fields
-    pub fn new_dense_tree(
-        root_hash: [u8; 32],
-        count: u16,
-        height: u8,
-        flags: Option<ElementFlags>,
-    ) -> Self {
-        Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, flags)
+    pub fn new_dense_tree(count: u16, height: u8, flags: Option<ElementFlags>) -> Self {
+        Element::DenseAppendOnlyFixedSizeTree(count, height, flags)
     }
 }

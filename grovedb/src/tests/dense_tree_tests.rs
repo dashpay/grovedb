@@ -781,7 +781,7 @@ fn test_dense_tree_height_immutability() {
         .expect("get element");
 
     match element {
-        Element::DenseAppendOnlyFixedSizeTree(_, count, height, _) => {
+        Element::DenseAppendOnlyFixedSizeTree(count, height, _) => {
             assert_eq!(height, 4, "height should remain 4");
             assert_eq!(count, 5, "count should be 5");
         }

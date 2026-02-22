@@ -1,58 +1,71 @@
-//! MMR storage adapter bridging `BulkStore` to ckb MMR traits.
+//! MMR storage adapter bridging `BulkStore` to MMR traits.
 
-use std::{cell::RefCell, collections::HashMap};
-
-use grovedb_mmr::{MMRStoreReadOps, MMRStoreWriteOps, MmrNode};
+use grovedb_merkle_mountain_range::{
+    CostResult, CostsExt, MMRStoreReadOps, MMRStoreWriteOps, MmrNode, OperationCost,
+};
 
 use super::keys::mmr_node_key;
 use crate::BulkStore;
 
-/// Adapter bridging `BulkStore` to ckb MMR storage traits.
+/// Adapter bridging `BulkStore` to MMR storage traits.
 ///
-/// Uses a write-through cache to handle read-after-write when the
-/// underlying store defers writes (e.g., batch-based transactional storage).
+/// Callers should call `get_root()` **before** `commit()` so that
+/// recently-pushed nodes are still available in the `MMRBatch` overlay.
+/// This eliminates the need for a write-through cache.
 pub(crate) struct MmrAdapter<'a, S: BulkStore> {
     pub store: &'a S,
-    pub cache: &'a RefCell<HashMap<u64, MmrNode>>,
 }
 
-impl<S: BulkStore> MMRStoreReadOps<MmrNode> for &MmrAdapter<'_, S> {
-    fn get_elem(&self, pos: u64) -> grovedb_mmr::CkbResult<Option<MmrNode>> {
-        // Check cache first
-        if let Some(node) = self.cache.borrow().get(&pos) {
-            return Ok(Some(node.clone()));
-        }
-        // Fall through to storage
+impl<S: BulkStore> MMRStoreReadOps for &MmrAdapter<'_, S> {
+    fn element_at_position(
+        &self,
+        pos: u64,
+    ) -> CostResult<Option<MmrNode>, grovedb_merkle_mountain_range::Error> {
         let key = mmr_node_key(pos);
-        match self.store.get(&key) {
+        let result = match self.store.get(&key) {
             Ok(Some(bytes)) => {
                 let node = MmrNode::deserialize(&bytes).map_err(|e| {
-                    grovedb_mmr::CkbError::StoreError(format!(
+                    grovedb_merkle_mountain_range::Error::StoreError(format!(
                         "deserialize MMR node at {}: {}",
                         pos, e
                     ))
-                })?;
-                Ok(Some(node))
+                });
+                match node {
+                    Ok(n) => Ok(Some(n)),
+                    Err(e) => Err(e),
+                }
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(grovedb_mmr::CkbError::StoreError(e)),
-        }
+            Err(e) => Err(grovedb_merkle_mountain_range::Error::StoreError(e)),
+        };
+        result.wrap_with_cost(OperationCost::default())
     }
 }
 
-impl<S: BulkStore> MMRStoreWriteOps<MmrNode> for &MmrAdapter<'_, S> {
-    fn append(&mut self, pos: u64, elems: Vec<MmrNode>) -> grovedb_mmr::CkbResult<()> {
+impl<S: BulkStore> MMRStoreWriteOps for &MmrAdapter<'_, S> {
+    fn append(
+        &mut self,
+        pos: u64,
+        elems: Vec<MmrNode>,
+    ) -> CostResult<(), grovedb_merkle_mountain_range::Error> {
         for (i, node) in elems.into_iter().enumerate() {
             let p = pos + i as u64;
             let key = mmr_node_key(p);
-            let serialized = node.serialize().map_err(|e| {
-                grovedb_mmr::CkbError::StoreError(format!("serialize MMR node at {}: {}", p, e))
-            })?;
-            self.store
-                .put(&key, &serialized)
-                .map_err(grovedb_mmr::CkbError::StoreError)?;
-            self.cache.borrow_mut().insert(p, node);
+            let serialized = match node.serialize() {
+                Ok(s) => s,
+                Err(e) => {
+                    return Err(grovedb_merkle_mountain_range::Error::StoreError(format!(
+                        "serialize MMR node at {}: {}",
+                        p, e
+                    )))
+                    .wrap_with_cost(OperationCost::default());
+                }
+            };
+            if let Err(e) = self.store.put(&key, &serialized) {
+                return Err(grovedb_merkle_mountain_range::Error::StoreError(e))
+                    .wrap_with_cost(OperationCost::default());
+            }
         }
-        Ok(())
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 }

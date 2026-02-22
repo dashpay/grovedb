@@ -181,7 +181,7 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::MmrTree(_, _, flags) => {
+            Element::MmrTree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -192,7 +192,7 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::BulkAppendTree(_, _, _, flags) => {
+            Element::BulkAppendTree(_, _, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -203,7 +203,7 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::DenseAppendOnlyFixedSizeTree(_, _, _, flags) => {
+            Element::DenseAppendOnlyFixedSizeTree(_, _, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32

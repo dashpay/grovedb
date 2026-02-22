@@ -147,11 +147,19 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::MmrTree(mmr_root, mmr_size, flags) => {
+            Element::MmrTree(mmr_size, flags) => {
+                drawer.write(format!("mmr_tree: mmr_size: {mmr_size}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
+            Element::BulkAppendTree(total_count, chunk_power, flags) => {
                 drawer.write(
                     format!(
-                        "mmr_tree: mmr_root: {} mmr_size: {mmr_size}",
-                        hex::encode(mmr_root)
+                        "bulk_append_tree: total_count: {total_count} chunk_power: {chunk_power}",
                     )
                     .as_bytes(),
                 )?;
@@ -162,30 +170,8 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::BulkAppendTree(state_root, total_count, chunk_power, flags) => {
-                drawer.write(
-                    format!(
-                        "bulk_append_tree: state_root: {} total_count: {total_count} chunk_power: \
-                         {chunk_power}",
-                        hex::encode(state_root)
-                    )
-                    .as_bytes(),
-                )?;
-
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
-                }
-            }
-            Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, flags) => {
-                drawer.write(
-                    format!(
-                        "dense_tree: root_hash: {} count: {count} height: {height}",
-                        hex::encode(root_hash)
-                    )
-                    .as_bytes(),
-                )?;
+            Element::DenseAppendOnlyFixedSizeTree(count, height, flags) => {
+                drawer.write(format!("dense_tree: count: {count} height: {height}",).as_bytes())?;
 
                 if let Some(f) = flags {
                     if !f.is_empty() {

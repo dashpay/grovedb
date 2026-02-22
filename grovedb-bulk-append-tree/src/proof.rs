@@ -13,8 +13,8 @@
 use std::{cell::RefCell, collections::BTreeMap};
 
 use bincode::{Decode, Encode};
-use grovedb_mmr::{
-    leaf_to_pos, MMRStoreReadOps, MMRStoreWriteOps, MergeBlake3, MerkleProof, MmrNode,
+use grovedb_merkle_mountain_range::{
+    leaf_to_pos, CostsExt, MMRStoreReadOps, MMRStoreWriteOps, MerkleProof, MmrNode, OperationCost,
 };
 
 use crate::{
@@ -92,10 +92,24 @@ impl BulkAppendTreeProof {
             );
 
             for chunk_idx in first_chunk..=last_chunk {
-                let key = crate::chunk_key(chunk_idx);
-                let blob = get_aux(&key)?.ok_or_else(|| {
+                // Read chunk blob from the MMR leaf node
+                let mmr_pos = leaf_to_pos(chunk_idx);
+                let key = grovedb_merkle_mountain_range::mmr_node_key(mmr_pos);
+                let raw = get_aux(&key)?.ok_or_else(|| {
                     BulkAppendError::CorruptedData(format!(
-                        "chunk blob missing for chunk {}",
+                        "MMR leaf missing for chunk {}",
+                        chunk_idx
+                    ))
+                })?;
+                let node = MmrNode::deserialize(&raw).map_err(|e| {
+                    BulkAppendError::CorruptedData(format!(
+                        "failed to deserialize MMR leaf for chunk {}: {}",
+                        chunk_idx, e
+                    ))
+                })?;
+                let blob = node.into_value().ok_or_else(|| {
+                    BulkAppendError::CorruptedData(format!(
+                        "MMR leaf for chunk {} has no data",
                         chunk_idx
                     ))
                 })?;
@@ -135,10 +149,10 @@ impl BulkAppendTreeProof {
                 chunk_mmr_leaves.push((*chunk_idx, dense_root));
             }
 
-            // Build MMR positions and generate proof (lazy store)
+            // Build MMR positions and generate proof (lazy store, drops zero costs)
             let positions: Vec<u64> = chunk_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
-            let mmr = grovedb_mmr::MMR::<MmrNode, MergeBlake3, _>::new(mmr_size, &lazy_mmr_store);
-            let proof_result = mmr.gen_proof(positions);
+            let mmr = grovedb_merkle_mountain_range::MMR::new(mmr_size, &lazy_mmr_store);
+            let proof_result = mmr.gen_proof(positions).unwrap();
 
             // Check deferred storage errors first -- if the store failed,
             // the ckb error is a symptom, not the root cause.
@@ -149,13 +163,14 @@ impl BulkAppendTreeProof {
                 BulkAppendError::MmrError(format!("chunk MMR gen_proof failed: {}", e))
             })?;
 
-            chunk_mmr_proof_items = proof.proof_items().iter().map(|node| node.hash).collect();
+            chunk_mmr_proof_items = proof.proof_items().iter().map(|node| node.hash()).collect();
         }
 
-        // Get the chunk MMR root (reuses cached nodes from proof generation)
+        // Get the chunk MMR root (reuses cached nodes from proof generation, drops zero
+        // costs)
         let chunk_mmr_root = if mmr_size > 0 {
-            let mmr = grovedb_mmr::MMR::<MmrNode, MergeBlake3, _>::new(mmr_size, &lazy_mmr_store);
-            let root_result = mmr.get_root();
+            let mmr = grovedb_merkle_mountain_range::MMR::new(mmr_size, &lazy_mmr_store);
+            let root_result = mmr.get_root().unwrap();
 
             if let Some(err) = lazy_mmr_store.take_error() {
                 return Err(err);
@@ -164,7 +179,7 @@ impl BulkAppendTreeProof {
                 BulkAppendError::MmrError(format!("chunk MMR get_root failed: {}", e))
             })?;
 
-            root.hash
+            root.hash()
         } else {
             [0u8; 32]
         };
@@ -266,7 +281,8 @@ impl BulkAppendTreeProof {
 
         // Verify chunk_mmr_size is consistent with completed_chunks
         if completed_chunks > 0 {
-            let expected_leaf_count = grovedb_mmr::mmr_size_to_leaf_count(self.chunk_mmr_size);
+            let expected_leaf_count =
+                grovedb_merkle_mountain_range::mmr_size_to_leaf_count(self.chunk_mmr_size);
             if expected_leaf_count != completed_chunks {
                 return Err(BulkAppendError::InvalidProof(format!(
                     "chunk MMR leaf count mismatch: MMR has {} leaves, expected {} completed \
@@ -334,7 +350,7 @@ impl BulkAppendTreeProof {
                 .map(|hash| MmrNode::internal(*hash))
                 .collect();
 
-            let proof = MerkleProof::<MmrNode, MergeBlake3>::new(self.chunk_mmr_size, proof_nodes);
+            let proof = MerkleProof::new(self.chunk_mmr_size, proof_nodes);
 
             let verification_leaves: Vec<(u64, MmrNode)> = self
                 .chunk_mmr_leaves
@@ -500,54 +516,64 @@ where
     }
 }
 
-impl<F> MMRStoreReadOps<MmrNode> for &LazyMmrNodeStore<'_, F>
+impl<F> MMRStoreReadOps for &LazyMmrNodeStore<'_, F>
 where
     F: Fn(&[u8]) -> Result<Option<Vec<u8>>, BulkAppendError>,
 {
-    fn get_elem(&self, pos: u64) -> grovedb_mmr::CkbResult<Option<MmrNode>> {
+    fn element_at_position(
+        &self,
+        pos: u64,
+    ) -> grovedb_merkle_mountain_range::CostResult<
+        Option<MmrNode>,
+        grovedb_merkle_mountain_range::Error,
+    > {
         if self.error.borrow().is_some() {
-            return Ok(None);
+            return Ok(None).wrap_with_cost(OperationCost::default());
         }
 
         let cache = self.cache.borrow();
         if let Some(cached) = cache.get(&pos) {
-            return Ok(cached.clone());
+            return Ok(cached.clone()).wrap_with_cost(OperationCost::default());
         }
         drop(cache);
 
-        let key = grovedb_mmr::mmr_node_key(pos);
+        let key = grovedb_merkle_mountain_range::mmr_node_key(pos);
         match (self.get_aux)(&key) {
             Ok(Some(bytes)) => match MmrNode::deserialize(&bytes) {
                 Ok(node) => {
                     self.cache.borrow_mut().insert(pos, Some(node.clone()));
-                    Ok(Some(node))
+                    Ok(Some(node)).wrap_with_cost(OperationCost::default())
                 }
                 Err(e) => {
                     *self.error.borrow_mut() = Some(BulkAppendError::CorruptedData(format!(
                         "failed to deserialize MMR node at pos {}: {}",
                         pos, e
                     )));
-                    Ok(None)
+                    Ok(None).wrap_with_cost(OperationCost::default())
                 }
             },
             Ok(None) => {
                 self.cache.borrow_mut().insert(pos, None);
-                Ok(None)
+                Ok(None).wrap_with_cost(OperationCost::default())
             }
             Err(e) => {
                 *self.error.borrow_mut() = Some(e);
-                Ok(None)
+                Ok(None).wrap_with_cost(OperationCost::default())
             }
         }
     }
 }
 
-impl<F> MMRStoreWriteOps<MmrNode> for &LazyMmrNodeStore<'_, F>
+impl<F> MMRStoreWriteOps for &LazyMmrNodeStore<'_, F>
 where
     F: Fn(&[u8]) -> Result<Option<Vec<u8>>, BulkAppendError>,
 {
-    fn append(&mut self, _pos: u64, _elems: Vec<MmrNode>) -> grovedb_mmr::CkbResult<()> {
-        Ok(())
+    fn append(
+        &mut self,
+        _pos: u64,
+        _elems: Vec<MmrNode>,
+    ) -> grovedb_merkle_mountain_range::CostResult<(), grovedb_merkle_mountain_range::Error> {
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 }
 
@@ -559,15 +585,26 @@ mod tests {
     /// Simple BTreeMap-based store for computing MMR root in tests.
     struct BTreeMapStore(BTreeMap<u64, MmrNode>);
 
-    impl MMRStoreReadOps<MmrNode> for &BTreeMapStore {
-        fn get_elem(&self, pos: u64) -> grovedb_mmr::CkbResult<Option<MmrNode>> {
-            Ok(self.0.get(&pos).cloned())
+    impl MMRStoreReadOps for &BTreeMapStore {
+        fn element_at_position(
+            &self,
+            pos: u64,
+        ) -> grovedb_merkle_mountain_range::CostResult<
+            Option<MmrNode>,
+            grovedb_merkle_mountain_range::Error,
+        > {
+            Ok(self.0.get(&pos).cloned()).wrap_with_cost(OperationCost::default())
         }
     }
 
-    impl MMRStoreWriteOps<MmrNode> for &BTreeMapStore {
-        fn append(&mut self, _pos: u64, _elems: Vec<MmrNode>) -> grovedb_mmr::CkbResult<()> {
-            Ok(())
+    impl MMRStoreWriteOps for &BTreeMapStore {
+        fn append(
+            &mut self,
+            _pos: u64,
+            _elems: Vec<MmrNode>,
+        ) -> grovedb_merkle_mountain_range::CostResult<(), grovedb_merkle_mountain_range::Error>
+        {
+            Ok(()).wrap_with_cost(OperationCost::default())
         }
     }
 
@@ -601,8 +638,8 @@ mod tests {
                 }
             }
             let mmr_store = BTreeMapStore(mmr_nodes);
-            let mmr = grovedb_mmr::MMR::<MmrNode, MergeBlake3, _>::new(tree.mmr_size(), &mmr_store);
-            mmr.get_root().expect("get root").hash
+            let mmr = grovedb_merkle_mountain_range::MMR::new(tree.mmr_size(), &mmr_store);
+            mmr.get_root().unwrap().expect("get root").hash()
         } else {
             [0u8; 32]
         };

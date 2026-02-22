@@ -1,9 +1,8 @@
 //! Read operations for BulkAppendTree.
 
-use super::{
-    keys::{buffer_key, chunk_key},
-    BulkAppendTree,
-};
+use grovedb_merkle_mountain_range::{leaf_to_pos, mmr_node_key, MmrNode};
+
+use super::{keys::buffer_key, BulkAppendTree};
 use crate::{chunk::deserialize_chunk_blob, BulkAppendError, BulkStore};
 
 impl BulkAppendTree {
@@ -22,10 +21,23 @@ impl BulkAppendTree {
         let completed_chunks = self.chunk_count();
 
         if chunk_idx < completed_chunks {
-            // Read from completed chunk blob
-            let ckey = chunk_key(chunk_idx);
-            match store.get(&ckey) {
-                Ok(Some(blob)) => {
+            // Read chunk data from the MMR leaf node
+            let mmr_pos = leaf_to_pos(chunk_idx);
+            let mkey = mmr_node_key(mmr_pos);
+            match store.get(&mkey) {
+                Ok(Some(bytes)) => {
+                    let node = MmrNode::deserialize(&bytes).map_err(|e| {
+                        BulkAppendError::CorruptedData(format!(
+                            "failed to deserialize MMR node for chunk {}: {}",
+                            chunk_idx, e
+                        ))
+                    })?;
+                    let blob = node.into_value().ok_or_else(|| {
+                        BulkAppendError::CorruptedData(format!(
+                            "MMR leaf for chunk {} has no data",
+                            chunk_idx
+                        ))
+                    })?;
                     let entries = deserialize_chunk_blob(&blob)?;
                     if (intra_idx as usize) < entries.len() {
                         Ok(Some(entries[intra_idx as usize].clone()))
@@ -39,7 +51,7 @@ impl BulkAppendTree {
                     }
                 }
                 Ok(None) => Err(BulkAppendError::CorruptedData(format!(
-                    "missing chunk blob {}",
+                    "missing MMR leaf for chunk {}",
                     chunk_idx
                 ))),
                 Err(e) => Err(BulkAppendError::StorageError(e)),
@@ -65,8 +77,24 @@ impl BulkAppendTree {
         if chunk_index >= self.chunk_count() {
             return Ok(None);
         }
-        let ckey = chunk_key(chunk_index);
-        store.get(&ckey).map_err(BulkAppendError::StorageError)
+        let mmr_pos = leaf_to_pos(chunk_index);
+        let mkey = mmr_node_key(mmr_pos);
+        match store.get(&mkey) {
+            Ok(Some(bytes)) => {
+                let node = MmrNode::deserialize(&bytes).map_err(|e| {
+                    BulkAppendError::CorruptedData(format!(
+                        "failed to deserialize MMR node for chunk {}: {}",
+                        chunk_index, e
+                    ))
+                })?;
+                Ok(node.into_value())
+            }
+            Ok(None) => Err(BulkAppendError::CorruptedData(format!(
+                "missing MMR leaf for chunk {}",
+                chunk_index
+            ))),
+            Err(e) => Err(BulkAppendError::StorageError(e)),
+        }
     }
 
     /// Get all current buffer entries.

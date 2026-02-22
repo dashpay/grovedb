@@ -114,7 +114,7 @@ fn test_bulk_append_tree_is_any_tree() {
 #[test]
 fn test_bulk_append_tree_serialization_roundtrip() {
     let grove_version = GroveVersion::latest();
-    let original = Element::new_bulk_append_tree([42u8; 32], 100, 3, Some(vec![7, 8, 9]));
+    let original = Element::new_bulk_append_tree(100, 3, Some(vec![7, 8, 9]));
     let bytes = original.serialize(grove_version).expect("serialize");
     let deserialized = Element::deserialize(&bytes, grove_version).expect("deserialize");
     assert_eq!(original, deserialized);
@@ -449,9 +449,8 @@ fn test_bulk_state_root_deterministic() {
         .expect("get2");
 
     match (&elem1, &elem2) {
-        (Element::BulkAppendTree(sr1, tc1, cp1, _), Element::BulkAppendTree(sr2, tc2, cp2, _)) => {
-            assert_eq!(sr1, sr2, "state roots should be deterministic");
-            assert_eq!(tc1, tc2);
+        (Element::BulkAppendTree(tc1, cp1, _), Element::BulkAppendTree(tc2, cp2, _)) => {
+            assert_eq!(tc1, tc2, "total counts should be deterministic");
             assert_eq!(cp1, cp2);
         }
         _ => panic!("expected BulkAppendTree elements"),
@@ -757,12 +756,12 @@ fn test_bulk_batch_matches_direct_ops() {
         .expect("get2");
 
     match (&elem1, &elem2) {
-        (Element::BulkAppendTree(_, sr1, tc1, ..), Element::BulkAppendTree(_, sr2, tc2, ..)) => {
+        (Element::BulkAppendTree(tc1, cp1, ..), Element::BulkAppendTree(tc2, cp2, ..)) => {
             assert_eq!(
-                sr1, sr2,
-                "state roots should match between direct and batch"
+                tc1, tc2,
+                "total counts should match between direct and batch"
             );
-            assert_eq!(tc1, tc2);
+            assert_eq!(cp1, cp2);
         }
         _ => panic!("expected BulkAppendTree elements"),
     }

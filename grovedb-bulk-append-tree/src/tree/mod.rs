@@ -17,9 +17,6 @@ mod query;
 #[cfg(test)]
 mod tests;
 
-use std::{cell::RefCell, collections::HashMap};
-
-use grovedb_mmr::MmrNode;
 use keys::META_KEY;
 
 use crate::{BulkAppendError, BulkStore};
@@ -51,7 +48,6 @@ pub struct BulkAppendTree {
     pub(crate) chunk_power: u8,
     pub(crate) mmr_size: u64,
     pub(crate) buffer_hash: [u8; 32],
-    pub(crate) mmr_node_cache: RefCell<HashMap<u64, MmrNode>>,
 }
 
 impl BulkAppendTree {
@@ -70,7 +66,6 @@ impl BulkAppendTree {
             chunk_power,
             mmr_size: 0,
             buffer_hash: [0u8; 32],
-            mmr_node_cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -93,7 +88,6 @@ impl BulkAppendTree {
             chunk_power,
             mmr_size,
             buffer_hash,
-            mmr_node_cache: RefCell::new(HashMap::new()),
         })
     }
 

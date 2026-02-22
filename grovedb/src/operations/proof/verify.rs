@@ -613,7 +613,9 @@ impl GroveDb {
     }
 
     /// Verify an MMR lower layer proof and add results.
-    /// Returns NULL_HASH since MmrTree has no child Merk.
+    /// Returns the computed MMR root hash, which the caller uses as the
+    /// child hash for Merk authentication (`combine_hash(value_hash ||
+    /// mmr_root)`).
     fn verify_mmr_lower_layer<T>(
         mmr_bytes: &[u8],
         element: &Element,
@@ -627,9 +629,9 @@ impl GroveDb {
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
-        // Extract the MMR root and size from the element
-        let (mmr_root, element_mmr_size) = match element {
-            Element::MmrTree(mmr_root, mmr_size, ..) => (*mmr_root, *mmr_size),
+        // Extract the MMR size from the element
+        let element_mmr_size = match element {
+            Element::MmrTree(mmr_size, ..) => *mmr_size,
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
@@ -638,22 +640,25 @@ impl GroveDb {
             }
         };
 
-        let mmr_proof = grovedb_mmr::MmrTreeProof::decode_from_slice(mmr_bytes)
+        let mmr_proof = grovedb_merkle_mountain_range::MmrTreeProof::decode_from_slice(mmr_bytes)
             .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
 
         // Cross-validate: proof's mmr_size must match the element's mmr_size
-        if mmr_proof.mmr_size != element_mmr_size {
+        if mmr_proof.mmr_size() != element_mmr_size {
             return Err(Error::InvalidProof(
                 query.clone(),
                 format!(
                     "MMR proof mmr_size {} does not match element mmr_size {}",
-                    mmr_proof.mmr_size, element_mmr_size
+                    mmr_proof.mmr_size(),
+                    element_mmr_size
                 ),
             ));
         }
 
-        let verified_leaves = mmr_proof
-            .verify(&mmr_root)
+        // Compute root from the proof — the Merk child hash mechanism
+        // authenticates this root via combine_hash(value_hash || mmr_root)
+        let (mmr_root, verified_leaves) = mmr_proof
+            .verify_and_get_root()
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Add each verified leaf to the result set
@@ -680,18 +685,15 @@ impl GroveDb {
             }
         }
 
-        // MmrTree has no child Merk - return NULL_HASH
-        Ok([0u8; 32])
+        // Return the computed MMR root as the child hash
+        Ok(mmr_root)
     }
 
     /// Verify a BulkAppendTree lower layer proof and add results.
     ///
-    /// For `BulkAppendTree` elements: verifies against the state_root stored in
-    /// the element and returns NULL_HASH (no child Merk).
-    ///
-    /// For `CommitmentTree` elements: verifies internal consistency and returns
-    /// the computed state_root as the lower hash (authenticated via child Merk
-    /// hash).
+    /// For both `BulkAppendTree` and `CommitmentTree` elements: verifies
+    /// internal consistency and returns the computed state_root as the lower
+    /// hash (authenticated via child Merk hash).
     fn verify_bulk_append_lower_layer<T>(
         bulk_bytes: &[u8],
         element: &Element,
@@ -705,10 +707,8 @@ impl GroveDb {
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
-        // Extract state_root from element, or None for CommitmentTree
-        let (state_root_opt, is_commitment_tree) = match element {
-            Element::BulkAppendTree(state_root, ..) => (Some(*state_root), false),
-            Element::CommitmentTree(..) => (None, true),
+        match element {
+            Element::BulkAppendTree(..) | Element::CommitmentTree(..) => {}
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
@@ -721,19 +721,9 @@ impl GroveDb {
             grovedb_bulk_append_tree::BulkAppendTreeProof::decode_from_slice(bulk_bytes)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
 
-        let (proof_result, bulk_state_root) = if let Some(sr) = state_root_opt {
-            // BulkAppendTree: verify against known state_root from element
-            let result = bulk_proof
-                .verify(&sr)
-                .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
-            (result, sr)
-        } else {
-            // CommitmentTree: verify internal consistency, return computed root
-            let (sr, result) = bulk_proof
-                .verify_and_compute_root()
-                .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
-            (result, sr)
-        };
+        let (bulk_state_root, proof_result) = bulk_proof
+            .verify_and_compute_root()
+            .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Get the query range from the path query to extract matching values
         let sub_query =
@@ -778,13 +768,8 @@ impl GroveDb {
             }
         }
 
-        // BulkAppendTree: no child Merk, return NULL_HASH
-        // CommitmentTree: return computed state_root as child Merk hash
-        Ok(if is_commitment_tree {
-            bulk_state_root
-        } else {
-            [0u8; 32]
-        })
+        // Return computed state_root as child Merk hash
+        Ok(bulk_state_root)
     }
 
     /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.
@@ -802,11 +787,9 @@ impl GroveDb {
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
-        // Extract the root hash, count, and height from the authenticated element
-        let (dense_root, element_count, element_height) = match element {
-            Element::DenseAppendOnlyFixedSizeTree(root_hash, count, height, _) => {
-                (*root_hash, *count, *height)
-            }
+        // Extract the count and height from the authenticated element
+        let (element_count, element_height) = match element {
+            Element::DenseAppendOnlyFixedSizeTree(count, height, _) => (*count, *height),
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
@@ -841,8 +824,8 @@ impl GroveDb {
             ));
         }
 
-        let verified_entries = dense_proof
-            .verify(&dense_root)
+        let (computed_root, verified_entries) = dense_proof
+            .verify_and_get_root()
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Add each verified entry to the result set
@@ -872,8 +855,8 @@ impl GroveDb {
             }
         }
 
-        // DenseTree has no child Merk - return NULL_HASH
-        Ok([0u8; 32])
+        // Return computed dense root as the child hash for Merk verification
+        Ok(computed_root)
     }
 
     /// Extract a position range from query items (used by BulkAppendTree

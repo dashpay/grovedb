@@ -746,21 +746,16 @@ impl GroveDb {
                             e
                         ))
                     })
-            } else if let Element::MmrTree(mmr_root, mmr_size, flag) = element {
-                let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
+            } else if let Element::MmrTree(mmr_size, flag) = element {
+                let tree = Element::new_mmr_tree(mmr_size, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| e.into())
-            } else if let Element::BulkAppendTree(state_root, total_count, chunk_power, flag) =
-                element
-            {
-                let tree =
-                    Element::new_bulk_append_tree(state_root, total_count, chunk_power, flag);
+            } else if let Element::BulkAppendTree(total_count, chunk_power, flag) = element {
+                let tree = Element::new_bulk_append_tree(total_count, chunk_power, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| e.into())
-            } else if let Element::DenseAppendOnlyFixedSizeTree(dense_root, count, height, flag) =
-                element
-            {
-                let tree = Element::new_dense_tree(dense_root, count, height, flag);
+            } else if let Element::DenseAppendOnlyFixedSizeTree(count, height, flag) = element {
+                let tree = Element::new_dense_tree(count, height, flag);
                 tree.insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| e.into())
             } else {
@@ -963,11 +958,9 @@ impl GroveDb {
                             key_hex, e
                         ))
                     })
-                } else if let Element::MmrTree(existing_mmr_root, existing_mmr_size, flag) = element
-                {
-                    let mmr_root = custom_root_override.unwrap_or(existing_mmr_root);
+                } else if let Element::MmrTree(existing_mmr_size, flag) = element {
                     let mmr_size = custom_count_override.unwrap_or(existing_mmr_size);
-                    let tree = Element::new_mmr_tree(mmr_root, mmr_size, flag);
+                    let tree = Element::new_mmr_tree(mmr_size, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -983,20 +976,14 @@ impl GroveDb {
                     )
                     .map_err(|e| e.into())
                 } else if let Element::BulkAppendTree(
-                    existing_state_root,
                     existing_total_count,
                     existing_chunk_power,
                     flag,
                 ) = element
                 {
-                    let state_root = custom_root_override.unwrap_or(existing_state_root);
                     let total_count = custom_count_override.unwrap_or(existing_total_count);
-                    let tree = Element::new_bulk_append_tree(
-                        state_root,
-                        total_count,
-                        existing_chunk_power,
-                        flag,
-                    );
+                    let tree =
+                        Element::new_bulk_append_tree(total_count, existing_chunk_power, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -1012,17 +999,15 @@ impl GroveDb {
                     )
                     .map_err(|e| e.into())
                 } else if let Element::DenseAppendOnlyFixedSizeTree(
-                    existing_dense_root,
                     existing_count,
                     existing_height,
                     flag,
                 ) = element
                 {
-                    let dense_root = custom_root_override.unwrap_or(existing_dense_root);
                     let count = custom_count_override
                         .map(|c| c as u16)
                         .unwrap_or(existing_count);
-                    let tree = Element::new_dense_tree(dense_root, count, existing_height, flag);
+                    let tree = Element::new_dense_tree(count, existing_height, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -1286,8 +1271,9 @@ impl GroveDb {
                         .unwrap()?;
                     let merk_root_hash = inner_merk.root_hash().unwrap();
 
-                    // CommitmentTree uses bulk_state_root as the child hash
-                    // (not the inner Merk root, which is always empty).
+                    // Non-Merk tree types use their own root hash as the
+                    // Merk child hash (not the inner Merk root, which is
+                    // always empty for these types).
                     let root_hash = if let Element::CommitmentTree(_, total_count, chunk_power, _) =
                         &element
                     {
@@ -1299,7 +1285,7 @@ impl GroveDb {
                                 transaction,
                             )
                             .unwrap();
-                        let store = operations::bulk_append_tree::DataBulkStore::new(&storage_ctx);
+                        let store = grovedb_bulk_append_tree::DataBulkStore::new(&storage_ctx);
                         match grovedb_bulk_append_tree::BulkAppendTree::load_from_store(
                             &store,
                             *total_count,
@@ -1309,6 +1295,77 @@ impl GroveDb {
                                 .compute_current_state_root(&store)
                                 .unwrap_or(merk_root_hash),
                             Err(_) => merk_root_hash,
+                        }
+                    } else if let Element::BulkAppendTree(total_count, chunk_power, _) = &element {
+                        if *total_count == 0 {
+                            merk_root_hash
+                        } else {
+                            let storage_ctx = self
+                                .db
+                                .get_transactional_storage_context(
+                                    new_path_ref.clone(),
+                                    None,
+                                    transaction,
+                                )
+                                .unwrap();
+                            let store = grovedb_bulk_append_tree::DataBulkStore::new(&storage_ctx);
+                            match grovedb_bulk_append_tree::BulkAppendTree::load_from_store(
+                                &store,
+                                *total_count,
+                                *chunk_power,
+                            ) {
+                                Ok(tree) => tree
+                                    .compute_current_state_root(&store)
+                                    .unwrap_or(merk_root_hash),
+                                Err(_) => merk_root_hash,
+                            }
+                        }
+                    } else if let Element::MmrTree(mmr_size, _) = &element {
+                        // MmrTree stores the MMR root as the Merk child hash
+                        if *mmr_size == 0 {
+                            merk_root_hash
+                        } else {
+                            let storage_ctx = self
+                                .db
+                                .get_transactional_storage_context(
+                                    new_path_ref.clone(),
+                                    None,
+                                    transaction,
+                                )
+                                .unwrap();
+                            let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
+                            let mmr = grovedb_merkle_mountain_range::MMR::new(*mmr_size, &store);
+                            match mmr.get_root().value {
+                                Ok(root) => root.hash(),
+                                Err(_) => merk_root_hash,
+                            }
+                        }
+                    } else if let Element::DenseAppendOnlyFixedSizeTree(count, height, _) = &element
+                    {
+                        if *count == 0 {
+                            merk_root_hash
+                        } else {
+                            let storage_ctx = self
+                                .db
+                                .get_transactional_storage_context(
+                                    new_path_ref.clone(),
+                                    None,
+                                    transaction,
+                                )
+                                .unwrap();
+                            let store =
+                                grovedb_dense_fixed_sized_merkle_tree::AuxDenseTreeStore::new(
+                                    &storage_ctx,
+                                );
+                            use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
+                            let tree = DenseFixedSizedMerkleTree::from_state(*height, *count);
+                            match tree {
+                                Ok(t) => match t.root_hash(&store) {
+                                    Ok((hash, _)) => hash,
+                                    Err(_) => merk_root_hash,
+                                },
+                                Err(_) => merk_root_hash,
+                            }
                         }
                     } else {
                         merk_root_hash

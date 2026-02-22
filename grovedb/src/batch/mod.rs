@@ -1743,19 +1743,14 @@ where
                             let (tc, cp) = bulk_state.unwrap_or((0, 0));
                             Element::new_commitment_tree_with_all(sr, tc, cp, flags)
                         }
-                        Some(TreeType::MmrTree) => {
-                            let mr = custom_root.unwrap_or([0u8; 32]);
-                            Element::MmrTree(mr, 0, flags)
-                        }
+                        Some(TreeType::MmrTree) => Element::MmrTree(0, flags),
                         Some(TreeType::BulkAppendTree) => {
-                            let sr = custom_root.unwrap_or([0u8; 32]);
                             let (tc, cp) = bulk_state.unwrap_or((0, 0));
-                            Element::BulkAppendTree(sr, tc, cp, flags)
+                            Element::BulkAppendTree(tc, cp, flags)
                         }
                         Some(TreeType::DenseAppendOnlyFixedSizeTree) => {
-                            let dr = custom_root.unwrap_or([0u8; 32]);
                             let (count, height) = bulk_state.unwrap_or((0, 0));
-                            Element::new_dense_tree(dr, count as u16, height, flags)
+                            Element::new_dense_tree(count as u16, height, flags)
                         }
                         Some(_) | None => {
                             // Standard aggregate trees — infer from
@@ -2246,7 +2241,6 @@ impl GroveDb {
                                                                 ),
                                                             }
                                                     } else if let Element::MmrTree(
-                                                        mmr_root,
                                                         _mmr_size,
                                                         flags,
                                                     ) = element
@@ -2257,14 +2251,13 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                custom_root: Some(*mmr_root),
+                                                                custom_root: None,
                                                                 bulk_state: None,
                                                                 non_merk_tree_type: Some(
                                                                     TreeType::MmrTree,
                                                                 ),
                                                             }
                                                     } else if let Element::BulkAppendTree(
-                                                        state_root,
                                                         total_count,
                                                         chunk_power,
                                                         flags,
@@ -2276,7 +2269,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                custom_root: Some(*state_root),
+                                                                custom_root: None,
                                                                 bulk_state: Some((
                                                                     *total_count,
                                                                     *chunk_power,
@@ -2287,7 +2280,6 @@ impl GroveDb {
                                                             }
                                                     } else if let
                                                         Element::DenseAppendOnlyFixedSizeTree(
-                                                            dense_root,
                                                             count,
                                                             height,
                                                             flags,
@@ -2299,7 +2291,7 @@ impl GroveDb {
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                custom_root: Some(*dense_root),
+                                                                custom_root: None,
                                                                 bulk_state: Some((
                                                                     *count as u64,
                                                                     *height,

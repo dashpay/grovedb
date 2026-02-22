@@ -587,20 +587,16 @@ mod tests {
                 "CommitmentTree",
             ),
             // discriminant 12
-            (
-                Element::MmrTree([0u8; 32], 0, None),
-                ElementType::MmrTree,
-                "MmrTree",
-            ),
+            (Element::MmrTree(0, None), ElementType::MmrTree, "MmrTree"),
             // discriminant 13
             (
-                Element::BulkAppendTree([0u8; 32], 0, 2, None),
+                Element::BulkAppendTree(0, 2, None),
                 ElementType::BulkAppendTree,
                 "BulkAppendTree",
             ),
             // discriminant 14
             (
-                Element::DenseAppendOnlyFixedSizeTree([0u8; 32], 0, 1, None),
+                Element::DenseAppendOnlyFixedSizeTree(0, 1, None),
                 ElementType::DenseAppendOnlyFixedSizeTree,
                 "DenseAppendOnlyFixedSizeTree",
             ),

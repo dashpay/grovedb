@@ -17,7 +17,7 @@ use grovedb_merk::{
     },
     CryptoHash,
 };
-use grovedb_mmr::MmrTreeProof;
+use grovedb_merkle_mountain_range::MmrTreeProof;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -388,11 +388,11 @@ fn decode_mmr_proof(bytes: &[u8]) -> String {
         Ok(proof) => {
             let mut s = format!(
                 "\n    mmr_size: {}, leaves: {}, proof_items: {}",
-                proof.mmr_size,
-                proof.leaves.len(),
-                proof.proof_items.len(),
+                proof.mmr_size(),
+                proof.leaves().len(),
+                proof.proof_items().len(),
             );
-            for (i, (idx, value)) in proof.leaves.iter().enumerate() {
+            for (i, (idx, value)) in proof.leaves().iter().enumerate() {
                 s.push_str(&format!(
                     "\n    leaf[{}]: index={}, value={}",
                     i,
@@ -400,7 +400,7 @@ fn decode_mmr_proof(bytes: &[u8]) -> String {
                     hex_to_ascii(value),
                 ));
             }
-            for (i, hash) in proof.proof_items.iter().enumerate() {
+            for (i, hash) in proof.proof_items().iter().enumerate() {
                 s.push_str(&format!(
                     "\n    sibling[{}]: HASH[{}]",
                     i,

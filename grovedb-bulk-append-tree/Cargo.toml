@@ -11,9 +11,14 @@ readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [dependencies]
-grovedb-mmr = { version = "4.0.0", path = "../grovedb-mmr" }
+grovedb-merkle-mountain-range = { version = "4.0.0", path = "../grovedb-merkle-mountain-range" }
 grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree" }
 blake3 = "1.8.1"
 bincode = { version = "2.0.1", features = ["derive"] }
 hex = "0.4"
 thiserror = "2.0"
+grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
+grovedb-costs = { version = "4.0.0", path = "../costs", optional = true }
+
+[features]
+storage = ["grovedb-storage", "grovedb-costs"]

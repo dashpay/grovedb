@@ -4,16 +4,16 @@
 //! and the `grovedb-bulk-append-tree` crate which owns all pure data-structure
 //! logic (buffer management, chunk compaction, MMR orchestration, hashing).
 
-use std::{cell::RefCell, collections::HashMap};
+use std::collections::HashMap;
 
-use grovedb_bulk_append_tree::{BulkAppendTree, BulkStore, CachedBulkStore};
+use grovedb_bulk_append_tree::{BulkAppendTree, CachedBulkStore, DataBulkStore};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch, StorageContext};
+use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -21,59 +21,6 @@ use crate::{
     util::TxRef,
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
-
-// ── Storage adapter ─────────────────────────────────────────────────────
-
-/// Adapter implementing `BulkStore` for a GroveDB `StorageContext`.
-///
-/// Wraps normal `get`/`put`/`delete` calls (data storage, not aux) and
-/// accumulates their `OperationCost` in a `RefCell` for later retrieval.
-pub(crate) struct DataBulkStore<'a, C> {
-    ctx: &'a C,
-    cost: RefCell<OperationCost>,
-}
-
-impl<'a, C> DataBulkStore<'a, C> {
-    pub(crate) fn new(ctx: &'a C) -> Self {
-        Self {
-            ctx,
-            cost: RefCell::new(OperationCost::default()),
-        }
-    }
-
-    fn take_cost(&self) -> OperationCost {
-        self.cost.take()
-    }
-}
-
-impl<'db, C: StorageContext<'db>> BulkStore for DataBulkStore<'_, C> {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        let result = self.ctx.get(key);
-        let mut c = self.cost.borrow_mut();
-        match result.unwrap_add_cost(&mut c) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(format!("{}", e)),
-        }
-    }
-
-    fn put(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        let result = self.ctx.put(key, value, None, None);
-        let mut c = self.cost.borrow_mut();
-        match result.unwrap_add_cost(&mut c) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(format!("{}", e)),
-        }
-    }
-
-    fn delete(&self, key: &[u8]) -> Result<(), String> {
-        let result = self.ctx.delete(key, None);
-        let mut c = self.cost.borrow_mut();
-        match result.unwrap_add_cost(&mut c) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(format!("{}", e)),
-        }
-    }
-}
 
 /// Map a `BulkAppendError` to a GroveDB `Error`.
 fn map_bulk_err(e: grovedb_bulk_append_tree::BulkAppendError) -> Error {
@@ -111,7 +58,7 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power, existing_flags) = match &element {
-            Element::BulkAppendTree(_, tc, cp, flags) => (*tc, *cp, flags.clone()),
+            Element::BulkAppendTree(tc, cp, flags) => (*tc, *cp, flags.clone()),
             _ => {
                 return Err(Error::InvalidInput("element is not a BulkAppendTree"))
                     .wrap_with_cost(cost);
@@ -159,19 +106,15 @@ impl GroveDb {
             )
         );
 
-        let updated_element = Element::new_bulk_append_tree(
-            new_state_root,
-            new_total_count,
-            chunk_power,
-            existing_flags,
-        );
+        let updated_element =
+            Element::new_bulk_append_tree(new_total_count, chunk_power, existing_flags);
 
         cost_return_on_error_into!(
             &mut cost,
             updated_element.insert_subtree(
                 &mut parent_merk,
                 key,
-                grovedb_merk::tree::NULL_HASH,
+                new_state_root,
                 None,
                 grove_version,
             )
@@ -231,7 +174,7 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power) = match &element {
-            Element::BulkAppendTree(_, tc, cp, _) => (*tc, *cp),
+            Element::BulkAppendTree(tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a BulkAppendTree"))
                     .wrap_with_cost(cost);
@@ -289,7 +232,7 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power) = match &element {
-            Element::BulkAppendTree(_, tc, cp, _) => (*tc, *cp),
+            Element::BulkAppendTree(tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a BulkAppendTree"))
                     .wrap_with_cost(cost);
@@ -344,7 +287,7 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power) = match &element {
-            Element::BulkAppendTree(_, tc, cp, _) => (*tc, *cp),
+            Element::BulkAppendTree(tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a BulkAppendTree"))
                     .wrap_with_cost(cost);
@@ -394,7 +337,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::BulkAppendTree(_, total_count, ..) => Ok(total_count).wrap_with_cost(cost),
+            Element::BulkAppendTree(total_count, ..) => Ok(total_count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a BulkAppendTree")).wrap_with_cost(cost),
         }
     }
@@ -420,7 +363,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::BulkAppendTree(_, total_count, chunk_power, _) => {
+            Element::BulkAppendTree(total_count, chunk_power, _) => {
                 Ok(total_count / (1u32 << chunk_power) as u64).wrap_with_cost(cost)
             }
             _ => Err(Error::InvalidInput("element is not a BulkAppendTree")).wrap_with_cost(cost),
@@ -491,7 +434,7 @@ impl GroveDb {
             );
 
             let (total_count, chunk_power, _flags) = match &element {
-                Element::BulkAppendTree(_, tc, cp, flags) => (*tc, *cp, flags.clone()),
+                Element::BulkAppendTree(tc, cp, flags) => (*tc, *cp, flags.clone()),
                 _ => {
                     return Err(Error::InvalidInput("element is not a BulkAppendTree"))
                         .wrap_with_cost(cost);
@@ -556,10 +499,10 @@ impl GroveDb {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
                 key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
                 op: GroveOp::ReplaceTreeRootKey {
-                    hash: grovedb_merk::tree::NULL_HASH,
+                    hash: new_state_root,
                     root_key: None,
                     aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
-                    custom_root: Some(new_state_root),
+                    custom_root: None,
                     custom_count: Some(current_total_count),
                     bulk_state: Some((current_total_count, chunk_power)),
                 },

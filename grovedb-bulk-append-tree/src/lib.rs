@@ -11,6 +11,8 @@
 pub mod chunk;
 mod error;
 pub mod proof;
+#[cfg(feature = "storage")]
+mod storage_adapter;
 mod store;
 mod tree;
 
@@ -18,9 +20,11 @@ mod tree;
 pub use chunk::{deserialize_chunk_blob, serialize_chunk_blob};
 pub use error::BulkAppendError;
 pub use proof::{BulkAppendTreeProof, BulkAppendTreeProofResult};
+#[cfg(feature = "storage")]
+pub use storage_adapter::DataBulkStore;
 pub use store::{BulkStore, CachedBulkStore};
 pub use tree::{
     hash::{chain_buffer_hash, compute_state_root},
-    keys::{buffer_key, chunk_key, META_KEY},
+    keys::{buffer_key, META_KEY},
     AppendResult, BulkAppendTree,
 };

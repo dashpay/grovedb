@@ -15,7 +15,7 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
-use grovedb_bulk_append_tree::{BulkAppendTree, BulkStore, CachedBulkStore};
+use grovedb_bulk_append_tree::{BulkAppendTree, CachedBulkStore, DataBulkStore};
 use grovedb_commitment_tree::{Anchor, CommitmentFrontier};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
@@ -36,59 +36,6 @@ use crate::{
 
 /// Key used to store the serialized commitment frontier data in aux storage.
 pub(crate) const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
-
-// ── Storage adapters ────────────────────────────────────────────────────
-
-/// Adapter implementing `BulkStore` for a GroveDB `StorageContext`.
-///
-/// Uses the data namespace (`get`/`put`/`delete`), NOT aux. This keeps
-/// BulkAppendTree data separate from the Sinsemilla frontier (which uses aux).
-struct DataBulkStore<'a, C> {
-    ctx: &'a C,
-    cost: RefCell<OperationCost>,
-}
-
-impl<'a, C> DataBulkStore<'a, C> {
-    fn new(ctx: &'a C) -> Self {
-        Self {
-            ctx,
-            cost: RefCell::new(OperationCost::default()),
-        }
-    }
-
-    fn take_cost(&self) -> OperationCost {
-        self.cost.take()
-    }
-}
-
-impl<'db, C: StorageContext<'db>> BulkStore for DataBulkStore<'_, C> {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        let result = self.ctx.get(key);
-        let mut c = self.cost.borrow_mut();
-        match result.unwrap_add_cost(&mut c) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(format!("{}", e)),
-        }
-    }
-
-    fn put(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        let result = self.ctx.put(key, value, None, None);
-        let mut c = self.cost.borrow_mut();
-        match result.unwrap_add_cost(&mut c) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(format!("{}", e)),
-        }
-    }
-
-    fn delete(&self, key: &[u8]) -> Result<(), String> {
-        let result = self.ctx.delete(key, None);
-        let mut c = self.cost.borrow_mut();
-        match result.unwrap_add_cost(&mut c) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(format!("{}", e)),
-        }
-    }
-}
 
 /// Write-through caching wrapper for `StorageContext` aux operations.
 ///

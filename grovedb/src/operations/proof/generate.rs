@@ -13,7 +13,7 @@ use grovedb_merk::{
     tree::value_hash,
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
-use grovedb_mmr::MmrTreeProof;
+use grovedb_merkle_mountain_range::MmrTreeProof;
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
@@ -914,7 +914,7 @@ impl GroveDb {
 
                             // MmrTree with subquery → generate MMR proof
                             // root_key is always None for MmrTree (no child Merk data)
-                            Ok(Element::MmrTree(mmr_root, mmr_size, _))
+                            Ok(Element::MmrTree(mmr_size, _))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -926,7 +926,6 @@ impl GroveDb {
                                     self.generate_mmr_layer_proof(
                                         &lower_path,
                                         path_query,
-                                        mmr_root,
                                         mmr_size,
                                         overall_limit,
                                         &tx,
@@ -940,13 +939,9 @@ impl GroveDb {
 
                             // BulkAppendTree with subquery → generate BulkAppend proof
                             // root_key is always None for BulkAppendTree (no child Merk data)
-                            Ok(Element::BulkAppendTree(
-                                state_root,
-                                total_count,
-                                chunk_power,
-                                _,
-                            )) if !done_with_results
-                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            Ok(Element::BulkAppendTree(total_count, chunk_power, _))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
@@ -956,7 +951,7 @@ impl GroveDb {
                                     self.generate_bulk_append_layer_proof(
                                         &lower_path,
                                         path_query,
-                                        state_root,
+                                        [0u8; 32], // unused parameter
                                         total_count,
                                         chunk_power,
                                         overall_limit,
@@ -972,7 +967,6 @@ impl GroveDb {
                             // DenseAppendOnlyFixedSizeTree with subquery → generate
                             // dense tree proof
                             Ok(Element::DenseAppendOnlyFixedSizeTree(
-                                _dense_root,
                                 dense_count,
                                 dense_height,
                                 _,
@@ -1126,7 +1120,6 @@ impl GroveDb {
         &self,
         subtree_path: &[&[u8]],
         path_query: &PathQuery,
-        mmr_root: [u8; 32],
         mmr_size: u64,
         overall_limit: &mut Option<u16>,
         tx: &crate::Transaction,
@@ -1166,18 +1159,17 @@ impl GroveDb {
         let mmr_proof = cost_return_on_error_no_add!(
             cost,
             MmrTreeProof::generate(mmr_size, &leaf_indices, |pos| {
-                let key = grovedb_mmr::mmr_node_key(pos);
+                let key = grovedb_merkle_mountain_range::mmr_node_key(pos);
                 let result = storage_ctx.get(&key);
                 match result.value {
                     Ok(Some(bytes)) => {
-                        let node = grovedb_mmr::MmrNode::deserialize(&bytes)?;
+                        let node = grovedb_merkle_mountain_range::MmrNode::deserialize(&bytes)?;
                         Ok(Some(node))
                     }
                     Ok(None) => Ok(None),
-                    Err(e) => Err(grovedb_mmr::MmrError::OperationFailed(format!(
-                        "storage error: {}",
-                        e
-                    ))),
+                    Err(e) => Err(grovedb_merkle_mountain_range::Error::OperationFailed(
+                        format!("storage error: {}", e),
+                    )),
                 }
             })
             .map_err(|e| Error::CorruptedData(format!("{}", e)))
@@ -1185,7 +1177,7 @@ impl GroveDb {
 
         // Update limit
         if let Some(limit) = overall_limit.as_mut() {
-            let count = mmr_proof.leaves.len() as u16;
+            let count = mmr_proof.leaves().len() as u16;
             *limit = limit.saturating_sub(count);
         }
 
@@ -1370,7 +1362,7 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         // Create storage adapter
-        let store = crate::operations::dense_tree::AuxDenseTreeStore::new(&storage_ctx);
+        let store = grovedb_dense_fixed_sized_merkle_tree::AuxDenseTreeStore::new(&storage_ctx);
 
         // Generate the proof
         let dense_proof = cost_return_on_error_no_add!(
@@ -1535,7 +1527,7 @@ impl GroveDb {
     ///
     /// Query keys are interpreted as BE u64 bytes representing leaf indices.
     fn query_items_to_leaf_indices(items: &[QueryItem], mmr_size: u64) -> Result<Vec<u64>, Error> {
-        let leaf_count = grovedb_mmr::mmr_size_to_leaf_count(mmr_size);
+        let leaf_count = grovedb_merkle_mountain_range::mmr_size_to_leaf_count(mmr_size);
 
         // Nothing to prove when MMR is empty
         if leaf_count == 0 {
