@@ -2,12 +2,12 @@
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
+// Re-export from grovedb-query
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_query::proofs::{CryptoHash, HASH_LENGTH, NULL_HASH};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use integer_encoding::*;
 
-/// The length of a `Hash` (in bytes).
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub const HASH_LENGTH: usize = 32;
 /// 2x length of a `Hash`
 #[cfg(feature = "minimal")]
 pub const HASH_LENGTH_X2: usize = 64;
@@ -23,14 +23,6 @@ pub const HASH_BLOCK_SIZE: usize = 64;
 /// Hash block size as u32
 #[cfg(feature = "minimal")]
 pub const HASH_BLOCK_SIZE_U32: u32 = 64;
-
-/// A zero-filled `Hash`.
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];
-
-/// A cryptographic hash digest.
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub type CryptoHash = [u8; HASH_LENGTH];
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Hashes a value

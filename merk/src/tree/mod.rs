@@ -21,7 +21,7 @@ mod link;
 #[cfg(feature = "minimal")]
 mod ops;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-mod tree_feature_type;
+pub mod tree_feature_type;
 #[cfg(feature = "minimal")]
 mod walk;
 
