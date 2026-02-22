@@ -129,6 +129,115 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
+            GroveOp::CommitmentTreeInsert { cmx, payload } => {
+                let mut value = Vec::with_capacity(32 + payload.len());
+                value.extend_from_slice(cmx);
+                value.extend_from_slice(payload);
+                // Cost of inserting the item (cmx || payload) into the subtree
+                let item_cost = GroveDb::average_case_merk_insert_element(
+                    key,
+                    &Element::new_item(value),
+                    in_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                );
+                // Add cost of frontier aux I/O (load + save).
+                // Average frontier size with ~16 ommers:
+                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 (ommers) = 554
+                const AVG_FRONTIER_SIZE: u32 = 554;
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Average Sinsemilla hashes per append:
+                // 32 (root computation traverses all levels) + 1 (avg ommer updates) = 33
+                const AVG_SINSEMILLA_HASHES: u32 = 33;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 2, // get_aux + put_aux
+                    storage_cost: StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: AVG_FRONTIER_SIZE,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
+                    hash_node_calls: 0,
+                    sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
+                })
+            }
+            GroveOp::MmrTreeAppend { value: _value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::MmrTree,
+                    propagate,
+                    grove_version,
+                );
+                // Add cost of aux I/O for MMR nodes
+                // Average: 1 leaf write + ~1 internal node write
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                const AVG_NODE_SIZE: u32 = 42; // 1 flag + 32 hash + 4 len + ~5 avg value
+                const AVG_HASH_CALLS: u32 = 2; // 1 leaf + 1 avg merge
+                item_cost.add_cost(OperationCost {
+                    seek_count: 2,
+                    storage_cost: StorageCost {
+                        added_bytes: AVG_NODE_SIZE * 2,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: AVG_NODE_SIZE as u64,
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::BulkAppend { value: _value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::BulkAppendTree,
+                    propagate,
+                    grove_version,
+                );
+                // Add cost of aux I/O for bulk append nodes
+                // Average: 1 leaf write + ~1 internal node write
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                const AVG_NODE_SIZE: u32 = 42;
+                const AVG_HASH_CALLS: u32 = 2;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 2,
+                    storage_cost: StorageCost {
+                        added_bytes: AVG_NODE_SIZE * 2,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: AVG_NODE_SIZE as u64,
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::DenseTreeInsert { value: _value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::DenseAppendOnlyFixedSizeTree,
+                    propagate,
+                    grove_version,
+                );
+                // Average: 1 value write + hash recomputation from root
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                const AVG_VALUE_SIZE: u32 = 64;
+                const AVG_HASH_CALLS: u32 = 16; // average height traversal
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1,
+                    storage_cost: StorageCost {
+                        added_bytes: AVG_VALUE_SIZE,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: AVG_VALUE_SIZE as u64,
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
         }
     }
 }
@@ -383,6 +492,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -450,6 +560,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -512,6 +623,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 4,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -598,6 +710,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 109,
                 hash_node_calls: 8,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -691,6 +804,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 173,
                 hash_node_calls: 12,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -759,6 +873,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 7669,
                 hash_node_calls: 79,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

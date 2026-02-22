@@ -1518,7 +1518,9 @@ mod tests {
             .unwrap()
             .expect("should generate proof");
 
-        let GroveDBProof::V0(proof_v0) = &grovedb_proof;
+        let GroveDBProof::V0(proof_v0) = &grovedb_proof else {
+            panic!("expected V0 proof");
+        };
         let root_layer = &proof_v0.root_layer;
 
         // Navigate through proof hierarchy: root -> TEST_LEAF -> rotation_tree
@@ -1675,7 +1677,9 @@ mod tests {
             .unwrap()
             .expect("should generate proof");
 
-        let GroveDBProof::V0(proof_v0) = &grovedb_proof;
+        let GroveDBProof::V0(proof_v0) = &grovedb_proof else {
+            panic!("expected V0 proof");
+        };
         let root_layer = &proof_v0.root_layer;
 
         // Navigate through proof hierarchy: root -> TEST_LEAF -> stress_tree
@@ -2232,7 +2236,7 @@ mod tests {
 
                 // Check the root layer and lower layers
                 fn check_layer_proof(
-                    layer: &crate::operations::proof::LayerProof,
+                    layer: &crate::operations::proof::MerkOnlyLayerProof,
                     found_kvdigest_count: &mut bool,
                     found_plain_kvdigest: &mut bool,
                 ) {
@@ -2269,6 +2273,7 @@ mod tests {
                 // layers (e.g., root) So we don't assert
                 // !found_plain_kvdigest here
             }
+            _ => panic!("expected V0 proof"),
         }
     }
 }

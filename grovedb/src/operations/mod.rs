@@ -15,4 +15,16 @@ pub(crate) mod is_empty_tree;
 pub mod proof;
 
 #[cfg(feature = "minimal")]
+pub mod commitment_tree;
+
+#[cfg(feature = "minimal")]
+pub mod mmr_tree;
+
+#[cfg(feature = "minimal")]
+pub mod bulk_append_tree;
+
+#[cfg(feature = "minimal")]
+pub mod dense_tree;
+
+#[cfg(feature = "minimal")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};

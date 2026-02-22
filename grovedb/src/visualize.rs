@@ -44,22 +44,24 @@ impl GroveDb {
             drawer.write(b"\n[key: ")?;
             drawer = key.visualize(drawer)?;
             drawer.write(b" ")?;
-            match element {
-                Element::Tree(..) => {
-                    drawer.write(b"Merk root is: ")?;
-                    drawer = element.visualize(drawer)?;
-                    drawer.down();
-                    drawer = self.draw_subtree(
-                        drawer,
-                        path.derive_owned_with_child(key),
-                        transaction,
-                        grove_version,
-                    )?;
-                    drawer.up();
-                }
-                other => {
-                    drawer = other.visualize(drawer)?;
-                }
+            if element.uses_non_merk_data_storage() {
+                // Non-Merk data trees store entries as non-Element
+                // data in the data namespace — cannot recurse.
+                drawer.write(b"[non-Merk tree] ")?;
+                drawer = element.visualize(drawer)?;
+            } else if element.is_any_tree() {
+                drawer.write(b"Merk root is: ")?;
+                drawer = element.visualize(drawer)?;
+                drawer.down();
+                drawer = self.draw_subtree(
+                    drawer,
+                    path.derive_owned_with_child(key),
+                    transaction,
+                    grove_version,
+                )?;
+                drawer.up();
+            } else {
+                drawer = element.visualize(drawer)?;
             }
         }
 

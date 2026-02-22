@@ -44,6 +44,10 @@ fn element_to_string(element: Element) -> String {
         Element::CountSumTree(..) => "count_sum_tree".to_string(),
         Element::ProvableCountTree(..) => "provable_count_tree".to_string(),
         Element::ProvableCountSumTree(..) => "provable_count_sum_tree".to_string(),
+        Element::CommitmentTree(..) => "commitment_tree".to_string(),
+        Element::MmrTree(..) => "mmr_tree".to_string(),
+        Element::BulkAppendTree(..) => "bulk_append_tree".to_string(),
+        Element::DenseAppendOnlyFixedSizeTree(..) => "dense_tree".to_string(),
     }
 }
 
@@ -112,6 +116,10 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
         Element::CountSumTree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::ProvableCountTree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::ProvableCountSumTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::CommitmentTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::MmrTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::BulkAppendTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::DenseAppendOnlyFixedSizeTree(..) => nested_vecs_to_js(vec![], cx)?,
     };
 
     js_object.set(cx, "value", js_value)?;

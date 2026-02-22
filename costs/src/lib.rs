@@ -110,6 +110,10 @@ pub struct OperationCost {
     pub storage_loaded_bytes: u64,
     /// How many times node hashing was done (for merkelized tree).
     pub hash_node_calls: u32,
+    /// How many Sinsemilla hash operations were done (elliptic curve operations
+    /// for commitment tree anchors). These are significantly more expensive
+    /// than Blake3 node hashes.
+    pub sinsemilla_hash_calls: u32,
 }
 
 impl OperationCost {
@@ -176,6 +180,7 @@ impl OperationCost {
             && self.storage_cost.worse_or_eq_than(&other.storage_cost)
             && self.storage_loaded_bytes >= other.storage_loaded_bytes
             && self.hash_node_calls >= other.hash_node_calls
+            && self.sinsemilla_hash_calls >= other.sinsemilla_hash_calls
     }
 
     /// add storage_cost costs for key and value storages
@@ -291,6 +296,7 @@ impl Add for OperationCost {
             storage_cost: self.storage_cost + rhs.storage_cost,
             storage_loaded_bytes: self.storage_loaded_bytes + rhs.storage_loaded_bytes,
             hash_node_calls: self.hash_node_calls + rhs.hash_node_calls,
+            sinsemilla_hash_calls: self.sinsemilla_hash_calls + rhs.sinsemilla_hash_calls,
         }
     }
 }
@@ -301,6 +307,7 @@ impl AddAssign for OperationCost {
         self.storage_cost += rhs.storage_cost;
         self.storage_loaded_bytes += rhs.storage_loaded_bytes;
         self.hash_node_calls += rhs.hash_node_calls;
+        self.sinsemilla_hash_calls += rhs.sinsemilla_hash_calls;
     }
 }
 

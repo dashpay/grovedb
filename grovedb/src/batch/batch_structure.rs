@@ -133,11 +133,20 @@ where
                 GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     Ok(())
                 }
-                GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => {
-                    Err(Error::InvalidBatchOperation(
-                        "replace and insert tree hash are internal operations only",
-                    ))
+                GroveOp::CommitmentTreeInsert { .. }
+                | GroveOp::MmrTreeAppend { .. }
+                | GroveOp::BulkAppend { .. }
+                | GroveOp::DenseTreeInsert { .. }
+                | GroveOp::ReplaceTreeRootKey { .. } => {
+                    // CommitmentTreeInsert is preprocessed into item inserts
+                    // + ReplaceTreeRootKey before batch execution.
+                    // ReplaceTreeRootKey is internal only (produced by
+                    // preprocessing), not submitted by users directly.
+                    Ok(())
                 }
+                GroveOp::InsertTreeWithRootHash { .. } => Err(Error::InvalidBatchOperation(
+                    "insert tree hash is an internal operation only",
+                )),
             };
             if op_result.is_err() {
                 return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);

@@ -242,7 +242,13 @@ where {
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..) => Ok(element),
-            Element::Tree(..) => Err(Error::InvalidQuery("path_queries can not refer to trees")),
+            Element::Tree(..)
+            | Element::CommitmentTree(..)
+            | Element::MmrTree(..)
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                Err(Error::InvalidQuery("path_queries can not refer to trees"))
+            }
         }
     }
 
@@ -367,7 +373,11 @@ where {
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
                         | Element::ProvableCountTree(..)
-                        | Element::ProvableCountSumTree(..) => Err(Error::InvalidQuery(
+                        | Element::ProvableCountSumTree(..)
+                        | Element::CommitmentTree(..)
+                        | Element::MmrTree(..)
+                        | Element::BulkAppendTree(..)
+                        | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
                     }
@@ -512,7 +522,11 @@ where {
                         Element::ProvableCountSumTree(_, count_value, sum_value, _) => Ok(
                             QueryItemOrSumReturnType::CountSumValue(count_value, sum_value),
                         ),
-                        Element::Tree(..) => Err(Error::InvalidQuery(
+                        Element::Tree(..)
+                        | Element::CommitmentTree(..)
+                        | Element::MmrTree(..)
+                        | Element::BulkAppendTree(..)
+                        | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items, sum items, references and sum \
                              trees",
                         )),
@@ -602,6 +616,10 @@ where {
                         | Element::CountSumTree(..)
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
+                        | Element::CommitmentTree(..)
+                        | Element::MmrTree(..)
+                        | Element::BulkAppendTree(..)
+                        | Element::DenseAppendOnlyFixedSizeTree(..)
                         | Element::Item(..) => Err(Error::InvalidQuery(
                             "path_queries over sum items can only refer to sum items and \
                              references",
