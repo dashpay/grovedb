@@ -118,17 +118,13 @@ pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
 
 // ── Storage and cost helpers ────────────────────────────────────────────
 
-/// Prefix for MMR node keys in storage.
-const MMR_NODE_PREFIX: u8 = b'm';
-
 /// Build the storage key for an MMR node at a given position.
 ///
-/// Format: `m{pos}` (9 bytes: `'m'` + u64 BE).
-pub fn mmr_node_key(pos: u64) -> [u8; 9] {
-    let mut key = [0u8; 9];
-    key[0] = MMR_NODE_PREFIX;
-    key[1..9].copy_from_slice(&pos.to_be_bytes());
-    key
+/// Format: raw u64 big-endian (8 bytes).
+/// No prefix is needed because each MMR subtree gets its own isolated
+/// storage context in GroveDB (keyed by the Blake3 hash of the path).
+pub fn mmr_node_key(pos: u64) -> [u8; 8] {
+    pos.to_be_bytes()
 }
 
 /// Returns the exact number of Blake3 hash calls for pushing one leaf.
