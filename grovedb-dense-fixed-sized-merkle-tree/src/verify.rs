@@ -19,12 +19,17 @@ type VerifyResult = Result<([u8; 32], Vec<(u16, Vec<u8>)>), DenseMerkleError>;
 impl DenseTreeProof {
     /// Verify the proof against an expected root hash.
     ///
+    /// `height` and `count` are trusted values obtained from an authenticated
+    /// source (e.g. the parent `Element` in Merk).
+    ///
     /// Returns the proved `(position, value)` pairs on success.
     pub fn verify_against_expected_root(
         &self,
         expected_root: &[u8; 32],
+        height: u8,
+        count: u16,
     ) -> Result<Vec<(u16, Vec<u8>)>, DenseMerkleError> {
-        let (computed_root, entries) = self.verify_inner()?;
+        let (computed_root, entries) = self.verify_inner(height, count)?;
 
         if &computed_root != expected_root {
             return Err(DenseMerkleError::InvalidProof(format!(
@@ -40,14 +45,21 @@ impl DenseTreeProof {
     /// Verify the proof and return the computed root hash along with proved
     /// entries, without comparing against an expected root.
     ///
+    /// `height` and `count` are trusted values obtained from an authenticated
+    /// source (e.g. the parent `Element` in Merk).
+    ///
     /// This is used when the root hash flows through the Merk child hash
     /// mechanism rather than being stored in the Element.
-    pub fn verify_and_get_root(&self) -> VerifyResult {
-        self.verify_inner()
+    pub fn verify_and_get_root(&self, height: u8, count: u16) -> VerifyResult {
+        self.verify_inner(height, count)
     }
 
     /// Verify the proof against a [`Query`], returning the computed root hash
     /// and proved entries.
+    ///
+    /// `height` and `count` are trusted values obtained from an authenticated
+    /// source (e.g. the parent `Element` in Merk). Open-ended query ranges are
+    /// clamped to `count`.
     ///
     /// In addition to the structural checks performed by
     /// [`verify_and_get_root`](Self::verify_and_get_root), this method ensures
@@ -57,11 +69,11 @@ impl DenseTreeProof {
     ///   corresponding entry in the proof.
     /// - **Sound**: the proof contains no entries for positions that were not
     ///   requested by the query.
-    pub fn verify_for_query(&self, query: &Query) -> VerifyResult {
-        let (root, entries) = self.verify_inner()?;
+    pub fn verify_for_query(&self, query: &Query, height: u8, count: u16) -> VerifyResult {
+        let (root, entries) = self.verify_inner(height, count)?;
 
         let expected_positions: BTreeSet<u16> =
-            match crate::proof::query_to_positions(query, self.count) {
+            match crate::proof::query_to_positions(query, count) {
                 Ok(p) => p.into_iter().collect(),
                 Err(e) => return Err(e),
             };
@@ -97,22 +109,22 @@ impl DenseTreeProof {
 
     /// Shared verification logic: validates the proof structure, recomputes
     /// the root hash, and returns `(computed_root, proved_entries)`.
-    fn verify_inner(&self) -> VerifyResult {
+    fn verify_inner(&self, height: u8, count: u16) -> VerifyResult {
         // Validate height to prevent shift overflow
-        if !(1..=16).contains(&self.height) {
+        if !(1..=16).contains(&height) {
             return Err(DenseMerkleError::InvalidProof(format!(
-                "invalid height {} in proof (must be 1..=16)",
-                self.height
+                "invalid height {} (must be 1..=16)",
+                height
             )));
         }
 
-        let capacity = ((1u32 << self.height) - 1) as u16;
+        let capacity = ((1u32 << height) - 1) as u16;
 
         // Validate count against capacity
-        if self.count > capacity {
+        if count > capacity {
             return Err(DenseMerkleError::InvalidProof(format!(
                 "count {} exceeds capacity {} for height {}",
-                self.count, capacity, self.height
+                count, capacity, height
             )));
         }
 
@@ -230,83 +242,86 @@ impl DenseTreeProof {
 
         // Recompute root hash from position 0
         let computed_root =
-            self.recompute_hash(0, capacity, &entry_map, &value_hash_map, &hash_map)?;
+            recompute_hash(0, capacity, count, &entry_map, &value_hash_map, &hash_map)?;
 
         // Vuln 2: Only return entries at valid positions (< count AND < capacity)
         let entries = self
             .entries
             .iter()
-            .filter(|(pos, _)| *pos < self.count && *pos < capacity)
+            .filter(|(pos, _)| *pos < count && *pos < capacity)
             .map(|(pos, val)| (*pos, val.clone()))
             .collect();
 
         Ok((computed_root, entries))
     }
 
-    /// Recursively recompute the hash for a position.
-    ///
-    /// All nodes use `blake3(H(value) || H(left) || H(right))`.
-    /// Leaf nodes simply have `[0; 32]` for both child hashes.
-    fn recompute_hash(
-        &self,
-        position: u16,
-        capacity: u16,
-        entry_map: &BTreeMap<u16, &Vec<u8>>,
-        value_hash_map: &BTreeMap<u16, &[u8; 32]>,
-        hash_map: &BTreeMap<u16, &[u8; 32]>,
-    ) -> Result<[u8; 32], DenseMerkleError> {
-        // Beyond capacity or count -> zero hash
-        if position >= capacity || position >= self.count {
-            return Ok([0u8; 32]);
-        }
+}
 
-        // Precomputed subtree hash available -> use it directly
-        if let Some(hash) = hash_map.get(&position) {
-            return Ok(**hash);
-        }
-
-        // Every node needs H(value) — either compute from full value
-        // (entries) or use precomputed value hash (node_value_hashes)
-        let value_hash: [u8; 32] = if let Some(value) = entry_map.get(&position) {
-            *blake3::hash(value).as_bytes()
-        } else if let Some(hash) = value_hash_map.get(&position) {
-            **hash
-        } else {
-            return Err(DenseMerkleError::InvalidProof(format!(
-                "incomplete proof: no value or value hash for position {}",
-                position
-            )));
-        };
-
-        // Use u32 to avoid overflow for leaf positions near capacity.
-        let left_child_u32 = 2 * position as u32 + 1;
-        let right_child_u32 = 2 * position as u32 + 2;
-
-        let left_hash = if left_child_u32 < capacity as u32 {
-            self.recompute_hash(
-                left_child_u32 as u16,
-                capacity,
-                entry_map,
-                value_hash_map,
-                hash_map,
-            )?
-        } else {
-            [0u8; 32]
-        };
-        let right_hash = if right_child_u32 < capacity as u32 {
-            self.recompute_hash(
-                right_child_u32 as u16,
-                capacity,
-                entry_map,
-                value_hash_map,
-                hash_map,
-            )?
-        } else {
-            [0u8; 32]
-        };
-
-        Ok(node_hash(&value_hash, &left_hash, &right_hash))
+/// Recursively recompute the hash for a position.
+///
+/// All nodes use `blake3(H(value) || H(left) || H(right))`.
+/// Leaf nodes simply have `[0; 32]` for both child hashes.
+fn recompute_hash(
+    position: u16,
+    capacity: u16,
+    count: u16,
+    entry_map: &BTreeMap<u16, &Vec<u8>>,
+    value_hash_map: &BTreeMap<u16, &[u8; 32]>,
+    hash_map: &BTreeMap<u16, &[u8; 32]>,
+) -> Result<[u8; 32], DenseMerkleError> {
+    // Beyond capacity or count -> zero hash
+    if position >= capacity || position >= count {
+        return Ok([0u8; 32]);
     }
+
+    // Precomputed subtree hash available -> use it directly
+    if let Some(hash) = hash_map.get(&position) {
+        return Ok(**hash);
+    }
+
+    // Every node needs H(value) — either compute from full value
+    // (entries) or use precomputed value hash (node_value_hashes)
+    let value_hash: [u8; 32] = if let Some(value) = entry_map.get(&position) {
+        *blake3::hash(value).as_bytes()
+    } else if let Some(hash) = value_hash_map.get(&position) {
+        **hash
+    } else {
+        return Err(DenseMerkleError::InvalidProof(format!(
+            "incomplete proof: no value or value hash for position {}",
+            position
+        )));
+    };
+
+    // Use u32 to avoid overflow for leaf positions near capacity.
+    let left_child_u32 = 2 * position as u32 + 1;
+    let right_child_u32 = 2 * position as u32 + 2;
+
+    let left_hash = if left_child_u32 < capacity as u32 {
+        recompute_hash(
+            left_child_u32 as u16,
+            capacity,
+            count,
+            entry_map,
+            value_hash_map,
+            hash_map,
+        )?
+    } else {
+        [0u8; 32]
+    };
+    let right_hash = if right_child_u32 < capacity as u32 {
+        recompute_hash(
+            right_child_u32 as u16,
+            capacity,
+            count,
+            entry_map,
+            value_hash_map,
+            hash_map,
+        )?
+    } else {
+        [0u8; 32]
+    };
+
+    Ok(node_hash(&value_hash, &left_hash, &right_hash))
 }
 
 fn hex_encode(bytes: &[u8; 32]) -> String {

@@ -92,14 +92,14 @@ mod proof_tests {
             .unwrap()
             .expect("generate_for_query should succeed");
         let (_root, entries) = proof
-            .verify_for_query(query)
+            .verify_for_query(query, height, count)
             .expect("verify_for_query should succeed");
         entries
     }
 
     /// Helper: generate a proof for `gen_query`, then assert that
-    /// `verify_for_query(verify_query)` fails with either "incomplete" or
-    /// "unsound" in the error message.
+    /// `verify_for_query(verify_query, count)` fails with either "incomplete"
+    /// or "unsound" in the error message.
     fn gen_and_expect_mismatch(
         height: u8,
         count: u16,
@@ -110,7 +110,7 @@ mod proof_tests {
         let proof = DenseTreeProof::generate_for_query(height, count, gen_query, store)
             .unwrap()
             .expect("generate_for_query should succeed");
-        let result = proof.verify_for_query(verify_query);
+        let result = proof.verify_for_query(verify_query, height, count);
         assert!(
             result.is_err(),
             "verify_for_query should fail: gen={:?} vs verify={:?}",
@@ -139,7 +139,7 @@ mod proof_tests {
         assert_eq!(proof.entries[0].0, 4);
 
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 7)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 1);
         assert_eq!(verified[0], (4, vec![4u8]));
@@ -152,7 +152,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 7)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 1);
         assert_eq!(verified[0], (1, vec![1u8]));
@@ -165,7 +165,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 7)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 1);
         assert_eq!(verified[0], (0, vec![0u8]));
@@ -178,7 +178,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 7)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 3);
         assert_eq!(verified[0], (3, vec![3u8]));
@@ -193,7 +193,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 7)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 7);
         for (pos, val) in &verified {
@@ -208,7 +208,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let wrong_root = [0xFFu8; 32];
-        let result = proof.verify_against_expected_root(&wrong_root);
+        let result = proof.verify_against_expected_root(&wrong_root, 3, 7);
         assert!(result.is_err(), "verification should fail with wrong root");
     }
 
@@ -221,7 +221,7 @@ mod proof_tests {
         let bytes = proof.encode_to_vec().expect("encode should succeed");
         let decoded = DenseTreeProof::decode_from_slice(&bytes).expect("decode should succeed");
         let verified = decoded
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 7)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 2);
     }
@@ -245,7 +245,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 3)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 3);
     }
@@ -267,7 +267,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 1, 1)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 1);
         assert_eq!(verified[0], (0, b"hello".to_vec()));
@@ -296,7 +296,7 @@ mod proof_tests {
             .unwrap()
             .expect("generate should succeed");
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 2, 3)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 1);
         assert_eq!(verified[0], (2, b"right_val".to_vec()));
@@ -317,7 +317,7 @@ mod proof_tests {
             .expect("generate should succeed");
         assert_eq!(proof.entries.len(), 1);
         let verified = proof
-            .verify_against_expected_root(&root)
+            .verify_against_expected_root(&root, 3, 7)
             .expect("verify should succeed");
         assert_eq!(verified.len(), 1);
     }
@@ -1525,7 +1525,7 @@ mod proof_tests {
             let proof = DenseTreeProof::generate_for_query(3, 0, &query, &store)
                 .unwrap()
                 .expect("should succeed for empty query on empty tree");
-            let (_root, entries) = proof.verify_for_query(&query).expect("should succeed");
+            let (_root, entries) = proof.verify_for_query(&query, 3, 0).expect("should succeed");
             assert!(entries.is_empty());
         }
 
@@ -1541,10 +1541,10 @@ mod proof_tests {
                 .expect("generate should succeed");
 
             let (query_root, _) = proof
-                .verify_for_query(&query)
+                .verify_for_query(&query, 3, 7)
                 .expect("verify_for_query should succeed");
             let entries = proof
-                .verify_against_expected_root(&expected_root)
+                .verify_against_expected_root(&expected_root, 3, 7)
                 .expect("verify_against_expected_root should succeed");
 
             assert_eq!(query_root, expected_root);
@@ -1561,10 +1561,10 @@ mod proof_tests {
                 .expect("generate should succeed");
 
             let (root, entries1) = proof
-                .verify_and_get_root()
+                .verify_and_get_root(3, 7)
                 .expect("verify_and_get_root should succeed");
             let (root2, entries2) = proof
-                .verify_for_query(&query)
+                .verify_for_query(&query, 3, 7)
                 .expect("verify_for_query should succeed");
 
             assert_eq!(root, root2);
@@ -1584,9 +1584,43 @@ mod proof_tests {
             let decoded = DenseTreeProof::decode_from_slice(&bytes).expect("decode should succeed");
 
             let (_root, entries) = decoded
-                .verify_for_query(&query)
+                .verify_for_query(&query, 3, 7)
                 .expect("verify_for_query on decoded proof should succeed");
             assert_eq!(entries.len(), 4);
+        }
+
+        #[test]
+        fn wrong_count_changes_root_hash() {
+            // Passing the wrong count to verify produces a different root hash,
+            // so verify_against_expected_root rejects it.
+            let (store, expected_root) = make_tree_h3_full();
+            let query = Query::new_range_full();
+            let proof = DenseTreeProof::generate_for_query(3, 7, &query, &store)
+                .unwrap()
+                .expect("generate should succeed");
+            // Pass wrong count=5 instead of correct count=7
+            let result = proof.verify_against_expected_root(&expected_root, 3, 5);
+            assert!(result.is_err(), "wrong count should change root hash");
+        }
+
+        #[test]
+        fn query_beyond_count_clamped_consistently() {
+            // Query [5..100) on a tree with count=11.
+            // Both generate and verify clamp to count=11 → {5..10}.
+            let store = MemStore::new();
+            let mut tree = crate::tree::DenseFixedSizedMerkleTree::new(4)
+                .expect("height 4 should be valid");
+            for i in 0..11u8 {
+                tree.insert(&[i], &store)
+                    .unwrap()
+                    .expect("insert should succeed");
+            }
+            let mut query = Query::new();
+            query.insert_range_from(vec![5]..);
+            let entries = gen_and_verify(4, 11, &query, &store);
+            assert_eq!(entries.len(), 6);
+            assert_eq!(entries[0].0, 5);
+            assert_eq!(entries[5].0, 10);
         }
 
         #[test]

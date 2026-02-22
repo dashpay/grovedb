@@ -126,12 +126,13 @@ macro_rules! cost_return_on_error {
 
 /// An inclusion proof for one or more positions in a dense fixed-sized Merkle
 /// tree.
+///
+/// The proof does **not** contain the tree's `height` or `count`. The caller
+/// must supply trusted values for both — obtained from an authenticated source
+/// such as the parent `Element` in Merk — when calling the verification
+/// methods.
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct DenseTreeProof {
-    /// Height of the tree (capacity = 2^height - 1).
-    pub height: u8,
-    /// Number of filled positions.
-    pub count: u16,
     /// The proved (position, value) pairs.
     pub entries: Vec<(u16, Vec<u8>)>,
     /// Hashes of ancestor node values on the auth path that are NOT proved
@@ -240,8 +241,6 @@ impl DenseTreeProof {
         }
 
         Ok(DenseTreeProof {
-            height,
-            count,
             entries,
             node_value_hashes,
             node_hashes,
@@ -277,27 +276,12 @@ impl DenseTreeProof {
     }
 
     /// Decode from bytes using bincode.
-    ///
-    /// Validates that the decoded height is in [1, 16] to prevent overflow.
     pub fn decode_from_slice(bytes: &[u8]) -> Result<Self, DenseMerkleError> {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>(); // 100MB limit
         let (proof, _): (Self, _) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| DenseMerkleError::InvalidProof(format!("decode error: {}", e)))?;
-        if !(1..=16).contains(&proof.height) {
-            return Err(DenseMerkleError::InvalidProof(format!(
-                "invalid height {} in proof (must be 1..=16)",
-                proof.height
-            )));
-        }
-        let capacity = ((1u32 << proof.height) - 1) as u16;
-        if proof.count > capacity {
-            return Err(DenseMerkleError::InvalidProof(format!(
-                "count {} exceeds capacity {} for height {}",
-                proof.count, capacity, proof.height
-            )));
-        }
         Ok(proof)
     }
 }

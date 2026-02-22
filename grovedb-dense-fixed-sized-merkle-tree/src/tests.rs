@@ -232,14 +232,12 @@ fn test_vuln1_node_hashes_root_bypass_rejected() {
     // Attacker constructs a forged proof with root hash at position 0 in
     // node_hashes to short-circuit verification.
     let forged_proof = DenseTreeProof {
-        height: 3,
-        count: 7,
         entries: vec![(4, b"FORGED".to_vec())],
         node_value_hashes: vec![],
         node_hashes: vec![(0, real_root)],
     };
 
-    let result = forged_proof.verify_against_expected_root(&real_root);
+    let result = forged_proof.verify_against_expected_root(&real_root, 3, 7);
     assert!(
         result.is_err(),
         "forged proof with node_hash at root should be rejected"
@@ -254,14 +252,12 @@ fn test_vuln1_node_hashes_ancestor_bypass_rejected() {
     // Placing a node_hash at position 1 would bypass verification of
     // the subtree containing position 4.
     let forged_proof = DenseTreeProof {
-        height: 3,
-        count: 7,
         entries: vec![(4, b"FORGED".to_vec())],
         node_value_hashes: vec![(0, *blake3::hash(&[0u8]).as_bytes())],
         node_hashes: vec![(1, [0xAA; 32]), (2, [0xBB; 32])],
     };
 
-    let result = forged_proof.verify_against_expected_root(&real_root);
+    let result = forged_proof.verify_against_expected_root(&real_root, 3, 7);
     assert!(
         result.is_err(),
         "forged proof with node_hash at ancestor of entry should be rejected"
@@ -295,7 +291,7 @@ fn test_vuln2_out_of_range_entries_filtered() {
     // somehow passes, the phantom entry must NOT appear in results.
     // The proof may fail verification due to the phantom entry, but if it
     // somehow passes, the phantom entry must NOT appear in results.
-    if let Ok(verified) = tampered.verify_against_expected_root(&root) {
+    if let Ok(verified) = tampered.verify_against_expected_root(&root, 3, 3) {
         for (pos, _) in &verified {
             assert!(
                 *pos < 3,
@@ -318,7 +314,7 @@ fn test_vuln3_duplicate_entries_rejected() {
     let mut tampered = legit_proof.clone();
     tampered.entries.push((4, b"FAKE".to_vec()));
 
-    let result = tampered.verify_against_expected_root(&root);
+    let result = tampered.verify_against_expected_root(&root, 3, 7);
     assert!(
         result.is_err(),
         "proof with duplicate entries should be rejected"
@@ -338,7 +334,7 @@ fn test_vuln3_duplicate_node_value_hashes_rejected() {
         proof.node_value_hashes.push(first);
     }
 
-    let result = proof.verify_against_expected_root(&root);
+    let result = proof.verify_against_expected_root(&root, 3, 7);
     // Should fail if there are duplicate node_value_hashes
     if proof.node_value_hashes.len() > 1 {
         assert!(
@@ -351,46 +347,27 @@ fn test_vuln3_duplicate_node_value_hashes_rejected() {
 #[test]
 fn test_vuln4_height_overflow_rejected() {
     let proof = DenseTreeProof {
-        height: 17,
-        count: 1,
         entries: vec![(0, vec![1, 2, 3])],
         node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let fake_root = [0u8; 32];
-    let result = proof.verify_against_expected_root(&fake_root);
+    // Caller passes height=17 which should be rejected
+    let result = proof.verify_against_expected_root(&fake_root, 17, 1);
     assert!(result.is_err(), "height 17 should be rejected");
 }
 
 #[test]
 fn test_vuln4_height_zero_rejected() {
     let proof = DenseTreeProof {
-        height: 0,
-        count: 0,
         entries: vec![],
         node_value_hashes: vec![],
         node_hashes: vec![],
     };
     let zero_root = [0u8; 32];
-    let result = proof.verify_against_expected_root(&zero_root);
+    // Caller passes height=0 which should be rejected
+    let result = proof.verify_against_expected_root(&zero_root, 0, 0);
     assert!(result.is_err(), "height 0 should be rejected");
-}
-
-#[test]
-fn test_vuln4_decode_invalid_height_rejected() {
-    // Craft a proof with height=17, encode it, then decode
-    let proof = DenseTreeProof {
-        height: 17,
-        count: 0,
-        entries: vec![],
-        node_value_hashes: vec![],
-        node_hashes: vec![],
-    };
-    let bytes = proof
-        .encode_to_vec()
-        .expect("encoding should succeed even with bad height");
-    let result = DenseTreeProof::decode_from_slice(&bytes);
-    assert!(result.is_err(), "decode should reject height 17");
 }
 
 #[test]
@@ -406,7 +383,7 @@ fn test_vuln6_overlapping_entries_and_node_value_hashes_rejected() {
         .node_value_hashes
         .push((4, *blake3::hash(&[4u8]).as_bytes()));
 
-    let result = proof.verify_against_expected_root(&root);
+    let result = proof.verify_against_expected_root(&root, 3, 7);
     assert!(
         result.is_err(),
         "proof with overlapping entries and node_value_hashes should be rejected"
@@ -424,7 +401,7 @@ fn test_vuln6_overlapping_entries_and_node_hashes_rejected() {
     // Put position 4 in both entries and node_hashes
     proof.node_hashes.push((4, [0xAA; 32]));
 
-    let result = proof.verify_against_expected_root(&root);
+    let result = proof.verify_against_expected_root(&root, 3, 7);
     assert!(
         result.is_err(),
         "proof with overlapping entries and node_hashes should be rejected"
@@ -545,7 +522,7 @@ fn test_vuln3_duplicate_node_hashes_rejected() {
     // Inject a duplicate in node_hashes
     if let Some(first) = proof.node_hashes.first().cloned() {
         proof.node_hashes.push(first);
-        let result = proof.verify_against_expected_root(&root);
+        let result = proof.verify_against_expected_root(&root, 3, 7);
         assert!(
             result.is_err(),
             "proof with duplicate node_hashes should be rejected"
@@ -563,7 +540,7 @@ fn test_vuln6_overlapping_node_value_hashes_and_node_hashes_rejected() {
     // Take a position from node_value_hashes and add it to node_hashes
     if let Some((pos, _)) = proof.node_value_hashes.first().cloned() {
         proof.node_hashes.push((pos, [0xCC; 32]));
-        let result = proof.verify_against_expected_root(&root);
+        let result = proof.verify_against_expected_root(&root, 3, 7);
         assert!(
             result.is_err(),
             "proof with overlapping node_value_hashes and node_hashes should be rejected"
@@ -574,32 +551,16 @@ fn test_vuln6_overlapping_node_value_hashes_and_node_hashes_rejected() {
 #[test]
 fn test_count_exceeds_capacity_rejected_in_verify() {
     let proof = DenseTreeProof {
-        height: 3,
-        count: 100, // capacity is 7 for height=3
         entries: vec![(0, vec![1, 2, 3])],
         node_value_hashes: vec![],
         node_hashes: vec![],
     };
-    let result = proof.verify_against_expected_root(&[0u8; 32]);
+    // Caller passes count=100 which exceeds capacity=7 for height=3
+    let result = proof.verify_against_expected_root(&[0u8; 32], 3, 100);
     assert!(
         result.is_err(),
         "count exceeding capacity should be rejected"
     );
-}
-
-#[test]
-fn test_count_exceeds_capacity_rejected_in_decode() {
-    // Craft a proof with count > capacity and encode it
-    let proof = DenseTreeProof {
-        height: 3,
-        count: 100,
-        entries: vec![],
-        node_value_hashes: vec![],
-        node_hashes: vec![],
-    };
-    let bytes = proof.encode_to_vec().expect("encoding should succeed");
-    let result = DenseTreeProof::decode_from_slice(&bytes);
-    assert!(result.is_err(), "decode should reject count > capacity");
 }
 
 #[test]
@@ -635,7 +596,7 @@ fn test_proof_verify_one_bit_different_root() {
     let mut wrong_root = root;
     wrong_root[0] ^= 0x01; // flip one bit
 
-    let result = proof.verify_against_expected_root(&wrong_root);
+    let result = proof.verify_against_expected_root(&wrong_root, 3, 7);
     assert!(
         result.is_err(),
         "verification should fail with 1-bit-different root"
@@ -649,7 +610,7 @@ fn test_proof_verify_all_zero_root() {
         .unwrap()
         .expect("generate should succeed");
 
-    let result = proof.verify_against_expected_root(&[0u8; 32]);
+    let result = proof.verify_against_expected_root(&[0u8; 32], 3, 7);
     assert!(
         result.is_err(),
         "verification should fail against all-zero root"
@@ -660,13 +621,11 @@ fn test_proof_verify_all_zero_root() {
 fn test_incomplete_proof_missing_node_value_hash() {
     // Manually construct a proof missing a required node_value_hash
     let proof = DenseTreeProof {
-        height: 3,
-        count: 7,
         entries: vec![(4, vec![4u8])],
         node_value_hashes: vec![], // missing ancestors 0 and 1
         node_hashes: vec![],
     };
-    let result = proof.verify_against_expected_root(&[0u8; 32]);
+    let result = proof.verify_against_expected_root(&[0u8; 32], 3, 7);
     assert!(
         result.is_err(),
         "proof missing node_value_hashes for ancestors should fail"
@@ -684,7 +643,7 @@ fn test_empty_tree_proof_generation() {
 
     let root = [0u8; 32]; // empty tree root
     let verified = proof
-        .verify_against_expected_root(&root)
+        .verify_against_expected_root(&root, 3, 0)
         .expect("verifying empty proof should succeed");
     assert_eq!(verified.len(), 0);
 }
@@ -798,19 +757,6 @@ fn test_proof_generate_store_failure() {
     );
 }
 
-#[test]
-fn test_height_and_count_accessor() {
-    let proof = DenseTreeProof {
-        height: 5,
-        count: 10,
-        entries: vec![],
-        node_value_hashes: vec![],
-        node_hashes: vec![],
-    };
-    assert_eq!(proof.height, 5);
-    assert_eq!(proof.count, 10);
-}
-
 // ── Round 3: DoS prevention, large tree, and rollback tests ──────────
 
 #[test]
@@ -819,13 +765,11 @@ fn test_dos_too_many_entries_rejected() {
     // Since u16 max is 65535, we test with a count that exceeds what's possible
     let entries: Vec<(u16, Vec<u8>)> = (0..65_535u16).map(|i| (i, vec![0u8])).collect();
     let proof = DenseTreeProof {
-        height: 16,
-        count: 65_535,
         entries,
         node_value_hashes: vec![],
         node_hashes: vec![],
     };
-    let result = proof.verify_against_expected_root(&[0u8; 32]);
+    let result = proof.verify_against_expected_root(&[0u8; 32], 16, 65_535);
     // 65535 entries == capacity for height 16, so passes the DoS check.
     // Should fail for root mismatch instead.
     assert!(result.is_err(), "proof should fail (root mismatch)");
@@ -835,13 +779,11 @@ fn test_dos_too_many_entries_rejected() {
 fn test_dos_too_many_node_value_hashes_rejected() {
     let node_value_hashes: Vec<(u16, [u8; 32])> = (0..65_535u16).map(|i| (i, [0u8; 32])).collect();
     let proof = DenseTreeProof {
-        height: 16,
-        count: 65_535,
         entries: vec![(65_534, vec![1u8])],
         node_value_hashes,
         node_hashes: vec![],
     };
-    let result = proof.verify_against_expected_root(&[0u8; 32]);
+    let result = proof.verify_against_expected_root(&[0u8; 32], 16, 65_535);
     assert!(
         result.is_err(),
         "proof with many node_value_hashes should be rejected"
@@ -852,13 +794,11 @@ fn test_dos_too_many_node_value_hashes_rejected() {
 fn test_dos_too_many_node_hashes_rejected() {
     let node_hashes: Vec<(u16, [u8; 32])> = (0..65_535u16).map(|i| (i, [0u8; 32])).collect();
     let proof = DenseTreeProof {
-        height: 16,
-        count: 65_535,
         entries: vec![(0, vec![1u8])],
         node_value_hashes: vec![],
         node_hashes,
     };
-    let result = proof.verify_against_expected_root(&[0u8; 32]);
+    let result = proof.verify_against_expected_root(&[0u8; 32], 16, 65_535);
     assert!(
         result.is_err(),
         "proof with many node_hashes should be rejected"
@@ -870,13 +810,11 @@ fn test_dos_exactly_at_limit_accepted() {
     // 65535 entries == capacity for height 16 — exactly at limit.
     let entries: Vec<(u16, Vec<u8>)> = (0..65_535u16).map(|i| (i, vec![0u8])).collect();
     let proof = DenseTreeProof {
-        height: 16,
-        count: 65_535,
         entries,
         node_value_hashes: vec![],
         node_hashes: vec![],
     };
-    let result = proof.verify_against_expected_root(&[0u8; 32]);
+    let result = proof.verify_against_expected_root(&[0u8; 32], 16, 65_535);
     // Should fail for root mismatch, NOT for exceeding capacity
     assert!(result.is_err(), "proof should fail (root mismatch)");
     let err_msg = format!("{}", result.unwrap_err());
@@ -911,7 +849,7 @@ fn test_large_tree_height_8_proof() {
         .unwrap()
         .expect("generate proof for large tree should succeed");
     let verified = proof
-        .verify_against_expected_root(&root)
+        .verify_against_expected_root(&root, 8, 255)
         .expect("verify proof for large tree should succeed");
     assert_eq!(verified.len(), 1);
     assert_eq!(verified[0].0, 200);
@@ -939,7 +877,7 @@ fn test_large_tree_multiple_positions_proof() {
         .unwrap()
         .expect("generate multi-position proof should succeed");
     let verified = proof
-        .verify_against_expected_root(&root)
+        .verify_against_expected_root(&root, 5, 31)
         .expect("verify multi-position proof should succeed");
     assert_eq!(verified.len(), 5);
 
@@ -972,7 +910,7 @@ fn test_proof_complex_with_all_three_fields() {
 
     // Verify it passes
     let verified = proof
-        .verify_against_expected_root(&root)
+        .verify_against_expected_root(&root, 3, 7)
         .expect("verify should succeed");
     assert_eq!(verified.len(), 1);
     assert_eq!(verified[0], (4, vec![4u8]));
@@ -1070,7 +1008,7 @@ fn test_deduplication_with_mixed_duplicates() {
     assert_eq!(proof.entries.len(), 3);
 
     let verified = proof
-        .verify_against_expected_root(&root)
+        .verify_against_expected_root(&root, 3, 7)
         .expect("verify should succeed");
     assert_eq!(verified.len(), 3);
     // Positions should be sorted (from BTreeSet)
