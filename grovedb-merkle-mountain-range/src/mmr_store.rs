@@ -38,10 +38,6 @@ impl<Store: MMRStoreReadOps> MMRBatch<Store> {
     ///
     /// Cache hits return the same cost as a store read (seek + loaded bytes)
     /// for deterministic fee estimation.
-    /// Look up an element by position, checking the in-memory batch first.
-    ///
-    /// Cache hits return the same cost as a store read (seek + loaded bytes)
-    /// for deterministic fee estimation.
     pub fn element_at_position(&self, pos: u64) -> CostResult<Option<MmrNode>, Error> {
         for (start_pos, elems) in self.memory_batch.iter().rev() {
             if pos < *start_pos {

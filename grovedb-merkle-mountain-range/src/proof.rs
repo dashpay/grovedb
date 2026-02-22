@@ -151,8 +151,12 @@ impl MerkleProof {
         let current_peaks_positions = get_peaks(self.mmr_size);
 
         let mut reverse_index = prev_peaks_positions.len() - 1;
-        for (i, position) in prev_peaks_positions.iter().enumerate() {
-            if *position < current_peaks_positions[i] {
+        for (i, (prev_pos, cur_pos)) in prev_peaks_positions
+            .iter()
+            .zip(current_peaks_positions.iter())
+            .enumerate()
+        {
+            if prev_pos < cur_pos {
                 reverse_index = i;
                 break;
             }
