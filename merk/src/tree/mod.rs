@@ -21,7 +21,7 @@ mod link;
 #[cfg(feature = "minimal")]
 mod ops;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-mod tree_feature_type;
+pub mod tree_feature_type;
 #[cfg(feature = "minimal")]
 mod walk;
 
@@ -74,6 +74,8 @@ use crate::tree::hash::HASH_LENGTH_X2;
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
+#[cfg(feature = "minimal")]
+use crate::tree::tree_feature_type::TreeFeatureTypeMerkExt;
 #[cfg(feature = "minimal")]
 use crate::{error::Error, tree_type::TreeType, Error::Overflow};
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for

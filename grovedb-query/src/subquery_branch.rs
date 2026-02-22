@@ -1,3 +1,8 @@
+use std::fmt;
+
+use bincode::{Decode, Encode};
+
+use crate::{hex_to_ascii, Path, Query};
 
 #[derive(Debug, Default, Clone, PartialEq, Encode, Decode)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -20,7 +25,7 @@ impl SubqueryBranch {
     /// Returns the depth of the subquery branch
     /// This depth is how many GroveDB layers down we could query at maximum
     #[inline]
-    fn max_depth_internal(&self, recursion_limit: u8) -> Option<u16> {
+    pub(crate) fn max_depth_internal(&self, recursion_limit: u8) -> Option<u16> {
         if recursion_limit == 0 {
             return None;
         }

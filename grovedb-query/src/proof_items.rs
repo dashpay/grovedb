@@ -1,4 +1,15 @@
+use std::{collections::BTreeSet, fmt};
 
+use crate::{
+    query_item::{
+        intersect::{Direction, RangeSetBorrowed},
+        QueryItem,
+    },
+    ProofParams,
+};
+
+/// Holds the partitioned query items (keys and ranges) used during proof
+/// generation.
 #[derive(Clone, Debug, Default)]
 pub struct ProofItems<'a> {
     key_query_items: BTreeSet<&'a Vec<u8>>,
@@ -24,6 +35,8 @@ impl fmt::Display for ProofItems<'_> {
 }
 
 impl<'a> ProofItems<'a> {
+    /// Creates a new `ProofItems` by partitioning query items into key lookups
+    /// and range queries, along with the corresponding [`ProofParams`].
     pub fn new_with_query_items(
         query_items: &[QueryItem],
         left_to_right: bool,
@@ -55,7 +68,9 @@ impl<'a> ProofItems<'a> {
 
     /// The point of process key is to take the current proof items that we have
     /// and split them left and right
-    fn process_key(&'a self, key: &'a Vec<u8>) -> (bool, bool, ProofItems<'a>, ProofItems<'a>) {
+    /// Splits the proof items around a key, returning (found, on_boundary,
+    /// left_items, right_items).
+    pub fn process_key(&'a self, key: &'a Vec<u8>) -> (bool, bool, ProofItems<'a>, ProofItems<'a>) {
         // 1) Partition the user’s key-based queries
         let mut left_key_query_items = BTreeSet::new();
         let mut right_key_query_items = BTreeSet::new();
@@ -104,6 +119,7 @@ impl<'a> ProofItems<'a> {
         (item_is_present, item_on_boundary, left, right)
     }
 
+    /// Returns `true` if there are no key or range query items.
     pub fn has_no_query_items(&self) -> bool {
         self.key_query_items.is_empty() && self.range_query_items.is_empty()
     }

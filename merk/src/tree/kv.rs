@@ -21,7 +21,9 @@ use crate::{
 use crate::{
     tree::{
         hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
-        tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerkNode},
+        tree_feature_type::{
+            TreeFeatureType, TreeFeatureType::BasicMerkNode, TreeFeatureTypeMerkExt,
+        },
     },
     Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };

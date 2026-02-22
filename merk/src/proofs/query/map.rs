@@ -2,22 +2,17 @@
 
 #![allow(unstable_name_collisions)]
 
-
 use std::{
     collections::{btree_map, btree_map::Iter, BTreeMap},
     ops::{Bound, RangeBounds},
 };
 
-
 use super::super::Node;
-
 use crate::error::Error;
-
 
 /// `MapBuilder` allows a consumer to construct a `Map` by inserting the nodes
 /// contained in a proof, in key-order.
 pub struct MapBuilder(Map);
-
 
 impl Default for MapBuilder {
     fn default() -> Self {
@@ -67,7 +62,6 @@ impl MapBuilder {
     }
 }
 
-
 /// `Map` stores data extracted from a proof (which has already been verified
 /// against a known root hash), and allows a consumer to access the data by
 /// looking up individual keys using the `get` method, or iterating over ranges
@@ -77,7 +71,6 @@ pub struct Map {
     entries: BTreeMap<Vec<u8>, (bool, Vec<u8>)>,
     right_edge: bool,
 }
-
 
 impl Map {
     /// Gets the value for a single key, or `None` if the key was proven to not
@@ -122,7 +115,6 @@ impl Map {
     }
 }
 
-
 /// Returns `None` for `Bound::Unbounded`, or the inner key value for
 /// `Bound::Included` and `Bound::Excluded`.
 fn bound_to_inner<T>(bound: Bound<T>) -> Option<T> {
@@ -132,7 +124,6 @@ fn bound_to_inner<T>(bound: Bound<T>) -> Option<T> {
     }
 }
 
-
 fn bound_to_vec(bound: Bound<&&[u8]>) -> Bound<Vec<u8>> {
     match bound {
         Bound::Unbounded => Bound::Unbounded,
@@ -141,14 +132,12 @@ fn bound_to_vec(bound: Bound<&&[u8]>) -> Bound<Vec<u8>> {
     }
 }
 
-
 fn bounds_to_vec<'a, R: RangeBounds<&'a [u8]>>(bounds: R) -> impl RangeBounds<Vec<u8>> {
     (
         bound_to_vec(bounds.start_bound()),
         bound_to_vec(bounds.end_bound()),
     )
 }
-
 
 /// An iterator over (key, value) entries as extracted from a verified proof. If
 /// during iteration we encounter a gap in the data (e.g. the proof did not
@@ -159,7 +148,6 @@ pub struct Range<'a> {
     iter: btree_map::Range<'a, Vec<u8>, (bool, Vec<u8>)>,
     prev_key: Option<Vec<u8>>,
 }
-
 
 impl Range<'_> {
     /// Returns an error if the proof does not properly prove the end of the
@@ -196,7 +184,6 @@ impl Range<'_> {
         }
     }
 }
-
 
 impl<'a> Iterator for Range<'a> {
     type Item = Result<(&'a [u8], &'a [u8]), Error>;
@@ -237,7 +224,6 @@ impl<'a> Iterator for Range<'a> {
         Some(Ok((key.as_slice(), value.as_slice())))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

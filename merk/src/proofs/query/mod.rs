@@ -1,14 +1,35 @@
+// Re-export grovedb-query types so downstream can use
+// grovedb_merk::proofs::query::*
+pub use grovedb_query::*;
+
+#[cfg(test)]
+mod merk_integration_tests;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod map;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod verify;
+
 #[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "minimal")]
 use grovedb_element::{ElementType, ProofNodeType};
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use map::{Map, MapBuilder};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use verify::{
+    ProofVerificationResult, ProvedKeyOptionalValue, ProvedKeyValue, QueryProofVerify,
+    VerifyOptions,
+};
 #[cfg(feature = "minimal")]
 use {super::Op, std::collections::LinkedList};
 
 #[cfg(feature = "minimal")]
 use super::Node;
+#[cfg(feature = "minimal")]
+use crate::error::Error;
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
@@ -400,14 +421,14 @@ where
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
-                .flat_map_ok(|child_opt| {
-                    if let Some(mut child) = child_opt {
-                        child.create_proof_internal(query_items, params, proof_status, grove_version)
-                    } else {
-                        Ok((LinkedList::new(), (true, true), proof_status))
-                            .wrap_with_cost(Default::default())
-                    }
-                })
+            .flat_map_ok(|child_opt| {
+                if let Some(mut child) = child_opt {
+                    child.create_proof_internal(query_items, params, proof_status, grove_version)
+                } else {
+                    Ok((LinkedList::new(), (true, true), proof_status))
+                        .wrap_with_cost(Default::default())
+                }
+            })
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
             proof.push_back(if params.left_to_right {
@@ -421,7 +442,6 @@ where
         }
     }
 }
-
 
 #[cfg(feature = "minimal")]
 impl Link {

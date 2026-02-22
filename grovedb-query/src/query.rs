@@ -1,3 +1,13 @@
+use std::{collections::HashSet, fmt, ops::RangeFull};
+
+use bincode::{
+    enc::write::Writer,
+    error::{DecodeError, EncodeError},
+    BorrowDecode, Decode, Encode,
+};
+use indexmap::IndexMap;
+
+use crate::{error::Error, query_item::QueryItem, Key, Path, SubqueryBranch};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
@@ -30,7 +40,7 @@ impl Encode for Query {
         match &self.conditional_subquery_branches {
             Some(conditional_subquery_branches) => {
                 encoder.writer().write(&[1])?; // Write a flag indicating presence of data
-                // Encode the length of the map
+                                               // Encode the length of the map
                 (conditional_subquery_branches.len() as u64).encode(encoder)?;
                 // Encode each key-value pair in the IndexMap
                 for (key, value) in conditional_subquery_branches {
@@ -40,7 +50,7 @@ impl Encode for Query {
             }
             None => {
                 encoder.writer().write(&[0])?; // Write a flag indicating
-                // absence of data
+                                               // absence of data
             }
         }
 
@@ -52,7 +62,6 @@ impl Encode for Query {
         Ok(())
     }
 }
-
 
 impl<Context> Decode<Context> for Query {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
@@ -94,7 +103,6 @@ impl<Context> Decode<Context> for Query {
         })
     }
 }
-
 
 impl<'de, Context> BorrowDecode<'de, Context> for Query {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
@@ -216,6 +224,8 @@ impl Query {
         }
     }
 
+    /// Returns `true` if the given key would trigger a subquery (either via
+    /// the default subquery branch or a matching conditional branch).
     pub fn has_subquery_on_key(&self, key: &[u8], in_path: bool) -> bool {
         if in_path || self.default_subquery_branch.subquery.is_some() {
             return true;
@@ -230,6 +240,8 @@ impl Query {
         false
     }
 
+    /// Returns `true` if the given key would trigger a subquery or subquery
+    /// path (either via the default branch or a matching conditional branch).
     pub fn has_subquery_or_subquery_path_on_key(&self, key: &[u8], in_path: bool) -> bool {
         if in_path
             || self.default_subquery_branch.subquery.is_some()
@@ -407,7 +419,7 @@ impl Query {
     }
 
     /// Get number of query items
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.items.len()
     }
 
@@ -518,14 +530,14 @@ impl Query {
             .conditional_subquery_branches
             .as_ref()
             .map_or(Some(0), |condition_subqueries| {
-                condition_subqueries
-                    .values()
-                    .try_fold(0, |max_depth, conditional_subquery_branch| {
-                        conditional_subquery_branch
-                            .max_depth_internal(recursion_limit)
-                            .map(|depth| max_depth.max(depth))
-                    })
-            })?;
+            condition_subqueries
+                .values()
+                .try_fold(0, |max_depth, conditional_subquery_branch| {
+                    conditional_subquery_branch
+                        .max_depth_internal(recursion_limit)
+                        .map(|depth| max_depth.max(depth))
+                })
+        })?;
         1u16.checked_add(default_subquery_branch_depth.max(conditional_subquery_branches_max_depth))
     }
 }

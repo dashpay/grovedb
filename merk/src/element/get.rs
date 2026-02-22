@@ -16,7 +16,7 @@ use crate::{
     ed::Decode,
     element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
     merk::NodeType,
-    tree::{kv::KV, TreeNodeInner},
+    tree::{kv::KV, tree_feature_type::TreeFeatureTypeMerkExt, TreeNodeInner},
     tree_type::{CostSize, SUM_ITEM_COST_SIZE},
     CryptoHash, Error, Merk,
 };

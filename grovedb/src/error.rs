@@ -158,6 +158,11 @@ pub enum Error {
     /// Element error
     ElementError(grovedb_element::error::ElementError),
 
+    // Merk errors
+    #[error("query error: {0}")]
+    /// Merk error
+    QueryError(grovedb_query::error::Error),
+
     #[error("cyclic error")]
     /// Cyclic reference
     CyclicError(&'static str),

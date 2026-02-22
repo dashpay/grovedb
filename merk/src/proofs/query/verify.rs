@@ -16,6 +16,29 @@ use crate::{
     CryptoHash as MerkHash, CryptoHash,
 };
 
+/// Verify proof against expected hash
+#[cfg(feature = "minimal")]
+#[deprecated]
+#[allow(unused)]
+pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
+    let ops = Decoder::new(bytes);
+    let mut map_builder = MapBuilder::new();
+
+    execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
+        root.hash().map(|hash| {
+            if hash != expected_hash {
+                Err(Error::InvalidProofError(format!(
+                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
+                    expected_hash,
+                    root.hash()
+                )))
+            } else {
+                Ok(map_builder.build())
+            }
+        })
+    })
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct VerifyOptions {
     /// When set to true, this will give back absence proofs for any query items
@@ -38,7 +61,31 @@ impl Default for VerifyOptions {
     }
 }
 
-impl Query {
+/// Extension trait adding proof verification methods to `Query`.
+///
+/// These methods depend on merk-internal types (Node, Op, Decoder, etc.)
+/// and therefore cannot live in the `grovedb-query` crate.
+pub trait QueryProofVerify {
+    /// Verifies the encoded proof with the given query, returning the root
+    /// hash and verification result.
+    fn execute_proof(
+        &self,
+        bytes: &[u8],
+        limit: Option<u16>,
+        left_to_right: bool,
+    ) -> CostResult<(MerkHash, ProofVerificationResult), Error>;
+
+    /// Verifies the encoded proof with the given query and expected hash.
+    fn verify_proof(
+        &self,
+        bytes: &[u8],
+        limit: Option<u16>,
+        left_to_right: bool,
+        expected_hash: MerkHash,
+    ) -> CostResult<ProofVerificationResult, Error>;
+}
+
+impl QueryProofVerify for Query {
     /// Verifies the encoded proof with the given query
     ///
     /// Every key in `keys` is checked to either have a key/value pair in the
@@ -50,7 +97,7 @@ impl Query {
     /// the value of `B`. Keys proven to be absent in the tree will have an
     /// entry of `None`, keys that have a proven value will have an entry of
     /// `Some(value)`.
-    pub fn execute_proof(
+    fn execute_proof(
         &self,
         bytes: &[u8],
         limit: Option<u16>,
@@ -388,7 +435,7 @@ impl Query {
     }
 
     /// Verifies the encoded proof with the given query and expected hash
-    pub fn verify_proof(
+    fn verify_proof(
         &self,
         bytes: &[u8],
         limit: Option<u16>,
@@ -409,7 +456,6 @@ impl Query {
             .flatten()
     }
 }
-
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 /// Proved key-value
@@ -447,7 +493,6 @@ impl TryFrom<ProvedKeyOptionalValue> for ProvedKeyValue {
     }
 }
 
-
 impl fmt::Display for ProvedKeyOptionalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let key_string = if self.key.len() == 1 && self.key[0] < b"0"[0] {
@@ -469,7 +514,6 @@ impl fmt::Display for ProvedKeyOptionalValue {
     }
 }
 
-
 #[derive(PartialEq, Eq, Debug, Clone)]
 /// Proved key-value
 pub struct ProvedKeyValue {
@@ -480,7 +524,6 @@ pub struct ProvedKeyValue {
     /// Proof
     pub proof: CryptoHash,
 }
-
 
 impl fmt::Display for ProvedKeyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -494,7 +537,6 @@ impl fmt::Display for ProvedKeyValue {
     }
 }
 
-
 #[derive(PartialEq, Eq, Debug)]
 /// Proof verification result
 pub struct ProofVerificationResult {
@@ -503,7 +545,6 @@ pub struct ProofVerificationResult {
     /// Limit
     pub limit: Option<u16>,
 }
-
 
 impl fmt::Display for ProofVerificationResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

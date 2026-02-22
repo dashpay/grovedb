@@ -22,6 +22,7 @@ grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
 grovedb-version = { version = "4.0.0", path = "../grovedb-version" }
 grovedb-visualize = { version = "4.0.0", path = "../visualize" }
 grovedb-element = { version = "4.0.0", path = "../grovedb-element" }
+grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
 
 bincode = { version = "=2.0.1" }
 bincode_derive = { version = "=2.0.1" }
@@ -48,11 +49,12 @@ minimal = [
         "grovedb-storage",
         "grovedb-storage/rocksdb_storage",
         "grovedb-element/visualize",
+        "grovedb-query/minimal",
 ]
 full = ["minimal", "test_utils", "colored_debug"]
 test_utils = ["rand"]
 colored_debug = ["colored"]
-verify = ["ed", "blake3"]
+verify = ["ed", "blake3", "grovedb-query/verify"]
 grovedbg = ["full"]
 
 [dev-dependencies]

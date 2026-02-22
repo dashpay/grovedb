@@ -174,7 +174,7 @@ impl PathQuery {
         self.query
             .query
             .terminal_keys(self.path.clone(), max_results, &mut result)
-            .map_err(Error::MerkError)?;
+            .map_err(Error::QueryError)?;
         Ok(result)
     }
 

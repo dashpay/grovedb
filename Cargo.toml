@@ -14,4 +14,5 @@ members = [
     "grovedb-epoch-based-storage-flags",
     "grovedb-element",
     "grovedb-merkle-mountain-range",
+    "grovedb-query",
 ]
