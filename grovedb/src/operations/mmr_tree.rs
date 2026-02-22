@@ -100,7 +100,7 @@ impl GroveDb {
                 .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
         );
         let new_mmr_root = new_root.hash();
-        let new_mmr_size = mmr.mmr_size();
+        let new_mmr_size = mmr.mmr_size;
 
         cost_return_on_error!(
             &mut cost,
@@ -411,7 +411,7 @@ impl GroveDb {
             // Push all values into a single MMR instance
             let mut mmr = MMR::new(mmr_size, &store);
             for value in values {
-                let leaf_count = mmr_size_to_leaf_count(mmr.mmr_size());
+                let leaf_count = mmr_size_to_leaf_count(mmr.mmr_size);
                 cost.hash_node_calls += hash_count_for_push(leaf_count);
 
                 let leaf = MmrNode::leaf(value.clone());
@@ -429,7 +429,7 @@ impl GroveDb {
                     .map_err(|e| Error::CorruptedData(format!("MMR get_root failed: {}", e)))
             );
             let new_mmr_root = new_root.hash();
-            let new_mmr_size = mmr.mmr_size();
+            let new_mmr_size = mmr.mmr_size;
 
             cost_return_on_error!(
                 &mut cost,

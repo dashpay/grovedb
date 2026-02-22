@@ -11,6 +11,6 @@ pub fn buffer_key(index: u32) -> [u8; 5] {
     key
 }
 
-/// Build aux key for an MMR node: m{pos} (9 bytes: 'm' + u64 BE).
+/// Build aux key for an MMR node: pos as u64 BE (8 bytes).
 /// Re-exports from grovedb-merkle-mountain-range for consistency.
 pub use grovedb_merkle_mountain_range::mmr_node_key;

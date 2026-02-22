@@ -151,15 +151,15 @@ impl BulkAppendTree {
 
         // Compute dense Merkle root
         let entry_refs: Vec<&[u8]> = entries.iter().map(|e| e.as_slice()).collect();
-        let (epoch_root, dense_hash_count) = compute_dense_merkle_root_from_values(&entry_refs)
+        let (_epoch_root, dense_hash_count) = compute_dense_merkle_root_from_values(&entry_refs)
             .map_err(|e| {
                 BulkAppendError::CorruptedData(format!("dense merkle root failed: {}", e))
             })?;
         hash_count += dense_hash_count;
 
-        // Store chunk blob inside the MMR leaf node
+        // Store chunk blob as a standard MMR leaf — hash = blake3(0x00 || blob)
         let blob = serialize_chunk_blob(entries);
-        let leaf = MmrNode::data_leaf(epoch_root, blob);
+        let leaf = MmrNode::leaf(blob);
 
         // Append chunk root to MMR
         let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
@@ -181,7 +181,7 @@ impl BulkAppendTree {
         mmr.commit()
             .unwrap()
             .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
-        self.mmr_size = mmr.mmr_size();
+        self.mmr_size = mmr.mmr_size;
 
         // Delete buffer entries
         for i in 0..self.chunk_size() {

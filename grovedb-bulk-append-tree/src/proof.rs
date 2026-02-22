@@ -14,7 +14,8 @@ use std::{cell::RefCell, collections::BTreeMap};
 
 use bincode::{Decode, Encode};
 use grovedb_merkle_mountain_range::{
-    leaf_to_pos, CostsExt, MMRStoreReadOps, MMRStoreWriteOps, MerkleProof, MmrNode, OperationCost,
+    leaf_hash, leaf_to_pos, CostsExt, MMRStoreReadOps, MMRStoreWriteOps, MerkleProof, MmrNode,
+    OperationCost,
 };
 
 use crate::{
@@ -41,7 +42,7 @@ pub struct BulkAppendTreeProof {
     pub chunk_mmr_size: u64,
     /// MMR proof sibling/peak hashes for the proved chunks.
     pub chunk_mmr_proof_items: Vec<[u8; 32]>,
-    /// (leaf_index_in_mmr, dense_merkle_root) for each proved chunk.
+    /// (leaf_index_in_mmr, mmr_leaf_hash) for each proved chunk.
     pub chunk_mmr_leaves: Vec<(u64, [u8; 32])>,
     /// ALL buffer entries (needed to recompute buffer_hash from [0;32]).
     pub buffer_entries: Vec<Vec<u8>>,
@@ -127,26 +128,12 @@ impl BulkAppendTreeProof {
         let lazy_mmr_store = LazyMmrNodeStore::new(&get_aux);
 
         if !chunk_indices.is_empty() {
-            // Compute dense Merkle root for each chunk blob
+            // Compute MMR leaf hash for each chunk blob.
+            // The MMR stores chunks as standard leaf nodes whose hash is
+            // blake3(0x00 || blob), so the proof must carry the same hash.
             for (chunk_idx, blob) in &chunk_blobs {
-                let values = deserialize_chunk_blob(blob).map_err(|e| {
-                    BulkAppendError::CorruptedData(format!(
-                        "failed to deserialize chunk {} blob: {}",
-                        chunk_idx, e
-                    ))
-                })?;
-                let value_refs: Vec<&[u8]> = values.iter().map(|v| v.as_slice()).collect();
-                let (dense_root, _) =
-                    grovedb_dense_fixed_sized_merkle_tree::compute_dense_merkle_root_from_values(
-                        &value_refs,
-                    )
-                    .map_err(|e| {
-                        BulkAppendError::CorruptedData(format!(
-                            "failed to compute dense merkle root for chunk {}: {}",
-                            chunk_idx, e
-                        ))
-                    })?;
-                chunk_mmr_leaves.push((*chunk_idx, dense_root));
+                let mmr_leaf_hash = leaf_hash(blob);
+                chunk_mmr_leaves.push((*chunk_idx, mmr_leaf_hash));
             }
 
             // Build MMR positions and generate proof (lazy store, drops zero costs)
@@ -297,22 +284,15 @@ impl BulkAppendTreeProof {
             )));
         }
 
-        // 1. Verify chunk blobs: compute dense Merkle root for each and check it
-        //    matches the chunk_mmr_leaves
+        // 1. Verify chunk blobs: compute leaf_hash(blob) for each and check it
+        //    matches the chunk_mmr_leaves. The MMR stores chunks as standard
+        //    leaf nodes whose hash = blake3(0x00 || blob).
         for (chunk_idx, blob) in &self.chunk_blobs {
-            let values = deserialize_chunk_blob(blob).map_err(|e| {
-                BulkAppendError::InvalidProof(format!(
-                    "failed to deserialize chunk {} blob: {}",
-                    chunk_idx, e
-                ))
-            })?;
-
-            // Find the corresponding leaf entry
-            let expected_root = self
+            let expected_hash = self
                 .chunk_mmr_leaves
                 .iter()
                 .find(|(idx, _)| idx == chunk_idx)
-                .map(|(_, root)| root)
+                .map(|(_, hash)| hash)
                 .ok_or_else(|| {
                     BulkAppendError::InvalidProof(format!(
                         "no MMR leaf entry for chunk {}",
@@ -320,24 +300,13 @@ impl BulkAppendTreeProof {
                     ))
                 })?;
 
-            let value_refs: Vec<&[u8]> = values.iter().map(|v| v.as_slice()).collect();
-            let (computed_root, _) =
-                grovedb_dense_fixed_sized_merkle_tree::compute_dense_merkle_root_from_values(
-                    &value_refs,
-                )
-                .map_err(|e| {
-                    BulkAppendError::InvalidProof(format!(
-                        "failed to compute dense merkle root for chunk {}: {}",
-                        chunk_idx, e
-                    ))
-                })?;
-
-            if &computed_root != expected_root {
+            let computed_hash = leaf_hash(blob);
+            if &computed_hash != expected_hash {
                 return Err(BulkAppendError::InvalidProof(format!(
-                    "dense merkle root mismatch for chunk {}: expected {}, got {}",
+                    "chunk blob hash mismatch for chunk {}: expected {}, got {}",
                     chunk_idx,
-                    hex::encode(expected_root),
-                    hex::encode(computed_root)
+                    hex::encode(expected_hash),
+                    hex::encode(computed_hash)
                 )));
             }
         }
@@ -628,11 +597,12 @@ mod tests {
         }
 
         let mmr_root = if tree.mmr_size() > 0 {
-            // Compute MMR root from stored nodes
+            // Compute MMR root from stored nodes.
+            // MMR node keys are 8-byte big-endian positions (no prefix).
             let mut mmr_nodes = BTreeMap::new();
             for (k, v) in store.0.borrow().iter() {
-                if k.starts_with(b"m") {
-                    let pos = u64::from_be_bytes(k[1..9].try_into().expect("pos bytes"));
+                if k.len() == 8 {
+                    let pos = u64::from_be_bytes(k[0..8].try_into().expect("pos bytes"));
                     let node = MmrNode::deserialize(v).expect("deserialize node");
                     mmr_nodes.insert(pos, node);
                 }
