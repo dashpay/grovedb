@@ -3,9 +3,9 @@
 //! A `DenseTreeProof` proves that specific positions hold specific values,
 //! authenticated against the tree's root hash.
 //!
-//! Internal nodes hash `blake3(0x01 || H(value) || H(left) || H(right))`,
-//! so ancestor nodes on the auth path only need their value *hash* (not the
-//! full value), keeping proofs compact.
+//! All nodes hash `blake3(H(value) || H(left) || H(right))`, so ancestor
+//! nodes on the auth path only need their value *hash* (not the full value),
+//! keeping proofs compact.
 
 use std::collections::BTreeSet;
 
@@ -29,7 +29,7 @@ pub struct DenseTreeProof {
     /// The proved (position, value) pairs.
     pub(crate) entries: Vec<(u16, Vec<u8>)>,
     /// Hashes of ancestor node values on the auth path that are NOT proved
-    /// entries. Only the 32-byte hash is needed because internal nodes use
+    /// entries. Only the 32-byte hash is needed because all nodes use
     /// `H(value)` in their hash computation.
     pub(crate) node_value_hashes: Vec<(u16, [u8; 32])>,
     /// Precomputed subtree hashes for sibling nodes not in the expanded set.
@@ -94,7 +94,7 @@ impl DenseTreeProof {
         store: &S,
     ) -> Result<Self, DenseMerkleError> {
         // Validate height before the shift to avoid panic on height >= 16
-        crate::error::validate_height(height)?;
+        crate::hash::validate_height(height)?;
         let capacity = ((1u32 << height) - 1) as u16;
 
         // Validate positions
@@ -145,17 +145,20 @@ impl DenseTreeProof {
                 node_value_hashes.push((pos, value_hash));
             }
 
-            // For each child of this position that is NOT in the expanded set,
-            // compute its hash and include it.
-            let first_leaf = (capacity - 1) / 2;
-            if pos < first_leaf {
-                let left_child = 2 * pos + 1;
-                let right_child = 2 * pos + 2;
+            // For each child of this position that is NOT in the expanded set
+            // and within capacity, compute its hash and include it.
+            let left_child_u32 = 2 * pos as u32 + 1;
+            let right_child_u32 = 2 * pos as u32 + 2;
 
+            if left_child_u32 < capacity as u32 {
+                let left_child = left_child_u32 as u16;
                 if !expanded.contains(&left_child) {
                     let (hash, _) = tree.hash_position(left_child, store)?;
                     node_hashes.push((left_child, hash));
                 }
+            }
+            if right_child_u32 < capacity as u32 {
+                let right_child = right_child_u32 as u16;
                 if !expanded.contains(&right_child) {
                     let (hash, _) = tree.hash_position(right_child, store)?;
                     node_hashes.push((right_child, hash));

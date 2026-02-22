@@ -12,14 +12,3 @@ pub enum DenseMerkleError {
     #[error("invalid proof: {0}")]
     InvalidProof(String),
 }
-
-/// Validate that height is in the allowed range [1, 16].
-pub(crate) fn validate_height(height: u8) -> Result<(), DenseMerkleError> {
-    if !(1..=16).contains(&height) {
-        return Err(DenseMerkleError::InvalidData(format!(
-            "height must be between 1 and 16, got {}",
-            height
-        )));
-    }
-    Ok(())
-}

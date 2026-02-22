@@ -1,11 +1,13 @@
 //! Dense fixed-sized Merkle tree using Blake3.
 //!
 //! A complete binary tree of height h with `2^h - 1` positions, where ALL
-//! nodes (internal + leaf) store data values, filled sequentially in
-//! level-order (BFS). No intermediate hashes are stored; the root hash is
-//! computed on-the-fly using recursive hashing:
-//! - leaf = `blake3(0x00 || value)`
-//! - internal = `blake3(0x01 || value || H(left) || H(right))`
+//! nodes store data values, filled sequentially in level-order (BFS). No
+//! intermediate hashes are stored; the root hash is computed on-the-fly
+//! using a uniform hash scheme for every node:
+//!
+//! `hash = blake3(H(value) || H(left) || H(right))`
+//!
+//! Nodes without children use `[0; 32]` for both child hashes.
 
 mod error;
 pub(crate) mod hash;

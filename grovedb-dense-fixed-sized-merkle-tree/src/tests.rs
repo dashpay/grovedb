@@ -153,14 +153,15 @@ fn test_single_insert() {
     assert_eq!(pos, 0);
     assert_eq!(tree.count(), 1);
     assert_ne!(root_hash, [0u8; 32]);
-    // Single node at leaf level: 1 hash call
-    assert_eq!(hash_calls, 1);
+    // Single node: 1 value hash + 1 node_hash = 2
+    assert_eq!(hash_calls, 2);
 
-    // Root hash should be blake3(0x00 || value) for a single-node tree
-    // (domain-separated leaf)
+    // Root hash = blake3(H(value) || [0;32] || [0;32]) for a single-node tree
+    let value_hash = *blake3::hash(b"hello").as_bytes();
     let mut hasher = blake3::Hasher::new();
-    hasher.update(&[0x00]);
-    hasher.update(b"hello");
+    hasher.update(&value_hash);
+    hasher.update(&[0u8; 32]);
+    hasher.update(&[0u8; 32]);
     let expected = *hasher.finalize().as_bytes();
     assert_eq!(root_hash, expected);
 }
@@ -183,25 +184,27 @@ fn test_sequential_fill_height_2() {
     assert_eq!(tree.count(), 3);
 
     // Verify structure: root=0 has children at 1 and 2
-    // Root hash = blake3(0x01 || H(root_val) || H(left) || H(right))
-    // H(left) = blake3(0x00 || left_val), H(right) = blake3(0x00 || right_val)
-    // (both leaves)
+    // All nodes: blake3(H(value) || H(left) || H(right))
+    // Children are leaf nodes (no children) so H(left_child) = [0;32], etc.
     let h_left = {
+        let vh = *blake3::hash(b"left_val").as_bytes();
         let mut h = blake3::Hasher::new();
-        h.update(&[0x00]);
-        h.update(b"left_val");
+        h.update(&vh);
+        h.update(&[0u8; 32]);
+        h.update(&[0u8; 32]);
         *h.finalize().as_bytes()
     };
     let h_right = {
+        let vh = *blake3::hash(b"right_val").as_bytes();
         let mut h = blake3::Hasher::new();
-        h.update(&[0x00]);
-        h.update(b"right_val");
+        h.update(&vh);
+        h.update(&[0u8; 32]);
+        h.update(&[0u8; 32]);
         *h.finalize().as_bytes()
     };
     let h_root_val = *blake3::hash(b"root_val").as_bytes();
     let expected = {
         let mut h = blake3::Hasher::new();
-        h.update(&[0x01]);
         h.update(&h_root_val);
         h.update(&h_left);
         h.update(&h_right);

@@ -1,6 +1,5 @@
 use crate::{
-    error::validate_height,
-    hash::{INTERNAL_DOMAIN_TAG, LEAF_DOMAIN_TAG},
+    hash::{node_hash, validate_height},
     DenseMerkleError, DenseTreeStore,
 };
 
@@ -179,6 +178,9 @@ impl DenseFixedSizedMerkleTree {
 
     /// Recursively compute the hash of a node.
     ///
+    /// All nodes use the same scheme: `blake3(H(value) || H(left) || H(right))`.
+    /// Leaf nodes simply have `[0; 32]` for both child hashes.
+    ///
     /// Returns `(hash, hash_call_count)`.
     fn hash_node<S: DenseTreeStore>(
         &self,
@@ -199,33 +201,26 @@ impl DenseFixedSizedMerkleTree {
             ))
         })?;
 
-        // Check if this is a leaf BEFORE computing child indices.
-        // A node is a leaf when its left child (2*pos+1) would be >= capacity.
-        // Equivalently: position >= (capacity - 1) / 2, which is overflow-safe.
-        let first_leaf = (capacity - 1) / 2;
-        if position >= first_leaf {
-            // Leaf node: hash = blake3(0x00 || value)
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(&[LEAF_DOMAIN_TAG]);
-            hasher.update(&value);
-            let hash = *hasher.finalize().as_bytes();
-            return Ok((hash, 1));
-        }
+        let value_hash = *blake3::hash(&value).as_bytes();
 
-        // Internal node: hash = blake3(0x01 || H(value) || H(left) || H(right))
-        let left_child = 2 * position + 1;
-        let right_child = 2 * position + 2;
-        let (left_hash, left_calls) = self.hash_node(left_child, store)?;
-        let (right_hash, right_calls) = self.hash_node(right_child, store)?;
+        // Use u32 to avoid overflow for leaf positions near capacity.
+        let left_child_u32 = 2 * position as u32 + 1;
+        let right_child_u32 = 2 * position as u32 + 2;
 
-        let value_hash = blake3::hash(&value);
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&[INTERNAL_DOMAIN_TAG]);
-        hasher.update(value_hash.as_bytes());
-        hasher.update(&left_hash);
-        hasher.update(&right_hash);
-        let hash = *hasher.finalize().as_bytes();
+        let (left_hash, left_calls) = if left_child_u32 < capacity as u32 {
+            self.hash_node(left_child_u32 as u16, store)?
+        } else {
+            ([0u8; 32], 0)
+        };
+        let (right_hash, right_calls) = if right_child_u32 < capacity as u32 {
+            self.hash_node(right_child_u32 as u16, store)?
+        } else {
+            ([0u8; 32], 0)
+        };
 
+        let hash = node_hash(&value_hash, &left_hash, &right_hash);
+
+        // 1 for value hash + 1 for node_hash + child calls
         Ok((hash, 2 + left_calls + right_calls))
     }
 }

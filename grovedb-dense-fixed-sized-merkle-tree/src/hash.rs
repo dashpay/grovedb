@@ -1,11 +1,15 @@
 use crate::DenseMerkleError;
 
-/// Domain separation tag for leaf node hashing: `blake3(0x00 || value)`.
-pub(crate) const LEAF_DOMAIN_TAG: u8 = 0x00;
-
-/// Domain separation tag for internal node hashing:
-/// `blake3(0x01 || H(value) || H(left) || H(right))`.
-pub(crate) const INTERNAL_DOMAIN_TAG: u8 = 0x01;
+/// Validate that height is in the allowed range [1, 16].
+pub(crate) fn validate_height(height: u8) -> Result<(), DenseMerkleError> {
+    if !(1..=16).contains(&height) {
+        return Err(DenseMerkleError::InvalidData(format!(
+            "height must be between 1 and 16, got {}",
+            height
+        )));
+    }
+    Ok(())
+}
 
 /// Merge two 32-byte hashes by concatenating and hashing with Blake3.
 pub(crate) fn blake3_merge(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
@@ -13,6 +17,22 @@ pub(crate) fn blake3_merge(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     data[..32].copy_from_slice(left);
     data[32..].copy_from_slice(right);
     *blake3::hash(&data).as_bytes()
+}
+
+/// Compute the hash of a node: `blake3(H(value) || H(left) || H(right))`.
+///
+/// All nodes use the same scheme — leaf nodes simply have `[0; 32]` for
+/// both child hashes.
+pub(crate) fn node_hash(
+    value_hash: &[u8; 32],
+    left_hash: &[u8; 32],
+    right_hash: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(value_hash);
+    hasher.update(left_hash);
+    hasher.update(right_hash);
+    *hasher.finalize().as_bytes()
 }
 
 /// Compute the blake3 dense Merkle root from pre-computed leaf hashes.

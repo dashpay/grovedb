@@ -3,16 +3,12 @@
 //! Pure function — no storage required. Recomputes the root hash from the
 //! proof data and compares it to the expected root.
 //!
-//! Internal nodes use `blake3(0x01 || H(value) || H(left) || H(right))`,
+//! All nodes use `blake3(H(value) || H(left) || H(right))`,
 //! so ancestor nodes only need a 32-byte value hash, not the full value.
 
 use std::collections::BTreeMap;
 
-use crate::{
-    hash::{INTERNAL_DOMAIN_TAG, LEAF_DOMAIN_TAG},
-    proof::DenseTreeProof,
-    DenseMerkleError,
-};
+use crate::{hash::node_hash, proof::DenseTreeProof, DenseMerkleError};
 
 /// Maximum number of elements per proof field (entries, node_value_hashes,
 /// node_hashes) to prevent DoS via expensive ancestor set computation.
@@ -193,6 +189,9 @@ impl DenseTreeProof {
     }
 
     /// Recursively recompute the hash for a position.
+    ///
+    /// All nodes use `blake3(H(value) || H(left) || H(right))`.
+    /// Leaf nodes simply have `[0; 32]` for both child hashes.
     fn recompute_hash(
         &self,
         position: u16,
@@ -211,24 +210,7 @@ impl DenseTreeProof {
             return Ok(**hash);
         }
 
-        // Check leaf condition BEFORE computing child indices.
-        let first_leaf = (capacity - 1) / 2;
-        if position >= first_leaf {
-            // Leaf node: must have full value (from entries)
-            let value = entry_map.get(&position).ok_or_else(|| {
-                DenseMerkleError::InvalidProof(format!(
-                    "incomplete proof: no value for leaf position {}",
-                    position
-                ))
-            })?;
-            // hash = blake3(0x00 || value)
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(&[LEAF_DOMAIN_TAG]);
-            hasher.update(value);
-            return Ok(*hasher.finalize().as_bytes());
-        }
-
-        // Internal node: need H(value) — either compute from full value
+        // Every node needs H(value) — either compute from full value
         // (entries) or use precomputed value hash (node_value_hashes)
         let value_hash: [u8; 32] = if let Some(value) = entry_map.get(&position) {
             *blake3::hash(value).as_bytes()
@@ -236,26 +218,39 @@ impl DenseTreeProof {
             **hash
         } else {
             return Err(DenseMerkleError::InvalidProof(format!(
-                "incomplete proof: no value or value hash for internal position {}",
+                "incomplete proof: no value or value hash for position {}",
                 position
             )));
         };
 
-        // hash = blake3(0x01 || H(value) || H(left) || H(right))
-        let left_child = 2 * position + 1;
-        let right_child = 2 * position + 2;
-        let left_hash =
-            self.recompute_hash(left_child, capacity, entry_map, value_hash_map, hash_map)?;
-        let right_hash =
-            self.recompute_hash(right_child, capacity, entry_map, value_hash_map, hash_map)?;
+        // Use u32 to avoid overflow for leaf positions near capacity.
+        let left_child_u32 = 2 * position as u32 + 1;
+        let right_child_u32 = 2 * position as u32 + 2;
 
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&[INTERNAL_DOMAIN_TAG]);
-        hasher.update(&value_hash);
-        hasher.update(&left_hash);
-        hasher.update(&right_hash);
+        let left_hash = if left_child_u32 < capacity as u32 {
+            self.recompute_hash(
+                left_child_u32 as u16,
+                capacity,
+                entry_map,
+                value_hash_map,
+                hash_map,
+            )?
+        } else {
+            [0u8; 32]
+        };
+        let right_hash = if right_child_u32 < capacity as u32 {
+            self.recompute_hash(
+                right_child_u32 as u16,
+                capacity,
+                entry_map,
+                value_hash_map,
+                hash_map,
+            )?
+        } else {
+            [0u8; 32]
+        };
 
-        Ok(*hasher.finalize().as_bytes())
+        Ok(node_hash(&value_hash, &left_hash, &right_hash))
     }
 }
 
