@@ -337,6 +337,9 @@ pub(crate) fn take_while_vec<T, P: Fn(&T) -> bool>(v: &mut Vec<T>, p: P) -> Vec<
 // GroveDB-specific MmrTreeProof
 // =============================================================================
 
+/// Verified leaf entries: `(leaf_index, value_bytes)` pairs.
+pub type VerifiedLeaves = Vec<(u64, Vec<u8>)>;
+
 /// A proof that specific leaves exist in an MMR tree.
 ///
 /// Contains the MMR size, the proved leaf values with their indices,
@@ -463,7 +466,7 @@ impl MmrTreeProof {
     ///
     /// # Returns
     /// The verified leaf values as `(leaf_index, value_bytes)` pairs.
-    pub fn verify(&self, expected_mmr_root: &[u8; 32]) -> Result<Vec<(u64, Vec<u8>)>> {
+    pub fn verify(&self, expected_mmr_root: &[u8; 32]) -> Result<VerifiedLeaves> {
         if self.leaves.is_empty() {
             return Err(Error::InvalidProof(
                 "proof contains no leaves to verify".into(),
@@ -536,7 +539,7 @@ impl MmrTreeProof {
     /// Unlike [`verify`](Self::verify), this does NOT check against an expected
     /// root — the caller is responsible for validating the root (typically via
     /// the Merk child hash mechanism).
-    pub fn verify_and_get_root(&self) -> Result<([u8; 32], Vec<(u64, Vec<u8>)>)> {
+    pub fn verify_and_get_root(&self) -> Result<([u8; 32], VerifiedLeaves)> {
         if self.leaves.is_empty() {
             return Err(Error::InvalidProof(
                 "proof contains no leaves to verify".into(),

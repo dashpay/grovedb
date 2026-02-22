@@ -68,7 +68,7 @@ impl<'db, C: StorageContext<'db>> MMRStoreWriteOps for &MmrStore<'_, C> {
                     .wrap_with_cost(cost);
                 }
             };
-            let result = self.ctx.put(&key, &serialized, None, None);
+            let result = self.ctx.put(key, &serialized, None, None);
             cost += result.cost;
             if let Err(e) = result.value {
                 return Err(crate::Error::StoreError(format!(

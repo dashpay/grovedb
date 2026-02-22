@@ -47,6 +47,6 @@ pub use mem_store::MemStore;
 pub use mmr::MMR;
 pub use mmr_store::{MMRBatch, MMRStoreReadOps, MMRStoreWriteOps};
 pub use node::{MmrNode, blake3_merge, leaf_hash};
-pub use proof::{MerkleProof, MmrTreeProof};
+pub use proof::{MerkleProof, MmrTreeProof, VerifiedLeaves};
 #[cfg(feature = "storage")]
 pub use storage_adapter::MmrStore;
