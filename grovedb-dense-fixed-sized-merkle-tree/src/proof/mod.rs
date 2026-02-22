@@ -11,8 +11,105 @@ use std::collections::BTreeSet;
 
 use bincode::{Decode, Encode};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_query::{Query, QueryItem};
 
 use crate::{DenseMerkleError, DenseTreeStore};
+
+/// Decode a byte slice as a big-endian `u16` position.
+///
+/// Accepts 1-byte (value 0–255) or 2-byte (big-endian u16) encodings.
+fn bytes_to_position(bytes: &[u8]) -> Result<u16, DenseMerkleError> {
+    match bytes.len() {
+        1 => Ok(bytes[0] as u16),
+        2 => Ok(u16::from_be_bytes([bytes[0], bytes[1]])),
+        _ => Err(DenseMerkleError::InvalidData(format!(
+            "position byte length must be 1 or 2, got {}",
+            bytes.len()
+        ))),
+    }
+}
+
+/// Convert a [`Query`] into a sorted, deduplicated vector of `u16` positions.
+///
+/// Each `QueryItem` is interpreted as specifying positions (big-endian u16
+/// encoded). All bounds are clamped to `[0, count)` — positions at or beyond
+/// `count` are silently excluded.
+fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, DenseMerkleError> {
+    let mut positions = BTreeSet::new();
+
+    for item in &query.items {
+        match item {
+            QueryItem::Key(k) => {
+                let pos = bytes_to_position(k)?;
+                if pos < count {
+                    positions.insert(pos);
+                }
+            }
+            QueryItem::Range(r) => {
+                let start = bytes_to_position(&r.start)?;
+                let end = bytes_to_position(&r.end)?.min(count);
+                for p in start..end {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeInclusive(r) => {
+                let start = bytes_to_position(r.start())?;
+                let end = bytes_to_position(r.end())?;
+                let clamped_end = end.min(count.saturating_sub(1));
+                for p in start..=clamped_end {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeFull(..) => {
+                for p in 0..count {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeFrom(r) => {
+                let start = bytes_to_position(&r.start)?;
+                for p in start..count {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeTo(r) => {
+                let end = bytes_to_position(&r.end)?.min(count);
+                for p in 0..end {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeToInclusive(r) => {
+                let end = bytes_to_position(&r.end)?;
+                let clamped_end = end.min(count.saturating_sub(1));
+                for p in 0..=clamped_end {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeAfter(r) => {
+                let start = bytes_to_position(&r.start)?;
+                for p in (start + 1)..count {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeAfterTo(r) => {
+                let start = bytes_to_position(&r.start)?;
+                let end = bytes_to_position(&r.end)?.min(count);
+                for p in (start + 1)..end {
+                    positions.insert(p);
+                }
+            }
+            QueryItem::RangeAfterToInclusive(r) => {
+                let start = bytes_to_position(r.start())?;
+                let end = bytes_to_position(r.end())?;
+                let clamped_end = end.min(count.saturating_sub(1));
+                for p in (start + 1)..=clamped_end {
+                    positions.insert(p);
+                }
+            }
+        }
+    }
+
+    Ok(positions.into_iter().collect())
+}
 
 mod tests;
 
@@ -152,17 +249,21 @@ impl DenseTreeProof {
         .wrap_with_cost(cost)
     }
 
-    /// Generate a proof for a contiguous range of positions `[start, end)`.
+    /// Generate a proof for the positions described by a [`Query`].
     ///
-    /// Convenience wrapper around [`generate`](Self::generate).
-    pub fn generate_range<S: DenseTreeStore>(
+    /// Each [`QueryItem`] in the query is interpreted as specifying positions
+    /// encoded as big-endian `u16` bytes (1-byte or 2-byte). Unbounded range
+    /// ends are clamped to `0` or `count`.
+    pub fn generate_for_query<S: DenseTreeStore>(
         height: u8,
         count: u16,
-        start: u16,
-        end: u16,
+        query: &Query,
         store: &S,
     ) -> CostResult<Self, DenseMerkleError> {
-        let positions: Vec<u16> = (start..end).collect();
+        let positions = match query_to_positions(query, count) {
+            Ok(p) => p,
+            Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
+        };
         Self::generate(height, count, &positions, store)
     }
 
