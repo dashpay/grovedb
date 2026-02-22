@@ -162,8 +162,6 @@ impl fmt::Display for Query {
     }
 }
 
-
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {

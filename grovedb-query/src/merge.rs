@@ -238,7 +238,6 @@ impl SubqueryBranch {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl Query {
     fn merge_default_subquerys_branch_subquery(
         &mut self,
