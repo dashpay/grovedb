@@ -71,7 +71,7 @@ pub enum TreeFeatureType {
     SummedMerkNode(i64),
     /// Big Summed Merk Tree Node
     BigSummedMerkNode(i128),
-    /// Counted Merk Tree None
+    /// Counted Merk Tree Node
     CountedMerkNode(u64),
     /// Counted and summed Merk Tree None
     CountedSummedMerkNode(u64, i64),

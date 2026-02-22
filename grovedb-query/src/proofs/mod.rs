@@ -108,7 +108,7 @@ pub enum Node {
     /// Contains: `(kv_hash, count)`
     KVHashCount(CryptoHash, u64),
 
-    /// Key, referenced value, reference element hash, and feature type.
+    /// Key, referenced value, reference element hash, and count.
     /// For queried References in ProvableCountTree.
     ///
     /// Contains: `(key, referenced_value, reference_element_hash, count)`
