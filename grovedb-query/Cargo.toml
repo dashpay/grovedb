@@ -1,0 +1,11 @@
+[package]
+name = "grovedb-query"
+version = "4.0.0"
+edition = "2021"
+license = "MIT"
+description = "Query primitives for GroveDB"
+homepage = "https://www.grovedb.org/"
+documentation = "https://docs.rs/grovedb-query"
+repository = "https://github.com/dashpay/grovedb"
+
+[dependencies]

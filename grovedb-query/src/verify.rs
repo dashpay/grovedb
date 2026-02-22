@@ -16,32 +16,6 @@ use crate::{
     CryptoHash as MerkHash, CryptoHash,
 };
 
-#[cfg(feature = "minimal")]
-pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), ProofStatus);
-
-#[cfg(feature = "minimal")]
-/// Verify proof against expected hash
-#[deprecated]
-#[allow(unused)]
-pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
-    let ops = Decoder::new(bytes);
-    let mut map_builder = MapBuilder::new();
-
-    execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
-        root.hash().map(|hash| {
-            if hash != expected_hash {
-                Err(Error::InvalidProofError(format!(
-                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-                    expected_hash,
-                    root.hash()
-                )))
-            } else {
-                Ok(map_builder.build())
-            }
-        })
-    })
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct VerifyOptions {
     /// When set to true, this will give back absence proofs for any query items

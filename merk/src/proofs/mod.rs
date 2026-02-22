@@ -7,9 +7,8 @@ pub mod chunk;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod encoding;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub mod query;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree;
+mod query;
 
 #[cfg(feature = "minimal")]
 pub use encoding::encode_into;
